@@ -5,13 +5,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 const profile = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fish-console-browser-')));
 let chrome;
 try {
   const remote = `const fs=require('fs'),os=require('os');process.stdout.write(fs.readFileSync(os.homedir()+'/.local/share/companion-world-v1/operator/console.token','utf8').trim());`;
   const token = execFileSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'myvm', '"$HOME/.local/opt/companion/bin/node" -e ' + JSON.stringify(remote)], { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw Error('ACCESS');
-  const screenshot = path.resolve('projects/big-fat-fish/.build/standalone-console-live.png');
+  const screenshot = fileURLToPath(new URL('../../.build/standalone-console-live.png', import.meta.url));
   const url = 'http://127.0.0.1:3082/#companion-operator=' + token;
   const output = await new Promise((resolve, reject) => {
     chrome = spawn('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-gpu', '--use-mock-keychain', '--password-store=basic', '--user-data-dir=' + profile, '--window-size=1360,1000', '--timeout=20000', '--virtual-time-budget=15000', '--screenshot=' + screenshot, '--dump-dom', url], { stdio: ['ignore', 'pipe', 'pipe'] });

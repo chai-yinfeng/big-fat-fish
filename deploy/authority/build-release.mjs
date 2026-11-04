@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 const project = fileURLToPath(new URL('../../', import.meta.url));
+const sourceRevision = execFileSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+const changes = execFileSync('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: project, encoding: 'utf8' });
+if (!/^[a-f0-9]{40,64}$/.test(sourceRevision) || changes.trim()) throw new Error('Release requires a committed, clean source tree');
 const output = path.resolve(process.argv[2] || path.join(project, '.build/authority-0.10.0'));
 if (fs.existsSync(output)) throw new Error('Refusing to overwrite a versioned release');
 fs.mkdirSync(output, { recursive: true });
@@ -117,5 +121,5 @@ fs.writeFileSync(path.join(bundle, 'cordis.patch.yml'), `# No second character o
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
 `);
-fs.writeFileSync(path.join(output, 'source-manifest.json'), JSON.stringify({ schemaVersion: 1, productVersion: '0.10.0', files: copied }, null, 2) + '\n');
+fs.writeFileSync(path.join(output, 'source-manifest.json'), JSON.stringify({ schemaVersion: 1, productVersion: '0.10.0', sourceRevision, files: copied }, null, 2) + '\n');
 console.log(JSON.stringify({ output, sourceFiles: Object.keys(copied).length, legacyPluginIncluded: false, privateDataIncluded: false }));

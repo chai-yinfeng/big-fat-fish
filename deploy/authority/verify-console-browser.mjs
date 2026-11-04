@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 const modelMode = process.argv.includes('--model');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'companion-browser-'));
 const chrome = spawn('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-gpu', '--use-mock-keychain', '--password-store=basic', '--user-data-dir=' + profile, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -65,7 +66,7 @@ try {
     if (!await wait(`document.querySelector('.bff-world input[type=password]')`)) throw new Error('MODEL_FORM_MISSING');
     if (!await evaluate(`document.querySelector('.bff-world input[type=password]').value.length===0`)) throw new Error('KEY_WAS_ECHOED');
   }
-  const screenshot = path.resolve(modelMode ? 'projects/big-fat-fish/notes/world-model-config-live.png' : 'projects/big-fat-fish/notes/world-console-live.png');
+  const screenshot = fileURLToPath(new URL(modelMode ? '../../.build/world-model-config-live.png' : '../../.build/world-console-live.png', import.meta.url));
   const image = await call('Page.captureScreenshot', { format: 'png' }, sessionId); fs.writeFileSync(screenshot, Buffer.from(image.data, 'base64'));
   console.log(JSON.stringify({ realPageVerified: true, automaticAuthorization: true, modelConfiguration: modelMode, pauseResume: !modelMode, screenshot, renderedText: await evaluate("document.querySelector('.bff-world').innerText") }));
 } catch (error) {

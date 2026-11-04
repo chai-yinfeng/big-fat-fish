@@ -32,6 +32,10 @@ __pycache__/
 /notes/
 .dev/
 .pnpm-store/
+.cache/
+*.jsonl
+*.ndjson
+*.har
 *.wav
 *.mp3
 *.m4a
