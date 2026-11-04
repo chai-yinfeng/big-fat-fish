@@ -1,0 +1,53 @@
+# Private runtime state and generated releases
+.secrets/
+.data/
+.build/
+/napcat/
+
+# Dependencies, environments and caches
+node_modules/
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Local credentials and runtime output (keep documented examples)
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+!.env.sample
+!*.env.example
+!*.env.sample
+*.log
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.tgz
+
+# Local material is not source history, especially with a public remote.
+/notes/
+.dev/
+.pnpm-store/
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.silk
+*.pcm
+*.mp4
+*.mov
+*.pem
+*.key
+*.p12
+*.gguf
+*.onnx
+*.safetensors
+*.bundle
+
+# Rebuild console output from the checked-in source and lockfile.
+/console/client.js

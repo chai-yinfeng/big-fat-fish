@@ -1,0 +1,38 @@
+# 大肥鱼陪伴模式 agent preset.
+#
+# Selecting this preset at session creation makes the session a companion
+# session. The global companion-core plugin reads `session.header.agentPreset`
+# and auto-binds the session (config `autoBindPreset`, default "companion"),
+# so no /companion bind is needed.
+- insert:
+    - id: preset-companion
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: companion
+        name: 大肥鱼陪伴
+        description: 聊天优先的陪伴会话：长期记忆、心情、主动开口和本机语音；工具收窄，不做编码任务。
+        order: 2
+        plugins:
+          # Identity is supplied only by companion-core's versioned persona.json.
+          # This preset selects capabilities, not a second character definition.
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              read: false
+              readImage: true
+              write: false
+              edit: false
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'

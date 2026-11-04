@@ -1,0 +1,7 @@
+.venv/
+.uv-cache/
+.models/
+__pycache__/
+*.pyc
+*.wav
+*.webm

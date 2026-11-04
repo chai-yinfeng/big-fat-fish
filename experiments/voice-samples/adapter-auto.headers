@@ -1,0 +1,8 @@
+HTTP/1.1 200 OK
+content-type: audio/wav
+content-length: 222764
+x-tts-provider: mimo
+Date: Sun, 25 Oct 2026 04:57:39 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+

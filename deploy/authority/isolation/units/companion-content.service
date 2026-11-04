@@ -1,0 +1,20 @@
+[Unit]
+Description=Companion scoped media and CPU-only file speech
+Requires=companion-authority.service companion-model.service
+After=companion-authority.service companion-model.service
+
+[Service]
+Type=exec
+ExecStart=%h/.local/opt/companion/bin/node %h/src/dsh-companion/authority-0.10.0/capabilities/media/main.mjs --config %h/.local/share/companion-world-v1/operator/content.json
+UMask=0077
+NoNewPrivileges=true
+KillMode=control-group
+TimeoutStopSec=20s
+MemoryHigh=3500M
+MemoryMax=4G
+CPUQuota=200%
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

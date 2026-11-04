@@ -1,0 +1,17 @@
+{
+  "name": "@big-fat-fish/adapters",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "HTTP TTS/ASR adapters and a fallback TTS router for companion-core.",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

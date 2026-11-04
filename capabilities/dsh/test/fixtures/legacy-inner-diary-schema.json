@@ -1,0 +1,16 @@
+{
+  "source": "plugin/lib/inner-diary-action.js:24-34, companion 0.3.0 comparison baseline",
+  "tool": {
+    "name": "companion_inner_diary",
+    "description": "保存你自己决定留下的私密内心日记。没有值得留下的感受或理解时不调用；不必每轮或每个视频写。",
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": { "type": "string", "description": "第一人称正文，最多240字；不复述凭据或隐私。" },
+        "key": { "type": "string", "description": "本次经历的稳定标识，1–96字符；重试沿用同一个。" }
+      },
+      "required": ["text", "key"]
+    }
+  }
+}

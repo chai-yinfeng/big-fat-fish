@@ -1,0 +1,14 @@
+[project]
+name = "companion-asr-gateway"
+version = "0.1.0"
+description = "Local ASR gateway: Qwen3-ASR (cloud) with SenseVoice/VAD fallback."
+requires-python = ">=3.10"
+dependencies = [
+  "aiohttp>=3.14.0",
+  "dashscope>=2.0.1",
+  "numpy>=2.0",
+  "sherpa-onnx>=2.0.0",
+]
+
+[tool.uv]
+package = false

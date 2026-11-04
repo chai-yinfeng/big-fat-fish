@@ -1,0 +1,9 @@
+[Unit]
+Description=Companion DSH browser ingress on host loopback
+
+[Socket]
+ListenStream=127.0.0.1:3081
+Accept=no
+
+[Install]
+WantedBy=sockets.target

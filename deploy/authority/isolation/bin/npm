@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /opt/companion/runtime/node-v24.22.2-linux-arm64/bin/node /opt/companion/runtime/node-v24.22.2-linux-arm64/lib/node_modules/npm/bin/npm-cli.js "$@"

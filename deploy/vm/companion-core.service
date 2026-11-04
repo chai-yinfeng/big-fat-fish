@@ -1,0 +1,25 @@
+[Unit]
+Description=Companion core — isolated validation deployment
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=%h/src/dsh-companion/core-0.3.0
+Environment=DSH_HOME=%h/.local/share/dsh-companion-base
+Environment=COMPANION_WORKSPACE=%h/src/dsh-companion/core-0.3.0
+Environment=COMPANION_PORT=3080
+Environment=PATH=%h/.local/opt/companion/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/opt/companion/bin/node %h/src/dsh-companion/ops/run-dsh.mjs
+UMask=0077
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=15s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

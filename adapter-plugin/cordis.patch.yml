@@ -1,0 +1,3 @@
+- insert:
+    - id: companion-adapters
+      name: '@local/companion-adapters'

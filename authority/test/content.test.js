@@ -1,0 +1,36 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { Authority } from '../src/engine.js';
+import { createAuthorityServer } from '../src/server.js';
+import { ContentClient } from '../../capabilities/media/client.js';
+
+test('content delegation uses bound Authority scope, rejects unobserved sources and stops while paused', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-content-core-'));
+  const core = new Authority({ file: path.join(root, 'core.sqlite') });
+  const token = 'synthetic-content-credential-not-a-real-secret', tokenFile = path.join(root, 'cap.token');
+  fs.writeFileSync(tokenFile, token, { mode: 0o600 });
+  core.registerCapability({ id: 'qq', policy: 'conversation.v1' });
+  core.bindActor({ capabilityId: 'qq', externalActorId: 'owner', personId: 'person:owner' });
+  core.bindStream({ capabilityId: 'qq', streamId: 'private', personId: 'person:owner', audience: 'private' });
+  const source = core.observe('qq', { eventId: 'input', streamId: 'private', actorId: 'owner', role: 'user', text: '[voice attachment]', at: 1, origin: 'attachment' });
+  core.submit('qq', { proposalId: 'derived-is-not-authored', observationId: source.observationId, type: 'experience.remember', payload: { summary: 'An invented experience from a placeholder', quote: '[voice attachment]' } });
+  core.processPending();
+  assert.equal(core.getReceipt('qq', 'derived-is-not-authored').reason, 'authored_text_required');
+  let calls = 0, received;
+  const socketPath = path.join(root, 'api.sock');
+  const app = createAuthorityServer({ authority: core, socketPath, credentials: [{ role: 'capability', capabilityId: 'qq', hash: createHash('sha256').update(token).digest('hex') }], contentControl: async (scope, input) => { calls++; received = scope; return { id: 'synthetic-ref', action: input.action }; } });
+  t.after(async () => { await app.close(); core.close(); assert.equal(path.dirname(root), os.tmpdir()); assert.match(path.basename(root), /^fish-content-core-/); fs.rmSync(root, { recursive: true }); });
+  await app.start(); const client = new ContentClient({ socketPath, tokenFile });
+  const input = { action: 'ingest', streamId: 'private', memoryEpoch: 0, sourceEventId: 'input', kind: 'audio', data: 'YQ==' };
+  assert.equal((await client.call(input)).id, 'synthetic-ref');
+  assert.equal(received.entityId, 'entity:big-fat-fish'); assert.equal(received.personId, 'person:owner');
+  await assert.rejects(client.call({ ...input, entityId: 'entity:someone-else' }));
+  await assert.rejects(client.call({ ...input, sourceEventId: 'unobserved' }), { code: 'CONTENT_FORBIDDEN' });
+  await assert.rejects(client.call({ ...input, memoryEpoch: 1 }));
+  core.setWorldPaused({ paused: true, expectedRevision: core.worldStatus().revision });
+  await assert.rejects(client.call(input)); assert.equal(calls, 1);
+});

@@ -1,0 +1,4 @@
+# Host capability only. No preset, auto-binding, old core or proactive services.
+- insert:
+    - id: companion-dsh-capability
+      name: '@local/companion-dsh-capability'

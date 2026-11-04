@@ -1,0 +1,20 @@
+{
+  "name": "@big-fat-fish/companion-core",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Companion core: durable memory, mood, relationship and proactive policy for a DSH companion agent.",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

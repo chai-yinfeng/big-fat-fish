@@ -1,0 +1,12 @@
+[Unit]
+Description=Private activation socket into the DSH sandbox
+
+[Socket]
+ListenStream=%h/.local/share/companion-world-v1/ipc/web/dsh-http.sock
+Accept=no
+SocketMode=0600
+DirectoryMode=0700
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

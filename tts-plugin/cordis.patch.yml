@@ -1,0 +1,3 @@
+- insert:
+    - id: companion-tts
+      name: '@local/companion-tts'

@@ -1,0 +1,12 @@
+[Unit]
+Description=Fixed-target browser ingress proxy for sandboxed DSH
+Requires=companion-dsh-internal.socket
+After=companion-dsh-internal.socket
+
+[Service]
+Type=exec
+Sockets=companion-dsh-public.socket
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd %h/.local/share/companion-world-v1/ipc/web/dsh-http.sock
+UMask=0077
+KillMode=control-group
+TimeoutStopSec=10s

@@ -1,0 +1,17 @@
+[Unit]
+Description=Companion bounded incremental memory maintenance
+Requires=companion-authority.service companion-model.service
+After=companion-authority.service companion-model.service
+
+[Service]
+Type=exec
+ExecStart=%h/.local/opt/companion/bin/node %h/src/dsh-companion/authority-0.10.0/capabilities/memory/main.mjs --config %h/.local/share/companion-world-v1/operator/memory-worker.json
+UMask=0077
+NoNewPrivileges=true
+KillMode=control-group
+TimeoutStopSec=120s
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

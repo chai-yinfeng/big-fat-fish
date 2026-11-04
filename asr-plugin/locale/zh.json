@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "大肥鱼语音适配器",
+    "description": "在本地暴露 TTS/ASR HTTP 路由，并在多个语音供应商之间自动降级；默认连接 edge-tts 服务。"
+  }
+}

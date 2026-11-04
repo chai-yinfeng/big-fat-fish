@@ -1,0 +1,3 @@
+- insert:
+    - id: companion-ui
+      name: '@local/companion-ui'

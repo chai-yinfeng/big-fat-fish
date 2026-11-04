@@ -1,0 +1,19 @@
+[Unit]
+Description=Companion QQ private-message transport
+Requires=companion-authority.service companion-dsh-internal.service
+After=companion-authority.service companion-dsh-internal.service
+
+[Service]
+Type=exec
+ExecStartPre=%h/.local/opt/companion/bin/node %h/src/dsh-companion/authority-0.10.0/ops/wait-sdk-ready.mjs
+TimeoutStartSec=90s
+ExecStart=%h/.local/opt/companion/bin/node %h/src/dsh-companion/authority-0.10.0/capabilities/qq/main.mjs --config %h/.local/share/companion-world-v1/operator/qq-bridge.json
+UMask=0077
+NoNewPrivileges=true
+KillMode=control-group
+TimeoutStopSec=15s
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=default.target

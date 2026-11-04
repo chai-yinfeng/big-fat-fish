@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "targetSession": "",
+  "targetSessions": [],
+  "autoBindPreset": "companion",
+  "persona": { "name": "VM companion（验证环境）" },
+  "services": { "autoStart": false },
+  "tts": { "enabled": false, "autoSpeak": false },
+  "extractor": { "enabled": false },
+  "proactive": { "enabled": false },
+  "diary": { "window": { "enabled": false } },
+  "innerDiary": { "enabled": false }
+}

@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>大肥鱼语音对比：MiMo-V2.5-TTS vs edge-tts</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f8fafc; --fg:#0f172a; --muted:#64748b; --card:#ffffff; --line:#e2e8f0; --accent:#0e7490; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0b1220; --fg:#e2e8f0; --muted:#94a3b8; --card:#111a2b; --line:#1e293b; --accent:#67e8f9; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 40px 20px 64px; }
+  h1 { font-size: 28px; line-height: 1.25; margin: 0 0 8px; }
+  p { color: var(--muted); margin: 0 0 16px; }
+  .grid { display:grid; gap:14px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); margin: 24px 0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; }
+  .card h2 { font-size:17px; margin:0 0 4px; }
+  .meta { font-size:13px; color:var(--muted); margin:0 0 10px; }
+  audio { width:100%; margin-top:8px; }
+  table { width:100%; border-collapse: collapse; margin: 16px 0 24px; font-size:14px; }
+  th, td { text-align:left; border-bottom:1px solid var(--line); padding:10px 8px; vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  code { background:rgba(148,163,184,.18); padding:1px 5px; border-radius:5px; font-size:.9em; }
+  ul { color:var(--muted); padding-left:1.2em; }
+  .tag { display:inline-block; font-size:12px; color:var(--accent); border:1px solid currentColor; border-radius:999px; padding:1px 8px; margin-left:6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>大肥鱼语音对比</h1>
+  <p>同一段中文，分别用小米 MiMo-V2.5-TTS 和微软 edge-tts 合成。文件就在本目录，直接用浏览器播放。</p>
+
+  <h2>同一句：中性对比</h2>
+  <p class="meta">文本：你好，我是大肥鱼。今天也要好好休息。</p>
+  <div class="grid">
+    <div class="card">
+      <h2>MiMo-V2.5-TTS <span class="tag">冰糖</span></h2>
+      <p class="meta">WAV / 24kHz / 16-bit / 约 180 KB；首次实测约 4.6s（含网络和推理）</p>
+      <audio controls preload="metadata" src="mimo-zh.wav"></audio>
+    </div>
+    <div class="card">
+      <h2>edge-tts <span class="tag">Xiaoxiao</span></h2>
+      <p class="meta">MP3 / 24kHz / 48kbps / 约 27 KB；首次实测约 0.6s</p>
+      <audio controls preload="metadata" src="edge-zh.mp3"></audio>
+    </div>
+  </div>
+
+  <h2>同一句：风格控制对比</h2>
+  <p class="meta">文本：你回来啦。今天辛苦了，先坐下歇一会儿吧。</p>
+  <div class="grid">
+    <div class="card">
+      <h2>MiMo · 温柔</h2>
+      <p class="meta">style：温柔、自然，像在跟亲近的人说话，语速稍慢</p>
+      <audio controls preload="metadata" src="mimo-warm.wav"></audio>
+    </div>
+    <div class="card">
+      <h2>MiMo · 疲惫</h2>
+      <p class="meta">style：声音有点疲惫，像是在深夜轻声说话，气声多一点，语速慢</p>
+      <audio controls preload="metadata" src="mimo-tired.wav"></audio>
+    </div>
+    <div class="card">
+      <h2>edge · 放慢</h2>
+      <p class="meta">edge 只能调 rate/pitch/volume；这里 rate=-10%</p>
+      <audio controls preload="metadata" src="edge-warm.mp3"></audio>
+    </div>
+  </div>
+
+  <h2>MiMo 音频标签</h2>
+  <div class="card">
+    <h2>标签控制</h2>
+    <p class="meta">文本：(轻笑)你回来啦。[叹气]今天辛苦了。 · style：自然口语，像日常聊天</p>
+    <audio controls preload="metadata" src="mimo-tag.wav"></audio>
+  </div>
+
+  <h2>走 DSH 适配器</h2>
+  <div class="card">
+    <h2>adapter /companion/tts · voice=auto</h2>
+    <p class="meta">x-tts-provider: mimo；同一个请求在没有 MiMo key 时会自动回退 edge。</p>
+    <audio controls preload="metadata" src="adapter-auto.wav"></audio>
+  </div>
+
+  <h2>怎么理解这组对比</h2>
+  <table>
+    <tr><th>维度</th><th>MiMo-V2.5-TTS</th><th>edge-tts</th></tr>
+    <tr><td>中文自然度</td><td>高，语气更“有人味”</td><td>中上，稳定但偏播音</td></tr>
+    <tr><td>风格/情绪</td><td>自然语言指令 + 音频标签 + 导演模式</td><td>基本只能调语速/音高/音量</td></tr>
+    <tr><td>音色</td><td>冰糖/茉莉/苏打/白桦；可设计/克隆</td><td>现成音色库</td></tr>
+    <tr><td>延迟</td><td>非流式约 4–5s（本次实测）</td><td>约 0.6s</td></tr>
+    <tr><td>文件</td><td>WAV，体积大（约 180–300 KB/句）</td><td>MP3，约 27–30 KB/句</td></tr>
+    <tr><td>成本</td><td>限时免费（需 key）</td><td>免费、无 key</td></tr>
+    <tr><td>适合</td><td>陪伴、角色化、情绪表达</td><td>兜底、低延迟、长文本</td></tr>
+  </table>
+
+  <h2>注意</h2>
+  <ul>
+    <li>延迟是单次实测，包含网络和模型推理，不是稳定基准；流式接口会显著改善首包延迟。</li>
+    <li>MiMo 输出 WAV（24kHz 16-bit PCM），edge 输出 48kbps MP3；体积差异不代表音质差异，只影响传输/存储。</li>
+    <li>正式体验上，建议“短句自动朗读用 MiMo，长文本/兜底用 edge”，或者直接只保留一个 provider。</li>
+  </ul>
+</main>
+</body>
+</html>

@@ -1,0 +1,27 @@
+{
+  "name": "@local/companion-preset",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "大肥鱼陪伴模式 agent preset: a chat-first companion session with memory, mood and local voice.",
+  "exports": {
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

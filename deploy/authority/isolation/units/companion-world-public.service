@@ -1,0 +1,12 @@
+[Unit]
+Description=Fixed operator API ingress, never mounted to model capability
+Requires=companion-authority.service
+After=companion-authority.service
+
+[Service]
+Type=exec
+Sockets=companion-world-public.socket
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd %h/.local/share/companion-world-v1/ipc/operator/operator.sock
+UMask=0077
+KillMode=control-group
+TimeoutStopSec=10s

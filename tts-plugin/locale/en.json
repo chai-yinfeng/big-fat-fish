@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Big Fat Fish Voice Adapters",
+    "description": "Local TTS/ASR HTTP routes with provider fallback, defaulting to the standalone edge-tts service."
+  }
+}

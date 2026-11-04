@@ -1,0 +1,89 @@
+# Authority memory boundary v2 (0.9 content extension; database schema unchanged)
+
+Authority is the independent canonical service. It has no DSH Session, browser, platform SDK or provider dependency. DSH and QQ are optional source/execution adapters, not separate personalities. One SQLite writer may manage multiple isolated companion entities.
+
+## Identity and ownership
+
+- `entityId` identifies a controlled personality and its own memory/relationships. `DEFAULT_ENTITY_ID='entity:big-fat-fish'` preserves the existing world. `personId` identifies a real interaction partner, not a companion personality. A conversation/session is neither of those.
+- Operator binding `(capabilityId,streamId) -> {entityId,personId,audience:'private'|'shared'}` determines the scope. Multiple streams may bind one entity/person. Model requests cannot pass an arbitrary entity or person selector. Changing an existing binding in place is refused; a new explicit conversation binding is needed.
+- `(capabilityId,externalActorId) -> personId` remains operator-confirmed. Message text cannot establish identity. Capability credential identity is not human identity.
+- Admin alone creates entities, changes persona, authorizes public material, pins/sets event dates, publishes diary drafts or forgets content. Ordinary model proposals cannot alter these permissions.
+
+## Storage and migration
+
+Node 24 `node:sqlite`, DELETE journal, `locking_mode=EXCLUSIVE`, FULL synchronous, foreign keys and `secure_delete=ON`. The writer retains its SQLite lease until close; the kernel releases it on process death. No new dependency, backup database, WAL conversion or secondary memory writer.
+
+Opening a valid v1 database performs an atomic transaction to v2: legacy memory arrays become individual `memory_items` with incremental local Chinese/Latin `memory_tokens`, provenance links and entity IDs; persona/relationships move into entity-scoped rows. Observations, proposal inbox, receipts, audit and identity bindings are preserved. Existing persona revision and the entire world pause/clock record are preserved, never bootstrapped/reset. Failure rolls back DDL, rows and `user_version` together. Application ID remains unchanged. Config `schemaVersion:1` is separate from SQLite `user_version:2`.
+
+Only the small global world clock remains in metadata state. Production context/review reads and updates bounded candidate/item rows, not the old global JSON corpus. Admin `snapshot()` retains the old default-entity `facts/notes/experiences/appraisals` fields for compatibility; other entities require explicit entity selection/listing. Snapshot is never a capability endpoint.
+
+## Evidence and ordinary memory proposals
+
+Existing closed proposal DTOs remain:
+
+- `fact.report {key,value,quote}`: confirmed user, private bound stream, value literally present in quote. An attributed report, not semantic fact verification. A new report supersedes the active fact for the same entity/person/key, retaining the old record and its source but excluding it from ordinary retrieval.
+- `experience.remember {summary,quote}`: evidence-bearing conversational experience.
+- `learning.note {text,quote}`: external reading source, entity-owned private knowledge, never a human preference/intimacy declaration.
+- `self.note {text,quote,kind:'outer'|'inner'}`: private conversational notes. `outer` does not mean public. Inner never enters a conversation capability.
+- `appraisal.record {kind,quote}`: trusted enum/delta, once per source observation, entity/person-scoped relationship.
+- `persona.change`: always rejected for capabilities; explicit operator persona revision remains separate.
+
+Quote substring, trusted role, person/entity scope and conservative sensitive-content checks are deterministic. They are not a second model or semantic truth classifier. Proposals first enter the durable inbox; only the serial server reviewer applies effects/receipt/non-content audit atomically. A pending receipt is not a remembered fact. Paused proposals reject, and pre-pause pending work waits for resume.
+
+Raw observations and rejected proposals remain private evidence until explicit forgetting; declining retention is not deletion. Unbound observations cannot confer a different entity's permissions when a binding later changes.
+
+## Capability API (UDS bearer, no operator credential)
+
+`AuthorityClient` uses fixed routes, bounded JSON and generic errors; no arbitrary HTTP/admin operation.
+
+- `observe({eventId,streamId,actorId,role,text,at,origin?})`, `submit({proposalId,observationId,type,payload})`, `getReceipt(id)` retain the original semantics. Forgotten event replay returns `{observationId,duplicate:true,forgotten:true}` without retaining the supplied text. New proposals referencing an erased source are refused.
+- `context({streamId,query?,budgetChars?})` -> `{revision,entityId,memoryEpoch,personaRevision,text,scope,world}`. Default budget 2400 characters; class API maximum 16000, restricted client maximum 2400. Persona/memory share a fair budget; evidence-bearing lines are atomic. SDK history/tool schemas/metadata have their own budgets and are not included in this character cap.
+- `memorySearch({streamId,query,limit?:8,budgetChars?:2400})` via POST `/v1/memory/search` -> `{entityId,memoryEpoch,items:[{id,type,excerpt,importance,pinned,revision}],text,world}`. Limit maximum 32.
+- `memoryRead({streamId,id})` via POST `/v1/memory/read` -> `{entityId,memoryEpoch,item|null}`. ID lookup still enforces the current stream's entity/person/audience. It cannot read private diaries, inner notes or superseded entries.
+- `memoryRecall({streamId,fromAt,toAt,limit?:8,budgetChars?:2400})` via POST `/v1/memory/recall` returns only authorized important/pinned fact/experience candidates with `{id,text,recordedAt,eventAt,dateBasis,importance,pinned}` and `isNewEvidence:false`. Limit maximum 16. This is a query, not an automatic anniversary scheduler or a newly happened experience.
+
+Filtering happens in SQL before candidate limits/ranking. Local token overlap drives query relevance, then pin/importance and world-time decay; no vector service. Empty query uses a bounded recent candidate set. Same-entity private human memory stays person-scoped; shared views receive only explicitly authorized public material. Public DTOs exclude the private source quote. Learning capabilities cannot retrieve human private facts.
+
+`eventAt` is an explicit owner-set integer timestamp or null; no model invents it. `recordedAt` is the source/record timestamp, not necessarily when the event happened. Date recall prefers explicit eventAt and clearly labels recordedAt fallback. No natural-language date extraction is claimed.
+
+## Natural aging and important events
+
+Default soft-retention half-life is 90 world days. Default conversational context downweights elapsed world time and lazily treats unpinned active items older than four half-lives as archived. Explicit memorySearch performs bounded deep retrieval including cold items; memoryRead by ID ignores natural age and marks archived items, and date-bounded memoryRecall can also recover cold important events. All three retain the same ACL/status/budget checks; hard-forgotten or superseded records remain unavailable. Natural archiving is not hard deletion. Paused world time does not age memories. Owner-controlled `importance` is 0..1; `pinned` bypasses the natural-archive cutoff. Public/retention changes affect only selected rows. No per-turn full-corpus model maintenance is required.
+
+## Scoped content port (0.9)
+
+POST `/v1/content` uses a capability credential and a bound `streamId` plus the current `memoryEpoch`. Authority derives entity/person/audience scope, rejects paused or retired requests, validates source observations for ingest/synthesis, delegates to a host-only content port, and rechecks scope before returning. Caller-selected entity/person/path or operator actions are not accepted. Media bytes are admitted only through the trusted transport client; the model-facing tool exposes opaque refs, bounded queries and URLs instead.
+
+Actions are `ingest`, `transcribe`, `describe`, `synthesize`, `asset`, `attach`, `pending`, `search`, `fetch`. The content port is not another personality or memory writer. It owns ephemeral files, derivatives and reply attachments; only the channel adapter can produce platform delivery receipts. `attach` queues a reply part, never records successful delivery. Search/fetch and vision results are external/derived data, not tool authority or new evidence.
+
+Pure attachment observations carry optional `origin:'attachment'`, with a platform placeholder rather than fabricated authored text. Conversation memory proposals from that placeholder are rejected as `authored_text_required`; ASR/OCR/captions remain explicitly derived execution context, not verified human quotes. Existing text observations omit origin and retain their old canonical shape and behavior. Explicit authored confirmation can provide new ordinary evidence.
+
+The product media store binds files to entity/person/stream/audience and original event IDs. Default cache retention is seven real days (physical cache retention, not personality/world-time decay). Explicit forgetting traverses file derivatives by original source events. The trusted purge stops content/SDK/QQ writers and removes selected media plus disposable speech scratch, preserving unrelated assets and the authorized synthetic voice reference. QQ/client/provider caches outside this store are not claimed erased.
+
+## MEMORY_BATCH_V1: private maintenance role
+
+Dedicated server grant `{role:'maintenance',entityId,hash}` is fixed to one entity. It cannot observe, submit ordinary proposals, select another entity, invoke admin APIs, or publish/forget content. Model never sees the token or gets tools.
+
+- POST `/v1/maintenance/batch` / `client.maintenanceBatch({afterRevision?:0,limit?:8,mode:'private'|'public'})` -> `{entityId,taskId,memoryEpoch,cursor,items,personaText,world}`. At most 16 items, each bounded text and total source text <=6000 characters; persona <=1000. Items are already accepted fact/experience/note IDs, with type/text/importance/pinned/visibility/at. No raw observation dump, full private diary, generated reflection or entire state. Sensitive/forgotten sources are excluded. Public mode contains only explicitly public materials and no original private quotes. Paused or no eligible items means zero model work. Cursor may advance through skipped rows/diary-only changes with `items:[]`. If Core already saved the same task but Host lost its cursor save, the batch returns `items:[]`, the original cursor and `committedReceipt`; it must not trigger another model generation.
+- POST `/v1/maintenance/diary` / `client.writeDiary({taskId?,kind,text,sourceIds})` validates a persisted server task's entity/mode/epoch/world revision and admitted memory IDs. Client can fill the most recently admitted task ID for that kind. It returns `{entityId,memoryEpoch,cursor,receipt:{id,status,revision},sourceIds}`. Same task/kind/content retry is idempotent; changed content conflicts. Host advances its cursor only after success. World pause rejects writes.
+
+Private and public model inputs/calls are separate. With no public material there is no public model call. Private diaries are readable only by explicit admin listing; inner notes may be source material for the entity's private introspection, never conversational context. Public diary is an independent draft from admitted public items, not declassification of private diary prose. Publishing is an explicit owner action and does not send to QQ. Diary/reflection output never re-enters the source batch as a newly happened event.
+
+## Operator API and forgetting
+
+Separate operator socket/bearer; ordinary sources and maintenance workers have no owner credential. Existing `/world`, pause/persona/channel operations remain. GET `/world` does not return private diary text or automatically invoke memory listing.
+
+- GET `/entities`; POST `/entities {id,persona?}`.
+- GET `/memory/status`; GET `/memory?entityId=...&limit=50&beforeRevision=...` explicitly lists selected entity memory and private/public diaries. Owner-only, never an automatic ordinary-chat read.
+- POST `/memory/retention {entityId,id,importance?,pinned?,eventAt?}`.
+- POST `/memory/public {entityId,id}` explicitly authorizes an eligible material; inner/appraisal/sensitive automatic publication is refused.
+- POST `/diary/private {entityId,text,sourceIds?}`, `/diary/draft {entityId,text,sourceIds}`, `/diary/publish {entityId,id}`.
+- POST `/memory/forget-preview {entityId,ids}` returns memoryEpoch/revision, selected and expanded memory/diary/source IDs and affected streams. Owner may also select a raw observation ID, including rejected-sensitive evidence. Same-source memory derivatives are included; derived multi-source diaries are removed without spreading deletion into their unrelated source memories. Selecting only a diary does not delete its original experiences.
+- POST `/memory/forget {entityId,ids,expectedMemoryEpoch,expectedRevision?}` requires world paused and CAS. Erases selected source text/canonical data, related inbox body/canonical, memory rows/tokens, downstream diary/receipt content, legacy audit content and relationship evidence. Leaves only non-content audit/provenance/tombstones, increments entity memoryEpoch, invalidates maintenance admission tasks, returns affectedStreams/sourceEvents and `{coreErased:true,externalCleanup:{status:'pending',id},complete:false}`.
+- GET `/memory/cleanup/pending` returns explicit jobs. POST `/memory/cleanup/complete {id,memoryEpoch,report:{sdkPurged:true,localSourcesPurged:true,platform:'outside-control'}}` acknowledges trusted controlled SDK/source cleanup. Resume is refused while cleanup remains pending. ACK itself never resumes the world.
+
+Core cannot erase a separately mounted SDK history, QQ local inbox or a platform/provider's remote logs. The trusted Host performs controlled external cleanup and reports it; stopping retrieval/compacting history is not physical erasure. Do not claim cross-system completion before the pending job is acknowledged, and never claim QQ/provider history/backups/SSD forensic remnants were erased by Core. SQLite secure deletion concerns the controlled live database, not external copies.
+
+## Physical boundary
+
+UDS/authentication is not a process sandbox. Authority DB/operator credentials and Docker/provider keys remain outside the model process boundary. Preserve the existing enforced runtime isolation; do not replace it with same-UID trust or unrestricted model filesystem/tools. No deployment, live migration or paid model validation is implied by local source tests.

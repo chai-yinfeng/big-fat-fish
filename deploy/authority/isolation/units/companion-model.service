@@ -1,0 +1,17 @@
+[Unit]
+Description=Companion fixed DeepSeek gateway (provider key outside model worker)
+Requires=companion-authority.service
+After=companion-authority.service
+
+[Service]
+Type=exec
+ExecStart=%h/.local/opt/companion/bin/node %h/src/dsh-companion/authority-0.10.0/model-gateway/main.mjs --config %h/.local/share/companion-world-v1/operator/model-gateway.json
+UMask=0077
+NoNewPrivileges=true
+KillMode=control-group
+TimeoutStopSec=15s
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=default.target

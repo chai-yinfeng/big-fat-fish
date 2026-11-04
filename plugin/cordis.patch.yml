@@ -1,0 +1,5 @@
+# DSH companion-core plugin shell.
+# The id is the settings/log namespace; keep it stable once sessions depend on it.
+- insert:
+    - id: companion-core
+      name: '@local/companion-core'

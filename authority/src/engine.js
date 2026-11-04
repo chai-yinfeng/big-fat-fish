@@ -1,0 +1,376 @@
+import { randomUUID } from 'node:crypto';
+import { Store, DEFAULT_ENTITY_ID } from './store.js';
+import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
+import { POLICIES, validatePayload, review } from './policies.js';
+import { normalizePersona, validatePersonaPatch } from '../../core/src/persona.js';
+import { renderContext } from './context.js';
+import { MemoryDomain } from './memory.js';
+export {
+  DEFAULT_ENTITY_ID
+}
+from './store.js';
+export class Authority extends MemoryDomain {
+  constructor(options){
+    super();
+    closed(options,['file','clock','persona','initialPaused'],['file']);
+    text(options.file,4096);
+    if(options.initialPaused!==undefined&&typeof options.initialPaused!=='boolean')fail('VALIDATION_ERROR','initialPaused must be boolean');
+    if(options.clock!==undefined&&typeof options.clock!=='function')fail('VALIDATION_ERROR','clock must be function');
+    this.clock=options.clock??Date.now;
+    jsonValue(options.persona??{});
+    const persona=validated(()=>normalizePersona(options.persona??{})),
+    at=this.now();
+    this.store=new Store(options.file,{
+      world:{
+        paused:options.initialPaused??false,revision:1,anchorWorldAt:at,anchorRealAt:at
+      },persona,personaRevision:1,facts:[],experiences:[],notes:[],appraisals:[],relationships:{}
+    });
+    this.processing=false;
+  }
+  now(){
+    return integer(this.clock());
+  }
+  worldStatus(){
+    const w=this.store.get('state').world,
+    realNow=this.now();
+    return{
+      paused:w.paused,
+      revision:w.revision,
+      worldNow:w.anchorWorldAt+(w.paused?0:realNow-w.anchorRealAt),
+      realNow
+    };
+  }
+  setWorldPaused(input){
+    closed(input,['paused','expectedRevision']);
+    integer(input.expectedRevision,1);
+    if(typeof input.paused!=='boolean')fail('VALIDATION_ERROR','paused must be boolean');
+    return this.store.transaction(()=>{
+      if(input.paused===false&&this.store.db.prepare("SELECT 1 FROM cleanup_jobs WHERE status='pending' LIMIT 1").get())fail('CONFLICT','Complete controlled cleanup before resuming',409);
+      const state=this.store.get('state');
+      if(state.world.revision!==input.expectedRevision)fail('CONFLICT','World revision conflicts',409);
+      const status=this.worldStatus();
+      if(status.paused===input.paused)return status;
+      state.world={
+        paused:input.paused,revision:status.revision+1,anchorWorldAt:status.worldNow,anchorRealAt:status.realNow
+      };
+      this.store.set('state',state);
+      this.store.audit({
+        type:'world.pause',paused:input.paused,worldRevision:state.world.revision,revision:this.store.nextRevision(),at:status.realNow
+      });
+      return{
+        ...status,paused:input.paused,revision:state.world.revision
+      };
+    });
+  }
+  registerCapability(input){
+    closed(input,['id','policy']);
+    identifier(input.id);
+    enumeration(input.policy,POLICIES);
+    return this.store.transaction(()=>{
+      const old=this.store.db.prepare('SELECT * FROM capabilities WHERE id=?').get(input.id);
+      if(old){
+        if(old.policy!==input.policy)fail('CONFLICT','Capability conflicts',409);
+        return{
+          ...input
+        };
+      }
+      this.store.db.prepare('INSERT INTO capabilities VALUES(?,?)').run(input.id,input.policy);
+      this.adminAudit('capability.register',input);
+      return{
+        ...input
+      };
+    });
+  }
+  bindActor(input){
+    closed(input,['capabilityId','externalActorId','personId']);
+    identifier(input.externalActorId);
+    identifier(input.personId);
+    return this.store.transaction(()=>{
+      capability(this.store,input.capabilityId);
+      const old=this.store.db.prepare('SELECT person_id FROM actors WHERE capability_id=? AND actor_id=?').get(input.capabilityId,input.externalActorId);
+      if(old){
+        if(old.person_id!==input.personId)fail('CONFLICT','Actor binding conflicts',409);
+        return{
+          ...input
+        };
+      }
+      this.store.db.prepare('INSERT INTO actors VALUES(?,?,?)').run(input.capabilityId,input.externalActorId,input.personId);
+      this.adminAudit('actor.bind',input);
+      return{
+        ...input
+      };
+    });
+  }
+  bindStream(input){
+    closed(input,['capabilityId','streamId','personId','audience','entityId'],['capabilityId','streamId','personId','audience']);
+    identifier(input.streamId);
+    identifier(input.personId);
+    enumeration(input.audience,['private','shared']);
+    const entityId=input.entityId??DEFAULT_ENTITY_ID;
+    this.entity(entityId);
+    return this.store.transaction(()=>{
+      capability(this.store,input.capabilityId);
+      const old=this.store.db.prepare('SELECT * FROM streams WHERE capability_id=? AND stream_id=?').get(input.capabilityId,input.streamId);
+      if(old){
+        if(old.person_id!==input.personId||old.audience!==input.audience||old.entity_id!==entityId)fail('CONFLICT','Stream binding conflicts; create a new conversation binding',409);
+        return{
+          ...input,entityId
+        };
+      }
+      this.store.db.prepare('INSERT INTO streams VALUES(?,?,?,?,?)').run(input.capabilityId,input.streamId,input.personId,input.audience,entityId);
+      this.adminAudit('stream.bind',{
+        ...input,entityId
+      });
+      return{
+        ...input,entityId
+      };
+    });
+  }
+  adminAudit(type,input){
+    this.store.audit({
+      type,...input,revision:this.store.nextRevision(),at:this.now()
+    });
+  }
+  revisePersona(input){
+    closed(input,['entityId','expectedRevision','patch','reason'],['expectedRevision','patch','reason']);
+    integer(input.expectedRevision,1);
+    text(input.reason,1000);
+    jsonValue(input.patch);
+    validated(()=>validatePersonaPatch(input.patch));
+    return this.store.transaction(()=>{
+      const e=this.entity(input.entityId??DEFAULT_ENTITY_ID);
+      if(e.persona_revision!==input.expectedRevision)fail('CONFLICT','Persona revision conflicts',409);
+      const persona=validated(()=>normalizePersona({
+        ...JSON.parse(e.persona),...input.patch
+      })),personaRevision=e.persona_revision+1;
+      this.store.db.prepare('UPDATE entities SET persona=?,persona_revision=? WHERE id=?').run(JSON.stringify(persona),personaRevision,e.id);
+      const revision=this.store.nextRevision();
+      this.store.audit({
+        type:'persona.revision',entityId:e.id,revision,personaRevision,patch:input.patch,reason:input.reason,at:this.now()
+      });
+      return{
+        entityId:e.id,revision,personaRevision,persona
+      };
+    });
+  }
+  contentScope(capabilityId, input) {
+    closed(input, ['streamId', 'memoryEpoch', 'sourceEventId'], ['streamId', 'memoryEpoch']);
+    identifier(input.streamId); integer(input.memoryEpoch);
+    if (capability(this.store, capabilityId).policy !== 'conversation.v1') fail('FORBIDDEN', 'Content capability is not granted', 403);
+    const scope = contextScope(this.store, capabilityId, input.streamId), entity = this.entity(scope.entityId), world = this.worldStatus();
+    if (world.paused || entity.memory_epoch !== input.memoryEpoch) fail('CONFLICT', 'Content scope is paused or retired', 409);
+    if (input.sourceEventId !== undefined) {
+      identifier(input.sourceEventId);
+      const source = this.store.db.prepare('SELECT body,forgotten FROM observations WHERE capability_id=? AND stream_id=? AND event_id=?').get(capabilityId, input.streamId, input.sourceEventId);
+      if (!source || source.forgotten || !resolveIdentity(this.store, capabilityId, JSON.parse(source.body)).confirmed) fail('FORBIDDEN', 'Content source is unavailable', 403);
+    }
+    return { ...scope, capabilityId, memoryEpoch: entity.memory_epoch, worldRevision: world.revision };
+  }
+  observe(capabilityId,input){
+    capability(this.store,capabilityId);
+    closed(input,['eventId','streamId','actorId','role','text','at','origin'], ['eventId','streamId','actorId','role','text','at']);
+    if (input.origin !== undefined) enumeration(input.origin, ['attachment']);
+    for(const f of ['eventId','streamId','actorId'])identifier(input[f]);
+    enumeration(input.role,['user','assistant','external']);
+    text(input.text,32000);
+    integer(input.at);
+    const encoded=canonical(input);
+    return this.store.transaction(()=>{
+      const binding = this.store.db.prepare('SELECT entity_id FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId, input.streamId);
+      const tombstone = this.store.db.prepare('SELECT observation_id FROM source_tombstones WHERE entity_id=? AND capability_id=? AND stream_id=? AND event_id=?').get(binding?.entity_id ?? DEFAULT_ENTITY_ID, capabilityId, input.streamId, input.eventId);
+      if (tombstone) return { observationId: tombstone.observation_id, duplicate: true, forgotten: true };
+      const previous=this.store.db.prepare('SELECT * FROM observations WHERE capability_id=? AND stream_id=? AND event_id=?').get(capabilityId,input.streamId,input.eventId);
+      if(previous){
+        if(previous.forgotten)return{
+          observationId:previous.id,duplicate:true,forgotten:true
+        };
+        if(previous.canonical!==encoded)fail('CONFLICT','Event identifier reused with different content',409);
+        return{
+          observationId:previous.id,duplicate:true
+        };
+      }
+      const stream=this.store.db.prepare('SELECT entity_id FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId,input.streamId);
+      const entityId=stream?.entity_id??DEFAULT_ENTITY_ID,id=randomUUID();
+      this.store.db.prepare('INSERT INTO observations(id,capability_id,stream_id,event_id,canonical,body,entity_id) VALUES(?,?,?,?,?,?,?)').run(id,capabilityId,input.streamId,input.eventId,encoded,JSON.stringify(input),entityId);
+      return{
+        observationId:id,duplicate:false
+      };
+    });
+  }
+  submit(capabilityId,input){
+    capability(this.store,capabilityId);
+    closed(input,['proposalId','observationId','type','payload']);
+    identifier(input.proposalId);
+    identifier(input.observationId);
+    validated(()=>validatePayload(input.type,input.payload));
+    const encoded=canonical(input);
+    return this.store.transaction(()=>{
+      const previous=this.store.db.prepare('SELECT * FROM inbox WHERE capability_id=? AND proposal_id=?').get(capabilityId,input.proposalId);
+      if(previous){
+        if(!previous.forgotten&&previous.canonical!==encoded)fail('CONFLICT','Proposal reused with different content',409);
+        return JSON.parse(previous.receipt);
+      }
+      const observation=this.store.db.prepare('SELECT * FROM observations WHERE id=?').get(input.observationId);
+      if(!observation||observation.capability_id!==capabilityId||observation.forgotten)fail('FORBIDDEN','Observation unavailable',403);
+      const policy=capability(this.store,capabilityId).policy,paused=this.worldStatus().paused,receipt={
+        proposalId:input.proposalId,status:paused?'rejected':'pending',policy,...(paused?{
+          revision:this.store.nextRevision(),reason:'world_paused'
+        }
+        :{})
+      };
+      this.store.db.prepare('INSERT INTO inbox(capability_id,proposal_id,observation_id,canonical,body,policy,status,receipt,entity_id) VALUES(?,?,?,?,?,?,?,?,?)').run(capabilityId,input.proposalId,input.observationId,encoded,JSON.stringify(input),policy,receipt.status,JSON.stringify(receipt),observation.entity_id);
+      if(paused)this.store.audit({
+        type:'proposal.resolved',capabilityId,proposalId:input.proposalId,observationId:input.observationId,entityId:observation.entity_id,revision:receipt.revision,status:'rejected',reason:'world_paused',effects:[]
+      });
+      return receipt;
+    });
+  }
+  getReceipt(capabilityId,proposalId){
+    capability(this.store,capabilityId);
+    identifier(proposalId);
+    const row=this.store.db.prepare('SELECT receipt FROM inbox WHERE capability_id=? AND proposal_id=?').get(capabilityId,proposalId);
+    return row?JSON.parse(row.receipt):null;
+  }
+  processPending(input={}){
+    closed(input,['limit'],[]);
+    const limit=integer(input.limit===undefined?32:input.limit,1,256);
+    if(this.processing)fail('CONFLICT','Reviewer is already processing',409);
+    if(this.store.get('state').world.paused)return[];
+    this.processing=true;
+    try{
+      return this.store.db.prepare("SELECT seq FROM inbox WHERE status='pending' ORDER BY seq LIMIT ?").all(limit).map(({
+        seq
+      })=>this.store.transaction(()=>{
+        const row=this.store.db.prepare('SELECT * FROM inbox WHERE seq=?').get(seq),source=this.store.db.prepare('SELECT * FROM observations WHERE id=?').get(row.observation_id),observation={
+          ...JSON.parse(source.body),id:source.id
+        };
+         const alreadyAppraised=Boolean(this.store.db.prepare("SELECT 1 FROM memory_items m JOIN memory_sources s ON m.id=s.memory_id WHERE m.entity_id=? AND m.collection='appraisals' AND s.observation_id=? LIMIT 1").get(row.entity_id,source.id));
+         const identity = resolveIdentity(this.store, row.capability_id, observation);
+        const decision=source.forgotten?{
+          status:'rejected',reason:'source_forgotten',effects:[]
+        }
+        : identity.stream && identity.stream.entityId !== row.entity_id ? { status: 'rejected', reason: 'source_entity_mismatch', effects: [] }
+        :review({
+          policy:row.policy,proposal:JSON.parse(row.body),observation,identity,state:{
+            alreadyAppraised
+          }
+        }),revision=this.store.nextRevision(),at=this.now(),worldAt=this.worldStatus().worldNow;
+         const effects=decision.effects.map(({
+          collection,...effect
+        })=>{
+          const entry={
+            ...effect,id:randomUUID(),capabilityId:row.capability_id,proposalId:row.proposal_id,revision,at
+          };
+           if(collection==='facts')for(const old of this.store.db.prepare("SELECT id FROM memory_items WHERE entity_id=? AND collection='facts' AND person_id=? AND json_extract(body,'$.key')=? AND status='active'").all(row.entity_id,entry.personId,entry.key)){
+            this.store.db.prepare("UPDATE memory_items SET status='superseded',superseded_by=? WHERE id=?").run(entry.id,old.id);
+            this.store.db.prepare('DELETE FROM memory_tokens WHERE memory_id=?').run(old.id);
+          }
+          this.store.insertMemory(row.entity_id,collection,entry,worldAt);
+          if(collection==='appraisals'){
+            const p=this.store.db.prepare('SELECT body FROM relationships WHERE entity_id=? AND person_id=?').get(row.entity_id,entry.personId),previous=p?JSON.parse(p.body):{
+              score:0
+            };
+            this.store.db.prepare('INSERT OR REPLACE INTO relationships VALUES(?,?,?)').run(row.entity_id,entry.personId,JSON.stringify({
+              score:Math.min(100,previous.score+entry.delta),revision,policy:row.policy,evidence:entry.evidence
+            }));
+          }
+          return{
+            collection,id:entry.id
+          };
+        });
+         const receipt={
+          proposalId:row.proposal_id,status:decision.status,revision,policy:row.policy,...(decision.reason?{
+            reason:decision.reason
+          }
+          :{})
+        };
+        this.store.db.prepare('UPDATE inbox SET status=?,receipt=? WHERE seq=?').run(receipt.status,JSON.stringify(receipt),seq);
+        this.store.audit({
+          type:'proposal.resolved',entityId:row.entity_id,capabilityId:row.capability_id,proposalId:row.proposal_id,observationId:source.id,policy:row.policy,revision,at,status:decision.status,...(decision.reason?{
+            reason:decision.reason
+          }
+          :{}),effects
+        });
+        return receipt;
+      }));
+    }
+    finally{
+      this.processing=false;
+    }
+  }
+  context(capabilityId,input){
+    closed(input,['streamId','query','budgetChars'],['streamId']);
+    const registered=capability(this.store,capabilityId),
+    scope=contextScope(this.store,capabilityId,input.streamId),
+    e=this.entity(scope.entityId),
+    query=input.query===undefined?'':input.query;
+    text(query,2000,true);
+    const budget=integer(input.budgetChars===undefined?2400:input.budgetChars,0,16000),
+    rows=this.candidates(scope,registered.policy,query,64);
+    return{
+      revision:this.store.get('revision'),
+      entityId:e.id,
+      memoryEpoch:e.memory_epoch,
+      personaRevision:e.persona_revision,
+      text:renderContext(JSON.parse(e.persona),rows,budget),
+      scope,
+      world:this.worldStatus()
+    };
+  }
+  health(){
+    this.store.check();
+    const counts=Object.fromEntries(this.store.db.prepare('SELECT status,COUNT(*) AS count FROM inbox GROUP BY status').all().map(r=>[r.status,r.count])),
+    e=this.entity(DEFAULT_ENTITY_ID);
+    return{
+      revision:this.store.get('revision'),
+      personaRevision:e.persona_revision,
+      entityId:e.id,
+      memoryEpoch:e.memory_epoch,
+      pending:counts.pending??0,
+      accepted:counts.accepted??0,
+      rejected:counts.rejected??0,
+      world:this.worldStatus()
+    };
+  }
+  snapshot(){
+    this.store.check();
+    const e=this.entity(DEFAULT_ENTITY_ID),
+    items=this.store.db.prepare('SELECT * FROM memory_items WHERE entity_id=? ORDER BY revision,id').all(e.id).map(r=>this.store.memory(r));
+    return{
+      ...this.store.get('state'),
+      persona:JSON.parse(e.persona),
+      personaRevision:e.persona_revision,
+      memoryEpoch:e.memory_epoch,
+      entityId:e.id,
+      entities:this.listEntities(),
+      revision:this.store.get('revision'),
+      ...Object.fromEntries(['facts','notes','experiences','appraisals'].map(k=>[k,items.filter(i=>i.type===k)])),
+      relationships:Object.fromEntries(this.store.db.prepare('SELECT person_id,body FROM relationships WHERE entity_id=?').all(e.id).map(r=>[r.person_id,JSON.parse(r.body)])),
+      capabilities:this.store.db.prepare('SELECT * FROM capabilities ORDER BY id').all(),
+      actors:this.store.db.prepare('SELECT capability_id AS capabilityId,actor_id AS externalActorId,person_id AS personId FROM actors ORDER BY capability_id,actor_id').all(),
+      streams:this.store.db.prepare('SELECT capability_id AS capabilityId,stream_id AS streamId,person_id AS personId,audience,entity_id AS entityId FROM streams ORDER BY capability_id,stream_id').all(),
+      observations:this.store.db.prepare('SELECT * FROM observations ORDER BY rowid').all().map(r=>({
+        id:r.id,capabilityId:r.capability_id,entityId:r.entity_id,...JSON.parse(r.body),...(r.forgotten?{
+          forgotten:true
+        }
+        :{})
+      })),
+      receipts:this.store.db.prepare('SELECT capability_id,receipt FROM inbox ORDER BY seq').all().map(r=>({
+        capabilityId:r.capability_id,...JSON.parse(r.receipt)
+      })),
+      audit:this.store.db.prepare('SELECT body FROM audit ORDER BY seq').all().map(r=>JSON.parse(r.body))
+    };
+  }
+  close(){
+    this.store.close();
+  }
+}
+function validated(fn){
+  try{
+    return fn();
+  }
+  catch(error){
+    if(error.code)throw error;
+    fail('VALIDATION_ERROR','Invalid bounded persona or payload');
+  }
+}

@@ -1,0 +1,487 @@
+import { randomUUID, createHash } from 'node:crypto';
+import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, text } from './identity.js';
+import { DEFAULT_ENTITY_ID } from './store.js';
+import { normalizePersona, renderPersona } from '../../core/src/persona.js';
+import { tokenize } from '../../core/src/util.js';
+import { memoryContent } from './context.js';
+import { SENSITIVE } from './policies.js';
+
+const DAY=86400000;
+const placeholders=values=>values.map(()=>'?').join(',');
+const uniqueIds=ids=>{
+  if(!Array.isArray(ids)||!ids.length||ids.length>100)fail('VALIDATION_ERROR','Select 1 to 100 source IDs');
+  ids.forEach(identifier);
+  return[...new Set(ids)];
+};
+const publicEntry=entry=>({
+  ...entry,evidence:entry.evidence?{
+    observationId:entry.evidence.observationId
+  }
+  :undefined
+});
+export class MemoryDomain {
+  entity(id=DEFAULT_ENTITY_ID){
+    identifier(id);
+    this.store.check();
+    const row=this.store.db.prepare('SELECT * FROM entities WHERE id=?').get(id);
+    if(!row)fail('NOT_FOUND','Entity not found',404);
+    return row;
+  }
+  getEntity({
+    entityId=DEFAULT_ENTITY_ID
+  }
+  ={}){
+    const e=this.entity(entityId);
+    return{
+      id:e.id,
+      entityId:e.id,
+      persona:JSON.parse(e.persona),
+      personaRevision:e.persona_revision,
+      memoryEpoch:e.memory_epoch,
+      retentionDays:e.retention_days
+    };
+  }
+  listEntities(){
+    return this.store.db.prepare('SELECT id,persona_revision AS personaRevision,memory_epoch AS memoryEpoch FROM entities ORDER BY id').all();
+  }
+  createEntity(input){
+    closed(input,['id','persona'],['id']);
+    identifier(input.id);
+    jsonValue(input.persona??{});
+    const persona=normalizePersona(input.persona??{});
+    return this.store.transaction(()=>{
+      if(this.store.db.prepare('SELECT id FROM entities WHERE id=?').get(input.id))fail('CONFLICT','Entity exists',409);
+      this.store.db.prepare('INSERT INTO entities(id,persona,persona_revision) VALUES(?,?,1)').run(input.id,JSON.stringify(persona));
+      this.adminAudit('entity.create',{
+        entityId:input.id
+      });
+      return this.getEntity({
+        entityId:input.id
+      });
+    });
+  }
+  visibility(scope,policy){
+    if(scope.audience==='shared')return{
+      sql:"m.visibility='public' AND COALESCE(m.kind,'')!='inner'",
+      args:[]
+    };
+    if(policy==='learning.v1')return{
+      sql:"COALESCE(m.kind,'')!='inner' AND m.collection='notes' AND m.kind='learning'",
+      args:[]
+    };
+    return{
+      sql:"COALESCE(m.kind,'')!='inner' AND (m.visibility='public' OR m.person_id=? OR (m.collection='notes' AND m.kind='learning'))",
+      args:[scope.personId]
+    };
+  }
+  candidates(scope,policy,query,limit,{ includeArchived = false } = {}){
+    const e=this.entity(scope.entityId),
+    v=this.visibility(scope,policy),
+    tokens=[...new Set(tokenize(query))].slice(0,64),
+    now=this.worldStatus().worldNow,
+    cutoff=now-e.retention_days*DAY*4;
+    if(query.trim()&&!tokens.length)return[];
+    const args = [scope.entityId, ...v.args, ...(includeArchived ? [] : [cutoff])];
+    const filter = `m.entity_id=? AND ${v.sql} AND m.status='active'
+      AND m.collection IN ('facts','notes','experiences')
+      ${includeArchived ? '' : 'AND (m.pinned=1 OR m.created_world_at>=?)'}`;
+    let rows;
+    if(tokens.length)rows=this.store.db.prepare(`SELECT m.*,COUNT(t.token) AS hits FROM memory_items m JOIN memory_tokens t ON t.memory_id=m.id AND t.entity_id=m.entity_id WHERE ${filter} AND t.token IN (${placeholders(tokens)}) GROUP BY m.id ORDER BY hits DESC,m.pinned DESC,m.revision DESC LIMIT ?`).all(...args,...tokens,Math.min(128,limit*4));
+    else rows=this.store.db.prepare(`SELECT m.*,0 AS hits FROM memory_items m WHERE ${filter} ORDER BY m.pinned DESC,m.revision DESC LIMIT ?`).all(...args,Math.min(128,limit*4));
+    const ranked=rows.map(row=>({
+      row,score:(tokens.length?row.hits/tokens.length:1)+(row.pinned?2:0)+row.importance*Math.pow(0.5,Math.max(0,now-row.created_world_at)/(e.retention_days*DAY))
+    })).sort((a,b)=>b.score-a.score||b.row.revision-a.row.revision).slice(0,limit);
+    return ranked.map(({
+      row
+    })=>{
+      const entry = { ...this.store.memory(row), archived: !row.pinned && row.created_world_at < cutoff };
+      return row.visibility==='public'?publicEntry(entry):entry;
+    });
+  }
+  memorySearch(capabilityId,input){
+    closed(input,['streamId','query','limit','budgetChars'],['streamId','query']);
+    const policy=capability(this.store,capabilityId).policy,
+    scope=contextScope(this.store,capabilityId,input.streamId),
+    e=this.entity(scope.entityId);
+    text(input.query,2000,true);
+    const limit=integer(input.limit??8,1,32),
+    budget=integer(input.budgetChars??2400,0,16000),
+    rows=this.candidates(scope,policy,input.query,limit,{ includeArchived: true });
+    let remaining=budget;
+    const items=[];
+    for(const row of rows){
+      const content=memoryContent(row),
+      excerpt=content.slice(0,Math.min(remaining,1000));
+      if(!excerpt)continue;
+      items.push({
+        id:row.id,type:row.type,excerpt,importance:row.importance,pinned:row.pinned,archived:row.archived,revision:row.revision
+      });
+      remaining-=excerpt.length;
+    }
+    return{
+      entityId:e.id,
+      memoryEpoch:e.memory_epoch,
+      items,
+      text:items.map(i=>JSON.stringify({
+        id:i.id,text:i.excerpt
+      })).join('\n').slice(0,budget),
+      world:this.worldStatus()
+    };
+  }
+  memoryRead(capabilityId,input){
+    closed(input,['streamId','id']);
+    identifier(input.id);
+    const policy=capability(this.store,capabilityId).policy,
+    scope=contextScope(this.store,capabilityId,input.streamId),
+    e=this.entity(scope.entityId),
+    v=this.visibility(scope,policy),
+    cutoff=this.worldStatus().worldNow-e.retention_days*DAY*4;
+    const row=this.store.db.prepare(`SELECT m.* FROM memory_items m WHERE m.id=? AND m.entity_id=? AND ${v.sql} AND m.status='active' AND m.collection IN ('facts','notes','experiences')`).get(input.id,e.id,...v.args);
+    const item = row ? { ...this.store.memory(row), archived: !row.pinned && row.created_world_at < cutoff } : null;
+    return{
+      entityId:e.id,
+      memoryEpoch:e.memory_epoch,
+      item: item && row.visibility === 'public' ? publicEntry(item) : item
+    };
+  }
+  listMemory(input={}){
+    closed(input,['entityId','limit','beforeRevision','includeArchived'],[]);
+    const e=this.entity(input.entityId??DEFAULT_ENTITY_ID),
+    limit=integer(input.limit??50,1,100),
+    before=integer(input.beforeRevision??Number.MAX_SAFE_INTEGER),
+    now=this.worldStatus().worldNow;
+    const rows=this.store.db.prepare('SELECT * FROM memory_items WHERE entity_id=? AND revision<? ORDER BY revision DESC,id LIMIT ?').all(e.id,before,limit);
+    const entries=rows.map(r=>({
+      ...this.store.memory(r),archived:r.status==='active'&&!r.pinned&&now-r.created_world_at>e.retention_days*DAY*4
+    })).filter(r=>input.includeArchived!==false||(!r.archived&&r.status==='active'));
+    const diaries=this.store.db.prepare('SELECT * FROM diaries WHERE entity_id=? AND revision<? ORDER BY revision DESC LIMIT ?').all(e.id,before,limit).map(r=>({
+      id:r.id,type:'diary',kind:r.kind,status:r.status,revision:r.revision,entityId:e.id,...JSON.parse(r.body)
+    }));
+    return{
+      entityId:e.id,
+      memoryEpoch:e.memory_epoch,
+      items:entries,
+      diaries
+    };
+  }
+  setMemoryRetention(input) {
+    closed(input, ['entityId', 'id', 'importance', 'pinned', 'eventAt'], ['entityId', 'id']);
+    identifier(input.id);
+    if (input.importance !== undefined && (!Number.isFinite(input.importance) || input.importance < 0 || input.importance > 1)) fail('VALIDATION_ERROR', 'Importance must be in 0..1');
+    if (input.pinned !== undefined && typeof input.pinned !== 'boolean') fail('VALIDATION_ERROR', 'pinned must be boolean');
+    if (input.eventAt !== undefined && input.eventAt !== null) integer(input.eventAt);
+    return this.store.transaction(() => {
+      this.entity(input.entityId);
+      const row = this.store.db.prepare('SELECT * FROM memory_items WHERE entity_id=? AND id=?').get(input.entityId, input.id);
+      if (!row) fail('NOT_FOUND', 'Memory not found', 404);
+      const body = JSON.parse(row.body);
+      if (Object.hasOwn(input, 'eventAt')) body.eventAt = input.eventAt;
+      const importance = input.importance ?? row.importance, pinned = input.pinned === undefined ? row.pinned : Number(input.pinned);
+      this.store.db.prepare('UPDATE memory_items SET importance=?,pinned=?,revision=?,body=? WHERE id=?')
+        .run(importance, pinned, this.store.nextRevision(), JSON.stringify(body), row.id);
+      this.store.audit({ type: 'memory.retention', entityId: input.entityId, id: input.id, importance, pinned: Boolean(pinned), eventAt: body.eventAt ?? null, at: this.now() });
+      return this.store.memory(this.store.db.prepare('SELECT * FROM memory_items WHERE id=?').get(row.id));
+    });
+  }
+  markMemoryPublic(input){
+    closed(input,['entityId','id']);
+    return this.store.transaction(()=>{
+      this.entity(input.entityId);
+      const row=this.store.db.prepare('SELECT * FROM memory_items WHERE entity_id=? AND id=?').get(input.entityId,input.id);
+      if(!row||row.kind==='inner'||row.collection==='appraisals')fail('FORBIDDEN','Not a public material',403);
+      if(SENSITIVE.test(memoryContent(JSON.parse(row.body))))fail('FORBIDDEN','Sensitive material requires a separate explicit process',403);
+      const body={
+        ...JSON.parse(row.body),visibility:'public'
+      };
+      this.store.db.prepare("UPDATE memory_items SET visibility='public',body=?,revision=? WHERE id=?").run(JSON.stringify(body),this.store.nextRevision(),row.id);
+      this.store.audit({
+        type:'memory.public-authorized',entityId:input.entityId,id:input.id,at:this.now()
+      });
+      return publicEntry(this.store.memory(this.store.db.prepare('SELECT * FROM memory_items WHERE id=?').get(row.id)));
+    });
+  }
+  writePrivateDiary(input){
+    closed(input,['entityId','text','sourceIds'],['entityId','text']);
+    text(input.text,4000);
+    const ids=input.sourceIds?.length?uniqueIds(input.sourceIds):[];
+    return this.store.transaction(()=>this.saveDiary(input.entityId,'private',input.text,ids));
+  }
+  savePublicDiaryDraft(input){
+    closed(input,['entityId','text','sourceIds']);
+    text(input.text,4000);
+    const ids=uniqueIds(input.sourceIds);
+    return this.store.transaction(()=>this.saveDiary(input.entityId,'public',input.text,ids));
+  }
+  saveDiary(entityId,kind,body,sourceIds){
+    this.entity(entityId);
+    for(const id of sourceIds){
+      const item=this.store.db.prepare('SELECT * FROM memory_items WHERE entity_id=? AND id=?').get(entityId,id);
+      if(!item||item.status!=='active'||(kind==='public'&&(item.visibility!=='public'||item.kind==='inner')))fail('FORBIDDEN','Diary sources unavailable',403);
+    }
+    const id=randomUUID(),
+    revision=this.store.nextRevision();
+    this.store.db.prepare('INSERT INTO diaries VALUES(?,?,?,?,?,?,?)').run(id,entityId,kind,kind==='public'?'draft':'private',revision,this.worldStatus().worldNow,JSON.stringify({
+      text:body
+    }));
+    for(const sourceId of sourceIds)this.store.db.prepare('INSERT INTO diary_sources VALUES(?,?)').run(id,sourceId);
+    this.store.audit({
+      type:'diary.saved',entityId,id,kind,revision,sourceIds,at:this.now()
+    });
+    return{
+      id,
+      status:kind==='public'?'draft':'private',
+      revision,
+      sourceIds
+    };
+  }
+  publishDiary(input){
+    closed(input,['entityId','id']);
+    return this.store.transaction(()=>{
+      this.entity(input.entityId);
+      const row=this.store.db.prepare("SELECT * FROM diaries WHERE entity_id=? AND id=? AND kind='public'").get(input.entityId,input.id);
+      if(!row)fail('NOT_FOUND','Public draft not found',404);
+      const revision=this.store.nextRevision();
+      this.store.db.prepare("UPDATE diaries SET status='published',revision=? WHERE id=?").run(revision,row.id);
+      this.store.audit({
+        type:'diary.published',entityId:input.entityId,id:row.id,revision,at:this.now()
+      });
+      return{
+        id:row.id,status:'published',revision
+      };
+    });
+  }
+  maintenanceBatch(entityId,input={}){
+    closed(input,['afterRevision','limit','mode'],[]);
+    const e=this.entity(entityId),
+    world=this.worldStatus(),
+    mode=enumeration(input.mode??'private',['private','public']),
+    after=integer(input.afterRevision??0),
+    limit=integer(input.limit??8,1,16);
+    if(world.paused)return{
+      entityId:e.id,
+      memoryEpoch:e.memory_epoch,
+      cursor:after,
+      items:[],
+      personaText:'',
+      world
+    };
+    const rows=this.store.db.prepare(`SELECT * FROM memory_items WHERE entity_id=? AND revision>? AND collection IN ('facts','notes','experiences') ORDER BY revision,id LIMIT ?`).all(e.id,after,limit),
+    latest=this.store.db.prepare('SELECT MAX(revision) AS revision FROM diaries WHERE entity_id=?').get(e.id).revision??after;
+    const cursor=rows.length?rows.at(-1).revision:Math.max(after,latest);
+    let remaining=6000;
+    const items=rows.filter(r=>r.status==='active'&&(mode!=='public'||(r.visibility==='public'&&r.kind!=='inner'))).map(r=>{
+      const m=this.store.memory(r),content=memoryContent(m);
+      if(SENSITIVE.test(content)||remaining<=0)return null;
+      const bounded=content.slice(0,Math.min(remaining,2000));
+      remaining-=bounded.length;
+      return{
+        id:r.id,type:r.collection,text:bounded,importance:r.importance,pinned:Boolean(r.pinned),visibility:r.visibility,...(mode==='private'?{
+          personId:m.personId
+        }
+        :{}),at:m.at
+      };
+    }).filter(Boolean);
+    const taskId=createHash('sha256').update(canonical({
+      entityId:e.id,after,cursor,epoch:e.memory_epoch,mode,ids:items.map(i=>i.id),worldRevision:world.revision
+    })).digest('hex');
+    this.store.db.prepare('INSERT OR IGNORE INTO maintenance_tasks VALUES(?,?,?,?,?,?,?)').run(taskId,e.id,e.memory_epoch,cursor,world.revision,mode,JSON.stringify(items.map(i=>i.id)));
+    // Core may have committed before the Host persisted its cursor. Re-admitting
+    // that same batch must not ask the model to regenerate an already saved diary.
+    const committedReceipt = this.store.db.prepare(`SELECT d.id,d.status,d.revision
+      FROM diary_receipts r JOIN diaries d ON d.id=r.diary_id
+      WHERE r.task_id=? AND r.kind=? AND d.entity_id=?`).get(taskId, mode, e.id);
+    return{
+      entityId:e.id,
+      taskId,
+      memoryEpoch:e.memory_epoch,
+      cursor,
+      items: committedReceipt ? [] : items,
+      ...(committedReceipt ? { committedReceipt } : {}),
+      personaText:renderPersona({
+        ...JSON.parse(e.persona),userCallName:'你',relationshipStage:'new'
+      }).slice(0,1000),
+      world
+    };
+  }
+  maintenanceDiary(entityId,input){
+    closed(input,['taskId','kind','text','sourceIds']);
+    identifier(input.taskId);
+    enumeration(input.kind,['private','public']);
+    text(input.text,4000);
+    if(SENSITIVE.test(input.text))fail('FORBIDDEN','Sensitive automatic diary denied',403);
+    const ids=uniqueIds(input.sourceIds);
+    return this.store.transaction(()=>{
+      const e=this.entity(entityId),world=this.worldStatus(),task=this.store.db.prepare('SELECT * FROM maintenance_tasks WHERE id=? AND entity_id=?').get(input.taskId,e.id);
+      if(!task||task.mode!==input.kind||task.epoch!==e.memory_epoch||task.world_revision!==world.revision||world.paused)fail('CONFLICT','Maintenance batch is no longer current',409);
+      const allowed=new Set(JSON.parse(task.source_ids));
+      if(ids.some(id=>!allowed.has(id)))fail('FORBIDDEN','Sources outside admitted batch',403);
+      const encoding=canonical(input),old=this.store.db.prepare('SELECT * FROM diary_receipts WHERE task_id=? AND kind=?').get(task.id,input.kind);
+      if(old){
+        if(old.canonical!==encoding)fail('CONFLICT','Diary retry changed content',409);
+        const row=this.store.db.prepare('SELECT * FROM diaries WHERE id=?').get(old.diary_id);
+        return{
+          entityId:e.id,memoryEpoch:e.memory_epoch,cursor:task.cursor,receipt:{
+            id:row.id,status:row.status,revision:row.revision
+          },sourceIds:ids
+        };
+      }
+      const receipt=this.saveDiary(e.id,input.kind,input.text,ids);
+      this.store.db.prepare('INSERT INTO diary_receipts VALUES(?,?,?,?)').run(task.id,input.kind,receipt.id,encoding);
+      return{
+        entityId:e.id,memoryEpoch:e.memory_epoch,cursor:task.cursor,receipt,sourceIds:ids
+      };
+    });
+  }
+  forgetPreview(input){
+    closed(input,['entityId','ids']);
+    const e=this.entity(input.entityId),
+    selected=uniqueIds(input.ids),
+    memoryIds=new Set(),
+    diaryIds=new Set(),
+    sources=new Set();
+    for(const id of selected){
+      if(this.store.db.prepare('SELECT id FROM memory_items WHERE entity_id=? AND id=?').get(e.id,id))memoryIds.add(id);
+      else if(this.store.db.prepare('SELECT id FROM diaries WHERE entity_id=? AND id=?').get(e.id,id))diaryIds.add(id);
+      else if(this.store.db.prepare('SELECT id FROM observations WHERE entity_id=? AND id=? AND forgotten=0').get(e.id,id))sources.add(id);
+      else fail('NOT_FOUND','Selected memory or source not found',404);
+    }
+    let changed=true;
+    while(changed){
+      const n=memoryIds.size+sources.size+diaryIds.size;
+      for(const id of memoryIds)for(const r of this.store.db.prepare('SELECT observation_id FROM memory_sources WHERE memory_id=?').all(id))sources.add(r.observation_id);
+      for(const source of sources)for(const r of this.store.db.prepare('SELECT m.id FROM memory_items m JOIN memory_sources s ON s.memory_id=m.id WHERE m.entity_id=? AND s.observation_id=?').all(e.id,source))memoryIds.add(r.id);
+      for(const id of memoryIds)for(const r of this.store.db.prepare('SELECT d.id FROM diaries d JOIN diary_sources s ON s.diary_id=d.id WHERE d.entity_id=? AND s.memory_id=?').all(e.id,id))diaryIds.add(r.id);
+      changed=n!==memoryIds.size+sources.size+diaryIds.size;
+    }
+    const sourceEvents=[...sources].map(id=>this.store.db.prepare('SELECT capability_id AS capabilityId,stream_id AS streamId,event_id AS eventId FROM observations WHERE id=?').get(id));
+    return{
+      entityId:e.id,
+      memoryEpoch:e.memory_epoch,
+      revision:this.store.get('revision'),
+      ids:selected,
+      expandedIds:[...memoryIds,
+      ...diaryIds],
+      memoryIds:[...memoryIds],
+      diaryIds:[...diaryIds],
+      sourceObservationIds:[...sources],
+      sourceEvents,
+      affectedStreams:this.store.db.prepare('SELECT capability_id AS capabilityId,stream_id AS streamId FROM streams WHERE entity_id=?').all(e.id),
+      externalCleanupRequired:true
+    };
+  }
+  forgetApply(input){
+    closed(input,['entityId','ids','expectedMemoryEpoch','expectedRevision'],['entityId','ids','expectedMemoryEpoch']);
+    integer(input.expectedMemoryEpoch);
+    return this.store.transaction(()=>{
+      if(!this.worldStatus().paused)fail('CONFLICT','Pause the world before forgetting',409);
+      const preview=this.forgetPreview({
+        entityId:input.entityId,ids:input.ids
+      });
+      if(preview.memoryEpoch!==input.expectedMemoryEpoch||(input.expectedRevision!==undefined&&preview.revision!==input.expectedRevision))fail('CONFLICT','Forget preview is stale',409);
+       const people=new Set();
+      for(const id of preview.memoryIds){
+        const row=this.store.db.prepare('SELECT person_id FROM memory_items WHERE id=?').get(id);
+        if(row?.person_id)people.add(row.person_id);
+        this.store.db.prepare('DELETE FROM memory_items WHERE id=? AND entity_id=?').run(id,input.entityId);
+      }
+      for(const id of preview.diaryIds){
+        this.store.db.prepare('DELETE FROM diary_receipts WHERE diary_id=?').run(id);
+        this.store.db.prepare('DELETE FROM diaries WHERE id=? AND entity_id=?').run(id,input.entityId);
+      }
+      for(const id of preview.sourceObservationIds){
+        const row=this.store.db.prepare('SELECT * FROM observations WHERE id=? AND entity_id=?').get(id,input.entityId);
+        if(!row)continue;
+        this.store.db.prepare('INSERT OR IGNORE INTO source_tombstones VALUES(?,?,?,?,?)').run(input.entityId,row.capability_id,row.stream_id,row.event_id,id);
+        const metadata=JSON.parse(row.body);
+        metadata.text='';
+        this.store.db.prepare("UPDATE observations SET canonical='',body=?,forgotten=1 WHERE id=?").run(JSON.stringify(metadata),id);
+        this.store.db.prepare("UPDATE inbox SET body='{}',canonical='',forgotten=1,status=CASE WHEN status='pending' THEN 'rejected' ELSE status END,receipt=CASE WHEN status='pending' THEN json_set(receipt,'$.status','rejected','$.reason','source_forgotten') ELSE receipt END WHERE observation_id=?").run(id);
+         for(const audit of this.store.db.prepare("SELECT seq,body FROM audit WHERE json_extract(body,'$.observationId')=?").all(id)){
+          const old=JSON.parse(audit.body);
+          this.store.db.prepare('UPDATE audit SET body=? WHERE seq=?').run(JSON.stringify({
+            type:old.type,entityId:input.entityId,proposalId:old.proposalId,observationId:id,status:old.status,revision:old.revision,at:old.at,contentErased:true
+          }),audit.seq);
+        }
+      }
+      for(const person of people){
+        const score=this.store.db.prepare("SELECT COALESCE(SUM(json_extract(body,'$.delta')),0) AS score FROM memory_items WHERE entity_id=? AND person_id=? AND collection='appraisals'").get(input.entityId,person).score;
+        this.store.db.prepare('UPDATE relationships SET body=? WHERE entity_id=? AND person_id=?').run(JSON.stringify({
+          score:Math.min(100,score)
+        }),input.entityId,person);
+      }
+      this.store.db.prepare('DELETE FROM maintenance_tasks WHERE entity_id=?').run(input.entityId);
+      const epoch=preview.memoryEpoch+1;
+      this.store.db.prepare('UPDATE entities SET memory_epoch=? WHERE id=?').run(epoch,input.entityId);
+      const id=randomUUID(),job={
+        id,entityId:input.entityId,memoryEpoch:epoch,affectedStreams:preview.affectedStreams,sourceObservationIds:preview.sourceObservationIds,sourceEvents:preview.sourceEvents
+      };
+      this.store.db.prepare('INSERT INTO cleanup_jobs VALUES(?,?,?,?,?)').run(id,input.entityId,epoch,'pending',JSON.stringify(job));
+      this.store.audit({
+        type:'memory.forgotten',entityId:input.entityId,ids:preview.expandedIds,memoryEpoch:epoch,revision:this.store.nextRevision(),at:this.now()
+      });
+      return{
+        ...job,coreErased:true,externalCleanup:{
+          status:'pending',id
+        },complete:false
+      };
+    });
+  }
+  cleanupPending(){
+    return this.store.db.prepare("SELECT body FROM cleanup_jobs WHERE status='pending' ORDER BY rowid").all().map(r=>JSON.parse(r.body));
+  }
+  cleanupComplete(input){
+    closed(input,['id','memoryEpoch','report']);
+    integer(input.memoryEpoch);
+    closed(input.report,['sdkPurged','localSourcesPurged','platform']);
+    if(input.report.sdkPurged!==true||input.report.localSourcesPurged!==true||input.report.platform!=='outside-control')fail('CONFLICT','Controlled external erasure is not complete',409);
+    return this.store.transaction(()=>{
+      const row=this.store.db.prepare('SELECT * FROM cleanup_jobs WHERE id=?').get(input.id);
+      if(!row||row.epoch!==input.memoryEpoch)fail('CONFLICT','Cleanup generation conflicts',409);
+      this.store.db.prepare("UPDATE cleanup_jobs SET status='complete' WHERE id=?").run(row.id);
+      this.store.audit({
+        type:'memory.external-cleanup',entityId:row.entity_id,id:row.id,memoryEpoch:row.epoch,report:input.report,revision:this.store.nextRevision(),at:this.now()
+      });
+      return{
+        id:row.id,status:'complete',controlledDataErased:true,platform:'outside-control'
+      };
+    });
+  }
+  memoryRecall(capabilityId, input) {
+    closed(input, ['streamId', 'fromAt', 'toAt', 'limit', 'budgetChars'], ['streamId', 'fromAt', 'toAt']);
+    const policy = capability(this.store, capabilityId).policy;
+    const scope = contextScope(this.store, capabilityId, input.streamId);
+    const entity = this.entity(scope.entityId),
+    visible = this.visibility(scope, policy);
+    integer(input.fromAt);
+    integer(input.toAt, input.fromAt);
+    const limit = integer(input.limit ?? 8, 1, 16),
+    budget = integer(input.budgetChars ?? 2400, 0, 16000);
+    const rows = this.store.db.prepare(`SELECT m.* FROM memory_items m
+      WHERE m.entity_id=? AND ${visible.sql} AND m.status='active'
+      AND m.collection IN ('facts','experiences') AND (m.pinned=1 OR m.importance>=0.8)
+      AND COALESCE(json_extract(m.body,'$.eventAt'),json_extract(m.body,'$.evidence.at'),m.created_world_at) BETWEEN ? AND ?
+      ORDER BY m.pinned DESC,m.importance DESC,m.revision DESC LIMIT ?`) .all(entity.id, ...visible.args, input.fromAt, input.toAt, limit);
+    let remaining = budget;
+    const items = rows.map(row => {
+      const memory = this.store.memory(row), content = memoryContent(memory).slice(0, Math.min(1000, remaining));
+       remaining -= content.length;
+       return {
+        id: row.id, text: content, recordedAt: memory.recordedAt, eventAt: memory.eventAt, dateBasis: memory.eventAt === null ? 'recordedAt' : 'eventAt', importance: row.importance, pinned: Boolean(row.pinned)
+      };
+    }).filter(item => item.text);
+    return {
+      entityId: entity.id,
+      memoryEpoch: entity.memory_epoch,
+      items,
+      kind: 'recall',
+      isNewEvidence: false
+    };
+  }
+  memoryStatus(){
+    return{
+      world:this.worldStatus(),
+      entities:this.listEntities(),
+      pendingExternalCleanup:this.cleanupPending().length
+    };
+  }
+}
