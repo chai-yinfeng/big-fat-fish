@@ -99,7 +99,8 @@ export async function activeEndpoints(base) {
 export function planRotation(base) {
   const abs = relative => path.join(base, relative);
   const files = new Map(); // relative -> { before, after }
-  const olds = [];         // every old secret/hash string; must vanish from SCAN_DIRS
+  const olds = [];         // { label, value } for every old secret/hash; must vanish from SCAN_DIRS
+  const remember = (label, value) => olds.push({ label, value });
   const rotated = [], skipped = [], warnings = [];
   const text = relative => {
     if (!files.has(relative)) {
@@ -126,7 +127,7 @@ export function planRotation(base) {
     const valid = item.format === 'hex' ? /^[a-f0-9]{64}$/ : /^[A-Za-z0-9_-]{32,256}$/;
     if (!valid.test(old)) fail('TOKEN_FORMAT ' + relative);
     const next = generate(item.format, old), oldHash = sha256(old), newHash = sha256(next);
-    olds.push(old, oldHash);
+    remember(relative, old); remember(relative + ' hash', oldHash);
     files.get(relative).after = next + '\n';
     for (const consumer of item.hashes) {
       if (!exists(consumer.file)) { skipped.push(consumer.file + ' ' + consumer.field + ' (absent)'); continue; }
@@ -168,11 +169,12 @@ export function planRotation(base) {
       if (oldWebui !== undefined && (typeof oldWebui !== 'string' || !oldWebui)) fail('WEBUI_TOKEN_FORMAT ' + webui);
       const next = generate('hex', oldEnv);
       if (next === oldWebui) fail('TOKEN_COLLISION');
-      olds.push(oldEnv);
+      remember(item.env + ' ' + item.key, oldEnv);
       if (count(entry.after, oldEnv) !== 1) fail('UNEXPECTED_OCCURRENCES ' + item.env);
       entry.after = entry.after.replace(line, item.key + '=' + next);
       if (oldWebui !== undefined) {
-        olds.push(oldWebui);
+        // Normally identical to the env value (one secret, two copies); only a WebUI-changed token is a second secret.
+        if (oldWebui !== oldEnv) remember(webui + ' token', oldWebui);
         substitute(webui, oldWebui, next, 1, (value, token) => value.token === token);
       } else warnings.push('webui.json absent; only WEBUI_TOKEN env rotated');
       rotated.push(item.env + ' ' + item.key);
@@ -196,7 +198,7 @@ export function planRotation(base) {
       const [index, match] = secretRows[0], old = match[3], next = generate('base64url', old);
       lines[start + 1 + index] = match[1] + match[2] + next + match[2] + match[4];
       entry.after = lines.join('\n');
-      olds.push(old);
+      remember(item.yaml + ' ' + item.record, old);
       rotated.push(item.yaml + ' ' + item.record);
     }
   }
@@ -207,7 +209,11 @@ export function planRotation(base) {
   const newHashes = new Set([...files.entries()].filter(([relative]) => relative.endsWith('.token')).map(([, entry]) => sha256(entry.after.trim())));
   for (const row of authority.credentials || []) if (!newHashes.has(row.hash)) fail('UNMANAGED_CREDENTIAL role=' + row.role + (row.capabilityId ? ' capabilityId=' + row.capabilityId : '') + (row.entityId ? ' entityId=' + row.entityId : ''));
   if (!newHashes.has(authority.operator?.tokenHash)) fail('UNMANAGED_OPERATOR_HASH');
-  if (new Set(olds).size !== olds.length) fail('DUPLICATE_SECRET');
+  const firstLabel = new Map();
+  for (const { label, value } of olds) {
+    if (firstLabel.has(value)) fail('DUPLICATE_SECRET ' + firstLabel.get(value) + ' ' + label);
+    firstLabel.set(value, label);
+  }
 
   // Residual scan: no old value may remain in any scanned config after the plan.
   const known = new Set(INVENTORY.flatMap(item => [item.file, item.env, item.yaml]).filter(Boolean));
@@ -218,7 +224,7 @@ export function planRotation(base) {
       if (!stat.isFile() || stat.size > 1048576) continue;
       if (name.endsWith('.token') && !known.has(relative) && !files.has(relative)) warnings.push('unmanaged token file ' + relative + ' (not rotated)');
       const content = files.has(relative) ? files.get(relative).after : fs.readFileSync(abs(relative), 'utf8');
-      if (olds.some(old => content.includes(old))) fail('OLD_VALUE_REMAINS ' + relative);
+      if (olds.some(({ value }) => content.includes(value))) fail('OLD_VALUE_REMAINS ' + relative);
     }
   }
   const changes = [...files.entries()].filter(([, entry]) => entry.after !== entry.before).map(([relative, entry]) => ({ relative, after: entry.after }));

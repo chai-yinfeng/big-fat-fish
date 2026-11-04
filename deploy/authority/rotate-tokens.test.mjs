@@ -17,7 +17,7 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 const idle = async () => [];
 
 // Synthetic world built by the real bootstrap/prepare code plus NapCat/DSH fixtures.
-function world(t) {
+function world(t, { webuiEqualsEnv = false } = {}) {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fish-rotate-')));
   t.after(() => { assert.ok(temp.startsWith(fs.realpathSync(os.tmpdir()) + path.sep + 'fish-rotate-')); fs.rmSync(temp, { recursive: true }); });
   execFileSync(process.execPath, [path.join(here, 'bootstrap.mjs')], { env: { ...process.env, HOME: temp }, stdio: 'ignore' });
@@ -27,11 +27,12 @@ function world(t) {
   prepareConsole(base);
   const runtime = path.join(base, 'qq-runtime');
   for (const dir of ['private', 'data/qq', 'data/config', 'data/plugins']) fs.mkdirSync(path.join(runtime, dir), { recursive: true, mode: 0o700 });
-  const files = renderFiles({ webuiToken: randomBytes(32).toString('hex'), onebotToken: randomBytes(32).toString('hex'), uid: 1001, gid: 1001 });
+  const webuiToken = randomBytes(32).toString('hex');
+  const files = renderFiles({ webuiToken, onebotToken: randomBytes(32).toString('hex'), uid: 1001, gid: 1001 });
   for (const [name, contents] of Object.entries(files)) fs.writeFileSync(path.join(runtime, name), contents, { mode: 0o600 });
   fs.copyFileSync(path.join(runtime, 'data/config/onebot11.json'), path.join(runtime, 'data/config/onebot11_10001.json'));
   // WebUI token changed in the WebUI after first start: differs from the env value.
-  fs.writeFileSync(path.join(runtime, 'data/config/webui.json'), JSON.stringify({ host: '0.0.0.0', port: 6099, prefix: '', token: randomBytes(32).toString('hex'), loginRate: 10 }, null, 4), { mode: 0o600 });
+  fs.writeFileSync(path.join(runtime, 'data/config/webui.json'), JSON.stringify({ host: '0.0.0.0', port: 6099, prefix: '', token: webuiEqualsEnv ? webuiToken : randomBytes(32).toString('hex'), loginRate: 10 }, null, 4), { mode: 0o600 });
   fs.writeFileSync(path.join(runtime, 'data/qq/login.db'), 'QQ LOGIN FIXTURE', { mode: 0o600 });
   fs.writeFileSync(path.join(base, 'dsh-home/.credentials.yaml'), `version: 1\n\nrefs:\n  UNRELATED_KEY: keep-this-value\n\nrecords:\n  client-connection/browser-session:\n    kind: grant\n    payload:\n      version: 1\n      secret: A${randomBytes(32).toString('base64url').slice(1)}\n  other-owner/grant:\n    kind: grant\n    payload:\n      access: unrelated-grant\n`, { mode: 0o600 });
   fs.writeFileSync(path.join(base, 'authority-data/authority.sqlite'), 'SQLite format 3\0persona and memory fixture', { mode: 0o600 });
@@ -137,6 +138,29 @@ test('refuses missing base, active services and unmanaged credentials without wr
   fs.writeFileSync(file, JSON.stringify(authority, null, 2) + '\n', { mode: 0o600 });
   before.set('operator/authority.json', { content: fs.readFileSync(file, 'utf8'), mode: 0o600 });
   await assert.rejects(rotateTokens({ base, probe: idle }), /UNMANAGED_CREDENTIAL role=capability capabilityId=legacy/);
+  assert.deepEqual(walk(base), before);
+});
+
+test('webui.json sharing the WEBUI_TOKEN env value (normal state) rotates to one new value', async t => {
+  const base = world(t, { webuiEqualsEnv: true }), old = secrets(base);
+  assert.equal(old.webui, old.webuiEnv);
+  const result = await rotateTokens({ base, probe: idle });
+  assert.ok(result.rotated.includes('qq-runtime/private/napcat.env WEBUI_TOKEN'));
+  const now = secrets(base);
+  assert.notEqual(now.webuiEnv, old.webuiEnv); assert.match(now.webuiEnv, /^[a-f0-9]{64}$/); assert.equal(now.webui, now.webuiEnv);
+  for (const [relative, { content }] of walk(base, relative => relative.startsWith('rotation-backup-'))) assert.ok(!content.includes(old.webuiEnv), relative);
+});
+
+test('two inventory items sharing one value are refused with both labels and nothing written', async t => {
+  const base = world(t);
+  const shared = fs.readFileSync(path.join(base, 'operator/admin.token'), 'utf8');
+  fs.writeFileSync(path.join(base, 'authority-content/control.token'), shared, { mode: 0o600 });
+  const before = walk(base);
+  await assert.rejects(rotateTokens({ base, probe: idle }), error => {
+    assert.equal(error.message, 'DUPLICATE_SECRET operator/admin.token authority-content/control.token');
+    assert.ok(!error.message.includes(shared.trim()));
+    return true;
+  });
   assert.deepEqual(walk(base), before);
 });
 
