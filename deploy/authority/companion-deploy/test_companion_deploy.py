@@ -275,6 +275,19 @@ class DeployTests(Fixture):
         self.assertIsNone(state['previous'])
         self.assertIn('deploy-failed', self.config.log.read_text())
 
+    def test_failed_start_command_also_restores(self):
+        tarball, name = self.release(self.commits[1])
+        original = self.system.systemctl
+        def systemctl(*args, check=True):
+            if args[0] == 'start' and self.system.running() == name:
+                raise cd.DeployError('systemctl start failed: synthetic')
+            return original(*args, check=check)
+        self.system.systemctl = systemctl
+        with self.assertRaisesRegex(cd.DeployError, 'restored authority-0.10.0'):
+            self.deployer.deploy(tarball)
+        self.assertEqual(self.units(), self.legacy_units)
+        self.assertEqual(self.current(), 'authority-0.10.0')
+
     def test_failed_second_deploy_restores_first(self):
         first, first_name = self.release(self.commits[1])
         self.deployer.deploy(first)

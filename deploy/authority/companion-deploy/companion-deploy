@@ -80,7 +80,10 @@ class System:
 
     def systemctl(self, *args, check=True):
         command = ['systemctl', '--user', '-M', self.config.user + '@', *args]
-        result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180)
+        try:
+            result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            raise DeployError('systemctl %s timed out' % args[0])
         if check and result.returncode:
             raise DeployError('systemctl %s failed: %s' % (' '.join(args), result.stderr.strip()[-400:]))
         return result
@@ -439,14 +442,14 @@ class Deployer:
         return problems
 
     def activate(self, release, units_source, previous_units):
-        """Stop, install units, reload, switch `current`, start, check."""
-        self.stop_all(sorted(set(previous_units) | {p.name for p in Path(units_source).iterdir() if UNIT_PATTERN.match(p.name)}))
-        names = self.put_units(units_source)
-        self.system.systemctl('daemon-reload')
-        self.switch(release)
+        """Stop, install units, reload, switch `current`, start, check. Returns problems."""
         try:
+            self.stop_all(sorted(set(previous_units) | {p.name for p in Path(units_source).iterdir() if UNIT_PATTERN.match(p.name)}))
+            names = self.put_units(units_source)
+            self.system.systemctl('daemon-reload')
+            self.switch(release)
             self.start_all(names)
-        except DeployError as error:
+        except (DeployError, OSError) as error:
             return [str(error)]
         return self.health(names)
 
@@ -617,7 +620,7 @@ def main(argv=None):
                 deployer.status()
             else:
                 deployer.list()
-    except (DeployError, OSError, tarfile.TarError) as error:
+    except (DeployError, OSError, tarfile.TarError, subprocess.SubprocessError) as error:
         print('companion-deploy: ' + str(error), file=sys.stderr)
         return 1
     return 0
