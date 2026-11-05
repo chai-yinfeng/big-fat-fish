@@ -5,9 +5,9 @@ After=companion-authority.service companion-dsh-internal.service
 
 [Service]
 Type=exec
-ExecStartPre=%h/.local/opt/companion/bin/node %h/src/dsh-companion/authority-0.10.0/ops/wait-sdk-ready.mjs
+ExecStartPre=%h/.local/opt/companion/bin/node %h/src/dsh-companion/current/ops/wait-sdk-ready.mjs
 TimeoutStartSec=90s
-ExecStart=%h/.local/opt/companion/bin/node %h/src/dsh-companion/authority-0.10.0/capabilities/qq/main.mjs --config %h/.local/share/companion-world-v1/operator/qq-bridge.json
+ExecStart=%h/.local/opt/companion/bin/node %h/src/dsh-companion/current/capabilities/qq/main.mjs --config %h/.local/share/companion-world-v1/operator/qq-bridge.json
 UMask=0077
 NoNewPrivileges=true
 KillMode=control-group

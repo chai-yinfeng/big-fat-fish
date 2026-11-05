@@ -41,21 +41,13 @@ UI 可单独 node --run build:console。当前没有自动接好的 dev/watch/HM
 console/dist，正式装配使用 console-web。不要把复制到正式 release 当开发热更新，
 也不要为 UI 小改动重启全部六个服务。下一步开发服务器需使用独立配置/数据根。
 
-## VM 开发与正式环境
+## 开发只在 Mac
 
-建议开发 checkout 为 ~/work/big-fat-fish。正式 release 在另外的版本目录，
-正式世界与登录状态不在源码仓库；不重跑 bootstrap，不把生产目录 rsync 进 Git。
-
-在 SSH 会话中使用 agent forwarding 访问已授权 GitHub 仓库，不复制私钥。
-转发 agent 通常只在对应连接存活时可用；断连后 Git 认证可能需重新连接。
-CLI 在 VM 只代表命令/文件操作在远端，不代表编码模型离线推理。
-
-开发 Agent 应使用独立用户或等效挂载隔离。仅建另一个目录、仍用生产 Linux
-用户，不能阻止读取生产密钥。本轮 clone 不等于已完成这种权限隔离，也不会
-自动安装 Codex。开发 QQ 用测试发送口/独立账号，不能和正式桥重复回应。
-
-后续交接通常采用本地提交 → 经授权 push 当前分支 → 另一端先确认工作树干净
-再 pull --ff-only。出现分叉先检查，不用 force 或 reset --hard 消除冲突。
+开发、测试和构建只在 Mac 本机 checkout 进行；VM（myvm）只运行正式服务，不再
+保留 VM 开发 checkout，也不在 VM 上改源码。正式服务由专用用户 companion 运行，
+Agent 的 SSH 用户 blackmagic 没有生产文件访问权，也不能 sudo。代码通过下面的
+发布流程到达 VM，不通过 rsync、git pull 或手工复制。开发 QQ 用测试发送口/独立
+账号，不能和正式桥重复回应。
 
 ## 低往返远程命令与耗时
 
@@ -81,10 +73,65 @@ SSH传输不消耗模型token；多次工具调用、长输出、重复上下文
 
 ## 发布与回退
 
-发布源码必须已提交、工作树干净；先构建前端，再构建新的不可变 release 路径。
-产物 source-manifest.json 记录 sourceRevision、productVersion 与文件摘要。
-不在旧版本目录改源码；更新正式服务须另行确认，迁移源码不等于发布。
+发布单位是 main 上的一个提交。release 目录名为 authority-<版本>-<提交前12位>，
+版本取根 package.json。source-manifest.json（schemaVersion 2）记录完整
+sourceRevision、productVersion、每个文件的 sha256 和可执行文件列表；unit 文件
+随代码一起位于 release 的 ops/isolation/units/。unit 与 launch.py 只引用
+~/src/dsh-companion/current，这是指向当前 release 的符号链接。
+
+1. Agent 在 Mac 上暂存（要求工作树干净、HEAD 已包含在 origin/main）：
+
+   ```sh
+   node --run stage:release
+   ```
+
+   它会 git fetch、构建前端、运行 build-release、生成确定性的
+   .build/releases/<release>.tar.gz 与 .sha256，scp 到 myvm:~/releases/，并打印
+   部署命令。本地试构建用 `node deploy/authority/stage-release.mjs --no-upload`
+   （未推送的提交需再加 `--allow-unpublished`，这样的包会被 VM 拒绝）。
+
+2. 用户在有 TTY 的终端上部署：
+
+   ```sh
+   ssh -t myvm 'sudo companion-deploy deploy ~blackmagic/releases/<release>.tar.gz'
+   ```
+
+   companion-deploy 把包复制到 root 目录后校验 .sha256、安全解包（拒绝绝对路径、
+   `..`、链接、设备文件和 setuid/setgid）、逐文件核对 manifest，再用 root 自己的
+   origin 镜像（/var/lib/companion-deploy/mirror.git，URL 写死在脚本里）确认该提交
+   在 main 上。显示版本、提交、标题和日期后要求输入 y。随后：停 companion-*
+   单元 → 安装只读 release（属主 companion）→ 快照旧 unit 并安装新 unit →
+   daemon-reload → 原子切换 current → 启动 → 健康检查（全部单元无 failed、
+   3081/3082 在监听、约 20 秒内无重启）。失败则自动恢复上一个 release 及其 unit
+   快照并以非零退出。只重启 companion 服务和 socket，不碰 NapCat，不重启机器。
+   保留最近 3 个部署管理的 release 及 current/previous；旧的 authority-0.10.0、
+   authority-0.9.0 从不删除。日志在 /var/log/companion-deploy.log。
+
+3. 回退与查看：
+
+   ```sh
+   ssh -t myvm 'sudo companion-deploy rollback'   # 切回 previous 及其 unit 快照
+   ssh myvm 'sudo companion-deploy status'
+   ssh myvm 'sudo companion-deploy list'
+   ```
+
+   第一次部署前的旧 unit（写死 authority-0.10.0）也会被快照，rollback 可完整
+   恢复它们。再次 rollback 会切回刚才的版本。
+
+数据库/配置迁移不在部署范围内：新 release 的 authority SCHEMA_VERSION 与当前
+release 不同则部署被拒绝，迁移须另行人工完成。回退只切换代码与 unit，不覆盖
+数据库、人设、记忆或登录态。
+
+一次性安装（用户在 VM 上执行；升级 companion-deploy 时重复后两步）。<SHA> 是
+main 上已审阅的提交，安装前先读一遍脚本：
+
+```sh
+sudo install -d -o root -g root -m 0700 /var/lib/companion-deploy
+sudo git clone --mirror https://github.com/chai-yinfeng/big-fat-fish.git /var/lib/companion-deploy/mirror.git
+sudo git --git-dir=/var/lib/companion-deploy/mirror.git fetch --prune
+sudo git --git-dir=/var/lib/companion-deploy/mirror.git show <SHA>:deploy/authority/companion-deploy/companion-deploy | less
+sudo sh -c 'git --git-dir=/var/lib/companion-deploy/mirror.git show <SHA>:deploy/authority/companion-deploy/companion-deploy > /usr/local/sbin/.companion-deploy.new && chmod 0755 /usr/local/sbin/.companion-deploy.new && mv /usr/local/sbin/.companion-deploy.new /usr/local/sbin/companion-deploy'
+```
 
 代码撤销优先用 git revert <commit> 并检查后提交；不要擅自重写已公开历史。
-生产回滚使用已核对的旧 release 与服务配置，不把数据库/人设/记忆也一起覆盖。
 Git 管理代码版本，不替代数据库迁移策略，也不备份平台登录态与用户录音。

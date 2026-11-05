@@ -3,7 +3,7 @@ Description=Companion authority in a rootless private sandbox
 
 [Service]
 Type=exec
-ExecStart=/usr/bin/python3 %h/src/dsh-companion/authority-0.10.0/ops/isolation/launch.py authority
+ExecStart=/usr/bin/python3 %h/src/dsh-companion/current/ops/isolation/launch.py authority
 UMask=0077
 NoNewPrivileges=true
 KillMode=control-group

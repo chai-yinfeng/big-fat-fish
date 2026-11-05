@@ -12,9 +12,9 @@ Host defaults (overridable as launcher flags before the role):
 | Flag | Default |
 | --- | --- |
 | `--base` | `$HOME/.local/share/companion-authority-v1` |
-| `--release` | `$HOME/src/dsh-companion/authority-0.4.0` |
+| `--release` | `$HOME/src/dsh-companion/current` (symlink switched by `companion-deploy`) |
 | `--runtime` | `$HOME/.local/opt/companion` |
-| `--ops` | `$HOME/src/dsh-companion/authority-ops-0.4.0` |
+| `--ops` | `$HOME/src/dsh-companion/current/ops` |
 
 Copy the **whole** parent operations directory to `--ops`, including this
 `isolation/` directory. The release and operations trees must contain code only,

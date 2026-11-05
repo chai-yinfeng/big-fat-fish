@@ -8,10 +8,23 @@ const project = fileURLToPath(new URL('../../', import.meta.url));
 const sourceRevision = execFileSync('git', ['rev-parse', '--verify', 'HEAD'], { cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
 const changes = execFileSync('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: project, encoding: 'utf8' });
 if (!/^[a-f0-9]{40,64}$/.test(sourceRevision) || changes.trim()) throw new Error('Release requires a committed, clean source tree');
-const output = path.resolve(process.argv[2] || path.join(project, '.build/authority-0.10.0'));
+const version = JSON.parse(fs.readFileSync(path.join(project, 'package.json'), 'utf8')).version;
+if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/.test(version)) throw new Error('Root package.json needs a plain semantic version');
+// Deploy-managed release name: authority-<version>-<first 12 hex of the commit>.
+const releaseName = `authority-${version}-${sourceRevision.slice(0, 12)}`;
+const output = path.resolve(process.argv[2] || path.join(project, '.build', releaseName));
 if (fs.existsSync(output)) throw new Error('Refusing to overwrite a versioned release');
 fs.mkdirSync(output, { recursive: true });
-const copied = {};
+const copied = {}, executables = [];
+function record(destination, bytes, mode) {
+  copied[destination] = createHash('sha256').update(bytes).digest('hex');
+  if (mode & 0o111) executables.push(destination);
+}
+function write(destination, text) {
+  const target = path.join(output, destination);
+  fs.writeFileSync(target, text, { flag: 'wx', mode: 0o644 });
+  record(destination, Buffer.from(text), 0o644);
+}
 function copy(relative, destination = relative) {
   const source = path.join(project, relative), target = path.join(output, destination);
   const stat = fs.lstatSync(source);
@@ -23,7 +36,7 @@ function copy(relative, destination = relative) {
     const bytes = fs.readFileSync(source);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, bytes, { flag: 'wx', mode: stat.mode & 0o777 });
-    copied[destination] = createHash('sha256').update(bytes).digest('hex');
+    record(destination, bytes, stat.mode);
   } else throw new Error('Unadmitted source entry');
 }
 for (const item of ['model-gateway', 'authority/src', 'authority/test', 'authority/package.json', 'authority/PROTOCOL.md', 'capabilities/dsh/lib', 'capabilities/dsh/test', 'capabilities/dsh/package.json', 'capabilities/dsh/README.md', 'capabilities/conversation', 'capabilities/qq', 'capabilities/memory', 'capabilities/media', 'capabilities/speech', 'integrations/dsh', 'deploy/qq', 'core/src/persona.js', 'core/src/util.js']) copy(item);
@@ -34,9 +47,9 @@ copy('console/icon.svg', 'capability-bundle/icon.svg');
 copy('console/locale', 'capability-bundle/locale');
 copy('console/client.js', 'capability-bundle/client.js');
 copy('console/dist', 'console-web');
-fs.writeFileSync(path.join(output, 'package.json'), JSON.stringify({ name: '@companion/release', private: true, type: 'module', version: '0.10.0', engines: { node: '>=24' } }, null, 2) + '\n');
-fs.writeFileSync(path.join(bundle, 'package.json'), JSON.stringify({
-  name: '@local/companion', version: '0.10.0', private: true, type: 'module',
+write('package.json', JSON.stringify({ name: '@companion/release', private: true, type: 'module', version, engines: { node: '>=24' } }, null, 2) + '\n');
+write('capability-bundle/package.json', JSON.stringify({
+  name: '@local/companion', version, private: true, type: 'module',
   description: 'One companion Authority with a restricted native conversation capability.',
   exports: { '.': './index.js', './client': './client.js', './locale/*.json': './locale/*.json', './icon': './icon.svg', './package.json': './package.json' },
   files: ['index.js', 'client.js', 'cordis.patch.yml', 'locale', 'icon.svg'],
@@ -44,7 +57,7 @@ fs.writeFileSync(path.join(bundle, 'package.json'), JSON.stringify({
   dsh: { bundle: { patch: './cordis.patch.yml' }, client: { platform: 'web', immediately: true, inject: ['@deepseek-ai/dsh-client-ui-settings-general', '@deepseek-ai/dsh-client-locale'] } },
 }, null, 2) + '\n');
 copy('deploy/authority/product-entry.js', 'capability-bundle/index.js');
-fs.writeFileSync(path.join(bundle, 'cordis.patch.yml'), `# No second character or unrestricted coding preset in this product profile.
+write('capability-bundle/cordis.patch.yml', `# No second character or unrestricted coding preset in this product profile.
 - id: system-prompt
   config:
     personaPrefix: >-
@@ -121,5 +134,7 @@ fs.writeFileSync(path.join(bundle, 'cordis.patch.yml'), `# No second character o
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
 `);
-fs.writeFileSync(path.join(output, 'source-manifest.json'), JSON.stringify({ schemaVersion: 1, productVersion: '0.10.0', sourceRevision, files: copied }, null, 2) + '\n');
-console.log(JSON.stringify({ output, sourceFiles: Object.keys(copied).length, legacyPluginIncluded: false, privateDataIncluded: false }));
+// schemaVersion 2: `files` lists every release file except this manifest (generated ones included).
+const files = Object.fromEntries(Object.entries(copied).sort(([a], [b]) => a < b ? -1 : 1));
+fs.writeFileSync(path.join(output, 'source-manifest.json'), JSON.stringify({ schemaVersion: 2, productVersion: version, releaseName, sourceRevision, files, executables: executables.sort() }, null, 2) + '\n');
+console.log(JSON.stringify({ output, releaseName, sourceFiles: Object.keys(copied).length, legacyPluginIncluded: false, privateDataIncluded: false }));

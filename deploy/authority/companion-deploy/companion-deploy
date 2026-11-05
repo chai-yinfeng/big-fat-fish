@@ -1,0 +1,627 @@
+#!/usr/bin/python3
+"""Root-run release switcher for the companion user services.
+
+Installed once by the human (root-owned, /usr/local/sbin/companion-deploy).
+It trusts only itself, its root-owned state and its own Git mirror of the
+public origin. The tarball and everything in the agent inbox are untrusted.
+
+  companion-deploy deploy <tarball>   verify, install, switch, restart, check
+  companion-deploy rollback           switch back to the previous release
+  companion-deploy status             current/previous release and unit state
+  companion-deploy list               installed releases
+
+Data/config migrations are out of scope: a release whose authority database
+SCHEMA_VERSION differs from the running release is refused.
+"""
+import argparse
+import datetime
+import errno
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import shutil
+import stat as stat_module
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+
+ORIGIN_URL = 'https://github.com/chai-yinfeng/big-fat-fish.git'
+MAIN_REF = 'refs/heads/main'
+SERVICE_USER = 'companion'
+KEEP_RELEASES = 3
+HEALTH_SETTLE_SECONDS = 5
+HEALTH_WINDOW_SECONDS = 15
+PORTS = (3081, 3082)
+MAX_TARBALL_BYTES = 512 << 20
+MAX_EXTRACTED_BYTES = 2 << 30
+MAX_MEMBERS = 50000
+RELEASE_PATTERN = re.compile(r'^authority-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)-([0-9a-f]{12})$')
+UNIT_PATTERN = re.compile(r'^companion-[A-Za-z0-9-]+\.(service|socket)$')
+SCHEMA_PATTERN = re.compile(r'^export const SCHEMA_VERSION = (\d+);$', re.M)
+
+
+class DeployError(Exception):
+    pass
+
+
+class Config:
+    """All host paths in one place; tests point them at a temporary tree."""
+    def __init__(self, home='/home/companion', state='/var/lib/companion-deploy',
+                 log='/var/log/companion-deploy.log', origin=ORIGIN_URL, git_protocol='https',
+                 user=SERVICE_USER):
+        self.home = Path(home)
+        self.releases = self.home / 'src/dsh-companion'
+        self.units = self.home / '.config/systemd/user'
+        self.state_dir = Path(state)
+        self.mirror = self.state_dir / 'mirror.git'
+        self.snapshots = self.state_dir / 'unit-snapshots'
+        self.work = self.state_dir / 'work'
+        self.state_file = self.state_dir / 'state.json'
+        self.log = Path(log)
+        self.origin = origin
+        self.git_protocol = git_protocol
+        self.user = user
+
+
+class System:
+    """Side effects outside plain file operations; replaced in tests."""
+    def __init__(self, config):
+        self.config = config
+
+    def owner(self):
+        entry = pwd.getpwnam(self.config.user)
+        return entry.pw_uid, entry.pw_gid
+
+    def systemctl(self, *args, check=True):
+        command = ['systemctl', '--user', '-M', self.config.user + '@', *args]
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180)
+        if check and result.returncode:
+            raise DeployError('systemctl %s failed: %s' % (' '.join(args), result.stderr.strip()[-400:]))
+        return result
+
+    def listening(self, port):
+        result = subprocess.run(['ss', '-Hltn', 'sport = :%d' % port], capture_output=True, text=True, timeout=10)
+        return result.returncode == 0 and bool(result.stdout.strip())
+
+    def git(self, *args):
+        env = {'PATH': '/usr/bin:/bin', 'HOME': str(self.config.state_dir), 'GIT_TERMINAL_PROMPT': '0',
+               'GIT_CONFIG_NOSYSTEM': '1', 'LANG': 'C'}
+        command = ['git', '-c', 'protocol.allow=never', '-c', 'protocol.%s.allow=always' % self.config.git_protocol, *args]
+        return subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, timeout=300)
+
+    def sleep(self, seconds):
+        time.sleep(seconds)
+
+    def confirm(self, prompt):
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            raise DeployError('confirmation requires an interactive terminal (use ssh -t)')
+        return input(prompt).strip().lower() in ('y', 'yes')
+
+    def say(self, text):
+        print(text, flush=True)
+
+
+# ---------------------------------------------------------------- tarball
+
+def copy_untrusted(source, target, limit=MAX_TARBALL_BYTES):
+    """Copy an agent-writable file without following a final symlink."""
+    fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_NONBLOCK', 0))
+    try:
+        stat = os.fstat(fd)
+        if not stat_module.S_ISREG(stat.st_mode) or stat.st_size > limit:
+            raise DeployError('input must be a regular file under %d bytes: %s' % (limit, source))
+        with os.fdopen(os.dup(fd), 'rb') as reader, open(target, 'xb') as writer:
+            shutil.copyfileobj(reader, writer)
+        if os.path.getsize(target) > limit:
+            raise DeployError('input grew while copying: ' + str(source))
+    finally:
+        os.close(fd)
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_checksum(tarball, checksum_file):
+    text = Path(checksum_file).read_text(encoding='ascii', errors='strict').split()
+    if len(text) != 2 or not re.fullmatch(r'[0-9a-f]{64}', text[0]):
+        raise DeployError('malformed .sha256 file')
+    if text[0] != sha256_file(tarball):
+        raise DeployError('tarball does not match its .sha256')
+
+
+def safe_extract(tarball, destination):
+    """Extract only regular files and directories below one top directory.
+
+    Owners and modes from the archive are ignored. Returns the top directory name.
+    """
+    destination = Path(destination)
+    top, seen, total = None, set(), 0
+    with tarfile.open(tarball, 'r:gz') as archive:
+        members = []
+        for member in archive:
+            members.append(member)
+            if len(members) > MAX_MEMBERS:
+                raise DeployError('too many archive members')
+            name = member.name
+            if '\\' in name or '\0' in name or name.startswith('/') or not name:
+                raise DeployError('unsafe path in archive: %r' % name)
+            parts = [p for p in name.split('/') if p not in ('', '.')]
+            if not parts or any(p == '..' for p in parts):
+                raise DeployError('unsafe path in archive: %r' % name)
+            if not (member.isfile() or member.isdir()):
+                raise DeployError('archive may contain only files and directories: %r' % name)
+            if member.mode & 0o7000:
+                raise DeployError('setuid/setgid/sticky bit in archive: %r' % name)
+            if top is None:
+                top = parts[0]
+            elif parts[0] != top:
+                raise DeployError('archive must have exactly one top directory')
+            key = '/'.join(parts)
+            if key in seen:
+                raise DeployError('duplicate archive member: %r' % name)
+            seen.add(key)
+            total += member.size if member.isfile() else 0
+            if total > MAX_EXTRACTED_BYTES:
+                raise DeployError('archive expands beyond the size limit')
+        if top is None or not RELEASE_PATTERN.match(top):
+            raise DeployError('archive top directory is not a release name: %r' % top)
+        for member in members:
+            parts = [p for p in member.name.split('/') if p not in ('', '.')]
+            target = destination.joinpath(*parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source = archive.extractfile(member)
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'wb') as writer:
+                shutil.copyfileobj(source, writer)
+    return top
+
+
+def verify_manifest(root):
+    """Tier A: the extracted tree is exactly the manifest, byte for byte."""
+    root = Path(root)
+    try:
+        manifest = json.loads((root / 'source-manifest.json').read_text())
+    except (OSError, ValueError) as error:
+        raise DeployError('missing or invalid source-manifest.json: %s' % error)
+    if manifest.get('schemaVersion') != 2 or not isinstance(manifest.get('files'), dict):
+        raise DeployError('unsupported release manifest')
+    revision, version = manifest.get('sourceRevision'), manifest.get('productVersion')
+    if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{40}', revision):
+        raise DeployError('manifest sourceRevision is not a full commit id')
+    name = 'authority-%s-%s' % (version, revision[:12])
+    if not isinstance(version, str) or not RELEASE_PATTERN.match(name) or manifest.get('releaseName') != name or root.name != name:
+        raise DeployError('release name does not match manifest version/revision')
+    expected = manifest['files']
+    actual, dirs = set(), set()
+    for current, subdirs, files in os.walk(root):
+        relative = Path(current).relative_to(root)
+        for sub in subdirs:
+            if (Path(current) / sub).is_symlink():
+                raise DeployError('symlink in release')
+            dirs.add((relative / sub).as_posix())
+        for file in files:
+            actual.add((relative / file).as_posix())
+    actual.discard('source-manifest.json')
+    if actual != set(expected):
+        extra, missing = sorted(actual - set(expected)), sorted(set(expected) - actual)
+        raise DeployError('release files differ from manifest (extra %s, missing %s)' % (extra[:5], missing[:5]))
+    implied = {p.as_posix() for f in expected for p in Path(f).parents}
+    if dirs - implied:
+        raise DeployError('unexpected empty directories: %s' % sorted(dirs - implied)[:5])
+    for relative, digest in expected.items():
+        if sha256_file(root / relative) != digest:
+            raise DeployError('sha256 mismatch: ' + relative)
+    executables = manifest.get('executables', [])
+    if not isinstance(executables, list) or not set(executables) <= set(expected):
+        raise DeployError('manifest executables are not release files')
+    if not list((root / 'ops/isolation/units').glob('companion-*')):
+        raise DeployError('release has no unit files')
+    return manifest
+
+
+def normalize_modes(root, executables, uid, gid):
+    """Read-only tree owned by the service user; only manifest executables keep x."""
+    root = Path(root)
+    executables = set(executables)
+    for current, subdirs, files in os.walk(root, topdown=False):
+        for file in files:
+            path = Path(current) / file
+            relative = path.relative_to(root).as_posix()
+            os.chown(path, uid, gid, follow_symlinks=False)
+            os.chmod(path, 0o555 if relative in executables else 0o444)
+        os.chown(current, uid, gid, follow_symlinks=False)
+        if Path(current) != root:  # the top directory is sealed after it is moved into place
+            os.chmod(current, 0o555)
+
+
+def schema_version(release):
+    try:
+        found = SCHEMA_PATTERN.findall((Path(release) / 'authority/src/store.js').read_text())
+    except OSError:
+        found = []
+    if len(found) != 1:
+        raise DeployError('cannot read authority SCHEMA_VERSION in ' + str(release))
+    return int(found[0])
+
+
+# ---------------------------------------------------------------- git (tier B)
+
+class Mirror:
+    def __init__(self, config, system):
+        self.config, self.system = config, system
+
+    def run(self, *args):
+        result = self.system.git('--git-dir', str(self.config.mirror), *args)
+        if result.returncode:
+            raise DeployError('git %s failed: %s' % (args[0], result.stderr.strip()[-400:]))
+        return result.stdout
+
+    def update(self):
+        if not self.config.mirror.exists():
+            result = self.system.git('clone', '--quiet', '--mirror', self.config.origin, str(self.config.mirror))
+            if result.returncode:
+                raise DeployError('git clone --mirror failed: ' + result.stderr.strip()[-400:])
+        self.run('fetch', '--quiet', '--prune', self.config.origin, '+refs/heads/*:refs/heads/*')
+
+    def describe_published(self, revision):
+        if self.system.git('--git-dir', str(self.config.mirror), 'cat-file', '-e', revision + '^{commit}').returncode:
+            raise DeployError('commit %s is not in the origin mirror' % revision)
+        result = self.system.git('--git-dir', str(self.config.mirror), 'merge-base', '--is-ancestor', revision, MAIN_REF)
+        if result.returncode:
+            raise DeployError('commit %s is not contained in origin main; refusing' % revision)
+        subject, date = (self.run('log', '-1', '--format=%s%n%cI', revision).splitlines() + ['', ''])[:2]
+        return subject, date
+
+
+# ---------------------------------------------------------------- deployer
+
+class Deployer:
+    def __init__(self, config=None, system=None):
+        self.config = config or Config()
+        self.system = system or System(self.config)
+
+    # state
+    def load_state(self):
+        try:
+            return json.loads(self.config.state_file.read_text())
+        except FileNotFoundError:
+            return {'current': None, 'previous': None, 'installed': []}
+
+    def save_state(self, state):
+        temporary = self.config.state_file.with_name('.state.json.tmp')
+        temporary.write_text(json.dumps(state, indent=2) + '\n')
+        os.replace(temporary, self.config.state_file)
+
+    def log(self, action, **fields):
+        record = {'at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'), 'action': action, **fields}
+        with open(self.config.log, 'a') as handle:
+            handle.write(json.dumps(record, sort_keys=True) + '\n')
+
+    def prepare_dirs(self):
+        for path in (self.config.state_dir, self.config.snapshots, self.config.work):
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(path, 0o700)
+        for path in (self.config.releases, self.config.units):
+            if path.is_symlink() or not path.is_dir():
+                raise DeployError('expected a real directory: ' + str(path))
+
+    # releases on disk
+    def current_link(self):
+        return self.config.releases / 'current'
+
+    def active_release(self):
+        """Name of the release the services run: `current`, else legacy unit paths."""
+        link = self.current_link()
+        if link.is_symlink():
+            target = os.readlink(link)
+            if '/' in target:
+                raise DeployError('current symlink must be a bare release name')
+            return target
+        if link.exists():
+            raise DeployError('current exists and is not a symlink')
+        unit = self.config.units / 'companion-authority.service'
+        match = re.search(r'%h/src/dsh-companion/(authority-[^/\s]+)/', unit.read_text() if unit.is_file() else '')
+        if not match:
+            raise DeployError('cannot determine the active release')
+        return match.group(1)
+
+    def switch(self, release):
+        if not (self.config.releases / release).is_dir():
+            raise DeployError('release directory missing: ' + release)
+        uid, gid = self.system.owner()
+        temporary = self.config.releases / ('.current.%d' % os.getpid())
+        if temporary.is_symlink() or temporary.exists():
+            temporary.unlink()
+        os.symlink(release, temporary)
+        os.chown(temporary, uid, gid, follow_symlinks=False)
+        os.replace(temporary, self.current_link())
+
+    # units
+    def installed_units(self):
+        names = []
+        for entry in sorted(self.config.units.iterdir()):
+            if UNIT_PATTERN.match(entry.name):
+                if entry.is_symlink() or not entry.is_file():
+                    raise DeployError('unexpected non-file unit: ' + entry.name)
+                names.append(entry.name)
+        return names
+
+    def snapshot_units(self, label):
+        snapshot = self.config.snapshots / ('%s-%s' % (time.strftime('%Y%m%dT%H%M%S'), label))
+        suffix = 0
+        while snapshot.exists():
+            suffix += 1
+            snapshot = snapshot.with_name(snapshot.name.split('+')[0] + '+%d' % suffix)
+        snapshot.mkdir(mode=0o700)
+        for name in self.installed_units():
+            shutil.copyfile(self.config.units / name, snapshot / name, follow_symlinks=False)
+        return snapshot.name
+
+    def put_units(self, source_dir):
+        """Make the installed companion-* unit files exactly those in source_dir."""
+        uid, gid = self.system.owner()
+        wanted = sorted(p.name for p in Path(source_dir).iterdir() if UNIT_PATTERN.match(p.name))
+        for name in wanted:
+            data = (Path(source_dir) / name).read_bytes()
+            temporary = self.config.units / ('.%s.deploy-tmp' % name)
+            if temporary.is_symlink() or temporary.exists():
+                temporary.unlink()
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+            with os.fdopen(fd, 'wb') as writer:
+                writer.write(data)
+            os.chown(temporary, uid, gid, follow_symlinks=False)
+            os.replace(temporary, self.config.units / name)
+        for name in self.installed_units():
+            if name not in wanted:
+                (self.config.units / name).unlink()
+        return wanted
+
+    def startable(self, names):
+        """Units with an [Install] section are started; the rest are socket/dependency activated."""
+        return [n for n in names if '[Install]' in (self.config.units / n).read_text()]
+
+    def stop_all(self, names):
+        services = [n for n in names if n.endswith('.service')]
+        sockets = [n for n in names if n.endswith('.socket')]
+        if services or sockets:
+            self.system.systemctl('stop', *services, *sockets, check=False)
+        if names:
+            self.system.systemctl('reset-failed', *names, check=False)
+
+    def start_all(self, names):
+        start = self.startable(names)
+        sockets = [n for n in start if n.endswith('.socket')]
+        services = [n for n in start if n.endswith('.service')]
+        self.system.systemctl('start', *sockets, *services)
+
+    def unit_states(self, names):
+        output = self.system.systemctl('show', '--property=Id,ActiveState,NRestarts', *names, check=False).stdout
+        states = {}
+        for block in output.strip().split('\n\n'):
+            fields = dict(line.split('=', 1) for line in block.splitlines() if '=' in line)
+            if 'Id' in fields:
+                states[fields['Id']] = (fields.get('ActiveState', ''), fields.get('NRestarts', '0'))
+        return states
+
+    def health(self, names):
+        """All companion units healthy, ports listening, and no restarts over a window."""
+        required = self.startable(names)
+        self.system.sleep(HEALTH_SETTLE_SECONDS)
+        problems = []
+        first = self.unit_states(names)
+        self.system.sleep(HEALTH_WINDOW_SECONDS)
+        second = self.unit_states(names)
+        for name in names:
+            state, restarts = second.get(name, ('missing', '0'))
+            if state == 'failed' or first.get(name, ('', '0'))[0] == 'failed':
+                problems.append(name + ' failed')
+            elif name in required and state != 'active':
+                problems.append('%s is %s' % (name, state))
+            if restarts != first.get(name, ('', restarts))[1]:
+                problems.append(name + ' restarted during the health window')
+        for port in PORTS:
+            if not self.system.listening(port):
+                problems.append('127.0.0.1:%d is not listening' % port)
+        return problems
+
+    def activate(self, release, units_source, previous_units):
+        """Stop, install units, reload, switch `current`, start, check."""
+        self.stop_all(sorted(set(previous_units) | {p.name for p in Path(units_source).iterdir() if UNIT_PATTERN.match(p.name)}))
+        names = self.put_units(units_source)
+        self.system.systemctl('daemon-reload')
+        self.switch(release)
+        try:
+            self.start_all(names)
+        except DeployError as error:
+            return [str(error)]
+        return self.health(names)
+
+    def restore(self, release, snapshot, failed_units):
+        self.system.say('Restoring %s with its unit snapshot %s' % (release, snapshot))
+        problems = self.activate(release, self.config.snapshots / snapshot, failed_units)
+        if problems:
+            self.system.say('WARNING: restored release is not healthy either: ' + '; '.join(problems))
+        return problems
+
+    # retention
+    def retain(self, state):
+        keep = {state['current']['release'], (state.get('previous') or {}).get('release')}
+        managed = [i for i in state['installed'] if RELEASE_PATTERN.match(i['release'])]
+        newest = [i['release'] for i in sorted(managed, key=lambda i: i['at'], reverse=True)[:KEEP_RELEASES]]
+        keep |= set(newest)
+        removed = []
+        for item in list(managed):
+            name = item['release']
+            if name in keep:
+                continue
+            path = self.config.releases / name
+            if path.is_dir() and not path.is_symlink():
+                if os.geteuid() != 0:  # root ignores the read-only modes; tests do not
+                    for current, _dirs, _files in os.walk(path):
+                        os.chmod(current, 0o700)
+                shutil.rmtree(path)
+            state['installed'].remove(item)
+            removed.append(name)
+        return removed
+
+    # commands
+    def deploy(self, tarball):
+        self.prepare_dirs()
+        tarball = Path(tarball)
+        work = Path(tempfile.mkdtemp(prefix='deploy-', dir=self.config.work))
+        try:
+            local = work / 'release.tar.gz'
+            copy_untrusted(tarball, local)
+            copy_untrusted(Path(str(tarball) + '.sha256'), work / 'release.sha256', limit=4096)
+            verify_checksum(local, work / 'release.sha256')
+            extracted = work / 'tree'
+            extracted.mkdir(mode=0o700)
+            top = safe_extract(local, extracted)
+            manifest = verify_manifest(extracted / top)
+            revision, version = manifest['sourceRevision'], manifest['productVersion']
+            mirror = Mirror(self.config, self.system)
+            mirror.update()
+            subject, date = mirror.describe_published(revision)
+
+            state = self.load_state()
+            active = self.active_release()
+            target = self.config.releases / top
+            if target.exists() or target.is_symlink():
+                raise DeployError('release already installed: %s (use rollback, or remove it manually)' % top)
+            new_schema, old_schema = schema_version(extracted / top), schema_version(self.config.releases / active)
+            if new_schema != old_schema:
+                raise DeployError('authority database schema %d -> %d needs a separate manual migration; refusing' % (old_schema, new_schema))
+
+            self.system.say('Current release: %s\nNew release:     %s\n  version %s\n  commit  %s\n  subject %s\n  date    %s\n  files   %d' % (
+                active, top, version, revision, subject, date, len(manifest['files'])))
+            if not self.system.confirm('Deploy and restart companion services? [y/N] '):
+                self.log('deploy-declined', release=top, revision=revision)
+                raise DeployError('declined')
+
+            previous_units = self.installed_units()
+            snapshot = self.snapshot_units(active)
+            uid, gid = self.system.owner()
+            normalize_modes(extracted / top, manifest.get('executables', []), uid, gid)
+            os.rename(extracted / top, target)  # same filesystem on the VM; no copy into the user's home
+            os.chmod(target, 0o555)
+            state['installed'].append({'release': top, 'revision': revision, 'at': time.time()})
+            state['current'] = {'release': active}
+            self.save_state(state)
+
+            problems = self.activate(top, target / 'ops/isolation/units', previous_units)
+            if problems:
+                self.system.say('Health check FAILED: ' + '; '.join(problems))
+                restore_problems = self.restore(active, snapshot, self.installed_units())
+                self.log('deploy-failed', release=top, revision=revision, restored=active, problems=problems,
+                         restore_problems=restore_problems)
+                self.save_state(state)
+                raise DeployError('deploy of %s failed health check; restored %s' % (top, active))
+            state['previous'] = {'release': active, 'snapshot': snapshot}
+            state['current'] = {'release': top}
+            removed = self.retain(state)
+            self.save_state(state)
+            self.log('deploy', release=top, revision=revision, previous=active, removed=removed)
+            self.system.say('Deployed %s (previous %s). Removed old releases: %s' % (top, active, removed or 'none'))
+            return top
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def rollback(self):
+        self.prepare_dirs()
+        state = self.load_state()
+        previous = state.get('previous')
+        if not previous or not previous.get('snapshot'):
+            raise DeployError('no previous release recorded')
+        active = self.active_release()
+        self.system.say('Roll back from %s to %s (units snapshot %s)' % (active, previous['release'], previous['snapshot']))
+        if not self.system.confirm('Roll back and restart companion services? [y/N] '):
+            raise DeployError('declined')
+        current_units = self.installed_units()
+        snapshot = self.snapshot_units(active)
+        problems = self.activate(previous['release'], self.config.snapshots / previous['snapshot'], current_units)
+        if problems:
+            self.system.say('Health check FAILED after rollback: ' + '; '.join(problems))
+            self.restore(active, snapshot, self.installed_units())
+            self.log('rollback-failed', release=previous['release'], restored=active, problems=problems)
+            raise DeployError('rollback to %s failed health check; restored %s' % (previous['release'], active))
+        state['current'] = {'release': previous['release']}
+        state['previous'] = {'release': active, 'snapshot': snapshot}
+        self.save_state(state)
+        self.log('rollback', release=previous['release'], previous=active)
+        self.system.say('Rolled back to %s (previous now %s)' % (previous['release'], active))
+        return previous['release']
+
+    def status(self):
+        state = self.load_state()
+        names = self.installed_units()
+        lines = ['active release: ' + self.active_release(),
+                 'previous:       ' + str((state.get('previous') or {}).get('release'))]
+        for name, (active, restarts) in sorted(self.unit_states(names).items()):
+            lines.append('  %-36s %-10s restarts=%s' % (name, active, restarts))
+        for port in PORTS:
+            lines.append('  127.0.0.1:%d %s' % (port, 'listening' if self.system.listening(port) else 'NOT listening'))
+        self.system.say('\n'.join(lines))
+
+    def list(self):
+        state = self.load_state()
+        active = self.active_release()
+        previous = (state.get('previous') or {}).get('release')
+        managed = {i['release'] for i in state.get('installed', [])}
+        for entry in sorted(self.config.releases.iterdir()):
+            if entry.is_symlink() or not entry.name.startswith('authority-'):
+                continue
+            marks = [m for m, on in (('current', entry.name == active), ('previous', entry.name == previous),
+                                     ('managed', entry.name in managed)) if on]
+            self.system.say('%s %s' % (entry.name, ' '.join('[%s]' % m for m in marks)))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest='command', required=True)
+    sub.add_parser('deploy').add_argument('tarball')
+    sub.add_parser('rollback')
+    sub.add_parser('status')
+    sub.add_parser('list')
+    options = parser.parse_args(argv)
+    if os.geteuid() != 0:
+        print('companion-deploy must run as root', file=sys.stderr)
+        return 2
+    os.umask(0o077)
+    deployer = Deployer()
+    try:
+        deployer.config.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with open(deployer.config.state_dir / 'lock', 'w') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                raise DeployError('another companion-deploy is running')
+            if options.command == 'deploy':
+                deployer.deploy(options.tarball)
+            elif options.command == 'rollback':
+                deployer.rollback()
+            elif options.command == 'status':
+                deployer.status()
+            else:
+                deployer.list()
+    except (DeployError, OSError, tarfile.TarError) as error:
+        print('companion-deploy: ' + str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
