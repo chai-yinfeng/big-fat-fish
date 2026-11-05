@@ -36,9 +36,16 @@ class FakeSystem(cd.System):
         self.calls, self.said = [], []
         self.broken = set()  # release names whose authority service fails
         self.answer = True
+        self.chowned = []
 
     def owner(self):
         return os.getuid(), os.getgid()
+
+    def log_group(self):
+        return 4  # adm on Ubuntu; chown itself is faked below
+
+    def fchown(self, fd, uid, gid):
+        self.chowned.append((fd, uid, gid))
 
     def running(self):
         link = self.config.releases / 'current'
@@ -77,6 +84,7 @@ class Fixture(unittest.TestCase):
         (home / 'src/dsh-companion').mkdir(parents=True)
         (home / '.config/systemd/user').mkdir(parents=True)
         self.config = cd.Config(home=home, state=self.root / 'state', log=self.root / 'deploy.log',
+                                status=self.root / 'deploy.status.json',
                                 origin='file://' + str(self.root / 'origin.git'), git_protocol='file')
         self.system = FakeSystem(self.config)
         self.deployer = cd.Deployer(self.config, self.system)
@@ -287,6 +295,53 @@ class DeployTests(Fixture):
             self.deployer.deploy(tarball)
         self.assertEqual(self.units(), self.legacy_units)
         self.assertEqual(self.current(), 'authority-0.10.0')
+
+    def mode(self, path):
+        return path.stat().st_mode & 0o777
+
+    def test_log_and_status_are_root_adm_0640_and_state_stays_private(self):
+        self.config.log.write_text('')
+        os.chmod(self.config.log, 0o600)  # an existing file with the wrong mode is fixed on append
+        tarball, name = self.release(self.commits[1])
+        self.deployer.deploy(tarball)
+        self.assertEqual(self.mode(self.config.log), 0o640)
+        self.assertEqual(self.mode(self.config.status), 0o640)
+        self.assertEqual(self.mode(self.config.state_file), 0o600)
+        self.assertTrue(self.system.chowned)
+        self.assertTrue(all(uid == 0 and gid == 4 for _fd, uid, gid in self.system.chowned))
+        status = json.loads(self.config.status.read_text())
+        self.assertEqual((status['current'], status['previous']), (name, 'authority-0.10.0'))
+        self.assertEqual(status['last']['action'], 'deploy')
+        self.assertTrue(status['last']['ok'])
+        self.assertEqual(sorted(status), ['current', 'last', 'previous', 'updatedAt'])
+        before = len(self.system.chowned)
+        self.deployer.rollback()
+        self.assertGreater(len(self.system.chowned), before)  # ownership reasserted on every write
+        status = json.loads(self.config.status.read_text())
+        self.assertEqual((status['current'], status['last']['action']), ('authority-0.10.0', 'rollback'))
+
+    def test_status_records_refused_and_failed_deploys(self):
+        tarball, _ = self.release(self.unpublished)
+        with self.assertRaises(cd.DeployError):
+            self.deployer.deploy(tarball)
+        status = json.loads(self.config.status.read_text())
+        self.assertFalse(status['last']['ok'])
+        self.assertIn('not contained in origin main', status['last']['detail'])
+        self.assertEqual(status['current'], 'authority-0.10.0')
+        self.assertEqual(self.mode(self.config.status), 0o640)
+        shutil.rmtree(self.root / 'inbox')
+        tarball, name = self.release(self.commits[1])
+        self.system.broken.add(name)
+        with self.assertRaises(cd.DeployError):
+            self.deployer.deploy(tarball)
+        status = json.loads(self.config.status.read_text())
+        self.assertFalse(status['last']['ok'])
+        self.assertEqual(status['current'], 'authority-0.10.0')
+
+    def test_log_refuses_a_non_regular_file(self):
+        os.mkfifo(self.config.log)
+        with self.assertRaises(OSError):
+            self.deployer.log('x')
 
     def test_failed_second_deploy_restores_first(self):
         first, first_name = self.release(self.commits[1])

@@ -17,6 +17,7 @@ import argparse
 import datetime
 import errno
 import fcntl
+import grp
 import hashlib
 import json
 import os
@@ -34,6 +35,7 @@ import time
 ORIGIN_URL = 'https://github.com/chai-yinfeng/big-fat-fish.git'
 MAIN_REF = 'refs/heads/main'
 SERVICE_USER = 'companion'
+LOG_GROUP = 'adm'  # the agent SSH account reads logs through this group, never state.json
 KEEP_RELEASES = 3
 HEALTH_SETTLE_SECONDS = 5
 HEALTH_WINDOW_SECONDS = 15
@@ -53,8 +55,8 @@ class DeployError(Exception):
 class Config:
     """All host paths in one place; tests point them at a temporary tree."""
     def __init__(self, home='/home/companion', state='/var/lib/companion-deploy',
-                 log='/var/log/companion-deploy.log', origin=ORIGIN_URL, git_protocol='https',
-                 user=SERVICE_USER):
+                 log='/var/log/companion-deploy.log', status='/var/log/companion-deploy.status.json',
+                 origin=ORIGIN_URL, git_protocol='https', user=SERVICE_USER):
         self.home = Path(home)
         self.releases = self.home / 'src/dsh-companion'
         self.units = self.home / '.config/systemd/user'
@@ -64,6 +66,7 @@ class Config:
         self.work = self.state_dir / 'work'
         self.state_file = self.state_dir / 'state.json'
         self.log = Path(log)
+        self.status = Path(status)
         self.origin = origin
         self.git_protocol = git_protocol
         self.user = user
@@ -77,6 +80,12 @@ class System:
     def owner(self):
         entry = pwd.getpwnam(self.config.user)
         return entry.pw_uid, entry.pw_gid
+
+    def log_group(self):
+        return grp.getgrnam(LOG_GROUP).gr_gid
+
+    def fchown(self, fd, uid, gid):
+        os.fchown(fd, uid, gid)
 
     def systemctl(self, *args, check=True):
         command = ['systemctl', '--user', '-M', self.config.user + '@', *args]
@@ -305,14 +314,47 @@ class Deployer:
             return {'current': None, 'previous': None, 'installed': []}
 
     def save_state(self, state):
-        temporary = self.config.state_file.with_name('.state.json.tmp')
-        temporary.write_text(json.dumps(state, indent=2) + '\n')
-        os.replace(temporary, self.config.state_file)
+        """Private to root (0600 in a 0700 directory)."""
+        self.replace_file(self.config.state_file, json.dumps(state, indent=2) + '\n', 0o600)
+
+    def replace_file(self, path, text, mode, readable_by_logs=False):
+        temporary = path.with_name('.%s.tmp' % path.name)
+        if os.path.lexists(temporary):
+            temporary.unlink()
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+        with os.fdopen(fd, 'w') as handle:
+            if readable_by_logs:
+                self.system.fchown(handle.fileno(), 0, self.system.log_group())
+            os.fchmod(handle.fileno(), mode)
+            handle.write(text)
+        os.replace(temporary, path)
+
+    @staticmethod
+    def now():
+        return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
 
     def log(self, action, **fields):
-        record = {'at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'), 'action': action, **fields}
-        with open(self.config.log, 'a') as handle:
+        """Append-only, root:adm 0640. Only release names, commit ids and unit problems; no secrets."""
+        record = {'at': self.now(), 'action': action, **fields}
+        fd = os.open(self.config.log, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o640)
+        with os.fdopen(fd, 'a') as handle:
+            if not stat_module.S_ISREG(os.fstat(fd).st_mode):
+                raise DeployError('log is not a regular file')
+            self.system.fchown(fd, 0, self.system.log_group())
+            os.fchmod(fd, 0o640)
             handle.write(json.dumps(record, sort_keys=True) + '\n')
+
+    def write_status(self, action, ok, detail):
+        """Non-secret summary for `cat` by the adm group (state.json stays private)."""
+        state = self.load_state()
+        try:
+            current = self.active_release()
+        except (DeployError, OSError):
+            current = (state.get('current') or {}).get('release')
+        status = {'updatedAt': self.now(), 'current': current,
+                  'previous': (state.get('previous') or {}).get('release'),
+                  'last': {'action': action, 'ok': ok, 'detail': detail, 'at': self.now()}}
+        self.replace_file(self.config.status, json.dumps(status, indent=2) + '\n', 0o640, readable_by_logs=True)
 
     def prepare_dirs(self):
         for path in (self.config.state_dir, self.config.snapshots, self.config.work):
@@ -483,6 +525,15 @@ class Deployer:
 
     # commands
     def deploy(self, tarball):
+        try:
+            top = self._deploy(tarball)
+        except DeployError as error:
+            self.write_status('deploy', False, str(error))
+            raise
+        self.write_status('deploy', True, top)
+        return top
+
+    def _deploy(self, tarball):
         self.prepare_dirs()
         tarball = Path(tarball)
         work = Path(tempfile.mkdtemp(prefix='deploy-', dir=self.config.work))
@@ -544,6 +595,15 @@ class Deployer:
             shutil.rmtree(work, ignore_errors=True)
 
     def rollback(self):
+        try:
+            release = self._rollback()
+        except DeployError as error:
+            self.write_status('rollback', False, str(error))
+            raise
+        self.write_status('rollback', True, release)
+        return release
+
+    def _rollback(self):
         self.prepare_dirs()
         state = self.load_state()
         previous = state.get('previous')

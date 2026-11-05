@@ -52,10 +52,14 @@ console/dist，正式装配使用 console-web。不要把复制到正式 release
 VM（myvm）只用于生产。服务以专用用户 companion（uid 1001，密码锁定、不可登录，
 home 0700）运行，由 root 通过 `systemctl --user -M companion@ ...` 管理。人类和
 Agent 都以 blackmagic 身份 SSH 登录：没有 docker/lxd 权限，sudo 需要人类输入
-密码；blackmagic 属于 adm 组，可以只读查看 companion 的日志：
+密码；blackmagic 属于 adm 组，不用 sudo 就能只读查看 companion 的日志和部署记录
+（两个部署文件为 root:adm 0640，不含密钥；/var/lib/companion-deploy/state.json
+仍只有 root 可读）：
 
 ```sh
 ssh myvm 'journalctl _UID=1001 --since -1h --no-pager | tail -n 50'
+ssh myvm 'cat /var/log/companion-deploy.status.json'   # current/previous、最近一次结果与时间
+ssh myvm 'tail -n 20 /var/log/companion-deploy.log'    # 每次部署/回退一行 JSON
 ```
 
 生产变更只走 stage-release → `sudo companion-deploy`（见下文）。不在 VM 上开发、
@@ -115,7 +119,8 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    3081/3082 在监听、约 20 秒内无重启）。失败则自动恢复上一个 release 及其 unit
    快照并以非零退出。只重启 companion 服务和 socket，不碰 NapCat，不重启机器。
    保留最近 3 个部署管理的 release 及 current/previous；旧的 authority-0.10.0、
-   authority-0.9.0 从不删除。日志在 /var/log/companion-deploy.log。
+   authority-0.9.0 从不删除。日志在 /var/log/companion-deploy.log，摘要在
+   /var/log/companion-deploy.status.json（均 root:adm 0640，Agent 可直接 cat）。
 
 3. 回退与查看：
 
