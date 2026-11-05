@@ -11,7 +11,7 @@ Host defaults (overridable as launcher flags before the role):
 
 | Flag | Default |
 | --- | --- |
-| `--base` | `$HOME/.local/share/companion-authority-v1` |
+| `--base` | `$HOME/.local/share/companion-world-v1` |
 | `--release` | `$HOME/src/dsh-companion/current` (symlink switched by `companion-deploy`) |
 | `--runtime` | `$HOME/.local/opt/companion` |
 | `--ops` | `$HOME/src/dsh-companion/current/ops` |

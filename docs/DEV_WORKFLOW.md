@@ -7,7 +7,7 @@ git status --short
 git log -3 --oneline
 ```
 
-一次只让一个 Agent 写一个工作树。切换 Mac/VM/Codex 前，把已完成的小步修改
+一次只让一个 Agent 写一个工作树。切换 Agent 前，把已完成的小步修改
 做相关检查并本地提交，说明未完成项与验证命令。未提交内容不通过覆盖同步搬运。
 公开远端不包含私密 notes、录音、状态或模型；不要用 push --all/--mirror。
 GitHub推送仍须符合用户对目的地及公开范围的授权。
@@ -44,32 +44,42 @@ console/dist，正式装配使用 console-web。不要把复制到正式 release
 ## 开发只在 Mac
 
 开发、测试和构建只在 Mac 本机 checkout 进行；VM（myvm）只运行正式服务，不再
-保留 VM 开发 checkout，也不在 VM 上改源码。正式服务由专用用户 companion 运行，
-Agent 的 SSH 用户 blackmagic 没有生产文件访问权，也不能 sudo。代码通过下面的
-发布流程到达 VM，不通过 rsync、git pull 或手工复制。开发 QQ 用测试发送口/独立
+保留 VM 开发 checkout，也不在 VM 上改源码。代码通过下面的发布流程到达 VM，不通过 rsync、git pull 或手工复制。开发 QQ 用测试发送口/独立
 账号，不能和正式桥重复回应。
 
-## 低往返远程命令与耗时
+## VM 访问与远程命令
 
-本机项目根可运行：
+VM（myvm）只用于生产。服务以专用用户 companion（uid 1001，密码锁定、不可登录，
+home 0700）运行，由 root 通过 `systemctl --user -M companion@ ...` 管理。人类和
+Agent 都以 blackmagic 身份 SSH 登录：没有 docker/lxd 权限，sudo 需要人类输入
+密码；blackmagic 属于 adm 组，可以只读查看 companion 的日志：
 
 ```sh
-node scripts/vm.mjs status
-node scripts/vm.mjs check qq
-node scripts/vm.mjs check speech
+ssh myvm 'journalctl _UID=1001 --since -1h --no-pager | tail -n 50'
 ```
 
-该助手只进入 ~/work/big-fat-fish，使用 IPv4 和现有 Node24；成功返回短摘要，
-失败日志保留本机 .build，不读生产访问码或启动正式桥。VM 内直接运行模块检查
-最快，不必再 SSH 回自己。Codex CLI/桌面 SSH 项目均可使用同一开发 checkout。
+生产变更只走 stage-release → `sudo companion-deploy`（见下文）。不在 VM 上开发、
+测试或改文件。scripts/vm.mjs，以及 deploy/qq/open-login.mjs、
+deploy/authority/verify-standalone-console.mjs、verify-console-browser.mjs 等少数
+辅助脚本仍指向旧的 blackmagic $HOME 布局，已过时，尚未修复，不要用。
 
-本轮空 SSH 命令曾耗10.2–11.5秒，诊断主要停在TCP建立阶段；强制IPv4约1.3秒，
-临时复用连接约37毫秒。是本轮实际环境结果，不是所有网络的固定值。没有修改
-全局 SSH 配置；GitHub主机校验可使用官方公钥的项目级 known_hosts，不能关闭校验。
+SSH 传输不消耗模型 token；多次工具调用、长输出、重复上下文和失败重试会消耗。
+远程命令尽量合并为一次调用，只返回有限长度的摘要。
 
-SSH传输不消耗模型token；多次工具调用、长输出、重复上下文和失败重试会消耗。
-这次不读取私人会话账单，不虚报节省比例。就地CLI可减少往返，但模型仍使用其
-账号/API服务；换CLI本身不保证更少token。
+## 长期运行的清理
+
+VM 上会随时间增长的内容及负责清理的人：
+
+| 内容 | 位置 | 清理方式 |
+| --- | --- | --- |
+| 旧 release | /home/companion/src/dsh-companion/authority-*-<sha> | companion-deploy 自动保留最近 3 个及 current/previous；旧版 authority-0.10.0、0.9.0 不会自动删除 |
+| 上传的发布包 | ~blackmagic/releases/*.tar.gz(.sha256) | 手动删除 |
+| unit 快照与 Git 镜像 | /var/lib/companion-deploy/unit-snapshots/、mirror.git | 手动（root）；不要删掉 current/previous 对应的快照 |
+| systemd 日志 | journald | `sudo journalctl --vacuum-size=…` / `--vacuum-time=…` |
+| NapCat 镜像与容器日志 | docker（companion-world-qq） | 人类手动处理；companion-deploy 不碰 |
+| 世界数据（聊天、记忆、媒体） | /home/companion/.local/share/companion-world-v1 | 从不自动删除；任何清理都须用户明确批准 |
+
+这里只是说明，目前没有自动清理任务。
 
 ## 发布与回退
 
