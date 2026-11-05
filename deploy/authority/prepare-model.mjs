@@ -27,7 +27,7 @@ export function prepareModel(base = path.join(os.homedir(), '.local/share/compan
   fs.writeFileSync(authorityPath, JSON.stringify(authority, null, 2) + '\n', { mode: 0o600 });
   return { prepared: true, credentialsConfigured: fs.existsSync(config.settingsFile) };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try { process.stdout.write(JSON.stringify(prepareModel()) + '\n'); }
   catch { process.stderr.write('Model preparation failed; existing world was not reset.\n'); process.exitCode = 1; }
 }

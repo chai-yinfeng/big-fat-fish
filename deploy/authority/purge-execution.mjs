@@ -170,7 +170,7 @@ export async function purgeExecution({ base, plan, checkStopped = stopped }) {
   return { sdkPurged: true, localSourcesPurged: true, platform: 'outside-control', executionSessionsRemoved: directories.length, derivedFilesRemoved: derived.length, derivedDomainsRemoved: derivedDirectories.length, mediaArtifactsRemoved: mediaRemoved, speechScratchRemoved: speechScratch.length };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try {
     const base = process.argv[process.argv.indexOf('--base') + 1], file = process.argv[process.argv.indexOf('--plan') + 1];
     if (!path.isAbsolute(base) || path.basename(base) !== 'companion-world-v1') throw fail('EXECUTION_ROOT_REFUSED');

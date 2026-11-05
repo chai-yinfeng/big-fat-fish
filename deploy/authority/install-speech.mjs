@@ -237,7 +237,7 @@ export async function installSpeech({ base = defaultBase(), models = 'all', appl
   return { mode: 'apply', models, installed: selected.map(x => x.entry.id), npm: metadata.components.npm.dependencies, nativeTtsBuilt: models === 'all', inferencePerformed: false, referenceGenerated: false, servicesChanged: false, worldReset: false };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try {
     const options = { apply: false, models: 'all' };
     let explicitMode;

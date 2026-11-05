@@ -39,7 +39,7 @@ export function prepareMemory(base = path.join(os.homedir(), '.local/share/compa
   fs.writeFileSync(authorityFile, JSON.stringify(authority, null, 2) + '\n', { mode: 0o600 });
   return { prepared: true, entityConfigured: true, credentialsPreserved: Boolean(previous), worldNotReset: true };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try { process.stdout.write(JSON.stringify(prepareMemory()) + '\n'); }
   catch { process.stderr.write('Memory preparation failed; existing world was not reset.\n'); process.exitCode = 1; }
 }

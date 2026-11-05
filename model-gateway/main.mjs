@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { constants, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { AuthorityClient } from '../authority/src/client.js';
 import { createModelGateway } from './server.mjs';
@@ -29,6 +29,6 @@ export async function main(args = process.argv.slice(2)) {
   return gateway;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   main().catch(() => { process.stderr.write('Model gateway failed\n'); process.exitCode = 1; });
 }

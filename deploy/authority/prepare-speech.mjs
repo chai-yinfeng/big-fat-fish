@@ -60,7 +60,7 @@ export function prepareSpeech(base = path.join(os.homedir(), '.local/share/compa
   if (!fs.existsSync(manifestFile)) fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
   return { prepared: true, configPreserved, modelsInstalled: false, cpuBenchmarked: false, voiceAuditioned: false, cloudEnabled: false };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try { process.stdout.write(JSON.stringify(prepareSpeech()) + '\n'); }
   catch { process.stderr.write('Speech preparation failed; no engine was installed or invoked.\n'); process.exitCode = 1; }
 }

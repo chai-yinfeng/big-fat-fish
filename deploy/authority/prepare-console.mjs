@@ -12,7 +12,7 @@ export function prepareConsole(base = path.join(os.homedir(), '.local/share/comp
   fs.writeFileSync(file, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
   return { prepared: true, standaloneOrigin: 'http://127.0.0.1:3082', worldNotReset: true, credentialsPreserved: true };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try { console.log(JSON.stringify(prepareConsole())); }
   catch { console.error('Standalone console preparation failed; existing world was not reset.'); process.exitCode = 1; }
 }

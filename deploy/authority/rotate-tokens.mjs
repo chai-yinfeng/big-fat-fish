@@ -261,7 +261,7 @@ export async function rotateTokens({ base, dryRun = false, now = new Date(), pro
   return { ...summary, backup };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try {
     const args = process.argv.slice(2);
     let base = path.join(os.homedir(), '.local/share/companion-world-v1'), dryRun = false;

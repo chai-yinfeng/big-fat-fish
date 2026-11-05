@@ -21,7 +21,7 @@ export async function setupSyntheticReference(configFile) {
   fs.writeFileSync(manifestFile, JSON.stringify(metadata, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
   return { referencePrepared: true, preserved: false, origin: 'kokoro-local', durationMs: value.durationMs, sampleRate: value.sampleRate, voiceAuditioned: p.auditioned === true };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try {
     if (process.argv.length !== 4 || process.argv[2] !== '--config') throw failure('SPEECH_CONFIG');
     process.stdout.write(JSON.stringify(await setupSyntheticReference(process.argv[3])) + '\n');

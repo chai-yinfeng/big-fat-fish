@@ -71,7 +71,7 @@ export async function benchmarkSpeech({ base = path.join(os.homedir(), '.local/s
   }
   return result;
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try {
     const args = process.argv.slice(2), options = {};
     if (!args.includes('--run')) throw Error('SPEECH_BENCH_EXPLICIT_RUN_REQUIRED');

@@ -64,7 +64,7 @@ export async function verifyMedia({ base = path.join(os.homedir(), '.local/share
     return { voiceSent: state.attempts[0].state === 'sent', imageSent: state.attempts[1].state === 'sent', platformVoiceDecoded: state.platformVoiceDecoded, asrRecognizedTestWords: state.asrRecognizedTestWords === true, syntheticOnly: true, worldPaused: true, coreObserved: false, humanAuditioned: false };
   } finally { clearTimeout(timeout); onebot.stop(); }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try {
     const args = process.argv.slice(2); if (args.some(a => !['--send', '--plan'].includes(a))) throw Error('QQ_MEDIA_PROBE_ARGUMENTS');
     console.log(JSON.stringify(await verifyMedia({ send: args.includes('--send') })));

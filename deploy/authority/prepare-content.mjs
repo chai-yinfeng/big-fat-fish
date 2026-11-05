@@ -35,7 +35,7 @@ export function prepareContent(base = path.join(os.homedir(), '.local/share/comp
   fs.writeFileSync(layoutFile, JSON.stringify(layout) + '\n', { mode: 0o600 });
   return { prepared: true, modelsInstalled: false, cloudVoiceEnabled: false, replyMode: 'text-unless-requested', mediaCacheDays: 7 };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try { console.log(JSON.stringify(prepareContent())); }
   catch { console.error('Content preparation failed; inspect private infrastructure configuration.'); process.exitCode = 1; }
 }

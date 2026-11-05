@@ -94,7 +94,7 @@ export async function audition({ mode, base = path.join(os.homedir(), '.local/sh
     return { confirmedAudio: 4, confirmedLabels: 4, anonymized: true, formalStateUnchanged: true, worldPaused: true, humanAuditioned: false };
   } finally { clearTimeout(timeout); onebot.stop(); }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try { if (process.argv.length !== 3 || !['--generate', '--send', '--status'].includes(process.argv[2])) throw fail('AUDITION_ARGUMENTS'); console.log(JSON.stringify(await audition({ mode: process.argv[2].slice(2) }))); }
   catch (error) { console.error(/^AUDITION_[A-Z_]+$/.test(error.code || '') ? error.code : 'AUDITION_FAILED'); process.exitCode = 1; }
 }

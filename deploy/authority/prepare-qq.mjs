@@ -32,6 +32,6 @@ export function prepareQQ(base = path.join(os.homedir(), '.local/share/companion
   fs.writeFileSync(file, JSON.stringify(authority, null, 2) + '\n', { mode: 0o600 });
   return { prepared: true, existingWorldPreserved: true, qqConfigured: fs.existsSync(cfg.settingsFile) };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try { console.log(JSON.stringify(prepareQQ())); } catch { console.error('QQ infrastructure preparation failed; no world reset.'); process.exitCode = 1; }
 }

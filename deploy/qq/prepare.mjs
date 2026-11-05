@@ -95,7 +95,7 @@ export function prepare(runtime = defaultRuntime()) {
   return { prepared: true, runtime, image: IMAGE, started: false };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try {
     if (process.argv.length !== 2) throw new Error('USAGE_NODE_PREPARE_MJS');
     process.stdout.write(JSON.stringify(prepare()) + '\n');

@@ -54,7 +54,7 @@ export async function configureRecovery() {
   run('docker', ['compose', '-f', path.join(base, 'qq-runtime/compose.yaml'), 'up', '-d', '--no-build']);
   return { quickLoginConfigured: true, environmentUpdated: next !== current, userServicesEnabled: true, lingerRequested: true, worldStillPaused: true };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try { process.stdout.write(JSON.stringify(await configureRecovery()) + '\n'); }
   catch { process.stderr.write('Recovery setup failed; check maintenance pause, user service permissions and Docker. Credentials were not printed.\n'); process.exitCode = 1; }
 }
