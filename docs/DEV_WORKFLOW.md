@@ -122,13 +122,36 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    authority-0.9.0 从不删除。日志在 /var/log/companion-deploy.log，摘要在
    /var/log/companion-deploy.status.json（均 root:adm 0640，Agent 可直接 cat）。
 
-3. 回退与查看：
+   Agent 交给用户的除命令外还要有核对值：提交 sha 与标题、tarball sha256；
+   若 companion-deploy 本身有改动，再给出
+   `git show <SHA>:deploy/authority/companion-deploy/companion-deploy | shasum -a 256`。
+   Agent 不运行 sudo/companion-deploy，也不经手 sudo 密码；用户核对后输入 y。
+
+3. 部署后核查（Agent，无需 sudo）：
 
    ```sh
-   ssh -t myvm 'sudo companion-deploy rollback'   # 切回 previous 及其 unit 快照
-   ssh myvm 'sudo companion-deploy status'
-   ssh myvm 'sudo companion-deploy list'
+   ssh myvm 'cat /var/log/companion-deploy.status.json'   # current/previous、last.ok
+   ssh myvm 'tail -n 20 /var/log/companion-deploy.log'
+   ssh myvm 'journalctl _UID=1001 --since -15min --no-pager | tail -n 80'
+   ssh myvm "ss -Hltn | grep -E ':(3001|3081|3082|6099) '"
    ```
+
+   last.ok 为 false 表示部署已被拒绝或健康检查失败并自动恢复了 previous：从日志
+   诊断，在 Mac 上修复后重新发布，不在 VM 上打补丁。2026-11 教训：release 经
+   `current` 符号链接运行，入口判断必须用 realpath（否则进程静默退出 0）；由
+   model-gateway/entrypoint.test.mjs 强制检查。
+
+4. 回退与查看：
+
+   ```sh
+   ssh -t myvm 'sudo companion-deploy rollback'   # 用户执行：切回 previous 及其 unit 快照
+   ssh myvm 'cat /var/log/companion-deploy.status.json'   # 无需 sudo
+   ssh -t myvm 'sudo companion-deploy status'     # 用户执行：另含各单元状态
+   ssh -t myvm 'sudo companion-deploy list'       # 用户执行：列出所有 release 目录
+   ```
+
+   current、previous 与最近一次结果可不用 sudo 从 status JSON 读取；单元状态与
+   release 目录清单在 companion 的 0700 目录下，只能由用户 sudo 查看。
 
    第一次部署前的旧 unit（写死 authority-0.10.0）也会被快照，rollback 可完整
    恢复它们。再次 rollback 会切回刚才的版本。
@@ -137,15 +160,25 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
 release 不同则部署被拒绝，迁移须另行人工完成。回退只切换代码与 unit，不覆盖
 数据库、人设、记忆或登录态。
 
-一次性安装（用户在 VM 上执行；升级 companion-deploy 时重复后两步）。<SHA> 是
-main 上已审阅的提交，安装前先读一遍脚本：
+首次安装（用户在 VM 上执行一次）：
 
 ```sh
 sudo install -d -o root -g root -m 0700 /var/lib/companion-deploy
 sudo git clone --mirror https://github.com/chai-yinfeng/big-fat-fish.git /var/lib/companion-deploy/mirror.git
+```
+
+之后以及每次 companion-deploy 有改动时，按顺序升级（用户执行；<SHA> 是 main 上
+已审阅的提交，Agent 给出该提交的期望 sha256）：
+
+```sh
+# 1. 更新镜像
 sudo git --git-dir=/var/lib/companion-deploy/mirror.git fetch --prune
+# 2. 可选：先读一遍脚本
 sudo git --git-dir=/var/lib/companion-deploy/mirror.git show <SHA>:deploy/authority/companion-deploy/companion-deploy | less
+# 3. 从 <SHA> 安装
 sudo sh -c 'git --git-dir=/var/lib/companion-deploy/mirror.git show <SHA>:deploy/authority/companion-deploy/companion-deploy > /usr/local/sbin/.companion-deploy.new && chmod 0755 /usr/local/sbin/.companion-deploy.new && mv /usr/local/sbin/.companion-deploy.new /usr/local/sbin/companion-deploy'
+# 4. 与 Agent 给出的期望值比对
+sha256sum /usr/local/sbin/companion-deploy
 ```
 
 代码撤销优先用 git revert <commit> 并检查后提交；不要擅自重写已公开历史。

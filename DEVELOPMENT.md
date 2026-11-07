@@ -36,10 +36,10 @@ QQ只取匹配requestId的最终回合，不外发思考或中间工具结果。
 
 ## VM 布局
 
-服务以专用用户 companion 运行（uid 1001，home 0700），由 root 用 `systemctl --user -M companion@ ...` 管理；SSH 用户 blackmagic 不能直接读这些目录。运行中的世界状态（暂停、revision、QQ登录等）以控制台和 `companion-deploy status` 为准，本文不记录快照。
+服务以专用用户 companion 运行（uid 1001，home 0700），由 root 用 `systemctl --user -M companion@ ...` 管理；SSH 用户 blackmagic 不能直接读这些目录。运行中的世界状态（暂停、revision、QQ登录等）以控制台和 /var/log/companion-deploy.status.json 为准，本文不记录快照。
 
 ```text
-当前产品：/home/companion/src/dsh-companion/current → authority-<版本>-<sha12>
+当前产品：/home/companion/src/dsh-companion/current → authority-0.10.0-3f393a29eef9（2026-11-07部署），previous：authority-0.10.0
 旧产物（保留，不自动删除）：authority-0.10.0、authority-0.9.0
 唯一正式数据：/home/companion/.local/share/companion-world-v1
 私有运行时：/home/companion/.local/opt/companion
@@ -65,8 +65,8 @@ node --run stage:release
 # 用户在有 TTY 的终端执行（stage 会打印确切文件名）：
 ssh -t myvm 'sudo companion-deploy deploy ~blackmagic/releases/<release>.tar.gz'
 ssh -t myvm 'sudo companion-deploy rollback'
-ssh myvm 'sudo companion-deploy status'
-ssh myvm 'sudo companion-deploy list'
+# 不用 sudo 查看当前/上一版本与最近一次结果：
+ssh myvm 'cat /var/log/companion-deploy.status.json'
 ```
 
 companion-deploy 校验、安装只读产物、更新 companion-* 用户单元、daemon-reload、切换 current、只重启 companion 服务并做健康检查，失败自动恢复上一个版本；不碰 NapCat。流程细节与一次性安装见[开发流程](<docs/DEV_WORKFLOW.md>)。不在VM手改产品源码/profile依赖或patch；已有世界禁止重跑bootstrap，已有profile禁止from-default-profile覆盖。数据库/配置迁移不在部署范围内，需另行人工完成。

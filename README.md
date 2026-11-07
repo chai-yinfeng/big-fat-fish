@@ -37,7 +37,7 @@ node --run build:console
 node --run test          # 迁移、跨层变更或发布前
 ```
 
-完整命令、Mac/VM 单 Agent 交接及回退见 [开发流程](docs/DEV_WORKFLOW.md)。
+完整命令、仅在 Mac 开发与 stage-release → companion-deploy 发布/回退流程见 [开发流程](docs/DEV_WORKFLOW.md)。
 架构见 [ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ## 数据与发布
