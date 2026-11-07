@@ -1,4 +1,0 @@
-- insert:
-    - id: companion-bili-bridge
-      name: '@local/companion-bili-bridge'
-      config: {}
