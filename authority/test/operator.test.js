@@ -28,11 +28,12 @@ test('operator UI uses its separate credential and real world/persona operations
   assert.equal(first.cors, 'http://127.0.0.1:3081');
   assert.equal(first.body.value.world.paused, true);
   assert.equal(first.body.value.channels[1].status, 'not_configured');
-  assert.equal((await call('POST', '/world/pause', { paused: false, expectedRevision: 1 })).body.value.paused, false);
+  assert.equal((await call('POST', '/world/pause', { paused: false })).body.value.paused, false);
   assert.equal(resumed, 1);
   assert.equal((await call('POST', '/world/pause', { paused: true, expectedRevision: 1 })).status, 409);
+  assert.equal((await call('POST', '/world/pause', { paused: true })).body.value.paused, true);
   assert.equal((await call('POST', '/test-conversations', { conversationId: 'test-first' })).body.value.sourceId, 'dsh-test');
-  const edited = await call('POST', '/persona', { expectedRevision: 1, patch: { name: '大肥鱼' } });
+  const edited = await call('POST', '/persona', { patch: { name: '大肥鱼' } });
   assert.equal(edited.body.value.personaRevision, 2);
   assert.equal((await call('GET', '/world')).body.value.bindings.length, 1);
 });

@@ -41,13 +41,13 @@ export class Authority extends MemoryDomain {
     };
   }
   setWorldPaused(input){
-    closed(input,['paused','expectedRevision']);
-    integer(input.expectedRevision,1);
+    closed(input,['paused','expectedRevision'],['paused']);
+    if(input.expectedRevision!==undefined)integer(input.expectedRevision,1);
     if(typeof input.paused!=='boolean')fail('VALIDATION_ERROR','paused must be boolean');
     return this.store.transaction(()=>{
       if(input.paused===false&&this.store.db.prepare("SELECT 1 FROM cleanup_jobs WHERE status='pending' LIMIT 1").get())fail('CONFLICT','Complete controlled cleanup before resuming',409);
       const state=this.store.get('state');
-      if(state.world.revision!==input.expectedRevision)fail('CONFLICT','World revision conflicts',409);
+      if(input.expectedRevision!==undefined&&state.world.revision!==input.expectedRevision)fail('CONFLICT','World revision conflicts',409);
       const status=this.worldStatus();
       if(status.paused===input.paused)return status;
       state.world={
@@ -132,14 +132,14 @@ export class Authority extends MemoryDomain {
     });
   }
   revisePersona(input){
-    closed(input,['entityId','expectedRevision','patch','reason'],['expectedRevision','patch','reason']);
-    integer(input.expectedRevision,1);
+    closed(input,['entityId','expectedRevision','patch','reason'],['patch','reason']);
+    if(input.expectedRevision!==undefined)integer(input.expectedRevision,1);
     text(input.reason,1000);
     jsonValue(input.patch);
     validated(()=>validatePersonaPatch(input.patch));
     return this.store.transaction(()=>{
       const e=this.entity(input.entityId??DEFAULT_ENTITY_ID);
-      if(e.persona_revision!==input.expectedRevision)fail('CONFLICT','Persona revision conflicts',409);
+      if(input.expectedRevision!==undefined&&e.persona_revision!==input.expectedRevision)fail('CONFLICT','Persona revision conflicts',409);
       const persona=validated(()=>normalizePersona({
         ...JSON.parse(e.persona),...input.patch
       })),personaRevision=e.persona_revision+1;

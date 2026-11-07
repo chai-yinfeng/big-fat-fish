@@ -137,7 +137,7 @@ export function WorldConsole({ t, createSession, navigateSession, close, standal
     return h(React.Fragment, null,
       h('section', { className: 'bff-card' }, h('div', { className: 'bff-head' }, h('span', { className: 'bff-status' }, t(data.world.paused ? 'paused' : 'running')),
         button(data.world.paused ? 'resume' : 'pause', () => run(async () => {
-          await request('/world/pause', { paused: !data.world.paused, expectedRevision: data.world.revision }); await load(); setNotice(t('saved'));
+          await request('/world/pause', { paused: !data.world.paused }); await load(); setNotice(t('saved'));
         }))), text('pauseHint')),
       h('div', { className: 'bff-grid' }, ...['worldTime', 'realTime', 'revision'].map((key, index) => h('dl', { key, className: 'bff-card' },
         h('dt', null, t(key)), h('dd', { className: index < 2 ? 'bff-time' : '' }, index === 0 ? time(data.world.worldNow) : index === 1 ? time(data.world.realNow) : data.world.revision)))),
@@ -145,7 +145,7 @@ export function WorldConsole({ t, createSession, navigateSession, close, standal
   }
   function persona() {
     return h('form', { onSubmit: event => { event.preventDefault(); void run(async () => {
-      await request('/persona', { expectedRevision: data.persona.revision, patch: personaPatch(draft) }); await load(); setNotice(t('saved'));
+      await request('/persona', { patch: personaPatch(draft) }); await load(); setNotice(t('saved'));
     }); } }, h('h2', null, `${t('personaRevision')}: ${data.persona.revision}`), text('arrayHint'),
     ...['name', 'identity', 'traits', 'speechStyle', 'boundaries', 'principles'].map(key => field(key, key !== 'name')),
     h('div', { className: 'bff-actions' }, h('button', { type: 'submit', disabled: busy }, t('save')), button('discard', () => setDraft(personaDraft(data.persona.value)))), text('conflictHint'));
