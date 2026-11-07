@@ -30,7 +30,7 @@ test('world freezes durably, resumes without catch-up and raw reads never advanc
   assert.throws(() => f.a.setWorldPaused({ paused: false, expectedRevision: 1 }), error => error.code === 'CONFLICT');
   f.reopen();
   assert.equal(f.a.worldStatus().worldNow, 1200);
-  f.a.setWorldPaused({ paused: false, expectedRevision: 2 });
+  f.a.setWorldPaused({ paused: false });
   f.time(5100);
   assert.equal(f.a.worldStatus().worldNow, 1300);
   f.reopen();

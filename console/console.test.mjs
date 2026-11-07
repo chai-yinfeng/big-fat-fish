@@ -9,7 +9,7 @@ const response = (body, status = 200) => ({ ok: status < 400, status, json: asyn
 const root = new URL('./', import.meta.url);
 test('operator bearer stays at fixed loopback 3082 and exact mutation payload', async () => {
   let calls = 0;
-  const payload = { paused: false, expectedRevision: 7 };
+  const payload = { paused: false };
   await operatorRequest({ location, token: 'test-only', path: '/world/pause', payload, fetchImpl: async (url, options) => {
     calls++; assert.equal(url, 'http://127.0.0.1:3082/world/pause'); assert.equal(options.headers.Authorization, 'Bearer test-only');
     assert.equal(options.credentials, 'omit'); assert.equal(options.redirect, 'error'); assert.deepEqual(JSON.parse(options.body), payload);

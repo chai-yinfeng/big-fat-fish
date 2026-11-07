@@ -38,7 +38,8 @@ export function createContentOperator({ speechConfigFile, worldStatus, speechFac
   async function paused(input, signal) {
     if (signal?.aborted) throw fail('CONTENT_OPERATOR_CANCELLED', 409);
     const world = await worldStatus();
-    if (!world.paused || !Number.isSafeInteger(input.worldRevision) || world.revision !== input.worldRevision) throw fail('CONTENT_OPERATOR_WORLD_CONFLICT', 409);
+    // worldRevision is optional; when given, the world must not have changed since.
+    if (!world.paused || (input.worldRevision !== undefined && (!Number.isSafeInteger(input.worldRevision) || world.revision !== input.worldRevision))) throw fail('CONTENT_OPERATOR_WORLD_CONFLICT', 409);
   }
   function cas(expectedRevision) {
     const current = read();
@@ -87,7 +88,7 @@ export function createContentOperator({ speechConfigFile, worldStatus, speechFac
     try {
       await paused(input || {}, signal);
       if (input.action === 'configure') {
-        closed(input, ['action', 'expectedRevision', 'defaultTtsQuality', 'numThreads', 'maxTextChars', 'worldRevision']);
+        closed(input, ['action', 'expectedRevision', 'defaultTtsQuality', 'numThreads', 'maxTextChars', 'worldRevision'], ['action', 'expectedRevision', 'defaultTtsQuality', 'numThreads', 'maxTextChars']);
         const { config } = cas(input.expectedRevision);
         if (!['light', 'heavy'].includes(input.defaultTtsQuality) || ![1, 2].includes(input.numThreads) || !Number.isInteger(input.maxTextChars) || input.maxTextChars < 1 || input.maxTextChars > 120) throw fail('CONTENT_OPERATOR_INPUT');
         if (input.defaultTtsQuality === 'heavy') {
@@ -98,7 +99,7 @@ export function createContentOperator({ speechConfigFile, worldStatus, speechFac
         await commit(config, input, signal); return projected(read());
       }
       if (input.action === 'reference') {
-        closed(input, ['action', 'expectedRevision', 'audioBase64', 'transcript', 'authorized', 'worldRevision']);
+        closed(input, ['action', 'expectedRevision', 'audioBase64', 'transcript', 'authorized', 'worldRevision'], ['action', 'expectedRevision', 'audioBase64', 'transcript', 'authorized']);
         const { config } = cas(input.expectedRevision), p = config.voiceProfiles.default;
         if (p.pendingReferenceCleanup !== undefined) throw fail('CONTENT_OPERATOR_REFERENCE_CLEANUP_PENDING', 409);
         if (p.referenceOrigin === 'operator-authorized') throw fail('CONTENT_OPERATOR_REFERENCE_EXISTS', 409);
@@ -131,7 +132,7 @@ export function createContentOperator({ speechConfigFile, worldStatus, speechFac
         }
       }
       if (input.action === 'removeReference') {
-        closed(input, ['action', 'expectedRevision', 'confirmed', 'worldRevision']);
+        closed(input, ['action', 'expectedRevision', 'confirmed', 'worldRevision'], ['action', 'expectedRevision', 'confirmed']);
         if (input.confirmed !== true) throw fail('CONTENT_OPERATOR_CONFIRMATION_REQUIRED');
         let current = cas(input.expectedRevision);
         const p = current.config.voiceProfiles.default;
@@ -164,7 +165,7 @@ export function createContentOperator({ speechConfigFile, worldStatus, speechFac
         return projected(read());
       }
       if (input.action === 'test') {
-        closed(input, ['action', 'quality', 'worldRevision']);
+        closed(input, ['action', 'quality', 'worldRevision'], ['action', 'quality']);
         if (input.quality !== 'heavy') throw fail('CONTENT_OPERATOR_INPUT');
         const { config } = read(), model = runner.status().models?.['tts:heavy'];
         if (!model?.componentsPresent || !model.enabled || !model.verified) throw fail('CONTENT_OPERATOR_MODEL_UNAVAILABLE', 503);

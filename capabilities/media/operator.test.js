@@ -40,11 +40,17 @@ test('private operator status is safe and read-only; settings need pause, known 
   const response = await request(socketPath, token, { action: 'status' }); assert.equal(response.status, 200);
   const status = response.value.value; assert.equal(status.speech.defaultTtsQuality, 'heavy'); assert.equal(status.voice.hasReference, true); assert.equal(status.voice.transcriptUsedForSynthesis, false); assert.equal(JSON.stringify(status).includes('must-not-leak'), false); assert.deepEqual(fs.readFileSync(f.configFile), before);
   const configure = { action: 'configure', expectedRevision: status.speech.configurationRevision, worldRevision: 3, defaultTtsQuality: 'heavy', numThreads: 1, maxTextChars: 64 };
+  const { worldRevision: _pinned, ...unpinned } = configure;
   assert.equal((await request(socketPath, token, configure)).status, 409);
+  assert.equal((await request(socketPath, token, unpinned)).status, 409);
   f.setWorld({ paused: true, revision: 3 });
   await assert.rejects(f.operator.call({ ...configure, executable: '/untrusted' }), { statusCode: 400 });
   await assert.rejects(f.operator.call({ ...configure, expectedRevision: 'stale' }), { statusCode: 409 });
   const updated = await f.operator.call(configure); assert.notEqual(updated.speech.configurationRevision, status.speech.configurationRevision); assert.equal(updated.speech.numThreads, 1); assert.equal(updated.speech.maxTextChars, 64);
+  // worldRevision is optional; a supplied stale one still conflicts.
+  await assert.rejects(f.operator.call({ ...configure, expectedRevision: updated.speech.configurationRevision, worldRevision: 2 }), { code: 'CONTENT_OPERATOR_WORLD_CONFLICT', statusCode: 409 });
+  const unpinnedResult = await request(socketPath, token, { ...unpinned, expectedRevision: updated.speech.configurationRevision, maxTextChars: 32 });
+  assert.equal(unpinnedResult.status, 200); assert.equal(unpinnedResult.value.value.speech.maxTextChars, 32);
 });
 
 test('authorized PCM reference registration and explicit removal preserve the original synthetic voice', async t => {

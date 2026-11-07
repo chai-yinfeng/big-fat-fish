@@ -43,7 +43,8 @@ export function createContentServer({ socketPath, tokenFile, service, worldStatu
         if (!['status', 'configure', 'reference', 'test', 'removeReference'].includes(body.action)) throw failure('CONTENT_REQUEST_INVALID');
         if (active.size >= 8) throw failure('CONTENT_BUSY');
         const changing = body.action !== 'status';
-        const validWorld = world => world.paused === true && Number.isSafeInteger(body.worldRevision) && world.revision === body.worldRevision;
+        // worldRevision is optional; when given, the operation is cancelled if the world changes.
+        const validWorld = world => world.paused === true && (body.worldRevision === undefined || (Number.isSafeInteger(body.worldRevision) && world.revision === body.worldRevision));
         if (changing && !validWorld(await worldStatus())) throw Object.assign(failure('CONTENT_OPERATOR_WORLD_CONFLICT'), { statusCode: 409 });
         controller = new AbortController(); active.add(controller);
         res.once('close', () => { if (!res.writableEnded) controller.abort(); });

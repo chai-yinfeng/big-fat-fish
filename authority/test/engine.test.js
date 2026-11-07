@@ -123,6 +123,7 @@ test('learning cannot change relationships, appraisal once per observation, cap 
   a.revisePersona({ expectedRevision: rev, patch: { name: 'new' }, reason: 'operator' });
   assert.equal(a.snapshot().persona.name, 'new');
   assert.equal(a.snapshot().personaRevision, rev + 1);
+  assert.equal(a.revisePersona({ patch: { name: 'newer' }, reason: 'operator' }).personaRevision, rev + 2);
   assert.ok(a.snapshot().audit.some(e => e.type === 'persona.revision'));
 });
 
