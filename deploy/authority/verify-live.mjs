@@ -1,16 +1,18 @@
 #!/usr/bin/env node
-// Mutating checks are for this fresh synthetic deployment, not real memories.
+// Mutating checks are for a fresh synthetic deployment, not real memories.
+// Runs on the VM as companion (authority socket, /proc, systemctl --user). Against the
+// production world only the read-only `status` mode is allowed.
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { connectWeb } from './web-rpc.mjs';
 
-const base = path.join(os.homedir(), '.local/share/companion-authority-v1');
+const base = '/home/companion/.local/share/companion-world-v1';
 const reportFile = path.join(base, 'operator/live-verification.json');
 const mode = process.argv[2] || 'status';
+if (mode !== 'status') { process.stderr.write('Live acceptance refused: PRODUCTION_WORLD_STATUS_ONLY\n'); process.exit(2); }
 const prefix = 'validation:authority-v1:';
 const fixedAt = Date.parse('2026-10-30T04:00:00Z');
 const socketPath = path.join(base, 'ipc/authority/authority.sock');

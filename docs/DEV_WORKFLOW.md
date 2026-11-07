@@ -63,9 +63,11 @@ ssh myvm 'tail -n 20 /var/log/companion-deploy.log'    # 每次部署/回退一�
 ```
 
 生产变更只走 stage-release → `sudo companion-deploy`（见下文）。不在 VM 上开发、
-测试或改文件。scripts/vm.mjs，以及 deploy/qq/open-login.mjs、
-deploy/authority/verify-standalone-console.mjs、verify-console-browser.mjs 等少数
-辅助脚本仍指向旧的 blackmagic $HOME 布局，已过时，尚未修复，不要用。
+测试或改文件。需要私有 token 的 Mac 辅助脚本（open-world、deploy/qq/open-login、
+verify-standalone-console、verify-console-browser、verify-dialogue）都经
+deploy/authority/companion-sudo.mjs 以 `ssh -t myvm sudo -u companion` 读取，由用户
+在终端输入 sudo 密码；Agent 不运行它们。verify-live 只能在 VM 上以 companion 身份
+运行，且对正式世界只允许 status。
 
 SSH 传输不消耗模型 token；多次工具调用、长输出、重复上下文和失败重试会消耗。
 远程命令尽量合并为一次调用，只返回有限长度的摘要。

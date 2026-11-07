@@ -51,7 +51,7 @@ curl -fsS -o /dev/null http://127.0.0.1:6099/webui/
 node deploy/qq/open-login.mjs myvm
 ```
 
-SSH 使用已有 `myvm` 别名。helper 只占本机 6099，不碰现有 3081/3082 隧道；端口已占用则拒绝。它通过 SSH 在内存读取 VM 实际 WebUI token，交给 macOS 默认浏览器（Linux 为 `xdg-open`），不输出含 token URL。用户在官方页面手动扫码；终端保持运行，Ctrl-C 只关闭这个 SSH 隧道。不要把登录页 URL、二维码、账号或私有配置贴进会话。浏览器历史/本机进程参数仍可能留有 token URL，操作人应把本机浏览器视为可信入口。
+SSH 使用已有 `myvm` 别名。helper 只占本机 6099，不碰现有 3081/3082 隧道；端口已占用则拒绝。它通过 `ssh -t` 以 `sudo -u companion` 在内存读取 VM 实际 WebUI token（终端提示输入 sudo 密码），交给 macOS 默认浏览器（Linux 为 `xdg-open`），不输出含 token URL。用户在官方页面手动扫码；终端保持运行，Ctrl-C 只关闭这个 SSH 隧道。不要把登录页 URL、二维码、账号或私有配置贴进会话。浏览器历史/本机进程参数仍可能留有 token URL，操作人应把本机浏览器视为可信入口。
 
 首次 QQ 登录后，上游 `ConfigBase` 会从 `onebot11.json` 继承并生成账号命名配置，保留随机 WS token，**不用手填 QQid，不存在先开无鉴权 WS 再补 token 的窗口**。默认未指定 `ACCOUNT`，由用户选择扫码。若以后 WebUI 修改 OneBot token，须操作人同步 worker 的 `private/onebot.token`；不要重跑准备工具期望覆盖已有账号配置。当前 helper 要求 WebUI token 仍为生成的 64 位 hex、端口及 prefix 未改。
 

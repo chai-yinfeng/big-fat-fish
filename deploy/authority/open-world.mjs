@@ -2,26 +2,14 @@
 // Independent operator console. No DSH page, SDK access token or boot payload.
 import { spawn, execFileSync } from 'node:child_process';
 import net from 'node:net';
+import { WORLD, readCompanionFile, errorCode } from './companion-sudo.mjs';
 // Production world belongs to the dedicated `companion` user (home 0700); the
 // SSH user reads it only through sudo, prompted on this terminal.
-const COMPANION_CONSOLE_TOKEN = '/home/companion/.local/share/companion-world-v1/operator/console.token';
-const SUDO_PROMPT = '[sudo] myvm password for your SSH user (input hidden): ';
+const COMPANION_CONSOLE_TOKEN = WORLD + '/operator/console.token';
 const openOnly = process.argv.includes('--open-only');
 let tunnel, stopping = false;
 function stop(code = 0) { if (stopping) return; stopping = true; tunnel?.kill('SIGTERM'); process.exitCode = code; }
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => stop());
-// `ssh -t` gives sudo a remote TTY whose output (prompt included) arrives on our
-// piped stdout; show only the prompt on stderr and keep the token in memory.
-function readConsoleToken() {
-  return new Promise((resolve, reject) => {
-    const child = spawn('ssh', ['-t', 'myvm', `sudo -p '${SUDO_PROMPT}' -u companion cat ${COMPANION_CONSOLE_TOKEN}`], { stdio: ['inherit', 'pipe', 'inherit'] });
-    let output = '';
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', chunk => { output += chunk; while (output.includes(SUDO_PROMPT)) { output = output.replace(SUDO_PROMPT, ''); process.stderr.write(SUDO_PROMPT); } });
-    child.on('error', reject);
-    child.on('close', code => code === 0 ? resolve(output.replace(/\r/g, '').split('\n').map(line => line.trim()).filter(Boolean).pop() || '') : reject(Error('TOKEN_READ_FAILED')));
-  });
-}
 const portReady = () => new Promise(resolve => { const socket = net.connect(3082, '127.0.0.1'); socket.once('connect', () => { socket.destroy(); resolve(true); }); socket.once('error', () => resolve(false)); });
 try {
   if (!openOnly) {
@@ -36,9 +24,9 @@ try {
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   } else if (!await portReady()) throw Error('FORWARD_NOT_READY');
-  const token = await readConsoleToken();
+  const token = await readCompanionFile(COMPANION_CONSOLE_TOKEN);
   if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw Error('ACCESS_INVALID');
   const url = new URL('http://127.0.0.1:3082/'); url.hash = 'companion-operator=' + token;
-  execFileSync('/usr/bin/open', [url.href], { stdio: 'ignore' });
+  try { execFileSync('/usr/bin/open', [url.href], { stdio: 'ignore' }); } catch { throw Error('BROWSER_OPEN_FAILED'); }
   process.stdout.write(JSON.stringify({ opened: true, origin: url.origin, standalone: true, forwarding: !openOnly }) + '\n');
-} catch { process.stderr.write('World console could not open; check SSH connectivity and private forwarding.\n'); stop(1); }
+} catch (error) { process.stderr.write(`World console could not open (${errorCode(error)}); check SSH connectivity, sudo and private forwarding. No credential was printed.\n`); stop(1); }

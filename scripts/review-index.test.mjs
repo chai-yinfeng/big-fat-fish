@@ -6,14 +6,6 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-test('VM helper rejects an unknown check before making an SSH connection', () => {
-  const root = fileURLToPath(new URL('../', import.meta.url));
-  const result = spawnSync(process.execPath, ['scripts/vm.mjs', 'check', 'not-a-scope'], { cwd: root, encoding: 'utf8' });
-  assert.equal(result.status, 2);
-  assert.equal(result.stdout, '');
-  assert.match(result.stderr, /Usage:/);
-});
-
 test('index review accepts normal history, rejects synthetic credentials, and never prints the value', () => {
   const root = fileURLToPath(new URL('../', import.meta.url));
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bff-index-check-')));

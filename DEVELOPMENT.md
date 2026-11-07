@@ -99,8 +99,9 @@ python3 /home/companion/src/dsh-companion/current/ops/isolation/launch.py dsh --
 # Mac 项目根；token 经 sudo -u companion 读取，会提示输入 myvm 的 sudo 密码：
 node deploy/authority/open-world.mjs
 node deploy/authority/open-world.mjs --open-only
+node deploy/qq/open-login.mjs myvm   # NapCat WebUI 扫码登录，同样经 sudo 读取
 ```
 
-deploy/qq/open-login.mjs 仍按旧的 blackmagic $HOME 读取 NapCat WebUI token，已过时，修复前不要用。
+失败时只输出错误码（如 FORWARD_PORT_OCCUPIED、SUDO_FAILED、TOKEN_READ_FAILED），不输出 token。
 
 token只由私有进程交系统浏览器，不输出授权URL；operator fragment即时消费移除。关闭本机转发不等于停止VM服务或退出QQ。不要为了更新此GUI启动另一个Vite服务器。

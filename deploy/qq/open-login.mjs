@@ -2,6 +2,9 @@
 // Operator machine only. Keep this process alive while scanning in the OS browser.
 import { spawn, execFileSync } from 'node:child_process';
 import net from 'node:net';
+import { WORLD, readCompanionFile, errorCode, webuiToken } from '../authority/companion-sudo.mjs';
+
+const WEBUI_CONFIG = WORLD + '/qq-runtime/data/config/webui.json';
 
 const host = process.argv[2] || 'myvm';
 const openOnly = process.argv[3] === '--open-only';
@@ -43,17 +46,15 @@ try {
   const response = await fetch('http://127.0.0.1:6099/webui/', { signal: AbortSignal.timeout(5000) });
   if (!response.ok) throw new Error('WEBUI_UNAVAILABLE');
   await response.body?.cancel();
-  // Read the actual WebUI config (not an env token that may have been changed in WebUI).
-  // The credential crosses SSH stdout into memory only; neither command nor logs contain it.
-  const remote = `const fs=require('fs'),os=require('os'),p=os.homedir()+'/.local/share/companion-world-v1/qq-runtime/data/config/webui.json';const c=JSON.parse(fs.readFileSync(p,'utf8'));if(c.port!==6099||(c.prefix&&c.prefix!=='/')||!/^([a-f0-9]{64})$/.test(c.token))process.exit(1);process.stdout.write(c.token);`;
-  const token = execFileSync('ssh', ['-o', 'BatchMode=yes', host, '"$HOME/.local/opt/companion/bin/node" -'], { input: remote, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 15000 }).trim();
-  if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('INVALID_WEBUI_TOKEN');
+  // Read the actual WebUI config (not an env token that may have been changed in WebUI),
+  // as companion through sudo on this terminal; the credential stays in memory only.
+  const token = webuiToken(await readCompanionFile(WEBUI_CONFIG, { host }));
   const url = new URL('http://127.0.0.1:6099/webui/');
   url.searchParams.set('token', token);
   // Native browser handoff; URL intentionally never printed or passed to sidebar tools.
-  execFileSync(process.platform === 'darwin' ? '/usr/bin/open' : 'xdg-open', [url.href], { stdio: 'ignore', timeout: 10000 });
+  try { execFileSync(process.platform === 'darwin' ? '/usr/bin/open' : 'xdg-open', [url.href], { stdio: 'ignore', timeout: 10000 }); } catch { throw new Error('BROWSER_OPEN_FAILED'); }
   process.stdout.write('QQ login opened in your browser. Scan manually; keep this terminal running. Ctrl-C closes only this 6099 SSH tunnel.\n');
-} catch {
-  process.stderr.write('QQ login could not open. Check SSH, private WebUI config, running NapCat, and whether local 6099 is free. Credentials were not printed.\n');
+} catch (error) {
+  process.stderr.write(`QQ login could not open (${errorCode(error)}). Check SSH, sudo, private WebUI config, running NapCat, and whether local 6099 is free. Credentials were not printed.\n`);
   stop(1);
 }

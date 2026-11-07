@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 // Read-only real-page smoke check. CLI capture avoids debugger target creation;
 // form semantics are covered separately by UI tests and real operator APIs.
+// Run on the Mac with 3082 forwarded (open-world.mjs); sudo prompts on this terminal.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { WORLD, readCompanionFile, errorCode } from './companion-sudo.mjs';
 const profile = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fish-console-browser-')));
 let chrome;
 try {
-  const remote = `const fs=require('fs'),os=require('os');process.stdout.write(fs.readFileSync(os.homedir()+'/.local/share/companion-world-v1/operator/console.token','utf8').trim());`;
-  const token = execFileSync('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'myvm', '"$HOME/.local/opt/companion/bin/node" -e ' + JSON.stringify(remote)], { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const token = await readCompanionFile(WORLD + '/operator/console.token');
   if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw Error('ACCESS');
   const screenshot = fileURLToPath(new URL('../../.build/standalone-console-live.png', import.meta.url));
   const url = 'http://127.0.0.1:3082/#companion-operator=' + token;
@@ -27,7 +28,7 @@ try {
   const checks = { actualStandalonePage: /class="bff-world"/.test(output), authenticatedOverviewVisible: Boolean(status), worldPausedVisible: /暂停|Paused/i.test(status), credentialNotInDom: !output.includes(token), screenshotCreated: fs.existsSync(screenshot), dshSessionCreationAbsent: !/创建DSH测试对话/.test(output) };
   console.log(JSON.stringify({ checks, screenshot, mutationPerformed: false, scope: 'actual overview render; no real parameter edits, reference uploads or delete clicks' }));
   if (Object.values(checks).some(value => !value)) process.exitCode = 1;
-} catch (error) { console.error(JSON.stringify({ verified: false, code: /^[A-Z_]+$/.test(error.message || '') ? error.message : 'BROWSER_VERIFY_FAILED' })); process.exitCode = 1; }
+} catch (error) { console.error(JSON.stringify({ verified: false, code: errorCode(error) })); process.exitCode = 1; }
 finally {
   if (chrome && chrome.exitCode === null) { chrome.kill('SIGKILL'); await new Promise(resolve => chrome.once('exit', resolve)); }
   if (path.dirname(profile) !== fs.realpathSync(os.tmpdir()) || !path.basename(profile).startsWith('fish-console-browser-')) throw Error('BROWSER_PROFILE_PATH');

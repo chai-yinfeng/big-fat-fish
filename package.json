@@ -5,7 +5,7 @@
   "type": "module",
   "engines": { "node": ">=24" },
   "scripts": {
-    "test": "node console/build.mjs --standalone && node --test authority/test/*.test.js capabilities/conversation/*.test.js capabilities/dsh/test/*.test.js capabilities/qq/test/*.test.js capabilities/memory/*.test.js capabilities/media/*.test.js capabilities/speech/*.test.js console/*.test.mjs model-gateway/server.test.mjs model-gateway/entrypoint.test.mjs deploy/authority/purge-execution.test.mjs deploy/authority/rotate-tokens.test.mjs deploy/authority/stage-release.test.mjs && python3 -B -m unittest discover -s deploy/authority/companion-deploy -p 'test_*.py'",
+    "test": "node console/build.mjs --standalone && node --test authority/test/*.test.js capabilities/conversation/*.test.js capabilities/dsh/test/*.test.js capabilities/qq/test/*.test.js capabilities/memory/*.test.js capabilities/media/*.test.js capabilities/speech/*.test.js console/*.test.mjs model-gateway/server.test.mjs model-gateway/entrypoint.test.mjs deploy/authority/purge-execution.test.mjs deploy/authority/rotate-tokens.test.mjs deploy/authority/stage-release.test.mjs deploy/authority/companion-sudo.test.mjs && python3 -B -m unittest discover -s deploy/authority/companion-deploy -p 'test_*.py'",
     "test:authority": "node --test authority/test/*.test.js",
     "test:speech": "node --test capabilities/speech/*.test.js",
     "test:qq": "node --test capabilities/qq/test/*.test.js",
@@ -13,7 +13,7 @@
     "test:memory": "node --test capabilities/memory/*.test.js",
     "test:console": "node console/build.mjs --standalone && node --test console/*.test.mjs",
     "test:git": "node --test scripts/*.test.mjs",
-    "test:deploy": "node --test deploy/authority/stage-release.test.mjs && python3 -B -m unittest discover -s deploy/authority/companion-deploy -p 'test_*.py'",
+    "test:deploy": "node --test deploy/authority/stage-release.test.mjs deploy/authority/companion-sudo.test.mjs && python3 -B -m unittest discover -s deploy/authority/companion-deploy -p 'test_*.py'",
     "build:console": "node console/build.mjs --standalone",
     "build:release": "node deploy/authority/build-release.mjs",
     "stage:release": "node deploy/authority/stage-release.mjs",

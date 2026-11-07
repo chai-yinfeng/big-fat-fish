@@ -1,14 +1,12 @@
 #!/usr/bin/env node
-// Run on VM via SSH stdin. Reads access credentials into memory, never prints them.
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+// Run on the Mac with 3081 and 3082 forwarded. Resumes the world and sends one real
+// prompt (provider cost). Credentials come through sudo on this terminal, never printed.
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-const base = path.join(os.homedir(), '.local/share/companion-world-v1');
-const { connectWeb } = await import(pathToFileURL(path.join(os.homedir(), 'src/dsh-companion/authority-0.6.0/ops/web-rpc.mjs')));
-const operator = fs.readFileSync(path.join(base, 'operator/console.token'), 'utf8').trim();
+import { connectWeb } from '../../integrations/dsh/web-rpc.js';
+import { WORLD, readCompanionFiles } from './companion-sudo.mjs';
+const [webAccess, consoleToken] = await readCompanionFiles([WORLD + '/dsh-home/run/local-access.json', WORLD + '/operator/console.token']);
+const operator = consoleToken.trim();
 async function control(route, body) {
   const response = await fetch('http://127.0.0.1:3082' + route, { method: body === undefined ? 'GET' : 'POST', headers: { authorization: 'Bearer ' + operator, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const envelope = await response.json();
@@ -26,7 +24,7 @@ try {
     console.log(JSON.stringify({ connectionProbe: probe.ok, code: probe.code, model: probe.model }));
     if (!probe.ok) throw new Error('PROVIDER_PROBE_FAILED');
   }
-  const rpc = await connectWeb(JSON.parse(fs.readFileSync(path.join(base, 'dsh-home/run/local-access.json'), 'utf8')));
+  const rpc = await connectWeb(JSON.parse(webAccess));
   const sessionId = 'deepseek-live-' + Date.now().toString(36);
   await control('/test-conversations', { conversationId: sessionId });
   const created = await rpc('session/create', { request: { sessionId, cwd: '/home/companion/dsh', agentPreset: 'companion' } });

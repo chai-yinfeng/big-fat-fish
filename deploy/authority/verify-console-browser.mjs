@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // One real-page check through SSH-forwarded ports. No credentials are printed.
+// Run on the Mac with 3081 and 3082 forwarded; sudo prompts on this terminal.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { WORLD, readCompanionFiles } from './companion-sudo.mjs';
 const modelMode = process.argv.includes('--model');
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'companion-browser-'));
 const chrome = spawn('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-gpu', '--use-mock-keychain', '--password-store=basic', '--user-data-dir=' + profile, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -16,9 +18,9 @@ try {
   browserSocket = new WebSocket(await endpoint);
   await new Promise((resolve, reject) => { browserSocket.addEventListener('open', resolve, { once: true }); browserSocket.addEventListener('error', reject, { once: true }); });
   browserSocket.addEventListener('message', ({data}) => { const event = JSON.parse(data); if (event.method === 'Runtime.exceptionThrown') browserErrors.push((event.params.exceptionDetails.exception?.description || event.params.exceptionDetails.text).split('\n')[0].slice(0,300)); const entry = pending.get(event.id); if (!entry) return; pending.delete(event.id); clearTimeout(entry.timeout); event.error ? entry.reject(Object.assign(new Error('CDP_REQUEST_FAILED'), { detail: event.error.message })) : entry.resolve(event.result); });
-  const remote = `const fs=require('fs'),os=require('os'),b=os.homedir()+'/.local/share/companion-world-v1'; process.stdout.write(JSON.stringify({web:JSON.parse(fs.readFileSync(b+'/dsh-home/run/local-access.json','utf8')),operator:fs.readFileSync(b+'/operator/console.token','utf8').trim()}));`;
   stage = 'access';
-  access = JSON.parse(execFileSync('ssh', ['-o', 'BatchMode=yes', 'myvm', '"$HOME/.local/opt/companion/bin/node" -e ' + JSON.stringify(remote)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  const [web, operator] = await readCompanionFiles([WORLD + '/dsh-home/run/local-access.json', WORLD + '/operator/console.token']);
+  access = { web: JSON.parse(web), operator: operator.trim() };
   stage = 'chrome-target';
   const { targetId } = await call('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await call('Target.attachToTarget', { targetId, flatten: true });
