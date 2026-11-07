@@ -7,19 +7,11 @@ git status --short
 git log -3 --oneline
 ```
 
-一次只让一个 Agent 写一个工作树。切换 Agent 前，把已完成的小步修改
-做相关检查并本地提交，说明未完成项与验证命令。未提交内容不通过覆盖同步搬运。
-公开远端不包含私密 notes、录音、状态或模型；不要用 push --all/--mirror。
-GitHub推送仍须符合用户对目的地及公开范围的授权。
+一次只让一个 Agent 写一个工作树。切换前把已完成的修改检查后本地提交，说明未完成项。
+公开远端不包含 notes、录音、状态或模型；不要用 push --all/--mirror，推送须经用户授权。
 
-首次 clone 后启用本地检查（不是全局配置）：
-
-```sh
-git config --local core.hooksPath .githooks
-```
-
-pre-commit 只检查暂存文件的可疑凭据、私有素材和大文件，不自动跑全部测试。
-它不是完整的安全审计，public 推送仍需人工确认内容。提交信息写清改变与原因。
+首次 clone 后启用本地检查 `git config --local core.hooksPath .githooks`。pre-commit
+只检查暂存文件中的可疑凭据、私有素材和大文件，不跑测试，也不替代推送前的人工确认。
 
 ## 依赖与定向检查
 
@@ -37,15 +29,21 @@ node --run test:console
 ```
 
 仅选择受影响的模块；迁移、发布或跨层改动再跑 node --run test。
-UI 可单独 node --run build:console。当前没有自动接好的 dev/watch/HMR：构建输出
-console/dist，正式装配使用 console-web。不要把复制到正式 release 当开发热更新，
-也不要为 UI 小改动重启全部六个服务。下一步开发服务器需使用独立配置/数据根。
+UI 可单独 node --run build:console（输出 console/dist；没有 dev/watch/HMR）。
+开发服务使用独立配置/数据根，不把复制到正式 release 当热更新。
+
+## 测试发送与版本记录
+
+- 向用户本人已绑定的 QQ 发测试消息/语音：用户在一个会话中批准一次即覆盖该会话后续
+  的测试发送，不必逐条授权或另写私有记录。发给其他人或群仍需逐次单独授权。
+- 每个版本只在根目录 CHANGELOG.md 写简短条目（改了什么、真实验证了什么、什么未验证），
+  不再写长篇实机验收笔记。汇报只说真实运行过的内容，未验证的明确列出。
 
 ## 开发只在 Mac
 
-开发、测试和构建只在 Mac 本机 checkout 进行；VM（myvm）只运行正式服务，不再
-保留 VM 开发 checkout，也不在 VM 上改源码。代码通过下面的发布流程到达 VM，不通过 rsync、git pull 或手工复制。开发 QQ 用测试发送口/独立
-账号，不能和正式桥重复回应。
+开发、测试和构建只在 Mac 本机 checkout 进行；VM（myvm）只运行正式服务，不在 VM 上
+改源码。代码只通过下面的发布流程到达 VM，不用 rsync、git pull 或手工复制。开发 QQ
+用测试发送口/独立账号，不能和正式桥重复回应。
 
 ## VM 访问与远程命令
 
@@ -54,22 +52,14 @@ home 0700）运行，由 root 通过 `systemctl --user -M companion@ ...` 管理
 Agent 都以 blackmagic 身份 SSH 登录：没有 docker/lxd 权限，sudo 需要人类输入
 密码；blackmagic 属于 adm 组，不用 sudo 就能只读查看 companion 的日志和部署记录
 （两个部署文件为 root:adm 0640，不含密钥；/var/lib/companion-deploy/state.json
-仍只有 root 可读）：
+仍只有 root 可读），查看命令见“发布与回退”第 3 步。
 
-```sh
-ssh myvm 'journalctl _UID=1001 --since -1h --no-pager | tail -n 50'
-ssh myvm 'cat /var/log/companion-deploy.status.json'   # current/previous、最近一次结果与时间
-ssh myvm 'tail -n 20 /var/log/companion-deploy.log'    # 每次部署/回退一行 JSON
-```
-
-生产变更只走 stage-release → `sudo companion-deploy`（见下文）。不在 VM 上开发、
-测试或改文件。需要私有 token 的 Mac 辅助脚本（open-world、deploy/qq/open-login、
+需要私有 token 的 Mac 辅助脚本（open-world、deploy/qq/open-login、
 verify-standalone-console、verify-console-browser、verify-dialogue）都经
 deploy/authority/companion-sudo.mjs 以 `ssh -t myvm sudo -u companion` 读取，由用户
 在终端输入 sudo 密码；Agent 不运行它们。verify-live 只能在 VM 上以 companion 身份
 运行，且对正式世界只允许 status。
 
-SSH 传输不消耗模型 token；多次工具调用、长输出、重复上下文和失败重试会消耗。
 远程命令尽量合并为一次调用，只返回有限长度的摘要。
 
 ## 长期运行的清理
