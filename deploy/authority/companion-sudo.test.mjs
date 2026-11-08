@@ -2,14 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { WORLD, SUDO_PROMPT, sudoReadCommand, parseSudoRead, failureCode, errorCode, readCompanionFiles, readCompanionFile, webuiToken } from './companion-sudo.mjs';
+import { spawnSync } from 'node:child_process';
+import { WORLD, PRODUCTION_HOST, SUDO_PROMPT, sudoReadCommand, parseSudoRead, failureCode, errorCode, readCompanionFiles, readCompanionFile, webuiToken } from './companion-sudo.mjs';
 
 const token = 'T'.repeat(43);
 const B = '@@companion-file@@', E = '@@companion-end@@';
 
 test('remote command reads only fixed companion paths through sudo -u companion', () => {
   const command = sudoReadCommand([WORLD + '/operator/console.token']);
-  assert.match(command, /^sudo -p '\[sudo\] myvm password[^']*' -u companion sh -c '/);
+  assert.match(command, /^sudo -p '\[sudo\] production host password[^']*' -u companion sh -c '/);
   assert.ok(command.includes('cat /home/companion/.local/share/companion-world-v1/operator/console.token'));
   for (const bad of ['/etc/shadow', '/home/companion/../root/x', "/home/companion/a'b", '/home/companion/a b', '/home/companion/$(id)'])
     assert.throws(() => sudoReadCommand([bad]), /INVALID_COMPANION_PATH/);
@@ -63,16 +64,28 @@ async function capturedStderr(run) {
 test('reader shows each sudo prompt once and never echoes the secret', async () => {
   const half = SUDO_PROMPT.length >> 1;
   const { spawnImpl, calls } = fakeSsh([SUDO_PROMPT.slice(0, half), SUDO_PROMPT.slice(half) + '\r\n', `${B}\r\n${token}\r\n`, `\r\n${E}\r\n`], 0);
-  const { result, stderr } = await capturedStderr(() => readCompanionFile(WORLD + '/operator/console.token', { host: 'myvm', spawnImpl }));
+  const { result, stderr } = await capturedStderr(() => readCompanionFile(WORLD + '/operator/console.token', { host: 'other-host', spawnImpl }));
   assert.equal(result, token);
   assert.equal(stderr, SUDO_PROMPT);
-  assert.deepEqual(calls[0].args.slice(0, 2), ['-t', 'myvm']);
+  assert.deepEqual(calls[0].args.slice(0, 2), ['-t', 'other-host']);
   assert.deepEqual(calls[0].options.stdio, ['inherit', 'pipe', 'inherit']);
 });
 
 test('reader rejects with a code and keeps output private on failure', async () => {
-  const { spawnImpl } = fakeSsh([SUDO_PROMPT, '\r\nSorry, try again.\r\n'], 1);
+  const { spawnImpl, calls } = fakeSsh([SUDO_PROMPT, '\r\nSorry, try again.\r\n'], 1);
   const { result, stderr } = await capturedStderr(() => readCompanionFiles([WORLD + '/operator/console.token'], { spawnImpl }));
+  assert.equal(calls[0].args[1], PRODUCTION_HOST);
   assert.equal(result.message, 'SUDO_FAILED');
   assert.equal(stderr, SUDO_PROMPT);
+});
+
+test('production host defaults to home-agent, follows COMPANION_HOST and rejects option-like values', () => {
+  const module = new URL('./companion-sudo.mjs', import.meta.url).href;
+  const host = env => spawnSync(process.execPath, ['--input-type=module', '-e', `import(${JSON.stringify(module)}).then(m => process.stdout.write(m.PRODUCTION_HOST))`], { env, encoding: 'utf8' });
+  const { COMPANION_HOST, ...base } = process.env;
+  assert.equal(host(base).stdout, 'home-agent');
+  assert.equal(host({ ...base, COMPANION_HOST: 'myvm' }).stdout, 'myvm');
+  const bad = host({ ...base, COMPANION_HOST: '-oProxyCommand=x' });
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stderr, /INVALID_SSH_HOST/);
 });
