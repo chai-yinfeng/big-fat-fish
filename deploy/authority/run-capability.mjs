@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { connectWeb } from './web-rpc.mjs';
 
 process.umask(0o077);
-const NODE = '/opt/companion/runtime/node-v24.22.2-linux-arm64/bin/node';
+const NODE = `/opt/companion/runtime/node-v24.22.2-linux-${process.arch}/bin/node`;
 const DSH = '/opt/companion/runtime/dsh-0.2.1-rc.3/node_modules/@deepseek-ai/dsh/lib/bin.js';
 const ORIGIN = 'http://127.0.0.1:3081';
 const ACCESS = '/home/companion/dsh/run/local-access.json';

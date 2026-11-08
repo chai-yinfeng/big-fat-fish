@@ -3,11 +3,25 @@
 import argparse
 import os
 from pathlib import Path
+import platform
 import socket
 import sys
 
 PREFIX = '/opt/companion'
-NODE = PREFIX + '/runtime/node-v24.22.2-linux-arm64/bin/node'
+
+
+def node_arch(machine=None):
+    """Map the host machine name to the official Node archive architecture."""
+    machine = machine or platform.machine()
+    if machine in ('aarch64', 'arm64'):
+        return 'arm64'
+    if machine in ('x86_64', 'amd64'):
+        return 'x64'
+    raise ValueError('unsupported machine: ' + machine)
+
+
+NODE_HOME = PREFIX + '/runtime/node-v24.22.2-linux-' + node_arch()
+NODE = NODE_HOME + '/bin/node'
 DSH = PREFIX + '/runtime/dsh-0.2.1-rc.3/node_modules/@deepseek-ai/dsh/lib/bin.js'
 
 
@@ -34,7 +48,7 @@ def build_command(role, base, release, runtime, ops, arguments=()):
     # Dynamic linking needs this cache on some distributions, but no host /etc tree.
     if Path('/etc/ld.so.cache').is_file():
         args += ['--ro-bind', '/etc/ld.so.cache', '/etc/ld.so.cache']
-    env = {'PATH': PREFIX + '/runtime/node-v24.22.2-linux-arm64/bin:/usr/bin:/bin',
+    env = {'PATH': NODE_HOME + '/bin:/usr/bin:/bin',
            'LANG': 'C.UTF-8', 'TZ': 'America/New_York', 'HOME': '/tmp'}
     if role == 'authority':
         if arguments:
