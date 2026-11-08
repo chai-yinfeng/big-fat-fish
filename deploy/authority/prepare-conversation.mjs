@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 // identity, memory or sessions.
 export function prepareConversation(base = path.join(os.homedir(), '.local/share/companion-world-v1')) {
   if (!path.isAbsolute(base) || path.basename(base) !== 'companion-world-v1') throw Error('CONVERSATION_BASE');
-  const capabilityToken = path.join(base, 'qq-worker/capability.token'), gatewayToken = path.join(base, 'dsh-config/model-gateway.token');
+  const capabilityToken = path.join(base, 'qq-worker/capability.token'), gatewayToken = path.join(base, 'service-config/inference.token');
   if (!fs.existsSync(capabilityToken) || !fs.existsSync(gatewayToken)) throw Error('CONVERSATION_PREREQUISITES');
   for (const dir of ['conversation-config', 'conversation-data/sessions', 'ipc/conversation']) fs.mkdirSync(path.join(base, dir), { recursive: true, mode: 0o700 });
   const callerToken = path.join(base, 'conversation-config/caller.token');

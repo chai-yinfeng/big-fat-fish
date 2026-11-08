@@ -19,7 +19,7 @@ export function prepareMemory(base = path.join(os.homedir(), '.local/share/compa
   const config = {
     entityId,
     authority: { socketPath: path.join(base, 'ipc/authority/authority.sock'), tokenFile },
-    gateway: { socketPath: path.join(base, 'ipc/model/inference.sock'), tokenFile: path.join(base, 'dsh-config/model-gateway.token') },
+    gateway: { socketPath: path.join(base, 'ipc/model/inference.sock'), tokenFile: path.join(base, 'service-config/inference.token') },
     stateFile: path.join(base, 'memory-data', label + '.json'),
     maxCallsPerDay: 4,
     base,

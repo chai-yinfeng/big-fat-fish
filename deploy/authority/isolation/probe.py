@@ -80,11 +80,11 @@ def main():
     sockets = []
     try:
         for part in ['base/authority-data', 'base/ipc/authority', 'base/ipc/operator', 'base/ipc/model-control',
-                     'base/ipc/qq-control', 'base/operator', 'base/dsh-config', 'release', 'runtime', 'ops', 'outside']:
+                     'base/ipc/qq-control', 'base/operator', 'base/service-config', 'release', 'runtime', 'ops', 'outside']:
             (root / part).mkdir(parents=True, exist_ok=True)
         files = {'base/operator/authority.json': '{"synthetic":true}', 'base/operator/admin.token': 'SYNTHETIC-ADMIN',
                  'base/operator/reading.token': 'SYNTHETIC-READING', 'base/authority-data/authority.sqlite': 'SYNTHETIC-DB',
-                 'base/dsh-config/capability.token': 'SYNTHETIC-CAPABILITY', 'outside/secret': 'SYNTHETIC-OUTSIDE'}
+                 'base/service-config/health.token': 'SYNTHETIC-CAPABILITY', 'outside/secret': 'SYNTHETIC-OUTSIDE'}
         for path, value in files.items():
             (root / path).write_text(value)
         abstract = '\0companion-isolation-' + str(os.getpid())

@@ -22,14 +22,14 @@ variables containing the provider key:
   "operatorTokenHash": "<sha256 lowercase hex of existing console token>",
   "authority": {
     "socketPath": "/absolute/authority/api.sock",
-    "tokenFile": "/absolute/private/dsh-test.token"
+    "tokenFile": "/absolute/private/health.token"
   }
 }
 ```
 
 All three gateway paths must be absolute and distinct; hashes must be distinct
 64-character lowercase SHA-256 hex values. `authority.tokenFile` is the existing
-read-only `dsh-test` capability, not admin. Main calls only
+health-only `health` capability (policy `learning.v1`, no actor or stream binding), not admin. Main calls only
 `new AuthorityClient({socketPath, tokenFile}).health()` and supplies its `.world`
 to the gateway. Health failure fails inference/settings updates closed.
 

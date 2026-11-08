@@ -89,12 +89,12 @@ node deploy/qq/open-login.mjs        # NapCat WebUI 扫码登录（默认 home-a
 ## 生产主机布局
 
 ```text
-产品：/home/companion/src/dsh-companion/current → authority-<版本>-<sha>
+产品：/home/companion/src/companion/current → authority-<版本>-<sha>
 正式数据：/home/companion/.local/share/companion-world-v1
 私有运行时：/home/companion/.local/opt/companion
 用户单元：/home/companion/.config/systemd/user/companion-*
 会话记录：/home/companion/.local/share/companion-world-v1/conversation-data/sessions（每会话一个 JSONL）
-执行器：companion-conversation（UDS ipc/conversation/execute.sock，无 TCP 端口）
+执行器：companion-conversation（UDS ipc/conversation/execute.sock，无 TCP 端口；以 companion 用户运行、无文件系统隔离，网络经 seccomp 只允许 Unix socket，模型只能用两个不访问文件系统的工具）
 3082 独立世界控制台与 operator API（唯一由 companion 单元监听的 TCP 端口）
 NapCat WebUI 6099 / OneBot WS 3001（沿用旧记录，未在新布局下复核）
 ```
@@ -118,7 +118,7 @@ NapCat WebUI 6099 / OneBot WS 3001（沿用旧记录，未在新布局下复核�
 
 | 内容 | 位置 | 清理方式 |
 | --- | --- | --- |
-| 旧 release | /home/companion/src/dsh-companion/authority-*-<sha> | companion-deploy 自动保留最近 3 个及 current/previous；旧 VM 上的 authority-0.10.0、0.9.0 不会自动删除 |
+| 旧 release | /home/companion/src/companion/authority-*-<sha> | companion-deploy 自动保留最近 3 个及 current/previous；旧 VM 上的 authority-0.10.0、0.9.0 不会自动删除 |
 | 上传的发布包 | ~blackmagic/releases/*.tar.gz(.sha256) | 手动删除 |
 | unit 快照与 Git 镜像 | /var/lib/companion-deploy/unit-snapshots/、mirror.git | 手动（root）；不要删掉 current/previous 对应的快照 |
 | systemd 日志 | journald | `sudo journalctl --vacuum-size=…` / `--vacuum-time=…` |
@@ -133,7 +133,7 @@ NapCat WebUI 6099 / OneBot WS 3001（沿用旧记录，未在新布局下复核�
 版本取根 package.json。source-manifest.json（schemaVersion 2）记录完整
 sourceRevision、productVersion、每个文件的 sha256 和可执行文件列表；unit 文件
 随代码一起位于 release 的 ops/isolation/units/。unit 与 launch.py 只引用
-~/src/dsh-companion/current，这是指向当前 release 的符号链接。
+~/src/companion/current，这是指向当前 release 的符号链接。
 
 1. Agent 在 Mac 上暂存（要求工作树干净、HEAD 已包含在 origin/main）：
 
@@ -210,11 +210,11 @@ release 不同则部署被拒绝，迁移须另行人工完成。回退只切换
 
 ```sh
 # 仅全新数据根不存在时；已有世界禁止重跑 bootstrap：
-/home/companion/.local/opt/companion/bin/node /home/companion/src/dsh-companion/current/ops/bootstrap.mjs
+/home/companion/.local/opt/companion/bin/node /home/companion/src/companion/current/ops/bootstrap.mjs
 # 已有世界只补对应基础设施，保留 Key/人格/绑定（bootstrap 已含 conversation 配置）：
-/home/companion/.local/opt/companion/bin/node /home/companion/src/dsh-companion/current/ops/prepare-memory.mjs
-/home/companion/.local/opt/companion/bin/node /home/companion/src/dsh-companion/current/ops/prepare-content.mjs
-/home/companion/.local/opt/companion/bin/node /home/companion/src/dsh-companion/current/ops/prepare-conversation.mjs
+/home/companion/.local/opt/companion/bin/node /home/companion/src/companion/current/ops/prepare-memory.mjs
+/home/companion/.local/opt/companion/bin/node /home/companion/src/companion/current/ops/prepare-content.mjs
+/home/companion/.local/opt/companion/bin/node /home/companion/src/companion/current/ops/prepare-conversation.mjs
 ```
 
 全新主机顺序：用户安装私有 Node（deploy/vm/install-runtime.sh，不再安装 DSH/pnpm）→

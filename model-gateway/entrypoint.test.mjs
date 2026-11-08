@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const project = fileURLToPath(new URL('../', import.meta.url));
 
-// Production units run entrypoints through ~/src/dsh-companion/current (a symlink).
+// Production units run entrypoints through ~/src/companion/current (a symlink).
 test('model gateway runs main() when started through a symlinked release directory', t => {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fish-entry-')));
   t.after(() => fs.rmSync(temp, { recursive: true }));
