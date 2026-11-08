@@ -58,6 +58,7 @@ UI 可单独 node --run build:console（输出 console/dist；没有 dev/watch/H
 https://hf-mirror.com`），Docker Hub 只能经本机代理 127.0.0.1:7890。发布与安装工具按
 `process.arch` / `uname -m` 在 arm64 与 x64 之间选择私有 Node、CMake、sherpa 原生包和
 NapCat 平台。
+home-agent 网络问题一律先走本机代理 `http://127.0.0.1:7890`（git/curl/pip/npm/Docker；PyPI 可用清华镜像），交给用户的联网命令须提示加代理，详见 AGENTS.md。
 
 生产主机只用于生产。服务以专用用户 companion（uid 由主机分配，不固定；密码锁定、不可登录，
 home 0700）运行，由 root 通过 `systemctl --user -M companion@ ...` 管理。人类和

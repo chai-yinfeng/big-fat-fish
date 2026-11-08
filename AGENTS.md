@@ -28,6 +28,10 @@ docs/DEV_WORKFLOW.md. Do not scan legacy directories unless the task concerns th
 - Develop only on the Mac; the production host (SSH alias home-agent, x86_64;
   override with COMPANION_HOST) is production only. Never patch it. The old arm64
   VM myvm is legacy, awaiting retirement.
+- home-agent (mainland China) reaches GitHub/PyPI/Docker Hub poorly; its proxy
+  http://127.0.0.1:7890 is the first fix (git repo-local http.https://github.com/.proxy,
+  HTTPS_PROXY/-x, Docker daemon proxy), plus https://hf-mirror.com and the tuna PyPI
+  mirror. Remind the user to use it when handing them networked commands there.
 - The agent never runs sudo or companion-deploy and never asks for or handles the
   sudo password.
 - Agent part: tests pass → user approves the push to main → node --run stage:release
