@@ -106,8 +106,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process
     if (!path.isAbsolute(base) || path.basename(base) !== 'companion-world-v1') throw fail('EXECUTION_ROOT_REFUSED');
     if (!process.argv.includes('--base') || !process.argv.includes('--plan') || !path.isAbsolute(file)) throw fail('PURGE_ARGUMENTS_REQUIRED');
     // CLI deliberately does not guess pause state or manufacture an acknowledgement.
+    // Operator API port: 3082 unless --operator-port (staging uses another loopback port).
+    const port = process.argv.includes('--operator-port') ? Number(process.argv[process.argv.indexOf('--operator-port') + 1]) : 3082;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw fail('PURGE_ARGUMENTS_REQUIRED');
     const token = fs.readFileSync(path.join(base, 'operator/console.token'), 'utf8').trim();
-    const r = await fetch('http://127.0.0.1:3082/world', { headers: { authorization: 'Bearer ' + token } });
+    const r = await fetch(`http://127.0.0.1:${port}/world`, { headers: { authorization: 'Bearer ' + token } });
     const status = await r.json();
     if (!r.ok || !status.ok || !status.value?.world?.paused) throw fail('WORLD_MUST_BE_PAUSED');
     console.log(JSON.stringify(await purgeExecution({ base, plan: read(file) })));

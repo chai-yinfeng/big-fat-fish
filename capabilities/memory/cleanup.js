@@ -1,3 +1,9 @@
+/** Loopback operator API; the port defaults to 3082 (memory-worker.json `operatorPort`). */
+export function operatorURL(port = 3082) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw Object.assign(new Error('MEMORY_CONFIG'), { code: 'MEMORY_CONFIG' });
+  return `http://127.0.0.1:${port}`;
+}
+
 // Only operator-created, previewed forget jobs reach this trusted host component.
 // Neither diary model output nor ordinary memory proposals can invoke it.
 export class MemoryCleanup {

@@ -7,7 +7,7 @@ import { AuthorityClient } from '../../authority/src/client.js';
 import { ConversationPort } from '../conversation/index.js';
 import { createConversationClient } from '../conversation/client.js';
 import { QQBridge } from './bridge.js';
-import { OneBotClient } from './onebot-client.js';
+import { OneBotClient, onebotURL } from './onebot-client.js';
 import { ContentClient } from '../media/client.js';
 import { QQMedia } from './media.js';
 
@@ -19,7 +19,7 @@ async function main() {
   const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
   const authority = new AuthorityClient(cfg.authority), port = new ConversationPort(authority);
   let bridge;
-  const onebot = new OneBotClient({ url: 'ws://127.0.0.1:3001', token: fs.readFileSync(cfg.onebotTokenFile, 'utf8').trim(), onEvent: event => bridge.receive(event), onStatus: connected => { void bridge.connection(connected); } });
+  const onebot = new OneBotClient({ url: onebotURL(cfg.onebotPort), token: fs.readFileSync(cfg.onebotTokenFile, 'utf8').trim(), onEvent: event => bridge.receive(event), onStatus: connected => { void bridge.connection(connected); } });
   const executor = createConversationClient(cfg.conversation);
   const media = cfg.contentEnabled ? new QQMedia({ content: new ContentClient(cfg.authority), onebot }) : undefined;
   bridge = new QQBridge({ ...cfg, authority, port, onebot, executor, media });

@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { MemoryCleanup } from './cleanup.js';
+import { MemoryCleanup, operatorURL } from './cleanup.js';
 import { AuthorityClient } from '../../authority/src/client.js';
 import { MemoryMaintenance } from './maintenance.js';
 import { completeDiary } from './model-client.js';
@@ -16,12 +16,13 @@ async function main() {
   const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
   const authority = new AuthorityClient(cfg.authority);
   const worker = new MemoryMaintenance({ authority, complete: completeDiary(cfg.gateway), stateFile: cfg.stateFile, maxCallsPerDay: cfg.maxCallsPerDay ?? 4 });
+  const operatorOrigin = operatorURL(cfg.operatorPort);
   // A legacy cfg.purgeModule (a pinned release path) is ignored.
   const { purgeExecution } = await import(purgeModuleURL());
   const operator = async (route, payload) => {
     if (!['/world', '/memory/cleanup/pending', '/memory/cleanup/complete'].includes(route)) throw new Error('MEMORY_CONTROL_ROUTE');
     const token = fs.readFileSync(cfg.operatorTokenFile, 'utf8').trim();
-    const r = await fetch('http://127.0.0.1:3082' + route, { method: payload === undefined ? 'GET' : 'POST', headers: { authorization: 'Bearer ' + token, ...(payload === undefined ? {} : { 'content-type': 'application/json' }) }, ...(payload === undefined ? {} : { body: JSON.stringify(payload) }), signal: AbortSignal.timeout(10000) });
+    const r = await fetch(operatorOrigin + route, { method: payload === undefined ? 'GET' : 'POST', headers: { authorization: 'Bearer ' + token, ...(payload === undefined ? {} : { 'content-type': 'application/json' }) }, ...(payload === undefined ? {} : { body: JSON.stringify(payload) }), signal: AbortSignal.timeout(10000) });
     const value = await r.json(); if (!r.ok || !value.ok) throw new Error('MEMORY_CONTROL_UNAVAILABLE'); return value.value;
   };
   const service = (action, units) => { const r = spawnSync('systemctl', ['--user', action, ...units], { stdio: ['ignore', 'pipe', 'pipe'] }); if (r.status !== 0) throw new Error('MEMORY_EXECUTION_CONTROL'); };

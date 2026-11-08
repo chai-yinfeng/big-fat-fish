@@ -1,11 +1,18 @@
 import { randomUUID } from 'node:crypto';
 
+const validPort = port => Number.isInteger(port) && port > 0 && port < 65536;
+/** Loopback OneBot WebSocket; the port defaults to NapCat's 3001 (qq-bridge.json `onebotPort`). */
+export function onebotURL(port = 3001) {
+  if (!validPort(port)) throw new Error('ONEBOT_CONFIG');
+  return `ws://127.0.0.1:${port}`;
+}
+
 // Fixed OneBot transport, not a general HTTP or platform-action tool.
 export class OneBotClient {
   #url; #socket; #pending = new Map(); #timer; #stopped = true; #onEvent; #onStatus;
   constructor({ url, token, onEvent, onStatus = () => {}, WebSocketImpl = WebSocket }) {
     const target = new URL(url);
-    if (target.protocol !== 'ws:' || target.hostname !== '127.0.0.1' || target.port !== '3001' || target.search || target.hash) throw new Error('ONEBOT_CONFIG');
+    if (target.protocol !== 'ws:' || target.hostname !== '127.0.0.1' || !validPort(Number(target.port)) || target.search || target.hash) throw new Error('ONEBOT_CONFIG');
     target.searchParams.set('access_token', token);
     this.#url = target.href; this.WebSocketImpl = WebSocketImpl; this.#onEvent = onEvent; this.#onStatus = onStatus;
   }
