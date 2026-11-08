@@ -34,6 +34,9 @@ docs/DEV_WORKFLOW.md. Do not scan legacy directories unless the task concerns th
   mirror. Remind the user to use it when handing them networked commands there.
 - The agent never runs sudo or companion-deploy and never asks for or handles the
   sudo password.
+- Before any deploy hand-off, run staging on home-agent-dev (node deploy/staging/run.mjs,
+  agent account, never prod) from the prod release to the new one; it must print
+  STAGING PASSED. companion-deploy also refuses a release whose preflight fails.
 - Agent part: tests pass → user approves the push to main → node --run stage:release
   → give the user the exact commands plus expected values: commit sha + subject,
   tarball sha256, and, when companion-deploy changed, its expected sha256 from

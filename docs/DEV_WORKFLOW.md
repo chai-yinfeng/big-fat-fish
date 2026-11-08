@@ -134,6 +134,34 @@ NapCat WebUI 6099 / OneBot WS 3001（沿用旧记录，未在新布局下复核�
 
 这里只是说明，目前没有自动清理任务。
 
+## Staging 与部署预检（交付部署命令前必做）
+
+单元测试曾全部通过、上线却坏（旧 speech.json schema 被新代码拒绝；memory-worker.json
+指向被保留策略删掉的 release）。因此 Agent 在把生产部署命令交给用户之前必须：
+
+1. 在 Mac 上构建目标包：`node deploy/authority/stage-release.mjs --no-upload`
+   （分支上的提交加 `--allow-unpublished`；只用于 staging，生产会拒绝）。
+2. 跑 staging：`node deploy/staging/run.mjs --reset`（只清空）后
+   `node deploy/staging/run.mjs`，或一次 `node deploy/staging/run.mjs --reset --to <包>`。
+   `--from` 默认是生产当前 release（读 home-agent 上的 status JSON，包取自
+   `.build/releases/`），`--to` 默认是 HEAD 的包。结果须为 `STAGING PASSED`，汇报时附上摘要。
+
+staging 以 home-agent 上无 sudo 的 `agent` 账号（`ssh home-agent-dev`，已开 linger）运行，
+直接调用 companion-deploy 本身的 deploy/预检/单元/健康检查/保留代码：全新安装 from 包 →
+用该包的 bootstrap、prepare-memory、prepare-content、QQ prepare 初始化（无模型 Key、
+不登录 QQ）→ start → 升级到 to 包（预检、切换、健康检查）→ 删除 from 包 → 重启全部单元 →
+operator API 冒烟（/world、/runtime、/qq、/memory、人格预览与保存、对话执行器鉴权）→
+确认生产端口没有 staging 监听。全部位于 `~/companion-staging`（作为服务的 HOME），单元
+改名为 `companion-staging-*`，operator 端口 13082；memory、qq 单元限制为 Unix socket，
+旧 release 里写死的 3082/3001 连不到生产。`--reset` 只删除这个目录和 staging 单元。
+staging 不校验提交是否在 origin main（生产 companion-deploy 仍校验），不跑真实模型对话。
+
+部署预检：companion-deploy 在停止任何单元、切换 current 之前，以 companion 身份运行新包的
+`ops/preflight.mjs`，用新包自己的校验逻辑检查现有数据根中的全部配置（speech 用
+loadSpeechConfig，对话用 loadConfig，其余与各服务启动检查一致），并拒绝指向某个具体
+release 目录的路径（`current/` 下的路径须在新包中存在）。失败时只输出稳定错误码、文件名和
+字段名，删除刚安装的包，生产不变。旧配置里已被忽略的 `purgeModule` 只给警告。
+
 ## 发布与回退
 
 发布单位是 main 上的一个提交。release 目录名为 authority-<版本>-<提交前12位>，
@@ -163,8 +191,9 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    companion-deploy 把包复制到 root 目录后校验 .sha256、安全解包（拒绝绝对路径、
    `..`、链接、设备文件和 setuid/setgid）、逐文件核对 manifest，再用 root 自己的
    origin 镜像（/var/lib/companion-deploy/mirror.git，URL 写死在脚本里）确认该提交
-   在 main 上。显示版本、提交、标题和日期后要求输入 y。随后：停 companion-*
-   单元 → 安装只读 release（属主 companion）→ 快照旧 unit 并安装新 unit →
+   在 main 上。显示版本、提交、标题和日期后要求输入 y。随后：安装只读
+   release（属主 companion）→ 以 companion 身份运行新包预检（失败则删除该包并拒绝，服务不动）→
+   停 companion-* 单元 → 快照旧 unit 并安装新 unit →
    daemon-reload → 原子切换 current → 启动 → 健康检查（全部单元无 failed、
    3082 在监听、约 20 秒内无重启）。全新主机（没有任何 release 与 companion 单元）
    首次 deploy 只安装 release、单元与 current，不启动服务；完成下文一次性初始化后由用户执行
