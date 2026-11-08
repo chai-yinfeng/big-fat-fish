@@ -69,6 +69,29 @@ test('one selected child runs at a time; Qwen3-ASR only, audio over its cap is a
   assert.equal(runner.status().models['tts:test-only'].enabled, false);
 });
 
+const write = (file, value) => fs.writeFileSync(file, JSON.stringify(value));
+test('audio over 30 s needs the VAD model; maxAudioSeconds (<=600) caps it, and a pre-VAD config still loads', async t => {
+  const { root, runner, configFile, c, wav } = fixture(t);
+  const seconds = n => { const b = Buffer.alloc(44 + 16000 * 2 * n); wav.copy(b, 0, 0, 44); b.writeUInt32LE(b.length - 8, 4); b.writeUInt32LE(b.length - 44, 40); const file = path.join(root, `media-data/${n}s.wav`); fs.writeFileSync(file, b); return file; };
+  const s61 = seconds(61), s121 = seconds(121);
+  assert.equal(c.maxAudioSeconds, 120); assert.equal(c.models.vad.engine, 'sherpa-silero-vad');
+  // Prepared config names the VAD, but its file is not installed yet: one pass only, with a hint.
+  await assert.rejects(runner.transcribe({ inputFile: s61 }), { code: 'SPEECH_AUDIO_LIMIT' });
+  assert.deepEqual({ ...runner.status().longAudio, hint: undefined }, { vadPresent: false, singlePassSeconds: 30, maxAudioSeconds: 30, timeoutMs: 180000, hint: undefined });
+  assert.match(runner.status().longAudio.hint, /SPEECH_VAD_NOT_INSTALLED.*--models vad/);
+  write(configFile, { ...c, models: { ...c.models, vad: { ...c.models.vad, file: c.sherpaModule } } });
+  assert.equal((await runner.transcribe({ inputFile: s61 })).durationMs, 61000);
+  assert.deepEqual(runner.status().longAudio, { vadPresent: true, singlePassSeconds: 30, maxAudioSeconds: 120, timeoutMs: 180000 });
+  await assert.rejects(runner.transcribe({ inputFile: s121 }), { code: 'SPEECH_AUDIO_LIMIT' });
+  write(configFile, { ...c, models: { ...c.models, vad: { ...c.models.vad, file: c.sherpaModule, enabled: false } } });
+  await assert.rejects(runner.transcribe({ inputFile: s61 }), { code: 'SPEECH_AUDIO_LIMIT' });
+  // A production config prepared before long-audio support: no models.vad, maxAudioSeconds 30.
+  const { vad, ...models } = c.models;
+  write(configFile, { ...c, models, maxAudioSeconds: 30 }); assert.equal(loadSpeechConfig(configFile).models.vad, undefined);
+  for (const bad of [{ ...c, maxAudioSeconds: 601 }, { ...c, models: { ...c.models, vad: { ...vad, engine: 'other' } } }, { ...c, models: { ...c.models, vad: { ...vad, file: 'relative.onnx' } } }]) { write(configFile, bad); assert.throws(() => loadSpeechConfig(configFile), { code: 'SPEECH_CONFIG' }); }
+  write(configFile, { ...c, maxAudioSeconds: 600 }); assert.equal(loadSpeechConfig(configFile).maxAudioSeconds, 600);
+});
+
 test('voice ids resolve only through operator config; usageScope is a label, not an audience gate', async t => {
   const { root, runner, configFile, c } = fixture(t);
   const out = name => path.join(root, 'speech-data', name + '.wav');

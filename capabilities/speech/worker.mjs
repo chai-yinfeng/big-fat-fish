@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
-import { loadSpeechConfig, inputPath, engineFor, componentsPresent, wavInfo, failure, inside, trustedReference, resolveVoice } from './config.js';
+import { loadSpeechConfig, inputPath, engineFor, componentsPresent, wavInfo, failure, inside, trustedReference, resolveVoice, asrLimitSeconds, SINGLE_PASS_SECONDS } from './config.js';
+import { planChunks, joinTranscripts } from './chunks.js';
 import { toSimplifiedChinese } from './text.js';
 
 process.umask(0o077);
@@ -39,6 +40,15 @@ async function nativeTts(c, e, profile, job) {
   }
 }
 
+/** Speech regions [[start, end]] (16 kHz sample indexes) from the pinned Silero VAD. */
+function speechRegions(sherpa, c, samples) {
+  const windowSize = 512, vad = new sherpa.Vad({ sileroVad: { model: c.models.vad.file, threshold: 0.5, minSilenceDuration: 0.3, minSpeechDuration: 0.25, maxSpeechDuration: 20, windowSize }, sampleRate: 16000, numThreads: 1, provider: 'cpu', debug: 0 }, Math.ceil(samples.length / 16000) + 1);
+  const regions = [], drain = () => { while (!vad.isEmpty()) { const s = vad.front(false); regions.push([s.start, s.start + s.samples.length]); vad.pop(); } };
+  for (let i = 0; i < samples.length; i += windowSize) { vad.acceptWaveform(samples.subarray(i, i + windowSize)); drain(); }
+  vad.flush(); drain();
+  return regions;
+}
+
 async function run(c, job) {
   const profile = job.kind === 'tts' ? resolveVoice(c, job.voiceProfile) : undefined;
   const key = job.kind === 'tts' ? profile.engine : job.quality;
@@ -47,19 +57,32 @@ async function run(c, job) {
   if (job.kind === 'asr') {
     job.inputFile = inputPath(c, job.inputFile);
     const info = wavInfo(job.inputFile);
-    if (info.durationMs > c.maxAudioSeconds * 1000) throw failure('SPEECH_AUDIO_LIMIT');
+    if (info.durationMs > asrLimitSeconds(c) * 1000) throw failure('SPEECH_AUDIO_LIMIT');
     if (info.format !== 1 || info.bits !== 16) throw failure('SPEECH_AUDIO_FORMAT');
     const sherpa = require(c.sherpaModule), f = e.files;
     const modelConfig = { tokens: f.tokens || '', numThreads: c.numThreads, provider: 'cpu', debug: 0 };
     if (e.engine === 'sherpa-qwen3-asr') modelConfig.qwen3Asr = { convFrontend: f.convFrontend, encoder: f.encoder, decoder: f.decoder, tokenizer: f.tokenizer, hotwords: '', maxNewTokens: 1024 };
     else throw failure('SPEECH_NOT_CONFIGURED');
     const recognizer = new sherpa.OfflineRecognizer({ featConfig: { sampleRate: 16000, featureDim: 80 }, modelConfig });
-    const wave = sherpa.readWave(job.inputFile), stream = recognizer.createStream();
-    stream.acceptWaveform({ sampleRate: wave.sampleRate, samples: wave.samples });
-    recognizer.decode(stream);
-    const result = recognizer.getResult(stream);
-    if (typeof result.text !== 'string' || result.text.length > 12000) throw failure('SPEECH_WORKER_FAILED');
-    const text = e.engine === 'sherpa-qwen3-asr' ? toSimplifiedChinese(result.text.trim()) : result.text.trim();
+    const wave = sherpa.readWave(job.inputFile);
+    const decode = (sampleRate, samples) => {
+      const stream = recognizer.createStream();
+      stream.acceptWaveform({ sampleRate, samples });
+      recognizer.decode(stream);
+      const result = recognizer.getResult(stream);
+      if (typeof result.text !== 'string' || result.text.length > 12000) throw failure('SPEECH_WORKER_FAILED');
+      return result.text;
+    };
+    let raw;
+    if (info.durationMs <= SINGLE_PASS_SECONDS * 1000) raw = decode(wave.sampleRate, wave.samples);
+    else {
+      // Silero VAD runs at 16 kHz; Qwen3-ASR resamples to 16 kHz anyway.
+      const samples = wave.sampleRate === 16000 ? wave.samples : new sherpa.LinearResampler(wave.sampleRate, 16000).flush(wave.samples);
+      const parts = planChunks(speechRegions(sherpa, c, samples), samples.length, 16000).map(chunk => ({ text: decode(16000, samples.subarray(chunk.start, chunk.end)), overlapsPrevious: chunk.overlapsPrevious }));
+      raw = joinTranscripts(parts);
+      if (raw.length > 12000) throw failure('SPEECH_WORKER_FAILED');
+    }
+    const text = e.engine === 'sherpa-qwen3-asr' ? toSimplifiedChinese(raw.trim()) : raw.trim();
     return { text, model: e.id, durationMs: info.durationMs, complete: true, derived: true };
   }
   if (job.kind !== 'tts' || typeof job.text !== 'string' || !job.text.trim() || [...job.text].length > c.maxTextChars || !inside(fs.realpathSync(c.workRoot), fs.realpathSync(job.outputFile))) throw failure('SPEECH_REQUEST');

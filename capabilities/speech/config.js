@@ -7,6 +7,12 @@ export const SCHEMA_VERSION = 2;
 export const ASR_TIERS = ['default'];
 export const VOICE_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 export const USAGE_SCOPES = ['private', 'public'];
+// Qwen3-ASR's sherpa decoder (max_total_len 512, ~13 audio tokens/s) truncates past
+// ~30 s in one pass; longer audio needs the optional VAD (models.vad) to split it.
+export const SINGLE_PASS_SECONDS = 30;
+// Config ceiling: QQ voice is <=60 s; later video audio at 16 kHz PCM16 hits the
+// 16 MiB WAV ceiling at ~524 s, and 600 s decodes in ~2 min at RTF ~0.18 (< timeoutMs cap).
+export const MAX_AUDIO_SECONDS = 600;
 export const failure = code => Object.assign(new Error(code), { code });
 export const inside = (root, target) => target === root || target.startsWith(root + path.sep);
 const absolute = value => typeof value === 'string' && path.isAbsolute(value);
@@ -30,7 +36,9 @@ export function loadSpeechConfig(file) {
   // old operator/speech.json aside and re-run deploy/authority/prepare-speech.mjs.
   if (c?.schemaVersion !== SCHEMA_VERSION) throw failure('SPEECH_CONFIG_SCHEMA');
   if (!absolute(c.workRoot) || !Array.isArray(c.inputRoots) || !c.inputRoots.length || !c.inputRoots.every(absolute) || !absolute(c.nodeExecutable) || !absolute(c.sherpaModule) || !plain(c.models) || !plain(c.models.asr) || !plain(c.models.tts) || !Number.isInteger(c.numThreads) || c.numThreads < 1 || c.numThreads > 16) throw failure('SPEECH_CONFIG');
-  if (!Number.isInteger(c.maxTextChars) || c.maxTextChars < 1 || c.maxTextChars > 120 || !Number.isInteger(c.maxAudioSeconds) || c.maxAudioSeconds < 1 || c.maxAudioSeconds > 30 || !Number.isInteger(c.timeoutMs) || c.timeoutMs < 1000 || c.timeoutMs > 300000) throw failure('SPEECH_CONFIG');
+  if (!Number.isInteger(c.maxTextChars) || c.maxTextChars < 1 || c.maxTextChars > 120 || !Number.isInteger(c.maxAudioSeconds) || c.maxAudioSeconds < 1 || c.maxAudioSeconds > MAX_AUDIO_SECONDS || !Number.isInteger(c.timeoutMs) || c.timeoutMs < 1000 || c.timeoutMs > 300000) throw failure('SPEECH_CONFIG');
+  // models.vad is optional (configs prepared before long-audio support lack it).
+  if (c.models.vad !== undefined && (!plain(c.models.vad) || c.models.vad.engine !== 'sherpa-silero-vad' || typeof c.models.vad.id !== 'string' || !absolute(c.models.vad.file))) throw failure('SPEECH_CONFIG');
   if (Object.entries(c.models.tts).some(([key, e]) => !plain(e) || e.engine !== key || typeof e.id !== 'string')) throw failure('SPEECH_CONFIG');
   if (!plain(c.voiceProfiles) || Object.entries(c.voiceProfiles).some(([id, p]) => !validVoice(c, id, p))) throw failure('SPEECH_CONFIG');
   if (c.defaultVoice !== null && !Object.hasOwn(c.voiceProfiles, c.defaultVoice)) throw failure('SPEECH_CONFIG');
@@ -66,6 +74,16 @@ export function componentsPresent(c, kind, key) {
     if (!absolute(file)) return false;
     try { const stat = fs.statSync(file); return stat.isDirectory() || stat.isFile() && stat.size > 0; } catch { return false; }
   });
+}
+/** The VAD model file exists and is not disabled. */
+export function vadPresent(c) {
+  const v = c.models.vad;
+  if (!v || v.enabled === false) return false;
+  try { const stat = fs.statSync(v.file); return stat.isFile() && stat.size > 0; } catch { return false; }
+}
+/** Longest accepted ASR input: maxAudioSeconds, but one Qwen3-ASR pass without a VAD. */
+export function asrLimitSeconds(c) {
+  return vadPresent(c) ? c.maxAudioSeconds : Math.min(c.maxAudioSeconds, SINGLE_PASS_SECONDS);
 }
 /** Resolves a voice id only through operator config; never a caller path.
  * usageScope is a recorded label only: every current audience may use any voice. */

@@ -17,6 +17,7 @@ export function prepareSpeech(base = path.join(os.homedir(), '.local/share/compa
   const model = name => path.join(modelRoot, name);
   const qwen = model('sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25');
   const gguf = model('qwen3-tts-1.7b-base-gguf');
+  const vad = model('silero-vad-v5.1.2');
   const config = {
     schemaVersion: SCHEMA_VERSION,
     nodeExecutable: process.execPath,
@@ -27,7 +28,8 @@ export function prepareSpeech(base = path.join(os.homedir(), '.local/share/compa
     numThreads: 8,
     timeoutMs: 180000,
     maxTextChars: 120,
-    maxAudioSeconds: 30,
+    // QQ voice is <=60 s; audio over 30 s is split by the VAD (one Qwen3-ASR pass truncates past ~30 s).
+    maxAudioSeconds: 120,
     // Voices are registered by the operator (console upload); none exist initially.
     defaultVoice: null,
     voiceProfiles: {},
@@ -35,6 +37,8 @@ export function prepareSpeech(base = path.join(os.homedir(), '.local/share/compa
       asr: {
         default: { id: 'qwen3-asr-0.6b-int8-2026-03-25', engine: 'sherpa-qwen3-asr', files: { convFrontend: path.join(qwen, 'conv_frontend.onnx'), encoder: path.join(qwen, 'encoder.int8.onnx'), decoder: path.join(qwen, 'decoder.int8.onnx'), tokenizer: path.join(qwen, 'tokenizer') } },
       },
+      // models.vad is optional; without it ASR stays at one pass (<=30 s).
+      vad: { id: 'silero-vad-v5.1.2', engine: 'sherpa-silero-vad', file: path.join(vad, 'silero_vad.onnx') },
       tts: {
         'llama-tts': { id: 'qwen3-tts-1.7b-base-q4-k-m', engine: 'llama-tts', executable: path.join(runtime, 'llama.cpp/build/bin/llama-tts'), model: path.join(gguf, 'Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf'), mmproj: path.join(gguf, 'mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf'), maxFrames: 1024, language: 'zh' },
       },
@@ -46,6 +50,8 @@ export function prepareSpeech(base = path.join(os.homedir(), '.local/share/compa
     models: [
       // Archive digests were observed on a direct GitHub download (2026-11-08), not published by upstream.
       { id: config.models.asr.default.id, source: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2', modelscope: null, modelscopeTodo: 'ModelScope path for this exact archive not confirmed; GitHub release or a pre-fetched copy via --archive-dir', upstream: 'Qwen/Qwen3-ASR-0.6B', upstreamRevision: '5eb144179a02acc5e5ba31e748d22b0cf3e303b0', license: 'Apache-2.0 upstream; retain export provenance', bytes: 878702423, sha256: '393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96' },
+      // Upstream Silero VAD v5.1.2 ONNX; ModelScope pengzhendong/silero-vad serves the identical file.
+      { id: config.models.vad.id, source: 'https://raw.githubusercontent.com/snakers4/silero-vad/6478567951ae5c9979ad7b234185b5515f4be7a1/src/silero_vad/data/silero_vad.onnx', modelscope: 'https://www.modelscope.cn/models/pengzhendong/silero-vad', modelscopeRevision: '370539c71ec0ac703627938064cf31c1852186d7', modelscopePath: 'v5/silero_vad.onnx', upstream: 'snakers4/silero-vad', upstreamRevision: 'v5.1.2', license: 'MIT', bytes: 2327524, sha256: '2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f' },
       // ModelScope serves the same GGUF files (sha256 identical to the HF snapshot);
       // its revision is a moving branch, so the fixed sha256 below is what pins it.
       { id: config.models.tts['llama-tts'].id, source: 'https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF', revision: 'ca27d74bc954b73dadab5b71ca265d87fc861a7c', modelscope: 'https://www.modelscope.cn/models/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF', modelscopeRevision: 'master', upstream: 'Qwen/Qwen3-TTS-12Hz-1.7B-Base', upstreamRevision: 'fd4b254389122332181a7c3db7f27e918eec64e3', license: 'Apache-2.0 upstream', files: [

@@ -39,6 +39,13 @@ test('a freshly initialized world passes, including speech and memory configs', 
   assert.deepEqual(result.checked.sort(), ['authority.json', 'content.json', 'conversation.json', 'execution-storage.json', 'memory-worker.json', 'model-gateway.json', 'qq-bridge.json', 'speech-models.json', 'speech.json']);
 });
 
+test('a speech.json prepared before long-audio support (no models.vad, maxAudioSeconds 30) still passes', async t => {
+  const w = world(t);
+  w.edit('speech.json', c => { delete c.models.vad; c.maxAudioSeconds = 30; });
+  w.edit('speech-models.json', c => { c.models = c.models.filter(m => !m.id.startsWith('silero-vad')); });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), []);
+});
+
 test('bug (a): a speech.json left at schema 1 by an older first-time setup refuses the deploy', async t => {
   const w = world(t);
   w.edit('speech.json', c => { c.schemaVersion = 1; });

@@ -59,7 +59,10 @@ UI 可单独 node --run build:console（输出 console/dist；没有 dev/watch/H
 --proxy http://127.0.0.1:7890 --hf-endpoint https://hf-mirror.com --archive-dir <目录>`（GGUF 走
 ModelScope 直连并校验固定 sha256；npm、git clone 走代理；小型模型卡走 hf-mirror）。该主机经代理下载
 GitHub release 失败（SSL_ERROR_SYSCALL），sherpa Qwen3-ASR 压缩包须先在 Mac 上下载再拷到 `<目录>`，
-安装器按 manifest 固定的 sha256 校验。安装后在控制台“音色”中登记参考录音。发布与安装工具按
+安装器按 manifest 固定的 sha256 校验。已有安装补装长语音用的 Silero VAD（>30 秒的 ASR 需要它）：
+`ops/install-speech.mjs --apply --models vad --model-source modelscope --proxy http://127.0.0.1:7890`
+（只下载约 2.3MB 的固定 sha256 文件，并在 speech.json 补 `models.vad`、把旧默认 maxAudioSeconds 30 提到 120）。
+安装后在控制台“音色”中登记参考录音。发布与安装工具按
 `process.arch` / `uname -m` 在 arm64 与 x64 之间选择私有 Node、CMake、sherpa 原生包和
 NapCat 平台。
 home-agent 网络问题一律先走本机代理 `http://127.0.0.1:7890`（git/curl/pip/npm/Docker；PyPI 可用清华镜像），交给用户的联网命令须提示加代理，详见 AGENTS.md。

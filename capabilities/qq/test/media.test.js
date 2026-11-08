@@ -36,12 +36,15 @@ test('QQ voice becomes derived input, never a fabricated verbatim observation; d
   assert.match(input.text, /机器转写/); assert.match(input.text, /你好，我回来了/);
   assert.equal(input.queryText, '你好，我回来了');
   assert.deepEqual(input.evidence, [{ ref: 'synthetic-observation', eventId: f.observed[0].eventId, role: 'user' }]);
+  assert.doesNotMatch(input.text, /渠道表达策略/);
   assert.equal(f.sent[0].message[0].type, 'text'); assert.equal(f.tts(), 0);
 });
 
 test('explicit speech creates a record only after synthesis; authorized image attachment gets its own receipt', async t => {
   const f = fixture(t); await f.bridge.connection(true);
   await f.bridge.receive(f.event(2, [{ type: 'text', data: { text: '请用语音告诉我，你在吗' } }]));
+  // The model is told the reply is spoken in its own voice, so it does not claim it can only type.
+  assert.match(f.executions[0].input.text, /用你自己的声音合成为语音消息发出，你能发语音/); assert.match(f.executions[0].input.text, /不超过100字，不用Markdown、链接、表情符号/);
   assert.equal(f.tts(), 1); assert.deepEqual(f.qualities, [undefined]); assert.equal(f.sent[0].message[0].type, 'record'); assert.match(f.sent[0].message[0].data.file, /^base64:\/\//);
   assert.match(f.observed.at(-1).text, /已发送语音/);
   f.executor.execute = async request => { const image = f.store.records().find(r => r.kind === 'image'); await f.content.call({ action: 'attach', streamId: 'qq:100:private:200', memoryEpoch: 0, requestId: request.requestId, ref: image.id }); return '给你这张图。'; };

@@ -77,6 +77,32 @@ function archiveDirectory(value) {
   if (!fs.statSync(real).isDirectory()) throw fail('SPEECH_INSTALL_ARGUMENTS');
   return real;
 }
+// Silero VAD v5.1.2 (MIT) splits audio over one Qwen3-ASR pass (~30 s). A single ONNX
+// file: upstream GitHub at a fixed commit, or the byte-identical ModelScope copy
+// (sha256 observed on both, 2026-11-08; upstream publishes none).
+export const VAD = { id: 'silero-vad-v5.1.2', engine: 'sherpa-silero-vad', name: 'silero_vad.onnx', directory: 'silero-vad-v5.1.2', bytes: 2327524, sha256: '2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f',
+  source: 'https://raw.githubusercontent.com/snakers4/silero-vad/6478567951ae5c9979ad7b234185b5515f4be7a1/src/silero_vad/data/silero_vad.onnx',
+  modelscope: 'https://www.modelscope.cn/models/pengzhendong/silero-vad', modelscopeRevision: '370539c71ec0ac703627938064cf31c1852186d7', modelscopePath: 'v5/silero_vad.onnx', upstream: 'snakers4/silero-vad', upstreamRevision: 'v5.1.2', license: 'MIT' };
+export function vadUrl(modelSource = 'huggingface') {
+  if (!MODEL_SOURCES.includes(modelSource)) throw fail('SPEECH_INSTALL_ARGUMENTS');
+  return modelSource === 'modelscope' ? `${VAD.modelscope}/resolve/${VAD.modelscopeRevision}/${VAD.modelscopePath}` : VAD.source;
+}
+const OLD_DEFAULT_AUDIO_SECONDS = 30, LONG_AUDIO_SECONDS = 120;
+/** Registers the installed VAD in a speech config/manifest that predates it (no schema change).
+ * Returns copies plus whether anything changed; a conflicting existing entry is refused. */
+export function registerVad(config, manifest, file) {
+  config = structuredClone(config); manifest = structuredClone(manifest);
+  let changed = false;
+  const existing = config.models.vad;
+  if (existing !== undefined) { if (existing?.id !== VAD.id || existing.engine !== VAD.engine || existing.file !== file) throw fail('SPEECH_INSTALL_MANIFEST'); }
+  else { config.models.vad = { id: VAD.id, engine: VAD.engine, file }; changed = true; }
+  // Only the old prepared default is raised; an operator's own value stays.
+  if (config.maxAudioSeconds === OLD_DEFAULT_AUDIO_SECONDS) { config.maxAudioSeconds = LONG_AUDIO_SECONDS; changed = true; }
+  const entry = manifest.models.find(m => m.id === VAD.id);
+  if (entry) { if (entry.source !== VAD.source || entry.sha256 !== VAD.sha256 || entry.bytes !== VAD.bytes) throw fail('SPEECH_INSTALL_MANIFEST'); }
+  else { const { id, source, modelscope, modelscopeRevision, modelscopePath, upstream, upstreamRevision, license, bytes, sha256 } = VAD; manifest.models.push({ id, source, modelscope, modelscopeRevision, modelscopePath, upstream, upstreamRevision, license, bytes, sha256 }); changed = true; }
+  return { config, manifest, changed };
+}
 const MODELSCOPE = { 'qwen3-tts-1.7b-base-q4-k-m': 'https://www.modelscope.cn/models/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF' };
 const GGUF_FILES = [
   { name: 'Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf', bytes: 1035965280, sha256: '8d18c94acb2addd042f97da63c98be144eafa76d0d9495177eab65130cf85129' },
@@ -110,6 +136,7 @@ function directory(root, relative) {
 }
 function modelSelections(config, manifest, models) {
   if (config.schemaVersion !== 2 || manifest.schemaVersion !== 2) throw fail('SPEECH_CONFIG_SCHEMA');
+  if (models === 'vad') return [];
   const selections = [['asr', 'default'], ...(models === 'all' ? [['tts', 'llama-tts']] : [])];
   return selections.map(([kind, key]) => {
     const engine = config.models[kind][key], entry = manifest.models.find(m => m.id === engine?.id);
@@ -120,12 +147,14 @@ function modelSelections(config, manifest, models) {
   });
 }
 export function speechInstallPlan({ base = defaultBase(), models = 'all', hfEndpoint = HF_ENDPOINTS[0], modelSource = 'huggingface', proxy, archiveDir } = {}) {
-  if (!['asr', 'all'].includes(models) || !HF_ENDPOINTS.includes(hfEndpoint) || !MODEL_SOURCES.includes(modelSource)) throw fail('SPEECH_INSTALL_ARGUMENTS');
+  if (!['asr', 'all', 'vad'].includes(models) || !HF_ENDPOINTS.includes(hfEndpoint) || !MODEL_SOURCES.includes(modelSource)) throw fail('SPEECH_INSTALL_ARGUMENTS');
   if (proxy !== undefined) proxyEnv(proxy);
   archiveDir = archiveDirectory(archiveDir);
   base = basePath(base);
   const prepared = fs.existsSync(path.join(base, 'operator/speech.json')) && fs.existsSync(path.join(base, 'operator/speech-models.json'));
-  const selected = prepared ? modelSelections(readJson(path.join(base, 'operator/speech.json')), readJson(path.join(base, 'operator/speech-models.json')), models).map(x => x.entry.id) : Object.keys(SOURCES).filter(id => models === 'all' || !id.startsWith('qwen3-tts'));
+  const selected = prepared ? modelSelections(readJson(path.join(base, 'operator/speech.json')), readJson(path.join(base, 'operator/speech-models.json')), models).map(x => x.entry.id) : Object.keys(SOURCES).filter(id => models === 'all' || models === 'asr' && !id.startsWith('qwen3-tts'));
+  selected.push(VAD.id);
+  if (models === 'vad') return { mode: 'plan', models, prepared, targetValidated: true, selected, modelSource, vadSource: vadUrl(modelSource), proxy: proxy === undefined ? null : new URL(proxy).origin, archiveDir: archiveDir ?? null, estimatedDiskMiB: 5, actionsRequireApply: ['public pinned VAD model download', 'register models.vad in operator/speech.json (raises maxAudioSeconds 30 -> 120)'], inferencePerformed: false, servicesChanged: false, writesPerformed: false, networkRequestsPerformed: false };
   return { mode: 'plan', models, prepared, targetValidated: true, runtime: 'private speech-node prefix', dependencies: { 'sherpa-onnx-node': '2.0.1', sharp: '0.35.5' }, selected, hfEndpoint, modelSource, proxy: proxy === undefined ? null : new URL(proxy).origin, archiveDir: archiveDir ?? null, nativeTts: models === 'all' ? { llamaCpp: 'v0.8.0', commit: LLAMA_COMMIT, portableCmake: '4.4.5', cpuOnly: true, jobs: 2 } : null, estimatedDiskGiB: models === 'all' ? '8-12 including cache/source/build; estimate, not measured' : '3-4 including cache/runtime; estimate, not measured', actionsRequireApply: ['private npm install with scripts disabled', 'public pinned model downloads and safe extraction', ...(models === 'all' ? ['private portable CMake download', 'pinned llama.cpp clone and CPU-only build'] : [])], inferencePerformed: false, referenceGenerated: false, servicesChanged: false, writesPerformed: false, networkRequestsPerformed: false };
 }
 
@@ -196,7 +225,7 @@ export async function installSpeech({ base = defaultBase(), models = 'all', hfEn
   base = basePath(base);
   const privateRoot = fs.realpathSync(path.join(os.homedir(), '.local/opt/companion'));
   if (!inside(privateRoot, fs.realpathSync(process.execPath))) throw fail('SPEECH_PRIVATE_NODE_REQUIRED');
-  const stats = fs.statfsSync(base), minFree = (models === 'all' ? 12 : 4) * 1024 ** 3;
+  const stats = fs.statfsSync(base), minFree = (models === 'all' ? 12 : models === 'asr' ? 4 : 0.1) * 1024 ** 3;
   if (stats.bavail * stats.bsize < minFree) throw fail('SPEECH_INSTALL_DISK');
   const runtime = directory(privateRoot, 'speech-node');
   prepareSpeech(base, runtime);
@@ -247,21 +276,23 @@ export async function installSpeech({ base = defaultBase(), models = 'all', hfEn
     fs.renameSync(source, destination);
     return destination;
   }
-  const packageSource = readJson(fileURLToPath(new URL('./media-runtime.package.json', import.meta.url)));
-  if (JSON.stringify(packageSource.dependencies) !== JSON.stringify({ 'sherpa-onnx-node': '2.0.1', sharp: '0.35.5' })) throw fail('SPEECH_INSTALL_MANIFEST');
-  const packageFile = path.join(runtime, 'package.json');
-  if (fs.existsSync(packageFile)) { if (!fs.lstatSync(packageFile).isFile() || JSON.stringify(readJson(packageFile).dependencies) !== JSON.stringify(packageSource.dependencies)) throw fail('SPEECH_RUNTIME_CONFLICT'); }
-  else fs.writeFileSync(packageFile, JSON.stringify(packageSource, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-  const npm = path.resolve(path.dirname(fs.realpathSync(process.execPath)), '../lib/node_modules/npm/bin/npm-cli.js');
-  if (!fs.statSync(npm).isFile() || !inside(privateRoot, fs.realpathSync(npm))) throw fail('SPEECH_PRIVATE_NPM_REQUIRED');
-  directory(runtime, 'node_modules');
-  const lockFile = path.join(runtime, 'package-lock.json');
-  if (fs.existsSync(lockFile) && !fs.lstatSync(lockFile).isFile()) throw fail('SPEECH_INSTALL_TARGET');
-  await command(process.execPath, [npm, 'install', '--prefix', runtime, '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org', '--cache', directory(runtime, 'npm-cache'), '--userconfig=/dev/null', '--globalconfig=' + emptyGlobal], env, 'SPEECH_NPM_FAILED', runtime);
-  for (const [name, version] of Object.entries(packageSource.dependencies)) if (readJson(path.join(runtime, 'node_modules', name, 'package.json')).version !== version) throw fail('SPEECH_NPM_VERSION');
-  // npm selects sherpa-onnx-node's native optional package by os/cpu; require the one for this host.
-  if (readJson(path.join(runtime, 'node_modules', `sherpa-onnx-linux-${process.arch}`, 'package.json')).version !== packageSource.dependencies['sherpa-onnx-node']) throw fail('SPEECH_NPM_VERSION');
-  metadata.components.npm = { dependencies: packageSource.dependencies, scriptsExecuted: false, lockSha256: await sha256(lockFile) }; persist();
+  if (models !== 'vad') {
+    const packageSource = readJson(fileURLToPath(new URL('./media-runtime.package.json', import.meta.url)));
+    if (JSON.stringify(packageSource.dependencies) !== JSON.stringify({ 'sherpa-onnx-node': '2.0.1', sharp: '0.35.5' })) throw fail('SPEECH_INSTALL_MANIFEST');
+    const packageFile = path.join(runtime, 'package.json');
+    if (fs.existsSync(packageFile)) { if (!fs.lstatSync(packageFile).isFile() || JSON.stringify(readJson(packageFile).dependencies) !== JSON.stringify(packageSource.dependencies)) throw fail('SPEECH_RUNTIME_CONFLICT'); }
+    else fs.writeFileSync(packageFile, JSON.stringify(packageSource, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+    const npm = path.resolve(path.dirname(fs.realpathSync(process.execPath)), '../lib/node_modules/npm/bin/npm-cli.js');
+    if (!fs.statSync(npm).isFile() || !inside(privateRoot, fs.realpathSync(npm))) throw fail('SPEECH_PRIVATE_NPM_REQUIRED');
+    directory(runtime, 'node_modules');
+    const lockFile = path.join(runtime, 'package-lock.json');
+    if (fs.existsSync(lockFile) && !fs.lstatSync(lockFile).isFile()) throw fail('SPEECH_INSTALL_TARGET');
+    await command(process.execPath, [npm, 'install', '--prefix', runtime, '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org', '--cache', directory(runtime, 'npm-cache'), '--userconfig=/dev/null', '--globalconfig=' + emptyGlobal], env, 'SPEECH_NPM_FAILED', runtime);
+    for (const [name, version] of Object.entries(packageSource.dependencies)) if (readJson(path.join(runtime, 'node_modules', name, 'package.json')).version !== version) throw fail('SPEECH_NPM_VERSION');
+    // npm selects sherpa-onnx-node's native optional package by os/cpu; require the one for this host.
+    if (readJson(path.join(runtime, 'node_modules', `sherpa-onnx-linux-${process.arch}`, 'package.json')).version !== packageSource.dependencies['sherpa-onnx-node']) throw fail('SPEECH_NPM_VERSION');
+    metadata.components.npm = { dependencies: packageSource.dependencies, scriptsExecuted: false, lockSha256: await sha256(lockFile) }; persist();
+  }
   for (const { engine, entry } of selected) {
     if (!entry.files) {
       const archive = await download(entry.source, path.basename(new URL(entry.source).pathname), { bytes: entry.bytes, sha256: entry.sha256 });
@@ -291,6 +322,23 @@ export async function installSpeech({ base = defaultBase(), models = 'all', hfEn
     }
     metadata.components[entry.id] = { installed: true, inferenceVerified: false }; persist();
   }
+  {
+    const destination = target(modelRoot, VAD.directory), file = path.join(destination, VAD.name);
+    const cached = await download(VAD.source, VAD.name, VAD, vadUrl(modelSource));
+    if (fs.existsSync(destination)) {
+      if (!fs.lstatSync(destination).isDirectory() || !fs.lstatSync(file).isFile() || await sha256(file) !== VAD.sha256) throw fail('SPEECH_EXISTING_DIRECTORY_UNMANAGED');
+    } else {
+      const staging = fs.mkdtempSync(target(modelRoot, '.speech-vad-'));
+      fs.copyFileSync(cached.file, target(staging, VAD.name), fs.constants.COPYFILE_EXCL);
+      fs.writeFileSync(target(staging, 'SOURCE.json'), JSON.stringify({ source: VAD.source, downloadedFrom: modelSource === 'modelscope' ? vadUrl(modelSource) : VAD.source, upstream: VAD.upstream, upstreamRevision: VAD.upstreamRevision, license: VAD.license, sha256: VAD.sha256 }), { mode: 0o600, flag: 'wx' });
+      if (target(modelRoot, VAD.directory) !== destination || fs.existsSync(destination)) throw fail('SPEECH_INSTALL_TARGET');
+      fs.renameSync(staging, destination);
+    }
+    // Configs prepared before long-audio support get models.vad added here (no schema change).
+    const registered = registerVad(readJson(path.join(base, 'operator/speech.json')), readJson(path.join(base, 'operator/speech-models.json')), file);
+    if (registered.changed) { saveJson(path.join(base, 'operator/speech.json'), registered.config, base); saveJson(path.join(base, 'operator/speech-models.json'), registered.manifest, base); }
+    metadata.components[VAD.id] = { installed: true, inferenceVerified: false }; persist();
+  }
   if (models === 'all') {
     if (manifest.runtime.llamaCpp.commit !== LLAMA_COMMIT || manifest.runtime.llamaCpp.version !== 'v0.8.0' || manifest.runtime.llamaCpp.source !== 'https://github.com/ggml-org/llama.cpp') throw fail('SPEECH_INSTALL_MANIFEST');
     const cmakeArchive = await download(CMAKE.source, CMAKE.directory + '.tar.gz', { sha256: CMAKE.sha256 });
@@ -308,7 +356,7 @@ export async function installSpeech({ base = defaultBase(), models = 'all', hfEn
     if (config.models.tts['llama-tts'].executable !== path.join(build, 'bin/llama-tts') || !fs.statSync(config.models.tts['llama-tts'].executable).isFile()) throw fail('SPEECH_INSTALL_MANIFEST');
     metadata.components.llamaCpp = { version: 'v0.8.0', commit: LLAMA_COMMIT, cpuOnly: true, cmake: CMAKE.version, inferenceVerified: false }; persist();
   }
-  return { mode: 'apply', models, installed: selected.map(x => x.entry.id), npm: metadata.components.npm.dependencies, nativeTtsBuilt: models === 'all', inferencePerformed: false, referenceGenerated: false, servicesChanged: false, worldReset: false };
+  return { mode: 'apply', models, installed: [...selected.map(x => x.entry.id), VAD.id], npm: metadata.components.npm?.dependencies ?? null, nativeTtsBuilt: models === 'all', inferencePerformed: false, referenceGenerated: false, servicesChanged: false, worldReset: false };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
