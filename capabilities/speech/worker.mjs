@@ -3,15 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
-import { loadSpeechConfig, inputPath, engineFor, componentsPresent, wavInfo, failure, inside, trustedReference } from './config.js';
+import { loadSpeechConfig, inputPath, engineFor, componentsPresent, wavInfo, failure, inside, trustedReference, resolveVoice } from './config.js';
+import { toSimplifiedChinese } from './text.js';
 
 process.umask(0o077);
 const require = createRequire(import.meta.url);
-const allowedErrors = new Set(['SPEECH_NOT_CONFIGURED', 'SPEECH_REQUEST', 'SPEECH_AUDIO_FORMAT', 'SPEECH_AUDIO_LIMIT', 'SPEECH_PATH', 'SPEECH_INCOMPLETE', 'SPEECH_REFERENCE_REQUIRED']);
+const allowedErrors = new Set(['SPEECH_NOT_CONFIGURED', 'SPEECH_REQUEST', 'SPEECH_AUDIO_FORMAT', 'SPEECH_AUDIO_LIMIT', 'SPEECH_PATH', 'SPEECH_INCOMPLETE', 'SPEECH_REFERENCE_REQUIRED', 'SPEECH_VOICE_UNKNOWN', 'SPEECH_VOICE_SCOPE']);
 
-async function nativeTts(c, e, job) {
-  const profile = c.voiceProfiles.default;
-  const { file: reference } = trustedReference(c);
+async function nativeTts(c, e, profile, job) {
+  const { file: reference } = trustedReference(c, profile);
   // llama-tts v0.8.0 supports speaker-file conditioning, not a reference-text
   // or ICL CLI input. Do not put the registered private transcript in -p/-f.
   // Do not place private reply text in the native process command line.
@@ -20,7 +20,7 @@ async function nativeTts(c, e, job) {
   try {
     const prompt = path.join(temp, 'prompt.txt');
     fs.writeFileSync(prompt, job.text, { mode: 0o600 });
-    const args = ['-m', e.model, '-mm', e.mmproj, '--device', 'none', '-ngl', '0', '--no-mmproj-offload', '-t', String(c.numThreads), '-c', '2048', '-n', String(e.maxFrames), '--tts-lang', profile.language, '--tts-speaker-file', reference, '-f', prompt, '--output', job.outputFile];
+    const args = ['-m', e.model, '-mm', e.mmproj, '--device', 'none', '-ngl', '0', '--no-mmproj-offload', '-t', String(c.numThreads), '-c', '2048', '-n', String(e.maxFrames), '--tts-lang', e.language, '--tts-speaker-file', reference, '-f', prompt, '--output', job.outputFile];
     const log = await new Promise((resolve, reject) => {
       const child = spawn(e.executable, args, { stdio: ['ignore', 'ignore', 'pipe'], env: process.env });
       let stderr = '';
@@ -40,12 +40,14 @@ async function nativeTts(c, e, job) {
 }
 
 async function run(c, job) {
-  const e = engineFor(c, job.kind, job.quality);
-  if (!componentsPresent(c, job.kind, job.quality)) throw failure('SPEECH_NOT_CONFIGURED');
+  const profile = job.kind === 'tts' ? resolveVoice(c, job.voiceProfile, job.audience) : undefined;
+  const key = job.kind === 'tts' ? profile.engine : job.quality;
+  const e = engineFor(c, job.kind, key);
+  if (!componentsPresent(c, job.kind, key)) throw failure('SPEECH_NOT_CONFIGURED');
   if (job.kind === 'asr') {
     job.inputFile = inputPath(c, job.inputFile);
     const info = wavInfo(job.inputFile);
-    if (info.durationMs > (job.quality === 'heavy' ? c.maxHeavyAudioSeconds : c.maxAudioSeconds) * 1000) throw failure('SPEECH_AUDIO_LIMIT');
+    if (info.durationMs > (job.quality === 'fast' ? c.maxFastAudioSeconds : c.maxAudioSeconds) * 1000) throw failure('SPEECH_AUDIO_LIMIT');
     if (info.format !== 1 || info.bits !== 16) throw failure('SPEECH_AUDIO_FORMAT');
     const sherpa = require(c.sherpaModule), f = e.files;
     const modelConfig = { tokens: f.tokens || '', numThreads: c.numThreads, provider: 'cpu', debug: 0 };
@@ -58,17 +60,12 @@ async function run(c, job) {
     recognizer.decode(stream);
     const result = recognizer.getResult(stream);
     if (typeof result.text !== 'string' || result.text.length > 12000) throw failure('SPEECH_WORKER_FAILED');
-    return { text: result.text.trim(), model: e.id, durationMs: info.durationMs, complete: true, derived: true };
+    const text = e.engine === 'sherpa-qwen3-asr' ? toSimplifiedChinese(result.text.trim()) : result.text.trim();
+    return { text, model: e.id, durationMs: info.durationMs, complete: true, derived: true };
   }
-  if (job.kind !== 'tts' || job.voiceProfile !== 'default' || typeof job.text !== 'string' || !job.text.trim() || [...job.text].length > c.maxTextChars || !inside(fs.realpathSync(c.workRoot), fs.realpathSync(job.outputFile))) throw failure('SPEECH_REQUEST');
-  if (e.engine === 'llama-tts') await nativeTts(c, e, job);
-  else if (e.engine === 'sherpa-kokoro') {
-    const sherpa = require(c.sherpaModule), f = e.files;
-    const tts = new sherpa.OfflineTts({ model: { kokoro: { model: f.model, voices: f.voices, tokens: f.tokens, lexicon: [f.lexiconEn, f.lexiconZh].join(','), dictDir: f.dict, dataDir: f.espeakData }, numThreads: c.numThreads, provider: 'cpu', debug: 0 }, ruleFsts: [f.numberFst, f.dateFst].join(','), maxNumSentences: 1 });
-    const audio = tts.generate({ text: job.text, generationConfig: new sherpa.GenerationConfig({ sid: c.voiceProfiles.default.speakerId, speed: 1.0, silenceScale: 0.2 }) });
-    if (!audio.samples?.length || !Number.isInteger(audio.sampleRate)) throw failure('SPEECH_INCOMPLETE');
-    sherpa.writeWave(job.outputFile, { samples: audio.samples, sampleRate: audio.sampleRate });
-  } else throw failure('SPEECH_NOT_CONFIGURED');
+  if (job.kind !== 'tts' || typeof job.text !== 'string' || !job.text.trim() || [...job.text].length > c.maxTextChars || !inside(fs.realpathSync(c.workRoot), fs.realpathSync(job.outputFile))) throw failure('SPEECH_REQUEST');
+  if (e.engine === 'llama-tts') await nativeTts(c, e, profile, job);
+  else throw failure('SPEECH_NOT_CONFIGURED');
   return { model: e.id, ...wavInfo(job.outputFile), complete: true, mime: 'audio/wav' };
 }
 

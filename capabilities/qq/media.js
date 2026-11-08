@@ -40,7 +40,8 @@ export class QQMedia {
       const artifact = await this.call(scope, 'ingest', { sourceEventId, kind: part.kind, data });
       refs.push({ id: artifact.id, kind: part.kind });
       if (part.kind === 'audio') {
-        const result = await this.call(scope, 'transcribe', { ref: artifact.id, quality: /qwen3[ -]?asr|重档识别|高精度转写/i.test(message.authoredText) ? 'heavy' : 'light' });
+        // Tier is chosen by the media service (Qwen3-ASR by default, SenseVoice for long audio).
+        const result = await this.call(scope, 'transcribe', { ref: artifact.id });
         refs.push({ id: result.ref, kind: 'transcript' }); transcripts.push(result.text);
         descriptions.push(`音频 ${artifact.id} 的机器转写（可能误识别，不是已核对的真人逐字原话；说话者身份未知）：\n${result.text}`);
       } else if (part.kind === 'image') {
@@ -55,13 +56,14 @@ export class QQMedia {
     const policy = voiceRequested ? '\n[渠道表达策略：用户明确要求语音，本次最终回复须不超过100字，不带Markdown或URL；平台合成并取得发送回执后才算已发言。]' : '';
     const executionText = (message.authoredText || message.observation.text) + content + policy;
     if (executionText.length > 24000) throw fail('QQ_MEDIA_CONTEXT_LIMIT');
-    return { executionText, queryText, mediaRefs: refs, voiceRequested, voiceQuality: /qwen3[ -]?tts|重档语音|高质量语音/i.test(message.authoredText || transcripts.join('\n')) ? 'heavy' : /kokoro|轻档语音/i.test(message.authoredText || transcripts.join('\n')) ? 'light' : undefined };
+    return { executionText, queryText, mediaRefs: refs, voiceRequested };
   }
-  async plan({ scope, requestId, sourceEventId, text, voiceRequested, voiceQuality }) {
+  /** voiceProfile: optional operator-registered voice id; omitted uses the configured default voice. */
+  async plan({ scope, requestId, sourceEventId, text, voiceRequested, voiceProfile }) {
     const pending = await this.call(scope, 'pending', { requestId }).catch(() => ({ parts: [] }));
     const parts = [];
     if (voiceRequested) {
-      try { const audio = await this.call(scope, 'synthesize', { sourceEventId, text, quality: voiceQuality, voiceProfile: 'default' }); parts.push({ type: 'audio', ref: audio.id, text }); }
+      try { const audio = await this.call(scope, 'synthesize', { sourceEventId, text, ...(voiceProfile === undefined ? {} : { voiceProfile }) }); parts.push({ type: 'audio', ref: audio.id, text }); }
       catch { parts.push({ type: 'text', text: text + '\n（本次语音合成未完成，已改用文字；没有发送残缺语音。）' }); }
     } else parts.push({ type: 'text', text });
     for (const p of pending.parts || []) if (['image', 'sticker'].includes(p.type) && typeof p.ref === 'string') parts.push(p);

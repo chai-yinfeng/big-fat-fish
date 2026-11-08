@@ -56,7 +56,7 @@ export const CONTENT_TOOL_SCHEMA = {
       query: { type: 'string', maxLength: 128, description: 'Search query; search only.' },
       url: { type: 'string', maxLength: 8192, description: 'Public HTTP(S) page; read only.' },
       ref: { type: 'string', maxLength: 200, description: 'Scoped image/audio/sticker ref; describe/transcribe/attach only.' },
-      quality: { type: 'string', enum: ['light', 'heavy'], description: 'Transcribe only, default light. Heavy is slower CPU re-listening for <=30s audio when requested.' },
+      quality: { type: 'string', enum: ['default', 'fast'], description: 'Transcribe only. Default is Qwen3-ASR for <=30s audio (longer audio uses fast automatically); fast is SenseVoice, quicker but less accurate.' },
       question: { type: 'string', maxLength: 500, description: 'Optional image question; describe only.' },
     }, required: ['action'],
   },
@@ -128,7 +128,7 @@ export function createCompanionTools({ authority, content, scope, requestId, evi
     if (!isObject(args) || !['search', 'read', 'describe', 'transcribe', 'attach'].includes(args.action)) throw fail('INVALID_REQUEST');
     const keys = args.action === 'search' ? ['action', 'query'] : args.action === 'read' ? ['action', 'url'] : args.action === 'describe' ? ['action', 'ref', 'question'] : args.action === 'transcribe' ? ['action', 'ref', 'quality'] : ['action', 'ref'];
     closed(args, keys, keys.filter(key => !['question', 'quality'].includes(key)));
-    if (args.action === 'search' && (!string(args.query, 256) || !args.query.trim() || [...args.query].length > 128) || args.action === 'read' && !string(args.url, 8192) || ['describe', 'transcribe', 'attach'].includes(args.action) && !string(args.ref, 200) || args.question !== undefined && (!string(args.question, 1000) || [...args.question].length > 500) || args.quality !== undefined && !['light', 'heavy'].includes(args.quality)) throw fail('INVALID_REQUEST');
+    if (args.action === 'search' && (!string(args.query, 256) || !args.query.trim() || [...args.query].length > 128) || args.action === 'read' && !string(args.url, 8192) || ['describe', 'transcribe', 'attach'].includes(args.action) && !string(args.ref, 200) || args.question !== undefined && (!string(args.question, 1000) || [...args.question].length > 500) || args.quality !== undefined && !['default', 'fast'].includes(args.quality)) throw fail('INVALID_REQUEST');
     await guard();
     if (!content) throw fail('CONTENT_UNAVAILABLE');
     const request = { ...args, action: args.action === 'read' ? 'fetch' : args.action, streamId: scope.streamId, memoryEpoch: scope.memoryEpoch, ...(args.action === 'attach' ? { requestId } : {}) };

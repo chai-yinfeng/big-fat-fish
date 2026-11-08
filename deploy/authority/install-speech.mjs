@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -26,13 +26,35 @@ export function hfUrl(url, endpoint = HF_ENDPOINTS[0]) {
   if (!HF_ENDPOINTS.includes(endpoint)) throw fail('SPEECH_INSTALL_ARGUMENTS');
   return url.startsWith(HF_ENDPOINTS[0] + '/') ? endpoint + url.slice(HF_ENDPOINTS[0].length) : url;
 }
+// ModelScope is an alternative source for files with a fixed sha256 (the GGUFs).
+// On home-agent it ran ~30 MB/s direct while GitHub assets via proxy returned 504
+// and hf-mirror stalled on large files.
+export const MODEL_SOURCES = ['huggingface', 'modelscope'];
+export function ggufUrl(entry, name, { modelSource = 'huggingface', hfEndpoint = HF_ENDPOINTS[0] } = {}) {
+  if (!MODEL_SOURCES.includes(modelSource)) throw fail('SPEECH_INSTALL_ARGUMENTS');
+  if (modelSource === 'modelscope') {
+    if (entry.modelscope !== MODELSCOPE[entry.id]) throw fail('SPEECH_INSTALL_MANIFEST');
+    return `${entry.modelscope}/resolve/${entry.modelscopeRevision}/${name}`;
+  }
+  return hfUrl(`${entry.source}/resolve/${entry.revision}/${name}`, hfEndpoint);
+}
+// --proxy is for GitHub/npm/git only; ModelScope and hf-mirror are reached directly.
+export function proxyEnv(proxy) {
+  let url; try { url = new URL(proxy); } catch { throw fail('SPEECH_INSTALL_ARGUMENTS'); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw fail('SPEECH_INSTALL_ARGUMENTS');
+  const value = url.origin, noProxy = 'modelscope.cn,.modelscope.cn,hf-mirror.com,localhost,127.0.0.1';
+  return { HTTPS_PROXY: value, HTTP_PROXY: value, https_proxy: value, http_proxy: value, NO_PROXY: noProxy, no_proxy: noProxy };
+}
 const LLAMA_COMMIT = '8642541b255bfb5dc39cd351a178be09013a55d6';
 const SOURCES = {
-  'sensevoice-small-int8-2024-07-17': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2',
   'qwen3-asr-0.6b-int8-2026-03-25': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2',
-  'kokoro-v1.1-zh-int8': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_1.tar.bz2',
+  'sensevoice-small-int8-2024-07-17': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2',
   'qwen3-tts-1.7b-base-q4-k-m': 'https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF',
 };
+// Confirmed via the ModelScope file API: same names, sizes and sha256 as GGUF_FILES.
+// TODO(speech-install): ModelScope paths for the two sherpa ASR archives are not
+// confirmed; they stay GitHub-only (use --proxy on home-agent).
+const MODELSCOPE = { 'qwen3-tts-1.7b-base-q4-k-m': 'https://www.modelscope.cn/models/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF' };
 const GGUF_FILES = [
   { name: 'Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf', bytes: 1035965280, sha256: '8d18c94acb2addd042f97da63c98be144eafa76d0d9495177eab65130cf85129' },
   { name: 'mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf', bytes: 446422912, sha256: '6fd65188839bcd6ecc91b277ad471e22a0edfada4699a0fe82f1165c18cfcce2' },
@@ -64,20 +86,22 @@ function directory(root, relative) {
   return file;
 }
 function modelSelections(config, manifest, models) {
-  const selections = [['asr', 'light'], ['tts', 'light'], ...(models === 'all' ? [['asr', 'heavy'], ['tts', 'heavy']] : [])];
-  return selections.map(([kind, quality]) => {
-    const engine = config.models[kind][quality], entry = manifest.models.find(m => m.id === engine.id);
+  if (config.schemaVersion !== 2 || manifest.schemaVersion !== 2) throw fail('SPEECH_CONFIG_SCHEMA');
+  const selections = [['asr', 'default'], ['asr', 'fast'], ...(models === 'all' ? [['tts', 'llama-tts']] : [])];
+  return selections.map(([kind, key]) => {
+    const engine = config.models[kind][key], entry = manifest.models.find(m => m.id === engine?.id);
     if (!entry || entry.source !== SOURCES[entry.id]) throw fail('SPEECH_INSTALL_MANIFEST');
     if (entry.files && (entry.revision !== GGUF_REVISION || JSON.stringify(entry.files) !== JSON.stringify(GGUF_FILES))) throw fail('SPEECH_INSTALL_MANIFEST');
-    return { kind, quality, engine, entry };
+    return { kind, key, engine, entry };
   });
 }
-export function speechInstallPlan({ base = defaultBase(), models = 'all', hfEndpoint = HF_ENDPOINTS[0] } = {}) {
-  if (!['light', 'all'].includes(models) || !HF_ENDPOINTS.includes(hfEndpoint)) throw fail('SPEECH_INSTALL_ARGUMENTS');
+export function speechInstallPlan({ base = defaultBase(), models = 'all', hfEndpoint = HF_ENDPOINTS[0], modelSource = 'huggingface', proxy } = {}) {
+  if (!['asr', 'all'].includes(models) || !HF_ENDPOINTS.includes(hfEndpoint) || !MODEL_SOURCES.includes(modelSource)) throw fail('SPEECH_INSTALL_ARGUMENTS');
+  if (proxy !== undefined) proxyEnv(proxy);
   base = basePath(base);
   const prepared = fs.existsSync(path.join(base, 'operator/speech.json')) && fs.existsSync(path.join(base, 'operator/speech-models.json'));
-  const selected = prepared ? modelSelections(readJson(path.join(base, 'operator/speech.json')), readJson(path.join(base, 'operator/speech-models.json')), models).map(x => x.entry.id) : Object.keys(SOURCES).filter(id => models === 'all' || id.startsWith('sensevoice') || id.startsWith('kokoro'));
-  return { mode: 'plan', models, prepared, targetValidated: true, runtime: 'private speech-node prefix', dependencies: { 'sherpa-onnx-node': '2.0.1', sharp: '0.35.5' }, selected, hfEndpoint, nativeTts: models === 'all' ? { llamaCpp: 'v0.8.0', commit: LLAMA_COMMIT, portableCmake: '4.4.5', cpuOnly: true, jobs: 2 } : null, estimatedDiskGiB: models === 'all' ? '8-12 including cache/source/build; estimate, not measured' : '2-3 including cache/runtime; estimate, not measured', actionsRequireApply: ['private npm install with scripts disabled', 'public pinned model downloads and safe extraction', ...(models === 'all' ? ['private portable CMake download', 'pinned llama.cpp clone and CPU-only build'] : [])], inferencePerformed: false, referenceGenerated: false, servicesChanged: false, writesPerformed: false, networkRequestsPerformed: false };
+  const selected = prepared ? modelSelections(readJson(path.join(base, 'operator/speech.json')), readJson(path.join(base, 'operator/speech-models.json')), models).map(x => x.entry.id) : Object.keys(SOURCES).filter(id => models === 'all' || !id.startsWith('qwen3-tts'));
+  return { mode: 'plan', models, prepared, targetValidated: true, runtime: 'private speech-node prefix', dependencies: { 'sherpa-onnx-node': '2.0.1', sharp: '0.35.5' }, selected, hfEndpoint, modelSource, proxy: proxy === undefined ? null : new URL(proxy).origin, nativeTts: models === 'all' ? { llamaCpp: 'v0.8.0', commit: LLAMA_COMMIT, portableCmake: '4.4.5', cpuOnly: true, jobs: 2 } : null, estimatedDiskGiB: models === 'all' ? '8-12 including cache/source/build; estimate, not measured' : '3-4 including cache/runtime; estimate, not measured', actionsRequireApply: ['private npm install with scripts disabled', 'public pinned model downloads and safe extraction', ...(models === 'all' ? ['private portable CMake download', 'pinned llama.cpp clone and CPU-only build'] : [])], inferencePerformed: false, referenceGenerated: false, servicesChanged: false, writesPerformed: false, networkRequestsPerformed: false };
 }
 
 async function sha256(file) {
@@ -96,7 +120,7 @@ function saveJson(file, value, root) {
 async function publicResponse(url) {
   let current = new URL(url);
   for (let n = 0; n < 8; n++) {
-    if (current.protocol !== 'https:' || current.username || current.password || !['github.com', 'raw.githubusercontent.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com', 'huggingface.co', 'hf-mirror.com'].includes(current.hostname) && !current.hostname.endsWith('.huggingface.co') && !current.hostname.endsWith('.hf.co')) throw fail('SPEECH_DOWNLOAD_SOURCE');
+    if (current.protocol !== 'https:' || current.username || current.password || !['github.com', 'raw.githubusercontent.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com', 'huggingface.co', 'hf-mirror.com', 'modelscope.cn'].includes(current.hostname) && !current.hostname.endsWith('.huggingface.co') && !current.hostname.endsWith('.hf.co') && !current.hostname.endsWith('.modelscope.cn')) throw fail('SPEECH_DOWNLOAD_SOURCE');
     const response = await fetch(current, { redirect: 'manual', signal: AbortSignal.timeout(300000) });
     if ([301, 302, 303, 307, 308].includes(response.status)) { const location = response.headers.get('location'); await response.body?.cancel(); current = new URL(location, current); continue; }
     if (!response.ok || !response.body) throw fail('SPEECH_DOWNLOAD_FAILED');
@@ -136,15 +160,17 @@ with tarfile.open(archive,'r:*') as tar:
  tar.extractall(root,filter='data')
 `;
 
-export async function installSpeech({ base = defaultBase(), models = 'all', hfEndpoint = HF_ENDPOINTS[0], apply = false } = {}) {
-  const plan = speechInstallPlan({ base, models, hfEndpoint });
+export async function installSpeech({ base = defaultBase(), models = 'all', hfEndpoint = HF_ENDPOINTS[0], modelSource = 'huggingface', proxy, apply = false } = {}) {
+  const plan = speechInstallPlan({ base, models, hfEndpoint, modelSource, proxy });
   if (!apply) return plan;
+  // In-process fetch only uses the proxy when Node started with --use-env-proxy (the CLI re-execs).
+  if (proxy !== undefined && !process.execArgv.includes('--use-env-proxy')) throw fail('SPEECH_INSTALL_PROXY');
   if (process.platform !== 'linux' || !MACHINE[process.arch] || Number(process.versions.node.split('.')[0]) !== 24) throw fail('SPEECH_INSTALL_PLATFORM');
   const CMAKE = cmakeFor();
   base = basePath(base);
   const privateRoot = fs.realpathSync(path.join(os.homedir(), '.local/opt/companion'));
   if (!inside(privateRoot, fs.realpathSync(process.execPath))) throw fail('SPEECH_PRIVATE_NODE_REQUIRED');
-  const stats = fs.statfsSync(base), minFree = (models === 'all' ? 12 : 3) * 1024 ** 3;
+  const stats = fs.statfsSync(base), minFree = (models === 'all' ? 12 : 4) * 1024 ** 3;
   if (stats.bavail * stats.bsize < minFree) throw fail('SPEECH_INSTALL_DISK');
   const runtime = directory(privateRoot, 'speech-node');
   prepareSpeech(base, runtime);
@@ -156,11 +182,11 @@ export async function installSpeech({ base = defaultBase(), models = 'all', hfEn
   const emptyGlobal = target(runtime, 'npm-empty-global.npmrc');
   if (!fs.existsSync(emptyGlobal)) fs.writeFileSync(emptyGlobal, '', { flag: 'wx', mode: 0o600 });
   if (!fs.lstatSync(emptyGlobal).isFile() || fs.statSync(emptyGlobal).size !== 0) throw fail('SPEECH_RUNTIME_CONFLICT');
-  const env = { SPEECH_INSTALL_LOG: path.join(runtime, 'install-diagnostics.log'), PATH: path.dirname(process.execPath) + ':/usr/bin:/bin', HOME: runtime, TMPDIR: runtime, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1', CUDA_VISIBLE_DEVICES: '', HF_HUB_OFFLINE: '1', npm_config_userconfig: '/dev/null', npm_config_globalconfig: emptyGlobal };
-  async function download(url, name, expected = {}) {
+  const env = { SPEECH_INSTALL_LOG: path.join(runtime, 'install-diagnostics.log'), PATH: path.dirname(process.execPath) + ':/usr/bin:/bin', HOME: runtime, TMPDIR: runtime, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1', CUDA_VISIBLE_DEVICES: '', HF_HUB_OFFLINE: '1', npm_config_userconfig: '/dev/null', npm_config_globalconfig: emptyGlobal, ...(proxy === undefined ? {} : proxyEnv(proxy)) };
+  async function download(url, name, expected = {}, fetchUrl = hfUrl(url, hfEndpoint)) {
     const file = target(cache, name);
     if (!fs.existsSync(file)) {
-      const part = target(cache, name + '.part-' + randomUUID()), response = await publicResponse(hfUrl(url, hfEndpoint));
+      const part = target(cache, name + '.part-' + randomUUID()), response = await publicResponse(fetchUrl);
       let bytes = 0;
       const counter = new Transform({ transform(chunk, _encoding, callback) { bytes += chunk.length; callback(bytes > 3 * 1024 ** 3 ? fail('SPEECH_DOWNLOAD_SIZE') : null, chunk); } });
       await pipeline(Readable.fromWeb(response.body), counter, fs.createWriteStream(part, { flags: 'wx', mode: 0o600 }));
@@ -172,7 +198,7 @@ export async function installSpeech({ base = defaultBase(), models = 'all', hfEn
     const digest = await sha256(file), bytes = fs.statSync(file).size;
     if (expected.sha256 && digest !== expected.sha256 || expected.bytes != null && bytes !== expected.bytes) throw fail('SPEECH_DOWNLOAD_DIGEST');
     if (metadata.downloads[name] && (metadata.downloads[name].source !== url || metadata.downloads[name].sha256 !== digest)) throw fail('SPEECH_DOWNLOAD_DIGEST');
-    metadata.downloads[name] = { source: url, sha256: digest, bytes, verifiedAgainstPublishedDigest: Boolean(expected.sha256) }; persist();
+    metadata.downloads[name] = { source: url, ...(fetchUrl === url ? {} : { fetchedFrom: fetchUrl }), sha256: digest, bytes, verifiedAgainstPublishedDigest: Boolean(expected.sha256) }; persist();
     return { file, sha256: digest, bytes };
   }
   async function extract(archive, parent, top, finalName, marker) {
@@ -217,7 +243,7 @@ export async function installSpeech({ base = defaultBase(), models = 'all', hfEn
       const destination = target(modelRoot, 'qwen3-tts-1.7b-base-gguf');
       if (path.dirname(engine.model) !== destination || path.dirname(engine.mmproj) !== destination) throw fail('SPEECH_INSTALL_MANIFEST');
       const files = [];
-      for (const f of entry.files) files.push({ ...f, cached: await download(`${entry.source}/resolve/${entry.revision}/${f.name}`, f.name, f) });
+      for (const f of entry.files) files.push({ ...f, cached: await download(`${entry.source}/resolve/${entry.revision}/${f.name}`, f.name, f, ggufUrl(entry, f.name, { modelSource, hfEndpoint })) });
       if (fs.existsSync(destination)) {
         if (!fs.lstatSync(destination).isDirectory()) throw fail('SPEECH_INSTALL_TARGET');
         for (const f of files) { const file = target(destination, f.name); if (!fs.lstatSync(file).isFile() || await sha256(file) !== f.sha256) throw fail('SPEECH_EXISTING_DIRECTORY_UNMANAGED'); }
@@ -228,7 +254,7 @@ export async function installSpeech({ base = defaultBase(), models = 'all', hfEn
         const license = await download('https://raw.githubusercontent.com/QwenLM/Qwen3-TTS/022e286b98fbec7e1e916cb940cdf532cd9f488e/LICENSE', 'qwen3-tts-Apache-LICENSE.txt');
         fs.copyFileSync(card.file, target(staging, 'UPSTREAM_MODEL_CARD.md'), fs.constants.COPYFILE_EXCL);
         fs.copyFileSync(license.file, target(staging, 'LICENSE'), fs.constants.COPYFILE_EXCL);
-        fs.writeFileSync(target(staging, 'SOURCE.json'), JSON.stringify({ source: entry.source, revision: entry.revision, files: entry.files, upstream: entry.upstream, upstreamRevision: entry.upstreamRevision }), { mode: 0o600, flag: 'wx' });
+        fs.writeFileSync(target(staging, 'SOURCE.json'), JSON.stringify({ source: entry.source, revision: entry.revision, downloadedFrom: modelSource, files: entry.files, upstream: entry.upstream, upstreamRevision: entry.upstreamRevision }), { mode: 0o600, flag: 'wx' });
         if (target(modelRoot, path.basename(destination)) !== destination || fs.existsSync(destination)) throw fail('SPEECH_INSTALL_TARGET');
         fs.renameSync(staging, destination);
       }
@@ -249,7 +275,7 @@ export async function installSpeech({ base = defaultBase(), models = 'all', hfEn
     const cmake = path.join(cmakeRoot, 'bin/cmake'), build = target(source, 'build');
     await command(cmake, ['-S', source, '-B', build, '-G', 'Unix Makefiles', '-DCMAKE_BUILD_TYPE=Release', '-DGGML_CUDA=OFF', '-DGGML_VULKAN=OFF', '-DGGML_METAL=OFF', '-DGGML_CPU_KLEIDIAI=OFF', '-DGGML_BLAS=OFF', '-DLLAMA_OPENSSL=OFF', '-DLLAMA_BUILD_TESTS=OFF', '-DLLAMA_BUILD_EXAMPLES=OFF', '-DLLAMA_BUILD_SERVER=OFF', '-DLLAMA_BUILD_APP=OFF', '-DLLAMA_CONNECT=OFF'], env, 'SPEECH_CMAKE_FAILED');
     await command(cmake, ['--build', build, '--target', 'llama-tts', '-j2'], env, 'SPEECH_BUILD_FAILED');
-    if (config.models.tts.heavy.executable !== path.join(build, 'bin/llama-tts') || !fs.statSync(config.models.tts.heavy.executable).isFile()) throw fail('SPEECH_INSTALL_MANIFEST');
+    if (config.models.tts['llama-tts'].executable !== path.join(build, 'bin/llama-tts') || !fs.statSync(config.models.tts['llama-tts'].executable).isFile()) throw fail('SPEECH_INSTALL_MANIFEST');
     metadata.components.llamaCpp = { version: 'v0.8.0', commit: LLAMA_COMMIT, cpuOnly: true, cmake: CMAKE.version, inferenceVerified: false }; persist();
   }
   return { mode: 'apply', models, installed: selected.map(x => x.entry.id), npm: metadata.components.npm.dependencies, nativeTtsBuilt: models === 'all', inferencePerformed: false, referenceGenerated: false, servicesChanged: false, worldReset: false };
@@ -257,14 +283,18 @@ export async function installSpeech({ base = defaultBase(), models = 'all', hfEn
 
 if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try {
-    const options = { apply: false, models: 'all' };
+    const options = { apply: false, models: 'all' }, names = { '--hf-endpoint': 'hfEndpoint', '--model-source': 'modelSource' };
     let explicitMode;
     for (let i = 2; i < process.argv.length; i++) {
       const value = process.argv[i];
       if (value === '--plan' || value === '--apply') { if (explicitMode) throw fail('SPEECH_INSTALL_ARGUMENTS'); explicitMode = value; options.apply = value === '--apply'; }
-      else if (value === '--base' || value === '--models' || value === '--hf-endpoint') { const next = process.argv[++i]; if (!next || next.startsWith('--')) throw fail('SPEECH_INSTALL_ARGUMENTS'); options[value === '--hf-endpoint' ? 'hfEndpoint' : value.slice(2)] = next; }
+      else if (['--base', '--models', '--hf-endpoint', '--model-source', '--proxy'].includes(value)) { const next = process.argv[++i]; if (!next || next.startsWith('--')) throw fail('SPEECH_INSTALL_ARGUMENTS'); options[names[value] || value.slice(2)] = next; }
       else throw fail('SPEECH_INSTALL_ARGUMENTS');
     }
-    process.stdout.write(JSON.stringify(await installSpeech(options)) + '\n');
+    if (options.apply && options.proxy !== undefined && !process.execArgv.includes('--use-env-proxy')) {
+      // Re-run once with Node's env-proxy support so fetch() honours HTTPS_PROXY/NO_PROXY.
+      const child = spawnSync(process.execPath, ['--use-env-proxy', ...process.argv.slice(1)], { stdio: 'inherit', env: { ...process.env, ...proxyEnv(options.proxy) } });
+      process.exitCode = child.status ?? 1;
+    } else process.stdout.write(JSON.stringify(await installSpeech(options)) + '\n');
   } catch (e) { process.stderr.write(/^SPEECH_[A-Z_]+$/.test(e.code || '') ? e.code + '\n' : 'SPEECH_INSTALL_FAILED\n'); process.exitCode = 1; }
 }

@@ -59,7 +59,7 @@ export const INVENTORY = [
     readers: ['content service control.tokenFile (hashed at start)', 'authority content.tokenFile (mounted, read per request)'] },
   { file: 'qq-runtime/private/onebot.token', format: 'hex', optional: true, hashes: [],
     plain: 'qq-runtime/data/config/onebot11*.json network.*[].token (NapCat, incl. account-named copies)',
-    readers: ['qq bridge onebotTokenFile', 'deploy/qq/audition-voice.mjs'] },
+    readers: ['qq bridge onebotTokenFile'] },
   { env: 'qq-runtime/private/napcat.env', key: 'WEBUI_TOKEN', format: 'hex', optional: true, hashes: [],
     plain: 'qq-runtime/data/config/webui.json token (NapCat WebUI, authoritative after first start)',
     readers: ['NapCat container env_file', 'deploy/qq/open-login.mjs, configure-recovery.mjs (webui.json)'] },

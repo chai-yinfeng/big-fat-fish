@@ -40,8 +40,8 @@ export function operatorOrigin(location, { sameOrigin = false } = {}) {
 }
 export async function operatorRequest({ location, token, path, payload, fetchImpl = fetch, signal, sameOrigin = false }) {
   if (!token) throw Object.assign(new Error('authorization_required'), { code: 'authorization_required' });
-  if (!['/world', '/world/pause', '/persona', '/model', '/model/test', '/qq', '/memory', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/test'].includes(path)) throw new Error('unsupported_operator_path');
-  if (['/model', '/model/test', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
+  if (!['/world', '/world/pause', '/persona', '/model', '/model/test', '/qq', '/memory', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path)) throw new Error('unsupported_operator_path');
+  if (['/model', '/model/test', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
   if (path === '/runtime' && payload !== undefined) throw new Error('operator_get_required');
   const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}`, {
     method: payload === undefined ? 'GET' : 'POST',

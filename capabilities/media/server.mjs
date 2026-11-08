@@ -40,7 +40,7 @@ export function createContentServer({ socketPath, tokenFile, service, worldStatu
       const body = await bodyOf(req, isOperator ? 3 * 1024 * 1024 : 13 * 1024 * 1024);
       if (isOperator) {
         if (typeof operatorCall !== 'function') throw failure('CONTENT_OPERATOR_UNAVAILABLE');
-        if (!['status', 'configure', 'reference', 'test', 'removeReference'].includes(body.action)) throw failure('CONTENT_REQUEST_INVALID');
+        if (!['status', 'configure', 'reference', 'test', 'removeReference', 'setDefaultVoice'].includes(body.action)) throw failure('CONTENT_REQUEST_INVALID');
         if (active.size >= 8) throw failure('CONTENT_BUSY');
         const changing = body.action !== 'status';
         // worldRevision is optional; when given, the operation is cancelled if the world changes.

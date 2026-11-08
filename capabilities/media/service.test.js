@@ -22,9 +22,9 @@ test('real capability and private-control sockets preserve media provenance; pau
   core.bindActor({ capabilityId: 'qq', externalActorId: 'owner', personId: 'person:owner' });
   core.bindStream({ capabilityId: 'qq', streamId: 'private', personId: 'person:owner', audience: 'private' });
   core.observe('qq', { streamId: 'private', eventId: 'source', actorId: 'owner', role: 'user', text: '[audio attachment]', at: 1 });
-  let speechCalls = 0;
+  let speechCalls = 0; const qualities = [];
   const store = new ArtifactStore({ root: path.join(root, 'media') });
-  const service = new MediaService({ store, workRoot: path.join(root, 'work'), speech: { transcribe: async () => { speechCalls++; return { text: '合成测试转写', model: 'synthetic' }; } } });
+  const service = new MediaService({ store, workRoot: path.join(root, 'work'), speech: { transcribe: async ({ quality }) => { speechCalls++; qualities.push(quality); return { text: '合成测试转写', model: 'synthetic' }; } } });
   const controlSocket = path.join(root, 'content.sock'), socketPath = path.join(root, 'core.sock');
   const content = createContentServer({ socketPath: controlSocket, tokenFile: controlFile, service, worldStatus: async () => core.worldStatus() });
   const authority = createAuthorityServer({ authority: core, socketPath, credentials: [{ role: 'capability', capabilityId: 'qq', hash: createHash('sha256').update(capabilityToken).digest('hex') }], contentControl: createContentControlClient({ socketPath: controlSocket, tokenFile: controlFile }) });
@@ -34,7 +34,7 @@ test('real capability and private-control sockets preserve media provenance; pau
   const scope = { streamId: 'private', memoryEpoch: 0 };
   const artifact = await client.call({ ...scope, action: 'ingest', kind: 'audio', sourceEventId: 'source', data: wave.toString('base64') });
   const result = await client.call({ ...scope, action: 'transcribe', ref: artifact.id });
-  assert.equal(result.text, '合成测试转写'); assert.equal(result.isVerbatimUserText, false); assert.equal(result.isNewEvidence, false);
+  assert.equal(result.text, '合成测试转写'); assert.equal(result.isVerbatimUserText, false); assert.equal(result.isNewEvidence, false); assert.deepEqual(qualities, ['default']);
   assert.equal(JSON.parse(core.store.db.prepare('SELECT body FROM observations WHERE event_id=?').get('source').body).text, '[audio attachment]');
   core.setWorldPaused({ paused: true, expectedRevision: core.worldStatus().revision });
   await assert.rejects(client.call({ ...scope, action: 'transcribe', ref: artifact.id })); assert.equal(speechCalls, 1);
