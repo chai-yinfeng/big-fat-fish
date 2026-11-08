@@ -66,6 +66,16 @@ class ContractTests(unittest.TestCase):
         self.assertIn(('--ro-bind', str(self.root / 'base/operator/authority.json'), '/authority/config.json'), self.mounts(command))
         self.assertEqual(command[-4:], [launch.NODE, '/opt/companion/release/authority/src/main.js', '--config', '/authority/config.json'])
 
+    def test_lib64_symlink_only_when_host_has_usr_lib64(self):
+        isdir = os.path.isdir
+        for present in (True, False):
+            def fake(path, present=present):
+                return present if path == '/usr/lib64' else isdir(path)
+            with patch.object(launch.os.path, 'isdir', side_effect=fake):
+                command = self.command('authority')
+            links = [(command[i + 1], command[i + 2]) for i in range(len(command)) if command[i] == '--symlink']
+            self.assertEqual(('usr/lib64', '/lib64') in links, present)
+
     def test_no_missing_mount_creation_or_unknown_roles(self):
         with self.assertRaises(ValueError):
             self.command('authority', ['--arbitrary'])

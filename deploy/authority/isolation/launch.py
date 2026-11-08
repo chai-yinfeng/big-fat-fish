@@ -45,6 +45,9 @@ def build_command(role, base, release, runtime, ops, arguments=()):
             '--tmpfs', '/tmp', '--tmpfs', '/run',
             '--ro-bind', release, PREFIX + '/release',
             '--ro-bind', runtime, PREFIX + '/runtime']
+    # x86_64 ELF binaries load /lib64/ld-linux-x86-64.so.2; arm64 hosts have no /usr/lib64.
+    if os.path.isdir('/usr/lib64'):
+        args += ['--symlink', 'usr/lib64', '/lib64']
     # Dynamic linking needs this cache on some distributions, but no host /etc tree.
     if Path('/etc/ld.so.cache').is_file():
         args += ['--ro-bind', '/etc/ld.so.cache', '/etc/ld.so.cache']
