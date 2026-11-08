@@ -20,7 +20,8 @@ companion-conversation QQ delivery adapter → 实际回执
 默认 Executor 是 companion-conversation：pi-agent-core 的 Agent/tool loop，经 pi-ai `openai-completions`（DeepSeek compat，回传 `reasoning_content`）和 Unix socket fetch 只访问私有 model-gateway。会话 ID 由执行器按 streamId+memoryEpoch 派生，每个会话一个私有 JSONL；每次模型请求前取 Authority context（查询为本回合真实输入）；超时或调用方断开即 abort，同一会话串行。
 
 当前限制：
-- 尚未在生产主机部署与真实对话验收；systemd 加固在 user manager 下依赖非特权 user namespace，未在 home-agent 验证。
+- 尚未在生产主机部署与真实对话验收。
+- 执行器以 companion 用户运行、没有文件系统隔离（home-agent 的非特权 user manager 会静默跳过挂载/命名空间类选项）；网络经 seccomp 限制为 Unix socket；模型只能调用两个受限工具，它们不访问文件系统。
 
 ## 实际源码边界
 

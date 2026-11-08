@@ -12,9 +12,9 @@ Host defaults (overridable as launcher flags before the role):
 | Flag | Default |
 | --- | --- |
 | `--base` | `$HOME/.local/share/companion-world-v1` |
-| `--release` | `$HOME/src/dsh-companion/current` (symlink switched by `companion-deploy`) |
+| `--release` | `$HOME/src/companion/current` (symlink switched by `companion-deploy`) |
 | `--runtime` | `$HOME/.local/opt/companion` |
-| `--ops` | `$HOME/src/dsh-companion/current/ops` (accepted, not mounted) |
+| `--ops` | `$HOME/src/companion/current/ops` (accepted, not mounted) |
 
 The release and operations trees must contain code only, not operator
 credentials, database snapshots, or unrelated host configuration. The broad
@@ -52,14 +52,15 @@ from host `/etc`. Every inherited descriptor above stderr is closed.
 ## Other units
 
 The conversation executor (`companion-conversation.service`) is not wrapped in
-bwrap. It uses systemd hardening instead: `NoNewPrivileges`, `ProtectSystem=strict`
-with `ReadWritePaths` only for `conversation-data/` and `ipc/conversation/`,
-`InaccessiblePaths` for the Authority database, provider settings, operator
-tokens, QQ login data and other role credentials, `PrivateTmp`, `PrivateNetwork`
-and `RestrictAddressFamilies=AF_UNIX`. It reaches only the Authority and model
-gateway Unix sockets. In a user manager these options imply `PrivateUsers=`, so
-the host must allow unprivileged user namespaces for systemd (not yet verified on
-home-agent). `companion-qq.service` requires the conversation service. Ports:
+bwrap and runs as the companion user **without filesystem isolation**. On
+home-agent (systemd 255, `apparmor_restrict_unprivileged_userns=1`) an
+unprivileged user manager silently skips mount/namespace options (ProtectSystem,
+ReadWritePaths, InaccessiblePaths, PrivateTmp, PrivateNetwork, also with
+PrivateUsers), so the unit lists only options that take effect: `NoNewPrivileges`
+and seccomp/prctl-based `RestrictAddressFamilies=AF_UNIX` (network limited to Unix
+sockets), `SystemCallArchitectures=native`, `LockPersonality`, `RestrictRealtime`,
+`RestrictSUIDSGID`, plus `UMask`. The model can reach only `companion_scope` and
+`companion_content`, which have no filesystem access. `companion-qq.service` requires the conversation service. Ports:
 3082 is the only companion-owned TCP listener (`companion-world-public.socket`).
 
 ## Validation (no deployment)
