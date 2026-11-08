@@ -13,7 +13,7 @@ async function fixture(t, sendError = false) {
   const world = { paused: true, revision: 1 }, observations = [], sends = []; let executions = 0;
   const authority = { health: async () => ({ world }), context: async () => ({ entityId: 'entity:big-fat-fish', memoryEpoch: 0, world }) };
   const onebot = { call: async (action, args) => { if (action === 'get_login_info') return { user_id: 100 }; sends.push(args); if (sendError) throw new Error('NO_RECEIPT'); return { message_id: 99 }; } };
-  const bridge = new QQBridge({ authority, port: { observe: async value => observations.push(value) }, onebot, settingsFile: path.join(dir, 'settings.json'), stateFile: path.join(dir, 'state.json'), inboxFile: path.join(dir, 'inbox.ndjson'), workerConfigFile: path.join(dir, 'worker.json'), workerAuthoritySocket: '/private/authority.sock', workerTokenFile: '/private/token', workerInboxFile: '/private/inbox', executor: { execute: async () => { executions++; return '[CQ:file,file=/secret] just text'; } } });
+  const bridge = new QQBridge({ authority, port: { observe: async value => { observations.push(value); return { observationId: 'observation-' + observations.length }; } }, onebot, settingsFile: path.join(dir, 'settings.json'), stateFile: path.join(dir, 'state.json'), executor: { execute: async () => { executions++; return '[CQ:file,file=/secret] just text'; } } });
   await bridge.connection(true); await bridge.configure({ expectedSelfId: '100', allowedCallerUID: '200' });
   world.paused = false; world.revision++;
   const event = { post_type: 'message', message_type: 'private', self_id: 100, user_id: 200, sender: { user_id: 200 }, message_id: 7, time: Math.floor(Date.now() / 1000), message: [{ type: 'text', data: { text: 'Hello' } }] };
@@ -76,13 +76,14 @@ test('Core forgotten platform input becomes a dedupe tombstone without any SDK o
 });
 
 
-test('QQ selects only the Core epoch SID and discards an in-flight reply after forget', async t => {
+test('QQ passes only the Core epoch scope and discards an in-flight reply after forget', async t => {
   const f = await fixture(t); let epoch = 3, executed;
   f.bridge.authority.context = async () => ({ entityId: 'entity:big-fat-fish', memoryEpoch: epoch, world: f.world });
-  assert.match((await f.bridge.status()).sessionId, /-e3$/);
-  f.bridge.executor.execute = async input => { executed = input.sessionId; epoch = 4; return 'stale reply'; };
+  f.bridge.executor.execute = async request => { executed = request; epoch = 4; return 'stale reply'; };
   await f.bridge.receive(f.event);
-  assert.match(executed, /-e3$/);
+  assert.deepEqual(executed.scope, { streamId: 'qq:100:private:200', memoryEpoch: 3 });
+  assert.equal(Object.hasOwn(executed, 'sessionId'), false);
+  assert.deepEqual(executed.input, { text: 'Hello', queryText: 'Hello', mediaRefs: [], evidence: [{ ref: 'observation-1', eventId: 'onebot:v11:message:7', role: 'user' }] });
   assert.equal(f.sends.length, 0);
   assert.equal(Object.values(f.bridge.state.records)[0].status, 'paused');
 });
