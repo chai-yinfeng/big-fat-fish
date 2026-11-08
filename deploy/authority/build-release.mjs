@@ -42,7 +42,7 @@ function copy(relative, destination = relative) {
 for (const item of ['model-gateway', 'authority/src', 'authority/test', 'authority/package.json', 'authority/PROTOCOL.md', 'capabilities/qq', 'capabilities/memory', 'capabilities/media', 'capabilities/speech', 'deploy/qq', 'core/src/persona.js', 'core/src/util.js']) copy(item);
 // Dependency-free conversation modules used by QQ and the purge; the executor itself is bundled below.
 for (const item of ['index.js', 'executor.js', 'client.js', 'sessions.js', 'package.json']) copy('capabilities/conversation/' + item);
-for (const item of ['bootstrap.mjs', 'prepare-model.mjs', 'prepare-qq.mjs', 'prepare-conversation.mjs', 'prepare-memory.mjs', 'prepare-speech.mjs', 'prepare-content.mjs', 'prepare-console.mjs', 'install-speech.mjs', 'benchmark-speech.mjs', 'media-runtime.package.json', 'purge-execution.mjs', 'isolation/launch.py', 'isolation/units']) copy('deploy/authority/' + item, 'ops/' + item);
+for (const item of ['bootstrap.mjs', 'prepare-model.mjs', 'prepare-qq.mjs', 'prepare-conversation.mjs', 'prepare-memory.mjs', 'prepare-speech.mjs', 'prepare-content.mjs', 'prepare-console.mjs', 'install-speech.mjs', 'benchmark-speech.mjs', 'media-runtime.package.json', 'purge-execution.mjs', 'preflight.mjs', 'isolation/launch.py', 'isolation/units']) copy('deploy/authority/' + item, 'ops/' + item);
 copy('console/dist', 'console-web');
 // One self-contained ESM file (pi-agent-core, pi-ai, openai SDK); no node_modules in a release.
 const bundle = 'capabilities/conversation/conversation.mjs';

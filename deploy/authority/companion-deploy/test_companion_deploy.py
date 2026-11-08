@@ -37,6 +37,8 @@ class FakeSystem(cd.System):
         self.broken = set()  # release names whose authority service fails
         self.answer = True
         self.chowned = []
+        self.preflights = []  # release directories the preflight ran from
+        self.preflight_result = (0, 'PREFLIGHT OK checked=9 failures=0 warnings=0\n')
 
     def owner(self):
         return os.getuid(), os.getgid()
@@ -64,6 +66,11 @@ class FakeSystem(cd.System):
 
     def listening(self, port):
         return True
+
+    def preflight(self, release):
+        self.preflights.append((Path(release).name, self.running(), [c[0] for c in self.calls]))
+        code, stdout = self.preflight_result
+        return subprocess.CompletedProcess(['node'], code, stdout, '')
 
     def sleep(self, seconds):
         pass
@@ -130,7 +137,7 @@ class Fixture(unittest.TestCase):
         name = 'authority-%s-%s' % (version, revision[:12])
         tree = self.root / 'build' / name
         files = {'authority/src/store.js': 'export const SCHEMA_VERSION = %d;\n' % schema,
-                 'ops/isolation/launch.py': '#!/usr/bin/python3\n', 'package.json': '{}\n'}
+                 'ops/isolation/launch.py': '#!/usr/bin/python3\n', 'ops/preflight.mjs': '// synthetic\n', 'package.json': '{}\n'}
         for unit in UNITS.iterdir():
             files['ops/isolation/units/' + unit.name] = unit.read_text()
         for relative, text in files.items():
@@ -447,13 +454,91 @@ class DeployTests(Fixture):
         self.assertTrue((self.config.releases / 'authority-0.10.0').is_dir())
 
 
+class PreflightTests(Fixture):
+    def test_preflight_runs_from_the_new_release_before_any_unit_is_stopped(self):
+        tarball, name = self.release(self.commits[1])
+        self.assertEqual(self.deployer.deploy(tarball), name)
+        # Ran once, from the installed new release, while the old release was still current and nothing was stopped.
+        self.assertEqual(self.system.preflights, [(name, None, [])])
+
+    def test_failed_preflight_refuses_and_leaves_production_untouched(self):
+        tarball, name = self.release(self.commits[1])
+        self.system.preflight_result = (1, 'PREFLIGHT FAIL speech.json SPEECH_CONFIG_SCHEMA\n'
+                                           'PREFLIGHT FAIL memory-worker.json RELEASE_PINNED_PATH purgeModule\n'
+                                           'secret-token-value /home/companion/private\n'
+                                           'PREFLIGHT REFUSED checked=8 failures=2 warnings=0\n')
+        with self.assertRaisesRegex(cd.DeployError, 'preflight of %s refused the deploy .*speech.json SPEECH_CONFIG_SCHEMA; '
+                                    'memory-worker.json RELEASE_PINNED_PATH purgeModule' % name):
+            self.deployer.deploy(tarball)
+        self.assertEqual(self.system.calls, [])  # no stop, daemon-reload or start
+        self.assertFalse((self.config.releases / 'current').is_symlink())
+        self.assertEqual(self.units(), self.legacy_units)
+        self.assertFalse(os.path.lexists(self.config.releases / name))
+        self.assertEqual(list(self.config.snapshots.iterdir()), [])
+        self.assertNotIn(name, [i['release'] for i in self.deployer.load_state()['installed']])
+        record = [json.loads(line) for line in self.config.log.read_text().splitlines()][-1]
+        self.assertEqual((record['action'], record['removed_failed']), ('deploy-refused', True))
+        self.assertEqual(record['preflight'], ['speech.json SPEECH_CONFIG_SCHEMA', 'memory-worker.json RELEASE_PINNED_PATH purgeModule'])
+        status = json.loads(self.config.status.read_text())
+        self.assertFalse(status['last']['ok'])
+        everything = self.config.log.read_text() + self.config.status.read_text() + '\n'.join(self.system.said)
+        self.assertNotIn('secret-token-value', everything)
+        self.assertNotIn('/home/companion/private', everything)
+        # The same tarball deploys once the world is fixed.
+        self.system.preflight_result = (0, 'PREFLIGHT OK checked=9 failures=0 warnings=0\n')
+        self.assertEqual(self.deployer.deploy(tarball), name)
+
+    def test_crashed_preflight_and_a_release_without_one_are_refused(self):
+        tarball, name = self.release(self.commits[1])
+        self.system.preflight_result = (1, 'PREFLIGHT ERROR PREFLIGHT_CRASHED\n')
+        with self.assertRaisesRegex(cd.DeployError, 'preflight exited 1 without failure codes'):
+            self.deployer.deploy(tarball)
+        shutil.rmtree(self.root / 'inbox')
+        tarball, name = self.release(self.commits[2], mutate=lambda t: self.drop_preflight(t))
+        with self.assertRaisesRegex(cd.DeployError, 'release has no ops/preflight.mjs'):
+            self.deployer.deploy(tarball)
+        self.assertEqual(self.system.calls, [])
+        self.assertEqual(self.system.preflights, [(self.system.preflights[0][0], None, [])])
+
+    @staticmethod
+    def drop_preflight(tree):
+        (tree / 'ops/preflight.mjs').unlink()
+        manifest = json.loads((tree / 'source-manifest.json').read_text())
+        del manifest['files']['ops/preflight.mjs']
+        (tree / 'source-manifest.json').write_text(json.dumps(manifest))
+
+    def test_warnings_are_shown_but_do_not_refuse(self):
+        tarball, name = self.release(self.commits[1])
+        self.system.preflight_result = (0, 'PREFLIGHT WARN memory-worker.json IGNORED_LEGACY_FIELD purgeModule\nPREFLIGHT OK checked=9 failures=0 warnings=1\n')
+        self.assertEqual(self.deployer.deploy(tarball), name)
+        self.assertIn('PREFLIGHT WARN memory-worker.json IGNORED_LEGACY_FIELD purgeModule', self.system.said)
+
+
+class FreshHostPreflightTests(Fixture):
+    fresh = True
+
+    def test_first_install_has_no_world_to_check(self):
+        tarball, name = self.release(self.commits[1])
+        self.assertEqual(self.deployer.deploy(tarball), name)
+        self.assertEqual(self.system.preflights, [])
+
+
 class HealthTests(Fixture):
     def test_only_the_remaining_console_port_is_required(self):
         self.assertEqual(cd.PORTS, (3082,))
+        self.assertEqual(self.config.ports, (3082,))
         probed = []
         self.system.listening = lambda port: probed.append(port) or port == 3082
         self.assertEqual(self.deployer.health(self.deployer.installed_units()), [])
         self.assertEqual(probed, [3082])
+
+    def test_configured_ports_replace_the_default(self):
+        config = cd.Config(home=self.config.home, state=self.root / 'state2', ports=(13082,))
+        probed = []
+        self.system.listening = lambda port: probed.append(port) or False
+        deployer = cd.Deployer(config, self.system)
+        self.assertEqual(deployer.health([]), ['127.0.0.1:13082 is not listening'])
+        self.assertEqual(probed, [13082])
 
 
 class FreshHostTests(Fixture):

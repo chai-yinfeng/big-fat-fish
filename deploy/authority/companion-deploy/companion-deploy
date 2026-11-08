@@ -5,7 +5,7 @@ Installed once by the human (root-owned, /usr/local/sbin/companion-deploy).
 It trusts only itself, its root-owned state and its own Git mirror of the
 public origin. The tarball and everything in the agent inbox are untrusted.
 
-  companion-deploy deploy <tarball>   verify, install, switch, restart, check
+  companion-deploy deploy <tarball>   verify, install, preflight, switch, restart, check
   companion-deploy start              (re)start the current release's services, check
   companion-deploy rollback           switch back to the previous release
   companion-deploy status             current/previous release and unit state
@@ -52,6 +52,9 @@ MAX_MEMBERS = 50000
 RELEASE_PATTERN = re.compile(r'^authority-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)-([0-9a-f]{12})$')
 UNIT_PATTERN = re.compile(r'^companion-[A-Za-z0-9-]+\.(service|socket)$')
 SCHEMA_PATTERN = re.compile(r'^export const SCHEMA_VERSION = (\d+);$', re.M)
+PREFLIGHT_TIMEOUT_SECONDS = 120
+# Only these lines of the release's own preflight output are shown or logged (codes, labels, key names).
+PREFLIGHT_LINE = re.compile(r'^PREFLIGHT (FAIL|WARN) [A-Za-z0-9._-]{1,64} [A-Z][A-Z0-9_]{0,63}( [A-Za-z0-9._-]{1,128})?$')
 
 
 class DeployError(Exception):
@@ -62,7 +65,7 @@ class Config:
     """All host paths in one place; tests point them at a temporary tree."""
     def __init__(self, home='/home/companion', state='/var/lib/companion-deploy',
                  log='/var/log/companion-deploy.log', status='/var/log/companion-deploy.status.json',
-                 origin=ORIGIN_URL, git_protocol='https', user=SERVICE_USER):
+                 origin=ORIGIN_URL, git_protocol='https', user=SERVICE_USER, ports=PORTS):
         self.home = Path(home)
         self.releases = self.home / 'src/companion'
         self.units = self.home / '.config/systemd/user'
@@ -76,6 +79,7 @@ class Config:
         self.origin = origin
         self.git_protocol = git_protocol
         self.user = user
+        self.ports = tuple(ports)
 
 
 class System:
@@ -112,6 +116,18 @@ class System:
                'GIT_CONFIG_NOSYSTEM': '1', 'LANG': 'C'}
         command = ['git', '-c', 'protocol.allow=never', '-c', 'protocol.%s.allow=always' % self.config.git_protocol, *args]
         return subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, timeout=300)
+
+    def preflight(self, release):
+        """Run the release's read-only ops/preflight.mjs as the service user against its data root."""
+        entry = pwd.getpwnam(self.config.user)
+        node = self.config.home / '.local/opt/companion/bin/node'
+        env = {'PATH': '/usr/bin:/bin', 'HOME': str(self.config.home), 'LANG': 'C.UTF-8'}
+        try:
+            return subprocess.run([str(node), str(Path(release) / 'ops/preflight.mjs')], cwd=str(self.config.home), env=env,
+                                  user=entry.pw_uid, group=entry.pw_gid, extra_groups=[], stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            raise DeployError('preflight timed out')
 
     def sleep(self, seconds):
         time.sleep(seconds)
@@ -500,7 +516,7 @@ class Deployer:
                 problems.append('%s is %s' % (name, state))
             if restarts != first.get(name, ('', restarts))[1]:
                 problems.append(name + ' restarted during the health window')
-        for port in PORTS:
+        for port in self.config.ports:
             if not self.system.listening(port):
                 problems.append('127.0.0.1:%d is not listening' % port)
         return problems
@@ -555,6 +571,23 @@ class Deployer:
             self.system.say('WARNING: could not remove failed release %s: %s' % (release, error))
             return False
         return True
+
+    @staticmethod
+    def release_units(release_dir):
+        return Path(release_dir) / 'ops/isolation/units'
+
+    def preflight(self, release_dir):
+        """Problems found by the new release's preflight against the existing world; [] when it passes."""
+        if not (Path(release_dir) / 'ops/preflight.mjs').is_file():
+            return ['release has no ops/preflight.mjs']
+        result = self.system.preflight(release_dir)
+        lines = [line for line in result.stdout.splitlines() if PREFLIGHT_LINE.match(line)][:30]
+        for line in lines:
+            self.system.say(line)
+        if result.returncode == 0:
+            return []
+        failures = [line[len('PREFLIGHT FAIL '):] for line in lines if line.startswith('PREFLIGHT FAIL ')]
+        return failures or ['preflight exited %d without failure codes' % result.returncode]
 
     # retention
     def retain(self, state):
@@ -623,17 +656,23 @@ class Deployer:
             if active is None:
                 return self._first_install(extracted / top, target, top, manifest, state)
 
-            previous_units = self.installed_units()
-            snapshot = self.snapshot_units(active)
             uid, gid = self.system.owner()
             normalize_modes(extracted / top, manifest.get('executables', []), uid, gid)
             os.rename(extracted / top, target)  # same filesystem on the VM; no copy into the user's home
             os.chmod(target, 0o555)
+            # Read-only check of the existing world by the new release, before any unit is stopped.
+            refused = self.preflight(target)
+            if refused:
+                removed = self.remove_failed_release(top)
+                self.log('deploy-refused', release=top, revision=revision, preflight=refused, removed_failed=removed)
+                raise DeployError('preflight of %s refused the deploy (services untouched): %s' % (top, '; '.join(refused[:10])))
+            previous_units = self.installed_units()
+            snapshot = self.snapshot_units(active)
             state['installed'].append({'release': top, 'revision': revision, 'at': time.time()})
             state['current'] = {'release': active}
             self.save_state(state)
 
-            problems = self.activate(top, target / 'ops/isolation/units', previous_units)
+            problems = self.activate(top, self.release_units(target), previous_units)
             if problems:
                 self.system.say('Health check FAILED: ' + '; '.join(problems))
                 restore_problems, stopped = self.restore(active, snapshot, self.installed_units())
@@ -668,7 +707,7 @@ class Deployer:
         os.chmod(target, 0o555)
         state['installed'].append({'release': top, 'revision': revision, 'at': time.time()})
         self.save_state(state)
-        self.put_units(target / 'ops/isolation/units')
+        self.put_units(self.release_units(target))
         self.system.systemctl('daemon-reload')
         self.switch(top)
         state['current'], state['previous'] = {'release': top}, None
@@ -754,7 +793,7 @@ class Deployer:
                  'previous:       ' + str((state.get('previous') or {}).get('release'))]
         for name, (active, restarts) in sorted(self.unit_states(names).items()):
             lines.append('  %-36s %-10s restarts=%s' % (name, active, restarts))
-        for port in PORTS:
+        for port in self.config.ports:
             lines.append('  127.0.0.1:%d %s' % (port, 'listening' if self.system.listening(port) else 'NOT listening'))
         self.system.say('\n'.join(lines))
 
