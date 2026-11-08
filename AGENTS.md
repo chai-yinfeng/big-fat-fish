@@ -6,10 +6,10 @@ docs/DEV_WORKFLOW.md. Do not scan legacy directories unless the task concerns th
 
 ## Hard boundaries
 - Authority alone owns persona, world and canonical memory. Console and QQ are
-  adapters. The current default conversation executor is still the DSH adapter.
-  The planned replacement is a new executor built on pi-agent-core behind the
-  capabilities/conversation executor port; do not hand-write an agent loop.
-  DSH is not a future chat entry point; channels (QQ etc.) are.
+  adapters. The default conversation executor is companion-conversation, built on
+  pi-agent-core behind the capabilities/conversation executor port; do not
+  hand-write an agent loop. DSH has been removed; channels (QQ etc.) are the
+  chat entry points.
 - Keep operator APIs/tokens, production state, reference recordings, model weights
   and platform credentials out of the model worker and Git. Never read old local
   credentials to populate a new environment. The configured origin is public.
@@ -37,7 +37,7 @@ docs/DEV_WORKFLOW.md. Do not scan legacy directories unless the task concerns th
 - The user runs the commands, compares the hashes and answers y.
 - Then verify without sudo: cat /var/log/companion-deploy.status.json,
   tail /var/log/companion-deploy.log, journalctl _UID=$(id -u companion), and ss -ltn for
-  ports 3001/3081/3082/6099.
+  ports 3001/3082/6099.
 - A failed health check auto-restores the previous release: diagnose from the logs,
   fix on the Mac, release again.
 - Use a separate checkout/data root for development, and never let two QQ bridges
@@ -55,7 +55,7 @@ docs/DEV_WORKFLOW.md. Do not scan legacy directories unless the task concerns th
 
 ## Verification and records
 - Run the affected module first: node --run test:qq, test:speech, test:media,
-  test:memory, test:authority or test:console. Full node --run test is for release,
+  test:memory, test:authority, test:conversation or test:console. Full node --run test is for release,
   migration or cross-cutting changes.
 - Batch remote commands and return bounded summaries, not whole logs.
 - Report what really ran and what remains unverified; claim nothing without evidence.
