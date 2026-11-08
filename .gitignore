@@ -55,3 +55,4 @@ __pycache__/
 
 # Rebuild console output from the checked-in source and lockfile.
 /console/client.js
+/capabilities/conversation/dist/
