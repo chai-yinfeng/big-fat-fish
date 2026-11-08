@@ -25,14 +25,18 @@ icon.svg
 
 No CDN, source maps, dynamic chunks or extra dev server is needed by the standalone bundle. Parent serves `/` and these fixed assets from its existing operator HTTP listener on3082. API paths remain `/world` etc on the same origin; this also works through a different local SSH-forwarded port. HTTP loopback validation remains mandatory, not an arbitrary-origin bearer client.
 
-Parent should serve static assets without secret-bearing URL logging and with script/connect `self`, style `self` plus inline styles (the shared React view injects component CSS), media `blob:`, and no framing. No service worker is registered. VM gets compiled assets only, never frontend node_modules.
+Parent should serve static assets without secret-bearing URL logging and with script/connect `self`, style `self` plus inline styles (the view sets a few inline style attributes, e.g. progress widths), media `blob:`, and no framing. No service worker is registered. VM gets compiled assets only, never frontend node_modules.
+
+## Look and interaction
+
+Linear-style dark/light design (tokens in `standalone.css`, after the approved mockup). No webfont or icon font is shipped: Inter is used only if installed, otherwise system fonts; icons are inline SVG in `view.js`. Theme follows the system by default; the sidebar toggle or command palette stores a `light`/`dark` override in localStorage (`companion-world:theme`, display preference only). Navigation is the data-driven `NAV` list in `view.js` (id, icon, G+letter shortcut); a new page adds one entry and one renderer. Cmd/Ctrl-K opens a command palette, `G` then a letter switches pages, Escape closes palette/dialogs/drawer. Notices are toasts, errors stay inline, existing confirmations (memory forget, voice removal/cleanup retry) are modal dialogs, a skeleton shows while a page's data (QQ status, runtime) is loading, and `prefers-reduced-motion` disables animation. Below 860px the sidebar becomes a drawer.
 
 UI tests evaluate the shared view through `test-harness.mjs` with an injected fake React; it is not shipped.
 
 ## Authorization and sensitive data
 
 - Before mounting, consume `#companion-operator=<32–256 base64url chars>` once into this tab's sessionStorage and immediately remove the fragment, including malformed matching fragments/storage failures. Unrelated hashes are untouched.
-- Only operator access uses sessionStorage. No API key, reference recording, transcript, memory or diary is persisted in browser storage.
+- Only operator access uses sessionStorage; localStorage holds only the theme choice. No API key, reference recording, transcript, memory or diary is persisted in browser storage.
 - Bearer goes only to the allowlisted operator paths with `credentials:omit`, `redirect:error`, `cache:no-store`; standalone explicitly selects same-origin mode. Unknown response error messages never render reflected private input.
 - DeepSeek uses an uncontrolled password field; it is cleared before sending save/refresh, including request-failure cases. Saved key/suffix is never rendered. Empty preserves the server key. Testing is an explicit possibly-billed action.
 - Reference audio, transcript and rights consent are uncontrolled inputs read only on explicit submit. File bytes are locally checked for mono PCM16 WAV,3–20seconds,≤2MiB, then base64 is sent as content—not a pathname or filename. Inputs clear before the request and in finally; bytes/transcript never enter persistent React state/storage. The server remains the format/permission authority.
