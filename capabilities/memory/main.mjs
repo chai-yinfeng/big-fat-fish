@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { MemoryCleanup } from './cleanup.js';
 import { AuthorityClient } from '../../authority/src/client.js';
 import { MemoryMaintenance } from './maintenance.js';
 import { completeDiary } from './model-client.js';
+import { purgeModuleURL } from './purge-module.js';
 
 process.umask(0o077);
 async function main() {
@@ -16,7 +16,8 @@ async function main() {
   const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
   const authority = new AuthorityClient(cfg.authority);
   const worker = new MemoryMaintenance({ authority, complete: completeDiary(cfg.gateway), stateFile: cfg.stateFile, maxCallsPerDay: cfg.maxCallsPerDay ?? 4 });
-  const { purgeExecution } = await import(pathToFileURL(cfg.purgeModule).href);
+  // A legacy cfg.purgeModule (a pinned release path) is ignored.
+  const { purgeExecution } = await import(purgeModuleURL());
   const operator = async (route, payload) => {
     if (!['/world', '/memory/cleanup/pending', '/memory/cleanup/complete'].includes(route)) throw new Error('MEMORY_CONTROL_ROUTE');
     const token = fs.readFileSync(cfg.operatorTokenFile, 'utf8').trim();
@@ -36,4 +37,10 @@ async function main() {
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { if (stopping) return; stopping = true; clearInterval(timer); });
   process.stdout.write('Incremental memory maintenance ready; pause and source/budget gates remain active.\n');
 }
-main().catch(() => { process.stderr.write('Memory maintenance failed; inspect private configuration.\n'); process.exitCode = 1; });
+// Log only a stable code: never the message, a path, a token or a payload.
+function failureCode(error) {
+  if (typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code)) return error.code;
+  if (typeof error?.message === 'string' && /^MEMORY_[A-Z_]{1,56}$/.test(error.message)) return error.message;
+  return 'UNKNOWN';
+}
+main().catch(error => { process.stderr.write(`Memory maintenance failed (${failureCode(error)}); inspect private configuration.\n`); process.exitCode = 1; });

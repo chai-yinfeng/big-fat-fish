@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
-import { pathToFileURL, fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 
 export function prepareMemory(base = path.join(os.homedir(), '.local/share/companion-world-v1'), entityId = 'entity:big-fat-fish') {
   const authorityFile = path.join(base, 'operator/authority.json');
@@ -24,7 +24,7 @@ export function prepareMemory(base = path.join(os.homedir(), '.local/share/compa
     maxCallsPerDay: 4,
     base,
     operatorTokenFile: path.join(base, 'operator/console.token'),
-    purgeModule: fileURLToPath(new URL('./purge-execution.mjs', import.meta.url)),
+    // No purgeModule: the worker resolves purge-execution from its own release.
   };
   // The conversation executor keeps one JSONL transcript per derived session ID.
   const layoutFile = path.join(base, 'operator/execution-storage.json');

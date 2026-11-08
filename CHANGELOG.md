@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- 修复 companion-memory 在旧 release 被清理后启动失败：prepare-memory 曾把 Node realpath 后的 release 专属路径写进 memory-worker.json 的 `purgeModule`，release 被保留策略删掉后动态 import 失败。现在 worker 从自己所在的 release 解析 purge-execution（release 为 `ops/`，开发 checkout 为 `deploy/authority/`），忽略旧配置里的 `purgeModule`，prepare-memory 也不再写该字段；部署后无需在主机上重跑 prepare-memory。启动失败日志带稳定错误码（如 `MEMORY_CONFIG`），不含路径、令牌或内容。已验证：test:memory/authority/deploy。未验证：生产主机。
 - 修复控制台「运行与设置」在旧版 speech.json 下报错：media operator 的 status 遇到配置缺失、schema 1 或不合法时返回 200 和 `speech.status`（not_configured / config_schema_outdated / config_invalid），正常时为 ready；控制台按原因显示本地化提示，其余设置照常显示。操作出错不再清空整个页面，只有授权失效才清状态。Authority 的大写错误码（VALIDATION_ERROR 等）映射为对应的中英文提示，仍不回显服务端消息。已验证：test:console/media/authority/speech。未验证：生产主机上的实际页面。
 - 控制台人格页可编辑全部人格字段（含称呼、关系阶段和对话示例的增删排序），operator `/persona` 接受全部字段并仍经 validatePersonaPatch 与可选 expectedRevision；新增只读 `/persona/preview` 显示渲染文本和字符数/1600 份额并在会截断时告警；人格 JSON 导出/导入与「载入默认人格」只载入编辑区，需手动保存。已验证：test:console/authority/conversation。未验证：真实浏览器中的下载与文件选择。
 - 新默认人格「大肥鱼」：知道自己是跑在 DeepSeek 上的 AI，经历只讲真实发生的事（聊天、记忆、主机时间、从旧 VM 搬到新主机），正向描述为主，10 条对话示例；执行器 system prompt 的基础说明和框架行改为自然中文。Authority context 默认/客户端上限 2400 → 4000 字符，有记忆时人格份额 40%（1600），默认人格（渲染约 1083 字符）不再被截断。只影响新世界和默认值，已有世界需在控制台人格页或 admin persona 接口更新。已验证：test:conversation/authority/memory/console/qq。未验证：真实模型下的语气效果。
