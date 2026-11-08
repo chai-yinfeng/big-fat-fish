@@ -22,20 +22,20 @@ function fixture(t) {
   const content = { call: input => service.call({ ...scope, streamId: input.streamId, memoryEpoch: input.memoryEpoch }, input) };
   const onebot = { call: async (action, params) => { if (action === 'get_login_info') return { user_id: '100' }; if (action === 'get_record') return { base64: wav().toString('base64') }; if (action === 'get_image') return { base64: 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' }; if (action === 'send_private_msg') { sent.push(params); return { message_id: nextId++ }; } throw Error('unexpected action'); } };
   const settingsFile = path.join(root, 'settings.json'); fs.writeFileSync(settingsFile, JSON.stringify({ expectedSelfId: '100', allowedCallerUID: '200' }));
-  const inboxFile = path.join(root, 'inbox.jsonl'); fs.writeFileSync(inboxFile, '');
   const executor = { execute: async request => { executions.push(request); return '我在。'; } };
-  const bridge = new QQBridge({ authority: { health: async () => ({ world: { paused: false, revision: 1 } }), context: async () => ({ entityId: scope.entityId, memoryEpoch: 0 }) }, port: { observe: async value => { observed.push(value); return { observationId: 'synthetic-observation' }; } }, onebot, executor, media: new QQMedia({ content, onebot }), settingsFile, stateFile: path.join(root, 'dispatch.json'), inboxFile });
+  const bridge = new QQBridge({ authority: { health: async () => ({ world: { paused: false, revision: 1 } }), context: async () => ({ entityId: scope.entityId, memoryEpoch: 0 }) }, port: { observe: async value => { observed.push(value); return { observationId: 'synthetic-observation' }; } }, onebot, executor, media: new QQMedia({ content, onebot }), settingsFile, stateFile: path.join(root, 'dispatch.json') });
   const event = (id, message) => ({ post_type: 'message', self_id: 100, user_id: 200, message_id: id, message_type: 'private', sender: { user_id: 200 }, time: Math.floor(Date.now() / 1000), message });
-  return { bridge, event, observed, sent, executions, inboxFile, executor, content, store, service, qualities, tts: () => tts };
+  return { bridge, event, observed, sent, executions, executor, content, store, service, qualities, tts: () => tts };
 }
 
 test('QQ voice becomes derived input, never a fabricated verbatim observation; default reply remains text', async t => {
   const f = fixture(t); await f.bridge.connection(true);
   await f.bridge.receive(f.event(1, [{ type: 'record', data: { file: 'trusted-onebot-file-reference' } }]));
   assert.equal(f.observed[0].text, '[QQ语音消息]'); assert.equal(f.observed[0].role, 'user');
-  assert.match(f.executions[0].text, /机器转写/); assert.match(f.executions[0].text, /你好，我回来了/);
-  const row = JSON.parse(fs.readFileSync(f.inboxFile, 'utf8').trim());
-  assert.equal(row.observation.text, '[QQ语音消息]'); assert.equal(row.queryText, '你好，我回来了');
+  const { input } = f.executions[0];
+  assert.match(input.text, /机器转写/); assert.match(input.text, /你好，我回来了/);
+  assert.equal(input.queryText, '你好，我回来了');
+  assert.deepEqual(input.evidence, [{ ref: 'synthetic-observation', eventId: f.observed[0].eventId, role: 'user' }]);
   assert.equal(f.sent[0].message[0].type, 'text'); assert.equal(f.tts(), 0);
 });
 

@@ -1,13 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { messageFromOneBot } from './source.js';
-import { qqSessionId, qqRequestId } from './worker-route.js';
+import { qqRequestId } from './worker-route.js';
 import { executeConversation } from '../conversation/executor.js';
 
 const identifier = value => typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value);
 export class QQBridge {
-  constructor({ authority, port, onebot, executor, media, settingsFile, stateFile, inboxFile, workerConfigFile, workerAuthoritySocket, workerTokenFile, workerInboxFile }) {
-    Object.assign(this, { authority, port, onebot, executor, media, settingsFile, stateFile, inboxFile, workerConfigFile, workerAuthoritySocket, workerTokenFile, workerInboxFile });
+  constructor({ authority, port, onebot, executor, media, settingsFile, stateFile }) {
+    Object.assign(this, { authority, port, onebot, executor, media, settingsFile, stateFile });
     this.settings = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile, 'utf8')) : null;
     this.state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : { records: {} };
     for (const item of Object.values(this.state.records)) { if (['queued', 'processing'].includes(item.status)) item.status = 'interrupted'; else if (item.status === 'sending') item.status = 'unknown'; }
@@ -36,16 +36,11 @@ export class QQBridge {
   }
   async status() {
     const world = (await this.authority.health()).world;
-    const scope = this.settings ? await this.authority.context({ streamId: `qq:${this.settings.expectedSelfId}:private:${this.settings.allowedCallerUID}`, budgetChars: 1 }) : null;
-    return { connected: this.connected, loggedIn: Boolean(this.selfId), configured: Boolean(this.settings), callerConfigured: Boolean(this.settings?.allowedCallerUID), paused: world.paused,
-      ...(this.settings ? { sessionId: qqSessionId(this.settings.expectedSelfId, this.settings.allowedCallerUID, scope.memoryEpoch) } : {}) };
+    return { connected: this.connected, loggedIn: Boolean(this.selfId), configured: Boolean(this.settings), callerConfigured: Boolean(this.settings?.allowedCallerUID), paused: world.paused };
   }
   async configure({ expectedSelfId, allowedCallerUID }) {
     if (!(await this.authority.health()).world.paused || !identifier(expectedSelfId) || !identifier(allowedCallerUID) || expectedSelfId !== this.selfId || expectedSelfId === allowedCallerUID) throw new Error('QQ_CONFIGURATION_NOT_READY');
     this.settings = { expectedSelfId, allowedCallerUID }; this.write(this.settingsFile, this.settings);
-    fs.mkdirSync(path.dirname(this.inboxFile), { recursive: true, mode: 0o700 });
-    if (!fs.existsSync(this.inboxFile)) fs.writeFileSync(this.inboxFile, '', { mode: 0o600, flag: 'wx' });
-    this.write(this.workerConfigFile, { enabled: true, ...this.settings, socketPath: this.workerAuthoritySocket, tokenFile: this.workerTokenFile, inboxFile: this.workerInboxFile });
     return this.status();
   }
   loginIdentity() { return this.selfId; }
@@ -62,9 +57,8 @@ export class QQBridge {
     const scope = await this.authority.context({ streamId: observation.streamId, query: observation.text.slice(0, 512), budgetChars: 1 });
     if (!Number.isSafeInteger(scope.memoryEpoch) || scope.memoryEpoch < 0 || typeof scope.entityId !== 'string') { item.status = 'failed'; this.save(); return; }
     item.memoryEpoch = scope.memoryEpoch; item.entityId = scope.entityId;
-    const sessionId = qqSessionId(cfg.expectedSelfId, cfg.allowedCallerUID, scope.memoryEpoch);
     this.queued++;
-    const task = this.queue.then(() => this.process({ cfg, message, requestId, sessionId, item }));
+    const task = this.queue.then(() => this.process({ cfg, message, requestId, item }));
     this.queue = task.catch(() => {}).finally(() => { this.queued--; }); return task;
   }
   async current(cfg, observation, item) {
@@ -76,7 +70,7 @@ export class QQBridge {
     try { await this.port.observe({ eventId: 'qq:sent:' + receipt.messageId, streamId: observation.streamId, actorId: 'qq:model', role: 'assistant', text: receipt.text, at: Date.now() }); }
     catch { item.unobserved = true; this.save(); }
   }
-  async process({ cfg, message, requestId, sessionId, item }) {
+  async process({ cfg, message, requestId, item }) {
     const observation = message.observation, scope = { streamId: observation.streamId, memoryEpoch: item.memoryEpoch };
     let sending = false, prepared;
     try {
@@ -84,13 +78,14 @@ export class QQBridge {
       item.status = 'processing'; this.save();
       const observed = await this.port.observe(observation);
       if (observed?.forgotten) { item.status = 'forgotten'; this.save(); return; }
+      if (typeof observed?.observationId !== 'string' || !observed.observationId) throw new Error('QQ_OBSERVATION_UNAVAILABLE');
       if (message.media.length && !this.media) throw new Error('QQ_MEDIA_UNAVAILABLE');
       prepared = this.media ? await this.media.prepare(message, scope) : { executionText: observation.text, queryText: observation.text.slice(0, 512), mediaRefs: [], voiceRequested: false };
       if (!await this.current(cfg, observation, item)) { item.status = 'paused'; this.save(); return; }
-      // The read-only inbox binds processed input to the real platform event.
-      // Original observations remain separate from ASR/OCR/vision derivatives.
-      fs.appendFileSync(this.inboxFile, JSON.stringify({ requestId, sessionId, observation, executionText: prepared.executionText, queryText: prepared.queryText, mediaRefs: prepared.mediaRefs }) + '\n', { mode: 0o600 });
-      const text = await executeConversation(this.executor, { sessionId, requestId, text: prepared.executionText, timeoutMs: this.media && (prepared.mediaRefs.length || /音频|语音|转写|识别|qwen/i.test(prepared.queryText)) ? 420000 : 120000 });
+      // The executor derives its session from this scope. Only the original
+      // observation is memory evidence; ASR/OCR/vision stay execution context.
+      const input = { text: prepared.executionText, queryText: prepared.queryText, mediaRefs: prepared.mediaRefs, evidence: [{ ref: observed.observationId, eventId: observation.eventId, role: observation.role }] };
+      const text = await executeConversation(this.executor, { scope, requestId, input, timeoutMs: this.media && (prepared.mediaRefs.length || /音频|语音|转写|识别|qwen/i.test(prepared.queryText)) ? 420000 : 120000 });
       if (!await this.current(cfg, observation, item)) { item.status = 'paused'; this.save(); return; }
       const parts = this.media ? await this.media.plan({ scope, requestId, sourceEventId: observation.eventId, text, voiceRequested: prepared.voiceRequested, voiceQuality: prepared.voiceQuality }) : [{ type: 'text', text }];
       for (const part of parts) {

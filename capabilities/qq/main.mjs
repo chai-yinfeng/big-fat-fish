@@ -5,8 +5,7 @@ import net from 'node:net';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { AuthorityClient } from '../../authority/src/client.js';
 import { ConversationPort } from '../conversation/index.js';
-import { connectWeb } from '../../integrations/dsh/web-rpc.js';
-import { createDshExecutor } from '../../integrations/dsh/executor.js';
+import { createConversationClient } from '../conversation/client.js';
 import { QQBridge } from './bridge.js';
 import { OneBotClient } from './onebot-client.js';
 import { ContentClient } from '../media/client.js';
@@ -21,7 +20,7 @@ async function main() {
   const authority = new AuthorityClient(cfg.authority), port = new ConversationPort(authority);
   let bridge;
   const onebot = new OneBotClient({ url: 'ws://127.0.0.1:3001', token: fs.readFileSync(cfg.onebotTokenFile, 'utf8').trim(), onEvent: event => bridge.receive(event), onStatus: connected => { void bridge.connection(connected); } });
-  const executor = createDshExecutor({ getRpc: () => connectWeb(JSON.parse(fs.readFileSync(cfg.accessFile, 'utf8'))) });
+  const executor = createConversationClient(cfg.conversation);
   const media = cfg.contentEnabled ? new QQMedia({ content: new ContentClient(cfg.authority), onebot }) : undefined;
   bridge = new QQBridge({ ...cfg, authority, port, onebot, executor, media });
   const expected = Buffer.from(cfg.operatorTokenHash, 'hex');
