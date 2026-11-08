@@ -1,7 +1,7 @@
-// Shared UI: standalone browser entry and the optional legacy DSH entry.
+// Shared UI for the standalone browser entry.
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
-import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, validWorld, validQQ, qqPayload, modelPayload, bindAndCreate } from './operator-client.js';
+import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, validWorld, validQQ, qqPayload, modelPayload } from './operator-client.js';
 import { validRuntime, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
@@ -21,7 +21,7 @@ function Fish() {
     h('path', { d: 'M17 33c5-8 12-12 20-12 6 0 10 3 12 6-3 5-8 8-15 8-5 0-9-1-12-4l-5 6zM42 27l11-7-2 9 2 9-11-6z', fill: '#f8fafc' }),
     h('circle', { cx: 35, cy: 29, r: 2.4, fill: '#0f172a' }));
 }
-export function WorldConsole({ t, createSession, navigateSession, close, standalone = false }) {
+export function WorldConsole({ t, standalone = false }) {
   const [token, setToken] = useState(() => { try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; } });
   const [input, setInput] = useState('');
   const [data, setData] = useState(null);
@@ -30,8 +30,6 @@ export function WorldConsole({ t, createSession, navigateSession, close, standal
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [sessionId, setSessionId] = useState('');
-  const [created, setCreated] = useState('');
   const [modelName, setModelName] = useState('deepseek-flash');
   const apiKeyInput = useRef(null);
   const [qq, setQQ] = useState(null);
@@ -69,7 +67,7 @@ export function WorldConsole({ t, createSession, navigateSession, close, standal
     if (apiKeyInput.current) apiKeyInput.current.value = '';
     if (qqCallerInput.current) qqCallerInput.current.value = '';
     clearAudio(); clearReferenceInputs();
-    setToken(''); setInput(''); setData(null); setDraft(null); setQQ(null); setMemory(null); setForgetPreview(null); setRuntimeInfo(null); setSpeechDraft(null); setConfirmRemove(false); setCreated(''); setNotice('');
+    setToken(''); setInput(''); setData(null); setDraft(null); setQQ(null); setMemory(null); setForgetPreview(null); setRuntimeInfo(null); setSpeechDraft(null); setConfirmRemove(false); setNotice('');
   }
   async function request(path, payload, credential = token) {
     const controller = new AbortController();
@@ -92,7 +90,6 @@ export function WorldConsole({ t, createSession, navigateSession, close, standal
       if (!mounted.current || generation.current !== current) return;
       clearAudio(); clearReferenceInputs(); setData(null);
       if (caught.code === 'authorization_required') forget();
-      if (caught.sessionId) setSessionId(caught.sessionId);
       setError(describeError(caught));
     } finally {
       locked.current = false;
@@ -177,19 +174,7 @@ export function WorldConsole({ t, createSession, navigateSession, close, standal
       h('h2', null, t('channels')), data.bindings.length ? h('div', { className: 'bff-table' }, h('table', null,
         h('thead', null, h('tr', null, ...['source', 'conversation', 'person', 'audience'].map(key => h('th', { key, scope: 'col' }, t(key))))),
         h('tbody', null, ...data.bindings.map((binding, index) => h('tr', { key: binding.sourceId === 'qq' ? `qq:${index}` : `${binding.sourceId}:${binding.conversationId}:${index}` },
-          ...['sourceId', 'conversationId', 'personId', 'audience'].map(key => h('td', { key }, binding.sourceId === 'qq' && key === 'conversationId' ? t('qqPrivateConversation') : String(binding[key] ?? '—')))))))) : text('noBindings'),
-      !standalone && createSession && h('section', { className: 'bff-card' }, h('h2', null, t('sessionTitle')), text('sessionHint'),
-        h('form', { onSubmit: event => { event.preventDefault(); void run(async () => {
-          const id = sessionId.trim() || `test-${crypto.randomUUID()}`;
-          setSessionId(id);
-          const result = await bindAndCreate({ sessionId: id, bind: payload => request('/test-conversations', payload), create: createSession });
-          setCreated(result.id); await load();
-          try { await navigateSession?.(result.id, close); } catch { setNotice(t('openHint')); }
-        }); } }, h('label', null, h('span', null, t('sessionId')), h('input', { value: sessionId, disabled: busy, onChange: event => setSessionId(event.target.value), autoComplete: 'off' })),
-        h('button', { type: 'submit', disabled: busy }, t('create')))),
-      created && h('section', { className: 'bff-card' }, h('h2', null, t('created')), h('code', null, created), text('openHint'), button('copy', async () => {
-        try { await navigator.clipboard.writeText(created); setNotice(t('copied')); } catch { setNotice(t('copyFailed')); }
-      })));
+          ...['sourceId', 'conversationId', 'personId', 'audience'].map(key => h('td', { key }, binding.sourceId === 'qq' && key === 'conversationId' ? t('qqPrivateConversation') : String(binding[key] ?? '—')))))))) : text('noBindings'));
   }
   function modelSettings() {
     const model = data.model;

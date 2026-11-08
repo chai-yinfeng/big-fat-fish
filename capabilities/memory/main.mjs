@@ -25,8 +25,8 @@ async function main() {
   };
   const service = (action, units) => { const r = spawnSync('systemctl', ['--user', action, ...units], { stdio: ['ignore', 'pipe', 'pipe'] }); if (r.status !== 0) throw new Error('MEMORY_EXECUTION_CONTROL'); };
   const cleanup = new MemoryCleanup({ operator, purge: plan => purgeExecution({ base: cfg.base, plan }),
-    stopExecution: () => service('stop', ['companion-content.service', 'companion-qq.service', 'companion-dsh-public.socket', 'companion-dsh-public.service', 'companion-dsh-internal.socket', 'companion-dsh-internal.service']),
-    startExecution: () => service('start', ['companion-content.service', 'companion-dsh-internal.socket', 'companion-dsh-public.socket', 'companion-qq.service']),
+    stopExecution: () => service('stop', ['companion-qq.service', 'companion-conversation.service', 'companion-content.service']),
+    startExecution: () => service('start', ['companion-content.service', 'companion-conversation.service', 'companion-qq.service']),
   });
   let ticking = false;
   const tick = async () => { if (ticking) return; ticking = true; try { await cleanup.runOnce(); await worker.runOnce(); } finally { ticking = false; } };

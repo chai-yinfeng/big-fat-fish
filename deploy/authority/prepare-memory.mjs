@@ -26,13 +26,12 @@ export function prepareMemory(base = path.join(os.homedir(), '.local/share/compa
     operatorTokenFile: path.join(base, 'operator/console.token'),
     purgeModule: fileURLToPath(new URL('./purge-execution.mjs', import.meta.url)),
   };
-  // Confirmed for the pinned SDK rc.3 shipped defaults: file sessions and
-  // in-memory session-query index. Never include workspace.json as derived data.
+  // The conversation executor keeps one JSONL transcript per derived session ID.
   const layoutFile = path.join(base, 'operator/execution-storage.json');
-  const layout = { version: 1, sessionsRoot: 'dsh-home/sessions', derivedPaths: [{ kind: 'projection-cache-domain', path: 'dsh-home/storages/session_projcache' }] };
+  const layout = { version: 2, sessionsRoot: 'conversation-data/sessions' };
   if (fs.existsSync(layoutFile)) {
     const existing = JSON.parse(fs.readFileSync(layoutFile, 'utf8'));
-    if (JSON.stringify({ version: existing.version, sessionsRoot: existing.sessionsRoot, derivedPaths: existing.derivedPaths }) !== JSON.stringify(layout)) throw new Error('EXECUTION_LAYOUT_CONFLICT');
+    if (JSON.stringify({ version: existing.version, sessionsRoot: existing.sessionsRoot }) !== JSON.stringify(layout)) throw new Error('EXECUTION_LAYOUT_CONFLICT');
   } else fs.writeFileSync(layoutFile, JSON.stringify(layout) + '\n', { flag: 'wx', mode: 0o600 });
   const configFile = path.join(base, 'operator/memory-worker.json');
   fs.writeFileSync(configFile, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });

@@ -6,12 +6,18 @@ It trusts only itself, its root-owned state and its own Git mirror of the
 public origin. The tarball and everything in the agent inbox are untrusted.
 
   companion-deploy deploy <tarball>   verify, install, switch, restart, check
+  companion-deploy start              (re)start the current release's services, check
   companion-deploy rollback           switch back to the previous release
   companion-deploy status             current/previous release and unit state
   companion-deploy list               installed releases
 
 Data/config migrations are out of scope: a release whose authority database
 SCHEMA_VERSION differs from the running release is refused.
+
+On a fresh host (no release, no companion units) the first deploy installs the
+release, its units and `current` but starts nothing, because there is no
+previous release to fall back to and the world is not initialized yet. After
+the one-time initialization, `companion-deploy start` starts and checks it.
 """
 import argparse
 import datetime
@@ -39,7 +45,7 @@ LOG_GROUP = 'adm'  # the agent SSH account reads logs through this group, never 
 KEEP_RELEASES = 3
 HEALTH_SETTLE_SECONDS = 5
 HEALTH_WINDOW_SECONDS = 15
-PORTS = (3081, 3082)
+PORTS = (3082,)
 MAX_TARBALL_BYTES = 512 << 20
 MAX_EXTRACTED_BYTES = 2 << 30
 MAX_MEMBERS = 50000
@@ -361,15 +367,29 @@ class Deployer:
             path.mkdir(mode=0o700, parents=True, exist_ok=True)
             os.chmod(path, 0o700)
         for path in (self.config.releases, self.config.units):
-            if path.is_symlink() or not path.is_dir():
-                raise DeployError('expected a real directory: ' + str(path))
+            self.service_dir(path)
+
+    def service_dir(self, path):
+        """Require a real directory below the service home; create missing parts (fresh host)."""
+        home = self.config.home
+        if home.is_symlink() or not home.is_dir():
+            raise DeployError('service home is missing: ' + str(home))
+        uid, gid = self.system.owner()
+        current = home
+        for part in path.relative_to(home).parts:
+            current = current / part
+            if current.is_symlink() or (current.exists() and not current.is_dir()):
+                raise DeployError('expected a real directory: ' + str(current))
+            if not current.exists():
+                current.mkdir(mode=0o700)
+                os.chown(current, uid, gid, follow_symlinks=False)
 
     # releases on disk
     def current_link(self):
         return self.config.releases / 'current'
 
     def active_release(self):
-        """Name of the release the services run: `current`, else legacy unit paths."""
+        """Name of the release the services run: `current`, else legacy unit paths; None on a fresh host."""
         link = self.current_link()
         if link.is_symlink():
             target = os.readlink(link)
@@ -379,6 +399,8 @@ class Deployer:
         if link.exists():
             raise DeployError('current exists and is not a symlink')
         unit = self.config.units / 'companion-authority.service'
+        if not unit.exists() and not unit.is_symlink() and not (self.config.units.is_dir() and self.installed_units()):
+            return None
         match = re.search(r'%h/src/dsh-companion/(authority-[^/\s]+)/', unit.read_text() if unit.is_file() else '')
         if not match:
             raise DeployError('cannot determine the active release')
@@ -556,15 +578,18 @@ class Deployer:
             target = self.config.releases / top
             if target.exists() or target.is_symlink():
                 raise DeployError('release already installed: %s (use rollback, or remove it manually)' % top)
-            new_schema, old_schema = schema_version(extracted / top), schema_version(self.config.releases / active)
-            if new_schema != old_schema:
-                raise DeployError('authority database schema %d -> %d needs a separate manual migration; refusing' % (old_schema, new_schema))
+            if active is not None:
+                new_schema, old_schema = schema_version(extracted / top), schema_version(self.config.releases / active)
+                if new_schema != old_schema:
+                    raise DeployError('authority database schema %d -> %d needs a separate manual migration; refusing' % (old_schema, new_schema))
 
             self.system.say('Current release: %s\nNew release:     %s\n  version %s\n  commit  %s\n  subject %s\n  date    %s\n  files   %d' % (
-                active, top, version, revision, subject, date, len(manifest['files'])))
-            if not self.system.confirm('Deploy and restart companion services? [y/N] '):
+                active or 'none (first install; services will not be started)', top, version, revision, subject, date, len(manifest['files'])))
+            if not self.system.confirm('Deploy and restart companion services? [y/N] ' if active else 'Install the first release without starting services? [y/N] '):
                 self.log('deploy-declined', release=top, revision=revision)
                 raise DeployError('declined')
+            if active is None:
+                return self._first_install(extracted / top, target, top, manifest, state)
 
             previous_units = self.installed_units()
             snapshot = self.snapshot_units(active)
@@ -593,6 +618,58 @@ class Deployer:
             return top
         finally:
             shutil.rmtree(work, ignore_errors=True)
+
+    def _first_install(self, extracted, target, top, manifest, state):
+        """Fresh host: install release, units and `current`; nothing to restore, so start nothing."""
+        revision = manifest['sourceRevision']
+        uid, gid = self.system.owner()
+        self.stop_all(self.installed_units())
+        normalize_modes(extracted, manifest.get('executables', []), uid, gid)
+        os.rename(extracted, target)
+        os.chmod(target, 0o555)
+        state['installed'].append({'release': top, 'revision': revision, 'at': time.time()})
+        self.save_state(state)
+        self.put_units(target / 'ops/isolation/units')
+        self.system.systemctl('daemon-reload')
+        self.switch(top)
+        state['current'], state['previous'] = {'release': top}, None
+        self.save_state(state)
+        self.log('deploy-first', release=top, revision=revision)
+        self.system.say('Installed %s as the first release; services were not started.\n'
+                        'Initialize the world as the companion user, then run: companion-deploy start' % top)
+        return top
+
+    def start(self):
+        try:
+            release = self._start()
+        except DeployError as error:
+            self.write_status('start', False, str(error))
+            raise
+        self.write_status('start', True, release)
+        return release
+
+    def _start(self):
+        self.prepare_dirs()
+        active = self.active_release()
+        if active is None:
+            raise DeployError('no release is installed')
+        names = self.installed_units()
+        if not self.system.confirm('Start companion services of %s? [y/N] ' % active):
+            raise DeployError('declined')
+        self.stop_all(names)
+        try:
+            self.start_all(names)
+            problems = self.health(names)
+        except (DeployError, OSError) as error:
+            problems = [str(error)]
+        if problems:
+            self.system.say('Health check FAILED: ' + '; '.join(problems))
+            self.stop_all(names)
+            self.log('start-failed', release=active, problems=problems)
+            raise DeployError('services of %s are not healthy; stopped them again' % active)
+        self.log('start', release=active)
+        self.system.say('Started %s' % active)
+        return active
 
     def rollback(self):
         try:
@@ -631,7 +708,7 @@ class Deployer:
     def status(self):
         state = self.load_state()
         names = self.installed_units()
-        lines = ['active release: ' + self.active_release(),
+        lines = ['active release: ' + str(self.active_release()),
                  'previous:       ' + str((state.get('previous') or {}).get('release'))]
         for name, (active, restarts) in sorted(self.unit_states(names).items()):
             lines.append('  %-36s %-10s restarts=%s' % (name, active, restarts))
@@ -656,6 +733,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('deploy').add_argument('tarball')
+    sub.add_parser('start')
     sub.add_parser('rollback')
     sub.add_parser('status')
     sub.add_parser('list')
@@ -674,6 +752,8 @@ def main(argv=None):
                 raise DeployError('another companion-deploy is running')
             if options.command == 'deploy':
                 deployer.deploy(options.tarball)
+            elif options.command == 'start':
+                deployer.start()
             elif options.command == 'rollback':
                 deployer.rollback()
             elif options.command == 'status':

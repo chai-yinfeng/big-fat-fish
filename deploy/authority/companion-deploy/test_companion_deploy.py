@@ -76,25 +76,29 @@ class FakeSystem(cd.System):
 
 
 class Fixture(unittest.TestCase):
+    fresh = False  # True: a new host with no release, no units and no release/unit directories
+
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix='companion-deploy-test-')
         self.addCleanup(self.cleanup, temp)
         self.root = Path(temp.name).resolve()
         home = self.root / 'home'
-        (home / 'src/dsh-companion').mkdir(parents=True)
-        (home / '.config/systemd/user').mkdir(parents=True)
+        home.mkdir()
+        if not self.fresh:
+            (home / 'src/dsh-companion').mkdir(parents=True)
+            (home / '.config/systemd/user').mkdir(parents=True)
         self.config = cd.Config(home=home, state=self.root / 'state', log=self.root / 'deploy.log',
                                 status=self.root / 'deploy.status.json',
                                 origin='file://' + str(self.root / 'origin.git'), git_protocol='file')
         self.system = FakeSystem(self.config)
         self.deployer = cd.Deployer(self.config, self.system)
         # Legacy layout: versioned dirs, units hard-coded to authority-0.10.0, no `current`.
-        for legacy in ('authority-0.10.0', 'authority-0.9.0'):
+        for legacy in () if self.fresh else ('authority-0.10.0', 'authority-0.9.0'):
             store = home / 'src/dsh-companion' / legacy / 'authority/src/store.js'
             store.parent.mkdir(parents=True)
             store.write_text('export const SCHEMA_VERSION = 2;\n')
         self.legacy_units = {}
-        for unit in sorted(UNITS.iterdir()):
+        for unit in [] if self.fresh else sorted(UNITS.iterdir()):
             text = unit.read_text().replace('%h/src/dsh-companion/current/', '%h/src/dsh-companion/authority-0.10.0/')
             (self.config.units / unit.name).write_text(text)
             self.legacy_units[unit.name] = text
@@ -126,7 +130,7 @@ class Fixture(unittest.TestCase):
         name = 'authority-%s-%s' % (version, revision[:12])
         tree = self.root / 'build' / name
         files = {'authority/src/store.js': 'export const SCHEMA_VERSION = %d;\n' % schema,
-                 'ops/isolation/bin/dsh': '#!/bin/sh\n', 'package.json': '{}\n'}
+                 'ops/isolation/launch.py': '#!/usr/bin/python3\n', 'package.json': '{}\n'}
         for unit in UNITS.iterdir():
             files['ops/isolation/units/' + unit.name] = unit.read_text()
         for relative, text in files.items():
@@ -134,7 +138,7 @@ class Fixture(unittest.TestCase):
             (tree / relative).write_text(text)
         manifest = {'schemaVersion': 2, 'productVersion': version, 'releaseName': name, 'sourceRevision': revision,
                     'files': {r: hashlib.sha256(t.encode()).hexdigest() for r, t in sorted(files.items())},
-                    'executables': ['ops/isolation/bin/dsh']}
+                    'executables': ['ops/isolation/launch.py']}
         (tree / 'source-manifest.json').write_text(json.dumps(manifest))
         if mutate:
             mutate(tree)
@@ -252,12 +256,13 @@ class DeployTests(Fixture):
         release = self.config.releases / name
         self.assertEqual(release.stat().st_mode & 0o777, 0o555)
         self.assertEqual((release / 'package.json').stat().st_mode & 0o777, 0o444)
-        self.assertEqual((release / 'ops/isolation/bin/dsh').stat().st_mode & 0o777, 0o555)
+        self.assertEqual((release / 'ops/isolation/launch.py').stat().st_mode & 0o777, 0o555)
         self.assertIn(('daemon-reload',), self.system.calls)
         started = [c for c in self.system.calls if c[0] == 'start'][-1]
         self.assertIn('companion-qq.service', started)
-        self.assertIn('companion-dsh-public.socket', started)
-        self.assertNotIn('companion-dsh-internal.service', started)  # socket/dependency activated
+        self.assertIn('companion-conversation.service', started)
+        self.assertIn('companion-world-public.socket', started)
+        self.assertNotIn('companion-world-public.service', started)  # socket activated
         with self.assertRaisesRegex(cd.DeployError, 'already installed'):
             self.deployer.deploy(tarball)
 
@@ -377,6 +382,71 @@ class DeployTests(Fixture):
         self.assertEqual(removed, [names[3]])
         self.assertTrue((self.config.releases / names[2]).is_dir())
         self.assertTrue((self.config.releases / 'authority-0.10.0').is_dir())
+
+
+class HealthTests(Fixture):
+    def test_only_the_remaining_console_port_is_required(self):
+        self.assertEqual(cd.PORTS, (3082,))
+        probed = []
+        self.system.listening = lambda port: probed.append(port) or port == 3082
+        self.assertEqual(self.deployer.health(self.deployer.installed_units()), [])
+        self.assertEqual(probed, [3082])
+
+
+class FreshHostTests(Fixture):
+    fresh = True
+
+    def test_first_deploy_installs_without_starting_then_start_checks_health(self):
+        self.assertIsNone(self.deployer.active_release())
+        tarball, name = self.release(self.commits[1], schema=7)  # no running schema to compare
+        self.assertEqual(self.deployer.deploy(tarball), name)
+        self.assertEqual(self.current(), name)
+        for path in (self.config.releases, self.config.units):
+            self.assertTrue(path.is_dir() and not path.is_symlink())
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(sorted(self.units()), sorted(p.name for p in UNITS.iterdir()))
+        self.assertIn(('daemon-reload',), self.system.calls)
+        self.assertFalse([c for c in self.system.calls if c[0] == 'start'])
+        state = json.loads(self.config.state_file.read_text())
+        self.assertEqual(state['current'], {'release': name})
+        self.assertIsNone(state['previous'])
+        status = json.loads(self.config.status.read_text())
+        self.assertEqual((status['current'], status['previous'], status['last']['ok']), (name, None, True))
+        with self.assertRaisesRegex(cd.DeployError, 'no previous release'):
+            self.deployer.rollback()
+
+        self.assertEqual(self.deployer.start(), name)
+        started = [c for c in self.system.calls if c[0] == 'start'][-1]
+        self.assertIn('companion-conversation.service', started)
+        self.assertIn('companion-world-public.socket', started)
+        log = [json.loads(line)['action'] for line in self.config.log.read_text().splitlines()]
+        self.assertEqual(log, ['deploy-first', 'start'])
+
+        # The next release is a normal deploy with rollback to the first one.
+        second, second_name = self.release(self.commits[2], schema=7)
+        self.assertEqual(self.deployer.deploy(second), second_name)
+        self.assertEqual(self.deployer.rollback(), name)
+
+    def test_unhealthy_start_stops_services_again(self):
+        tarball, name = self.release(self.commits[1])
+        self.deployer.deploy(tarball)
+        self.system.broken.add(name)
+        with self.assertRaisesRegex(cd.DeployError, 'not healthy'):
+            self.deployer.start()
+        self.assertEqual(self.system.calls[-2][0], 'stop')
+        self.assertFalse(json.loads(self.config.status.read_text())['last']['ok'])
+        self.assertEqual(self.current(), name)
+
+    def test_declined_first_install_changes_nothing(self):
+        tarball, name = self.release(self.commits[1])
+        self.system.answer = False
+        with self.assertRaisesRegex(cd.DeployError, 'declined'):
+            self.deployer.deploy(tarball)
+        self.assertFalse((self.config.releases / name).exists())
+        self.assertFalse((self.config.releases / 'current').is_symlink())
+        self.assertEqual(self.units(), {})
+        with self.assertRaisesRegex(cd.DeployError, 'no release is installed'):
+            self.deployer.start()
 
 
 if __name__ == '__main__':

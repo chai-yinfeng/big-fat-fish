@@ -1,4 +1,0 @@
-#!/bin/sh
-case "$(uname -m)" in aarch64) arch=arm64 ;; x86_64) arch=x64 ;; *) echo "unsupported machine: $(uname -m)" >&2; exit 1 ;; esac
-NODE_HOME=/opt/companion/runtime/node-v24.22.2-linux-$arch
-exec "$NODE_HOME"/bin/node "$NODE_HOME"/lib/node_modules/npm/bin/npm-cli.js "$@"

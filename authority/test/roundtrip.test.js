@@ -7,7 +7,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { Authority } from '../src/engine.js';
 import { createAuthorityServer } from '../src/server.js';
 import { AuthorityClient } from '../src/client.js';
-import { createAdapter } from '../../capabilities/dsh/lib/adapter.js';
+import { createCompanionTools } from '../../capabilities/conversation/tools.js';
 import { observationFromOneBot } from '../../capabilities/qq/source.js';
 
 async function fixture(t) {
@@ -42,22 +42,21 @@ async function fixture(t) {
   return { authority, clients, settled };
 }
 
-test('native adapter -> restricted UDS -> serial authority -> same-person channels, without cross-person leakage', async t => {
+test('conversation tools -> restricted UDS -> serial authority -> same-person channels, without cross-person leakage', async t => {
   const { authority, clients, settled } = await fixture(t);
-  const config = { sessionIds: ['a', 'b'], actorId: 'native-owner' };
-  const adapter = createAdapter(config, clients.native);
-  await assert.rejects(adapter.refresh('a'), { code: 'REAL_USER_INPUT_REQUIRED' });
-  assert.deepEqual((await adapter.act('a', { action: 'evidence' })).evidence, []);
-  adapter.ingest('a', { type: 'user/message', seq: 1, time: 1000, data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '我喜欢红茶' }] } });
-  const evidence = await adapter.act('a', { action: 'evidence' });
-  assert.equal(evidence.evidence[0].role, 'user');
-  const submitted = await adapter.act('a', { action: 'propose', id: 'tea', ref: evidence.evidence[0].ref, type: 'fact.report', payload: { key: '饮料', value: '红茶', quote: '我喜欢红茶' } });
+  const observed = await clients.native.observe({ eventId: 'native:1', streamId: 'a', actorId: 'native-owner', role: 'user', text: '我喜欢红茶', at: 1000 });
+  const evidence = [{ ref: observed.observationId, eventId: 'native:1', role: 'user' }];
+  const scopeTool = streamId => createCompanionTools({ authority: clients.native, scope: { streamId, memoryEpoch: 0 }, requestId: 'request-1', evidence, guard: async () => {} })[0];
+  const call = async (tool, args) => JSON.parse((await tool.execute('call', args)).content[0].text);
+  assert.deepEqual((await call(scopeTool('a'), { action: 'evidence' })).evidence, evidence);
+  const submitted = await call(scopeTool('a'), { action: 'propose', id: 'tea', ref: observed.observationId, type: 'fact.report', payload: { key: '饮料', value: '红茶', quote: '我喜欢红茶' } });
   assert.equal((await settled(clients.native, submitted.proposalId)).status, 'accepted');
-  adapter.ingest('b', { type: 'user/message', seq: 1, time: 1001, data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '记得我喜欢红茶吗' }] } });
-  await adapter.refresh('b', { query: '记得我喜欢红茶吗', turn: 1 });
-  assert.match(adapter.text('b'), /红茶/);
-  const remounted = createAdapter(config, clients.native);
-  assert.equal((await remounted.act('a', { action: 'receipt', id: 'tea' })).status, 'accepted');
+  // Quote checks against the immutable observation are Authority's, not the executor's.
+  const invented = await call(scopeTool('a'), { action: 'propose', id: 'coffee', ref: observed.observationId, type: 'fact.report', payload: { key: '饮料', value: '咖啡', quote: '我喜欢咖啡' } });
+  assert.equal((await settled(clients.native, invented.proposalId)).status, 'rejected');
+  assert.match((await clients.native.context({ streamId: 'b', query: '记得我喜欢红茶吗' })).text, /红茶/);
+  assert.equal((await call(scopeTool('a'), { action: 'receipt', id: 'tea' })).status, 'accepted');
+  assert.equal(await call(scopeTool('b'), { action: 'receipt', id: 'tea' }), null, 'another stream derives a different proposal ID');
   assert.match((await clients['qq-fixture'].context({ streamId: 'qq:123:private:456', query: '红茶' })).text, /红茶/);
   for (const streamId of ['qq:123:private:789', 'qq:123:group:999']) assert.doesNotMatch((await clients['qq-fixture'].context({ streamId, query: '红茶' })).text, /红茶/);
   assert.doesNotMatch((await clients.reader.context({ streamId: 'reading', query: '红茶' })).text, /红茶/);

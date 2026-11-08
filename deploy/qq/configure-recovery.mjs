@@ -45,7 +45,7 @@ export async function configureRecovery() {
   if (!auth?.Credential) throw new Error('NAPCAT_MANUAL_AUTH_REQUIRED');
   await post('/QQLogin/SetQuickLoginQQ', { uin: settings.expectedSelfId }, auth.Credential);
   run('loginctl', ['enable-linger', '--no-ask-password', os.userInfo().username]);
-  run('systemctl', ['--user', 'enable', 'companion-authority.service', 'companion-model.service', 'companion-dsh-internal.socket', 'companion-dsh-public.socket', 'companion-world-public.socket', 'companion-qq.service']);
+  run('systemctl', ['--user', 'enable', 'companion-authority.service', 'companion-model.service', 'companion-conversation.service', 'companion-world-public.socket', 'companion-qq.service']);
   if (next !== current) {
     const temporary = file + '.tmp'; fs.writeFileSync(temporary, next, { mode: 0o600 }); fs.renameSync(temporary, file);
   }

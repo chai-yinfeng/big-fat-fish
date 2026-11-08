@@ -14,7 +14,7 @@ test('release tarball is deterministic and accepted by companion-deploy safe_ext
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fish-stage-')));
   t.after(() => fs.rmSync(temp, { recursive: true }));
   const tree = path.join(temp, 'tree'), deep = 'a'.repeat(60) + '/' + 'b'.repeat(60) + '/file.js';
-  for (const [name, text, mode] of [['package.json', '{}\n', 0o644], ['ops/isolation/bin/dsh', '#!/bin/sh\n', 0o755], [deep, 'x', 0o600]]) {
+  for (const [name, text, mode] of [['package.json', '{}\n', 0o644], ['ops/isolation/launch.py', '#!/usr/bin/python3\n', 0o755], [deep, 'x', 0o600]]) {
     fs.mkdirSync(path.dirname(path.join(tree, name)), { recursive: true });
     fs.writeFileSync(path.join(tree, name), text, { mode });
   }
@@ -24,7 +24,7 @@ test('release tarball is deterministic and accepted by companion-deploy safe_ext
   const file = path.join(temp, top + '.tar.gz');
   fs.writeFileSync(file, first);
   const listing = execFileSync('tar', ['-tvzf', file], { encoding: 'utf8' });
-  assert.match(listing, /-rwxr-xr-x .*ops\/isolation\/bin\/dsh/);
+  assert.match(listing, /-rwxr-xr-x .*ops\/isolation\/launch.py/);
   assert.match(listing, new RegExp('-rw-r--r-- .*' + deep));
   const out = path.join(temp, 'out'); fs.mkdirSync(out);
   const script = `import importlib.machinery as m, importlib.util as u, sys
@@ -33,7 +33,7 @@ print(mod.safe_extract(sys.argv[2], sys.argv[3]))`;
   const extracted = execFileSync('python3', ['-I', '-W', 'ignore', '-c', script, path.join(here, 'companion-deploy/companion-deploy'), file, out], { encoding: 'utf8' }).trim();
   assert.equal(extracted, top);
   assert.equal(fs.readFileSync(path.join(out, top, deep), 'utf8'), 'x');
-  assert.equal(fs.readFileSync(path.join(out, top, 'ops/isolation/bin/dsh'), 'utf8'), '#!/bin/sh\n');
+  assert.equal(fs.readFileSync(path.join(out, top, 'ops/isolation/launch.py'), 'utf8'), '#!/usr/bin/python3\n');
 });
 
 test('symlinks are not packed', t => {

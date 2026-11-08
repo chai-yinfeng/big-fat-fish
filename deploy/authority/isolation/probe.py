@@ -1,26 +1,22 @@
 #!/usr/bin/python3
-"""Synthetic rootless mount/network/FD3 probe; never installs or starts user units.
+"""Synthetic rootless mount/network probe; never installs or starts user units.
 
 Runs the production launcher's mount policy with a synthetic Python payload, not
-real Authority/DSH data. All fixtures and subprocesses are owned and cleaned here.
+real Authority data. All fixtures and subprocesses are owned and cleaned here.
 """
-import http.client
-import json
 import os
 from pathlib import Path
 import platform
 import shutil
-import signal
 import socket
 import subprocess
 import sys
 import tempfile
-import time
 
 ROOT = Path(__file__).resolve().parent
 
 PAYLOAD = r'''
-import errno,http.server,json,os,socket,subprocess,sys,threading
+import errno,json,os,socket,subprocess
 c=CONFIG
 result={'role':c['role'],'pid':os.getpid(),'netns':os.readlink('/proc/self/ns/net'),
         'pids':[x for x in os.listdir('/proc') if x.isdecimal()]}
@@ -69,67 +65,28 @@ if c['role']=='authority':
  except OSError as e:assert e.errno==errno.EROFS
  result.update({'authority_state_write':'GRANTED','authority_socket_bind':'GRANTED','config_write':'DENIED:EROFS','capability_token':'ABSENT'})
  print(json.dumps(result),flush=True)
-else:
- with socket.socket(socket.AF_UNIX) as s:
-  s.connect('/run/companion/authority.sock')
- result['authority_uds']='GRANTED'
- with open('/home/companion/config/capability.token') as f:
-  assert f.read()=='SYNTHETIC-CAPABILITY'
- for path in ['/run/companion/forbidden','/home/companion/config/capability.token']:
-  try:
-   open(path,'w').close()
-   raise AssertionError('readonly mount writable: '+path)
-  except OSError as e:assert e.errno==errno.EROFS
- with open('/home/companion/dsh/probe-result.json','w') as f:json.dump(result,f)
- result.update({'profile_write':'GRANTED','capability_token_read':'GRANTED','authority_directory_write':'DENIED:EROFS','capability_token_write':'DENIED:EROFS','fd3':os.readlink('/proc/self/fd/3')})
- class Handler(http.server.BaseHTTPRequestHandler):
-  def do_GET(self):
-   data=json.dumps(result).encode()
-   self.send_response(200);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
-  def log_message(self,*args):pass
- server=http.server.ThreadingHTTPServer(('127.0.0.1',3080),Handler)
- threading.Thread(target=server.serve_forever,daemon=True).start()
- env=dict(os.environ,LISTEN_FDS='1')
- env.pop('LISTEN_PIDFDID',None)
- proxy=subprocess.Popen(['/bin/sh','-c','LISTEN_PID=$$; export LISTEN_PID; exec /usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:3080'],pass_fds=(3,),env=env)
- os.close(3)
- sys.exit(proxy.wait())
 '''
-
-
-def terminate(process):
-    if process.poll() is None:
-        os.killpg(process.pid, signal.SIGTERM)
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait(timeout=5)
 
 
 def main():
     if sys.platform != 'linux':
         raise RuntimeError('run this probe on the target Linux VM, not macOS')
-    required = ['/usr/bin/bwrap', '/usr/bin/systemd-socket-activate', '/usr/lib/systemd/systemd-socket-proxyd', '/usr/bin/unshare']
+    required = ['/usr/bin/bwrap', '/usr/bin/unshare']
     for path in required:
         if not os.access(path, os.X_OK):
             raise RuntimeError('missing required executable: ' + path)
     root = Path(tempfile.mkdtemp(prefix='companion-isolation-probe-', dir='/tmp')).resolve()
     owned = str(root)
-    processes, sockets, logs = [], [], []
+    sockets = []
     try:
-        for part in ['base/authority-data', 'base/ipc/authority', 'base/ipc/web', 'base/operator',
-                     'base/dsh-home', 'base/dsh-config', 'release', 'runtime', 'ops', 'outside']:
+        for part in ['base/authority-data', 'base/ipc/authority', 'base/ipc/operator', 'base/ipc/model-control',
+                     'base/ipc/qq-control', 'base/operator', 'base/dsh-config', 'release', 'runtime', 'ops', 'outside']:
             (root / part).mkdir(parents=True, exist_ok=True)
         files = {'base/operator/authority.json': '{"synthetic":true}', 'base/operator/admin.token': 'SYNTHETIC-ADMIN',
                  'base/operator/reading.token': 'SYNTHETIC-READING', 'base/authority-data/authority.sqlite': 'SYNTHETIC-DB',
                  'base/dsh-config/capability.token': 'SYNTHETIC-CAPABILITY', 'outside/secret': 'SYNTHETIC-OUTSIDE'}
         for path, value in files.items():
             (root / path).write_text(value)
-        authority = socket.socket(socket.AF_UNIX)
-        authority.bind(str(root / 'base/ipc/authority/authority.sock'))
-        authority.listen(8)
-        sockets.append(authority)
         abstract = '\0companion-isolation-' + str(os.getpid())
         host_abstract = socket.socket(socket.AF_UNIX)
         host_abstract.bind(abstract)
@@ -150,7 +107,7 @@ def main():
         # A synthetic pinned-node fixture delegates to Python. Thus the REAL
         # production launcher, FD validation/closure and exec environment run too.
         synthetic = root / 'release/synthetic.py'
-        synthetic.write_text('import sys\nCONFIG=' + repr(config) + '\nCONFIG["role"]="authority" if "--config" in sys.argv else "capability"\n' + PAYLOAD)
+        synthetic.write_text('import sys\nCONFIG=' + repr(config) + '\nCONFIG["role"]="authority"\n' + PAYLOAD)
         fake_node = root / ('runtime/node-v24.22.2-linux-' + {'aarch64': 'arm64', 'x86_64': 'x64'}[platform.machine()] + '/bin/node')
         fake_node.parent.mkdir(parents=True)
         fake_node.write_text('#!/bin/sh\nexec /usr/bin/python3 /opt/companion/release/synthetic.py "$@"\n')
@@ -168,62 +125,16 @@ def main():
         print('AUTHORITY ' + completed.stdout.strip(), flush=True)
         assert (root / 'base/authority-data/probe.txt').read_text() == 'synthetic'
 
-        inner_log = open(root / 'inner.log', 'w+')
-        logs.append(inner_log)
-        inner = subprocess.Popen(['/usr/bin/systemd-socket-activate', '--now', '-l', str(root / 'base/ipc/web/dsh-http.sock'),
-                                  *command('capability')], env=poisoned, stdout=inner_log, stderr=inner_log, start_new_session=True)
-        processes.append(inner)
-        deadline = time.monotonic() + 10
-        while not (root / 'base/dsh-home/probe-result.json').exists():
-            if inner.poll() is not None or time.monotonic() > deadline:
-                inner_log.seek(0)
-                raise RuntimeError('capability startup failed: ' + inner_log.read()[-5000:])
-            time.sleep(.05)
-        # Let socket-activate bind port zero, avoiding a reserve/rebind race.
-        outer_listener = socket.socket()
-        outer_listener.bind(('127.0.0.1', 0))
-        outer_listener.listen()
-        port = outer_listener.getsockname()[1]
-        outer_log = open(root / 'outer.log', 'w+')
-        logs.append(outer_log)
-        # Pass a pre-bound listener as fd3 to proxyd via a tiny exec-only child.
-        outer_code = 'import os; fd=int(os.environ["PROBE_FD"]); os.dup2(fd,3); os.set_inheritable(3,True); os.environ.update(LISTEN_FDS="1",LISTEN_PID=str(os.getpid())); os.environ.pop("LISTEN_PIDFDID",None); os.execv("/usr/lib/systemd/systemd-socket-proxyd",["systemd-socket-proxyd",os.environ["PROBE_TARGET"]])'
-        outer = subprocess.Popen(['/usr/bin/python3', '-c', outer_code], pass_fds=(outer_listener.fileno(),),
-                                 env={'PROBE_FD': str(outer_listener.fileno()), 'PROBE_TARGET': str(root / 'base/ipc/web/dsh-http.sock')},
-                                 stdout=outer_log, stderr=outer_log, start_new_session=True)
-        processes.append(outer)
-        outer_listener.close()
-        response = None
-        for attempt in range(40):
-            try:
-                connection = http.client.HTTPConnection('127.0.0.1', port, timeout=2)
-                connection.request('GET', '/')
-                response = connection.getresponse()
-                body = response.read().decode()
-                connection.close()
-                break
-            except OSError:
-                if attempt == 39:
-                    raise
-                time.sleep(.05)
-        assert response.status == 200, (response.status, body)
-        result = json.loads(body)
-        assert result['fd3'].startswith('socket:['), result
-        print('CAPABILITY_HTTP_200 ' + json.dumps(result, sort_keys=True), flush=True)
         assert (root / 'base/operator/admin.token').read_text() == 'SYNTHETIC-ADMIN'
         assert (root / 'outside/secret').read_text() == 'SYNTHETIC-OUTSIDE'
-        print('PASS: rootless authority + capability mount policies, private PID/network, TCP->UDS->sandbox loopback', flush=True)
+        print('PASS: rootless authority mount policy, private PID/network', flush=True)
     finally:
-        for process in reversed(processes):
-            terminate(process)
-        for stream in logs:
-            stream.close()
         for listener in sockets:
             listener.close()
         if not owned.startswith('/tmp/companion-isolation-probe-') or str(root.resolve()) != owned:
             raise RuntimeError('refusing cleanup of unchecked fixture path')
         shutil.rmtree(owned)
-        print('CLEANED owned synthetic fixtures and subprocesses', flush=True)
+        print('CLEANED owned synthetic fixtures', flush=True)
 
 
 if __name__ == '__main__':

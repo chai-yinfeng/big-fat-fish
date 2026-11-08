@@ -1,0 +1,27 @@
+[Unit]
+Description=Companion conversation executor (pi-agent-core; no provider key, Unix sockets only)
+Requires=companion-authority.service companion-model.service
+After=companion-authority.service companion-model.service
+
+[Service]
+Type=exec
+ExecStart=%h/.local/opt/companion/bin/node %h/src/dsh-companion/current/capabilities/conversation/conversation.mjs --config %h/.local/share/companion-world-v1/operator/conversation.json
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=%h/.local/share/companion-world-v1/conversation-data %h/.local/share/companion-world-v1/ipc/conversation
+InaccessiblePaths=-%h/.local/share/companion-world-v1/authority-data -%h/.local/share/companion-world-v1/model-data -%h/.local/share/companion-world-v1/operator/admin.token -%h/.local/share/companion-world-v1/operator/console.token -%h/.local/share/companion-world-v1/qq-runtime -%h/.local/share/companion-world-v1/memory-config -%h/.local/share/companion-world-v1/authority-content
+PrivateTmp=true
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+KillMode=control-group
+TimeoutStopSec=15s
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=default.target
