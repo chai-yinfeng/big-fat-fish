@@ -72,6 +72,7 @@ All responses use `{ok:true,value}` / safe error envelopes. Standalone loads GET
 - The pinned CPU runner is speaker-file-only. Qwen Base supports cloning, but this adapter does not feed the transcript into full ICL continuation. The transcript registers provenance. UI explicitly does not promise exact cloning or naturalness from a successful test.
 - Image generation is explicitly not configured. Understanding/sending images is not image generation; no fake enable/generate button exists.
 
-## Verification and limits
+## Test coverage / current limits
 
-15 relevant checks cover the12 retained console behaviors plus3 standalone tests: artifact independence/local assets, explicit same-origin and fragment handling, exact parameter/audio payloads, no filename/storage/secret rendering, paused controls, confirmation/no-overwrite cleanup, and non-autoplay Blob URL revocation. Compilation and metadata/behavior tests do not replace live browser visual acceptance. No VM, current DSH profile, system browser, real recording upload, actual deletion, paid model call or audio playback was performed by this child; parent owns static hosting, API implementation, deployment and live acceptance.
+- `node --run test:console` (15 checks) covers the retained console behaviors plus standalone asset independence, same-origin/fragment handling, payload shapes, no secret/storage leakage, paused controls, confirmed cleanup and Blob URL revocation.
+- Not covered: live browser visual acceptance, real recording upload or deletion, paid model calls and audio playback.

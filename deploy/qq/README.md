@@ -93,4 +93,4 @@ QQ 服务等待 SDK HTTP 与产品插件真正就绪；WebSocket 已连接但 QQ
 ~/.local/opt/companion/bin/node ~/src/dsh-companion/authority-0.7.1/deploy/qq/verify-recovery.mjs --new-boot
 ```
 
-不要在重启验收前再次运行配置命令覆盖基线。当前已实测同容器 restart 与完整 VM 重启免再次扫码，后台在首次 SSH 检查前启动；世界仍暂停、数据与绑定保留。不能保证 QQ 凭据永久有效或任何容器重建都免扫，详见[实测与限制](<../../notes/boot-recovery-live-20261101.md>)。
+不要在重启验收前再次运行配置命令覆盖基线。当前已实测同容器 restart 与完整 VM 重启免再次扫码，后台在首次 SSH 检查前启动；世界仍暂停、数据与绑定保留。不能保证 QQ 凭据永久有效或任何容器重建都免扫。

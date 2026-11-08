@@ -6,14 +6,17 @@ docs/DEV_WORKFLOW.md. Do not scan legacy directories unless the task concerns th
 
 ## Hard boundaries
 - Authority alone owns persona, world and canonical memory. Console and QQ are
-  adapters. The default conversation executor still uses DSH; do not claim the
-  runtime is DSH-free. Keep the executor port rather than rewriting an agent loop.
+  adapters. The current default conversation executor is still the DSH adapter.
+  The planned replacement is a new executor built on pi-agent-core behind the
+  capabilities/conversation executor port; do not hand-write an agent loop.
+  DSH is not a future chat entry point; channels (QQ etc.) are.
 - Keep operator APIs/tokens, production state, reference recordings, model weights
   and platform credentials out of the model worker and Git. Never read old local
   credentials to populate a new environment. The configured origin is public.
 - A generated/queued attachment is not delivery; require the platform receipt.
   If delivery status is unknown, do not blindly resend.
-- Transcripts/captions are derived perception, not verbatim human evidence.
+- Machine transcripts/captions are derived content: label them as such and never
+  present them as the person's own words.
 
 ## Permissions
 - Ask before: bootstrapping/resetting a production data root, resuming a world,

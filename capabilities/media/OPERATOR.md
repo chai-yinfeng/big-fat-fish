@@ -35,4 +35,7 @@ This build supports Qwen3-TTS `--tts-speaker-file` and language selection. It ha
 
 The speech worker validates registered reference origin, hash and path. Kokoro synthetic manifests keep the original model/text/speaker checks; operator-authorized manifests require a fixed reference-directory UUID path, consent timestamp, bounded transcript and supported WAV. Models cannot choose another reference path or voice ID.
 
-Three direct tests cover safe read/CAS/pause/field closure, authorized-reference validation/deletion preserving synthetic audio, and public test output/cancellation/cleanup/exclusion of concurrent mutation. Real reference-audio quality and synthesis are not claimed from these injected-runner tests.
+## Test coverage / current limits
+
+- Three direct tests (injected runner): read/CAS/pause/field closure, reference validation and deletion that preserves synthetic audio, test output/cancellation/cleanup and exclusion of concurrent mutation.
+- Real reference-audio quality and synthesis are not covered.

@@ -60,7 +60,42 @@ deploy/authority/companion-sudo.mjs 以 `ssh -t myvm sudo -u companion` 读取�
 在终端输入 sudo 密码；Agent 不运行它们。verify-live 只能在 VM 上以 companion 身份
 运行，且对正式世界只允许 status。
 
+```sh
+# 用户在 Mac 项目根执行；token 经 sudo -u companion 读取，会提示输入 myvm 的 sudo 密码：
+node deploy/authority/open-world.mjs
+node deploy/authority/open-world.mjs --open-only
+node deploy/qq/open-login.mjs myvm   # NapCat WebUI 扫码登录
+```
+
+失败时只输出错误码（如 FORWARD_PORT_OCCUPIED、SUDO_FAILED、TOKEN_READ_FAILED），
+不输出 token；token 只交给系统浏览器，operator fragment 即时消费移除。关闭本机转发
+不等于停止 VM 服务或退出 QQ。不要为更新此 GUI 另起 Vite 服务器。
+
 远程命令尽量合并为一次调用，只返回有限长度的摘要。
+
+## VM 布局
+
+```text
+产品：/home/companion/src/dsh-companion/current → authority-<版本>-<sha>
+正式数据：/home/companion/.local/share/companion-world-v1
+私有运行时：/home/companion/.local/opt/companion
+用户单元：/home/companion/.config/systemd/user/companion-*
+3082 独立世界控制台与 operator API / 3081 DSH 执行适配页
+NapCat WebUI 6099 / OneBot WS 3001（沿用旧记录，未在新布局下复核）
+```
+
+主机入口均只监听回环；内部推理端口 3090 只在 worker 私网。运行中的世界状态
+（暂停、revision、QQ 登录等）以控制台和 status JSON 为准，文档不记录快照。
+
+## 控制台操作要点
+
+- 模型：deepseek-flash / deepseek-v4-pro 可选，视觉固定 Flash。Key 只填 password 框，
+  留空保留旧 Key；显式 probe 可能计费。
+- QQ：扫码后只在暂停且已登录时绑定本人发送号（须与机器人号不同）。当前仅本人私聊，
+  不开群、广播或自动加好友。
+- 语音识别在本地，但转写会进入 DeepSeek 对话，不是全本地对话。
+- 暂停：冻结世界、拒绝新模型/记忆效果、取消在途请求；不补算停机期间、不补发消息。
+  已交给供应商/平台的请求不可撤回，仍可能计费。恢复须用户明确操作。
 
 ## 长期运行的清理
 
@@ -151,6 +186,21 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
 数据库/配置迁移不在部署范围内：新 release 的 authority SCHEMA_VERSION 与当前
 release 不同则部署被拒绝，迁移须另行人工完成。回退只切换代码与 unit，不覆盖
 数据库、人设、记忆或登录态。
+
+一次性维护命令须以 companion 身份运行（需要人类 sudo，并按 AGENTS.md 先获批准）；
+在新布局下的确切调用方式尚未验证：
+
+```sh
+# 仅全新数据根不存在时；已有世界禁止重跑 bootstrap：
+/home/companion/.local/opt/companion/bin/node /home/companion/src/dsh-companion/current/ops/bootstrap.mjs
+# 已有世界只补对应基础设施，保留 Key/人格/绑定：
+/home/companion/.local/opt/companion/bin/node /home/companion/src/dsh-companion/current/ops/prepare-memory.mjs
+/home/companion/.local/opt/companion/bin/node /home/companion/src/dsh-companion/current/ops/prepare-content.mjs
+# 官方包管理入口：
+python3 /home/companion/src/dsh-companion/current/ops/isolation/launch.py dsh -- plugin --profile companion add /opt/companion/release/capability-bundle
+```
+
+已有 profile 禁止用 from-default-profile 覆盖。
 
 首次安装（用户在 VM 上执行一次）：
 

@@ -9,7 +9,6 @@
 - 生产日志使用 DSH 已有 `@deepseek-ai/node-addon-system/flock` 内核锁（显式 peer）；缺少相应平台组件会拒绝启动，不降级成可丢失的内存或猜 PID 清锁。
 - 残尾安全恢复、非法完整记录报错、原子事实替换；召回要求词法相关性，上下文按类别分配空间，事实不截成半句。
 - 空库/迁移前须同时准备新版 core 与新版 preset；已有会话可能保留旧 preset revision，部署时验证新建与恢复会话，不据源码修改声称运行时已切换。
-- 开发与迁移清单见 [`../notes/core-readiness-and-vm.md`](../notes/core-readiness-and-vm.md)。
 
 ## 前次变更（运行时状态以实际挂载验证为准）
 

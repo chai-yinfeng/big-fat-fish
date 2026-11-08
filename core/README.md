@@ -3,8 +3,6 @@
 无框架依赖的陪伴内核：长期记忆（facts/diary/episodes）、心情、关系、主动开口策略、上下文组装。
 用 Node 内置 `node:test`，零依赖。
 
-规格：[`../notes/companion-core-spec.md`](../notes/companion-core-spec.md)
-
 ## 快速开始
 
 ```js

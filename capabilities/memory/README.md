@@ -27,6 +27,7 @@ The purge descriptor admits only the product-owned SDK session tree and known de
 
 QQ platform records, provider-side records, external exports/backups and SSD forensic recovery are not claimed to be erased. Formal runtime data lives on the VM; migration preserves the existing world rather than rebuilding it from laptop history.
 
-## Verification
+## Test coverage / current limits
 
-Local checks use synthetic data and a fake upstream. They cover actual UDS Authority → gateway → private diary transport, no-input/paused zero-call behavior, separate public/private input, daily limits, source binding, and controlled-cleanup success/failure. They are not a claim that live long-term learning or provider diary output was exercised while the world remained paused.
+- Synthetic data and a fake upstream cover UDS Authority → gateway → private diary transport, paused/no-input zero calls, public/private separation, daily limits, source binding and cleanup success/failure.
+- Not covered: live long-term learning or real provider diary output.
