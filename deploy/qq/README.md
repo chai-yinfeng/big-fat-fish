@@ -1,8 +1,8 @@
-# VM QQ 最小运行准备
+# 生产主机 QQ 最小运行准备
 
-只使用官方 NapCat-Docker，不装 NapCat-Desktop，不新建 UI。工具本身不安装 Docker、不 pull、不启动容器、不读取账号。仅支持非 root 的 Linux arm64 VM；Node 使用现有 companion Node。
+只使用官方 NapCat-Docker，不装 NapCat-Desktop，不新建 UI。工具本身不安装 Docker、不 pull、不启动容器、不读取账号。仅支持非 root 的 Linux arm64 或 x64 主机（当前生产主机 home-agent 为 x86_64）；Node 使用现有 companion Node。
 
-## 准备与启动（VM，操作人执行）
+## 准备与启动（生产主机，操作人执行）
 
 先由用户自己安装并验证 Docker：
 
@@ -24,7 +24,7 @@ sudo docker info >/dev/null
 
 生成 `~/.local/share/companion-world-v1/qq-runtime/`，目录 0700、初始文件 0600：
 
-- `compose.yaml`：固定 `mlikiowa/napcat-docker:v4.18.42` 及 OCI index digest，`platform: linux/arm64`。
+- `compose.yaml`：固定 `mlikiowa/napcat-docker:v4.18.42` 及多架构 OCI index digest，`platform` 按主机架构写为 `linux/amd64`（x64）或 `linux/arm64`。
 - `private/napcat.env`：独立随机 WebUI token，仅经官方 `WEBUI_TOKEN` 传入；另有 `MODE=ws`、当前部署用户 UID/GID。
 - `private/onebot.token`：独立随机 OneBot token，供后续 QQ worker 在内存读取，不打印、不放命令参数、不挂给 Core。
 - `data/config/onebot11.json`：官方 WS 模板的 token 加固版本，启动前已经鉴权。
@@ -42,6 +42,8 @@ sudo docker compose -f compose.yaml up -d
 sudo docker compose -f compose.yaml ps --format json
 curl -fsS -o /dev/null http://127.0.0.1:6099/webui/
 ```
+
+home-agent 无法直连 Docker Hub，只能经本机代理 `http://127.0.0.1:7890`；pull 前由操作人自行为 dockerd 配置该代理（本工具不改 Docker 配置）。
 
 仅发布 `127.0.0.1:6099:6099` 和 `127.0.0.1:3001:3001`；不使用 host 网络、privileged 或额外 capabilities。不要开放公网端口；宿主防火墙同样应拒绝外部 6099/3001，旧 Docker 的 localhost publish 不应当作唯一隔离措施。运行 NapCat 是运行第三方代码，不是对容器内插件的硬沙箱；不要安装未知插件。
 
@@ -62,7 +64,7 @@ SSH 使用已有 `myvm` 别名。helper 只占本机 6099，不碰现有 3081/30
 ## 官方核对（2026-11-01，仅 HTTP 元数据，未拉镜像）
 
 - [稳定 release v4.18.42](https://github.com/NapNeko/NapCatQQ/releases/tag/v4.18.42)：非 prerelease。
-- [Docker Hub release tag](https://hub.docker.com/v2/repositories/mlikiowa/napcat-docker/tags/v4.18.42)：active linux/arm64，597,540,043 B；OCI index digest 已固定到 compose。
+- [Docker Hub release tag](https://hub.docker.com/v2/repositories/mlikiowa/napcat-docker/tags/v4.18.42)：active linux/arm64，597,540,043 B；2026-11-07 复核同一 index `sha256:696e9574…` 另含 active linux/amd64，612,180,984 B；OCI index digest 已固定到 compose。
 - [Docker 官方入口](https://github.com/NapNeko/NapCat-Docker/blob/76f3e6639c93ddd2914022f4387f03df9335518f/entrypoint.sh)、[WS 模板](https://github.com/NapNeko/NapCat-Docker/blob/76f3e6639c93ddd2914022f4387f03df9335518f/templates/templates/ws.json)：初始化 env 与路径。
 - [v4.18.42 配置继承](https://github.com/NapNeko/NapCatQQ/blob/v4.18.42/packages/napcat-core/helper/config-base.ts)、[OneBot WS schema](https://github.com/NapNeko/NapCatQQ/blob/v4.18.42/packages/napcat-onebot/config/config.ts)、[WebUI token 与启动日志](https://github.com/NapNeko/NapCatQQ/blob/v4.18.42/packages/napcat-webui-backend/index.ts)。
 

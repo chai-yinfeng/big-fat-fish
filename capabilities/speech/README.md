@@ -77,22 +77,27 @@ After installation approval, perform one public 5–10 second Chinese input and 
 
 ## Explicit private installer (not run during development)
 
-The installer defaults to `--plan`: it validates an existing canonical `companion-world-v1` root and its Authority marker, reports components/estimated disk, and performs **no network request or write**. Missing speech config is reported as `prepared:false`; only `--apply` may invoke the preparation helper. A Linux ARM64 private **Node24** process is required for applying. No apt/sudo, system Node replacement, profile edit, service restart, inference, synthetic reference generation or persona reset is performed.
+The installer defaults to `--plan`: it validates an existing canonical `companion-world-v1` root and its Authority marker, reports components/estimated disk, and performs **no network request or write**. Missing speech config is reported as `prepared:false`; only `--apply` may invoke the preparation helper. A Linux arm64 or x64 private **Node24** process is required for applying; npm installs the matching `sherpa-onnx-linux-<arch>` native package and the installer requires it. No apt/sudo, system Node replacement, profile edit, service restart, inference, synthetic reference generation or persona reset is performed.
 
 ```sh
-# In the complete VM release; this command is still read-only.
+# In the complete production release; this command is still read-only.
 "$HOME/.local/opt/companion/bin/node" /absolute/release/ops/install-speech.mjs --plan --models all
 # Only after the user explicitly authorizes downloads/install/build:
 "$HOME/.local/opt/companion/bin/node" /absolute/release/ops/install-speech.mjs --apply --models light
 # Later, after authorizing the heavy downloads/build:
 "$HOME/.local/opt/companion/bin/node" /absolute/release/ops/install-speech.mjs --apply --models all
+# Optional where huggingface.co is unreachable (e.g. home-agent): fetch the same pinned
+# revisions from the mirror; sizes and sha256 are still checked against the manifest.
+"$HOME/.local/opt/companion/bin/node" /absolute/release/ops/install-speech.mjs --apply --models all --hf-endpoint https://hf-mirror.com
 ```
+
+`--hf-endpoint` accepts only `https://huggingface.co` (default) or `https://hf-mirror.com`. It rewrites only `huggingface.co` download URLs; recorded sources stay the canonical huggingface.co URLs. The upstream model card has no published digest, so a mirrored copy is recorded as observed only.
 
 `--models light` installs the pinned private npm runtime (sherpa2.0.1 + sharp0.35.5), SenseVoice and Kokoro only; `all` additionally installs Qwen3-ASR int8, the two pinned Qwen3-TTS GGUFs, and builds the native TTS CLI. Default selection is `all`, explicitly shown by the plan. Npm uses its private Node's own CLI with `--ignore-scripts --omit=dev`, fixed public registry, private cache, and no user/global npm config. Its generated lock digest is recorded.
 
 Model sources come from the prepared speech manifest and must match the registered public sources/revision. Downloads are cached privately; archive SHA256 values are recorded as **observed**, not fabricated publisher verification. The known GGUF hashes and portable CMake hash are checked strictly. Tar extraction uses Python standard `tarfile` with `filter='data'` plus preflight relative-path/type/link checks; the extracted top-level folder must match the registered package. Archive LICENSE/data files are preserved. Existing model directories are never overwritten: installer-owned receipts can resume; an unknown preexisting directory stops for operator inspection. Failed partial downloads/staging directories are left private for diagnosis, not recursively deleted by guessed paths.
 
-For this VM's missing CMake, `all` uses [official CMake 4.4.5 Linux aarch64](https://github.com/Kitware/CMake/releases/tag/v4.4.5) in the private runtime only. Its archive hash `301d5063ab259577c1b57ce5490b1aab9ea5c56dc4c822f73499553dab94925f` was checked against the [publisher checksum list](https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-SHA-256.txt). It clones only the public pinned llama.cpp tag, verifies the exact commit and clean tracked source, selects Unix Makefiles (no Ninja required), disables CUDA/Vulkan/Metal/OpenSSL, and builds only `llama-tts -j2`. Source and license remain private alongside the build.
+Because the host may lack CMake, `all` uses [official CMake 4.4.5 Linux aarch64 or x86_64](https://github.com/Kitware/CMake/releases/tag/v4.4.5) (chosen by host architecture) in the private runtime only. The archive hashes (aarch64 `301d5063ab259577c1b57ce5490b1aab9ea5c56dc4c822f73499553dab94925f`, x86_64 `ed85135c5a5135b45e50423cb406dea04ca3338da0b8ef3c9ede963559680be0`) were checked against the [publisher checksum list](https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-SHA-256.txt). It clones only the public pinned llama.cpp tag, verifies the exact commit and clean tracked source, selects Unix Makefiles (no Ninja required), disables CUDA/Vulkan/Metal/OpenSSL, and builds only `llama-tts -j2`. Source and license remain private alongside the build.
 
 Plan disk estimates are **2–3GiB light**, **8–12GiB all**, including retained download cache and native source/build. They are planning reserves, not measured installation sizes or RAM. The script requires at least 3/12GiB currently free before the respective apply. Its private installation metadata records observed digests, component steps, npm lock hash and `inferenceVerified:false`; failures print fixed codes only. No claim is made that a successful compilation yields acceptable Chinese TTS latency or correctness: run the separate synthetic-reference step and small benchmark only after installation and human approval.
 

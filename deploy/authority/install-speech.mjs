@@ -9,7 +9,23 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { prepareSpeech } from './prepare-speech.mjs';
 
-const CMAKE = { version: '4.4.5', directory: 'cmake-4.4.5-linux-aarch64', source: 'https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-linux-aarch64.tar.gz', sha256: '301d5063ab259577c1b57ce5490b1aab9ea5c56dc4c822f73499553dab94925f' };
+const fail = code => Object.assign(new Error(code), { code });
+
+// sha256 values from Kitware's official cmake-4.4.5-SHA-256.txt release asset.
+const CMAKE_SHA256 = { aarch64: '301d5063ab259577c1b57ce5490b1aab9ea5c56dc4c822f73499553dab94925f', x86_64: 'ed85135c5a5135b45e50423cb406dea04ca3338da0b8ef3c9ede963559680be0' };
+const MACHINE = { arm64: 'aarch64', x64: 'x86_64' };
+export function cmakeFor(arch = process.arch) {
+  const machine = MACHINE[arch];
+  if (!machine) throw fail('SPEECH_INSTALL_PLATFORM');
+  const directory = `cmake-4.4.5-linux-${machine}`;
+  return { version: '4.4.5', directory, source: `https://github.com/Kitware/CMake/releases/download/v4.4.5/${directory}.tar.gz`, sha256: CMAKE_SHA256[machine] };
+}
+// Optional mirror for huggingface.co; pinned revisions and digests stay unchanged.
+const HF_ENDPOINTS = ['https://huggingface.co', 'https://hf-mirror.com'];
+export function hfUrl(url, endpoint = HF_ENDPOINTS[0]) {
+  if (!HF_ENDPOINTS.includes(endpoint)) throw fail('SPEECH_INSTALL_ARGUMENTS');
+  return url.startsWith(HF_ENDPOINTS[0] + '/') ? endpoint + url.slice(HF_ENDPOINTS[0].length) : url;
+}
 const LLAMA_COMMIT = '8642541b255bfb5dc39cd351a178be09013a55d6';
 const SOURCES = {
   'sensevoice-small-int8-2024-07-17': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2',
@@ -22,7 +38,6 @@ const GGUF_FILES = [
   { name: 'mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf', bytes: 446422912, sha256: '6fd65188839bcd6ecc91b277ad471e22a0edfada4699a0fe82f1165c18cfcce2' },
 ];
 const GGUF_REVISION = 'ca27d74bc954b73dadab5b71ca265d87fc861a7c';
-const fail = code => Object.assign(new Error(code), { code });
 const inside = (root, target) => target === root || target.startsWith(root + path.sep);
 const defaultBase = () => path.join(os.homedir(), '.local/share/companion-world-v1');
 const readJson = file => JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -57,12 +72,12 @@ function modelSelections(config, manifest, models) {
     return { kind, quality, engine, entry };
   });
 }
-export function speechInstallPlan({ base = defaultBase(), models = 'all' } = {}) {
-  if (!['light', 'all'].includes(models)) throw fail('SPEECH_INSTALL_ARGUMENTS');
+export function speechInstallPlan({ base = defaultBase(), models = 'all', hfEndpoint = HF_ENDPOINTS[0] } = {}) {
+  if (!['light', 'all'].includes(models) || !HF_ENDPOINTS.includes(hfEndpoint)) throw fail('SPEECH_INSTALL_ARGUMENTS');
   base = basePath(base);
   const prepared = fs.existsSync(path.join(base, 'operator/speech.json')) && fs.existsSync(path.join(base, 'operator/speech-models.json'));
   const selected = prepared ? modelSelections(readJson(path.join(base, 'operator/speech.json')), readJson(path.join(base, 'operator/speech-models.json')), models).map(x => x.entry.id) : Object.keys(SOURCES).filter(id => models === 'all' || id.startsWith('sensevoice') || id.startsWith('kokoro'));
-  return { mode: 'plan', models, prepared, targetValidated: true, runtime: 'private speech-node prefix', dependencies: { 'sherpa-onnx-node': '2.0.1', sharp: '0.35.5' }, selected, nativeTts: models === 'all' ? { llamaCpp: 'v0.8.0', commit: LLAMA_COMMIT, portableCmake: CMAKE.version, cpuOnly: true, jobs: 2 } : null, estimatedDiskGiB: models === 'all' ? '8-12 including cache/source/build; estimate, not measured' : '2-3 including cache/runtime; estimate, not measured', actionsRequireApply: ['private npm install with scripts disabled', 'public pinned model downloads and safe extraction', ...(models === 'all' ? ['private portable CMake download', 'pinned llama.cpp clone and CPU-only build'] : [])], inferencePerformed: false, referenceGenerated: false, servicesChanged: false, writesPerformed: false, networkRequestsPerformed: false };
+  return { mode: 'plan', models, prepared, targetValidated: true, runtime: 'private speech-node prefix', dependencies: { 'sherpa-onnx-node': '2.0.1', sharp: '0.35.5' }, selected, hfEndpoint, nativeTts: models === 'all' ? { llamaCpp: 'v0.8.0', commit: LLAMA_COMMIT, portableCmake: '4.4.5', cpuOnly: true, jobs: 2 } : null, estimatedDiskGiB: models === 'all' ? '8-12 including cache/source/build; estimate, not measured' : '2-3 including cache/runtime; estimate, not measured', actionsRequireApply: ['private npm install with scripts disabled', 'public pinned model downloads and safe extraction', ...(models === 'all' ? ['private portable CMake download', 'pinned llama.cpp clone and CPU-only build'] : [])], inferencePerformed: false, referenceGenerated: false, servicesChanged: false, writesPerformed: false, networkRequestsPerformed: false };
 }
 
 async function sha256(file) {
@@ -81,7 +96,7 @@ function saveJson(file, value, root) {
 async function publicResponse(url) {
   let current = new URL(url);
   for (let n = 0; n < 8; n++) {
-    if (current.protocol !== 'https:' || current.username || current.password || !['github.com', 'raw.githubusercontent.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com', 'huggingface.co'].includes(current.hostname) && !current.hostname.endsWith('.huggingface.co') && !current.hostname.endsWith('.hf.co')) throw fail('SPEECH_DOWNLOAD_SOURCE');
+    if (current.protocol !== 'https:' || current.username || current.password || !['github.com', 'raw.githubusercontent.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com', 'huggingface.co', 'hf-mirror.com'].includes(current.hostname) && !current.hostname.endsWith('.huggingface.co') && !current.hostname.endsWith('.hf.co')) throw fail('SPEECH_DOWNLOAD_SOURCE');
     const response = await fetch(current, { redirect: 'manual', signal: AbortSignal.timeout(300000) });
     if ([301, 302, 303, 307, 308].includes(response.status)) { const location = response.headers.get('location'); await response.body?.cancel(); current = new URL(location, current); continue; }
     if (!response.ok || !response.body) throw fail('SPEECH_DOWNLOAD_FAILED');
@@ -121,10 +136,11 @@ with tarfile.open(archive,'r:*') as tar:
  tar.extractall(root,filter='data')
 `;
 
-export async function installSpeech({ base = defaultBase(), models = 'all', apply = false } = {}) {
-  const plan = speechInstallPlan({ base, models });
+export async function installSpeech({ base = defaultBase(), models = 'all', hfEndpoint = HF_ENDPOINTS[0], apply = false } = {}) {
+  const plan = speechInstallPlan({ base, models, hfEndpoint });
   if (!apply) return plan;
-  if (process.platform !== 'linux' || process.arch !== 'arm64' || Number(process.versions.node.split('.')[0]) !== 24) throw fail('SPEECH_INSTALL_PLATFORM');
+  if (process.platform !== 'linux' || !MACHINE[process.arch] || Number(process.versions.node.split('.')[0]) !== 24) throw fail('SPEECH_INSTALL_PLATFORM');
+  const CMAKE = cmakeFor();
   base = basePath(base);
   const privateRoot = fs.realpathSync(path.join(os.homedir(), '.local/opt/companion'));
   if (!inside(privateRoot, fs.realpathSync(process.execPath))) throw fail('SPEECH_PRIVATE_NODE_REQUIRED');
@@ -144,7 +160,7 @@ export async function installSpeech({ base = defaultBase(), models = 'all', appl
   async function download(url, name, expected = {}) {
     const file = target(cache, name);
     if (!fs.existsSync(file)) {
-      const part = target(cache, name + '.part-' + randomUUID()), response = await publicResponse(url);
+      const part = target(cache, name + '.part-' + randomUUID()), response = await publicResponse(hfUrl(url, hfEndpoint));
       let bytes = 0;
       const counter = new Transform({ transform(chunk, _encoding, callback) { bytes += chunk.length; callback(bytes > 3 * 1024 ** 3 ? fail('SPEECH_DOWNLOAD_SIZE') : null, chunk); } });
       await pipeline(Readable.fromWeb(response.body), counter, fs.createWriteStream(part, { flags: 'wx', mode: 0o600 }));
@@ -187,6 +203,8 @@ export async function installSpeech({ base = defaultBase(), models = 'all', appl
   if (fs.existsSync(lockFile) && !fs.lstatSync(lockFile).isFile()) throw fail('SPEECH_INSTALL_TARGET');
   await command(process.execPath, [npm, 'install', '--prefix', runtime, '--ignore-scripts', '--omit=dev', '--no-audit', '--no-fund', '--registry=https://registry.npmjs.org', '--cache', directory(runtime, 'npm-cache'), '--userconfig=/dev/null', '--globalconfig=' + emptyGlobal], env, 'SPEECH_NPM_FAILED', runtime);
   for (const [name, version] of Object.entries(packageSource.dependencies)) if (readJson(path.join(runtime, 'node_modules', name, 'package.json')).version !== version) throw fail('SPEECH_NPM_VERSION');
+  // npm selects sherpa-onnx-node's native optional package by os/cpu; require the one for this host.
+  if (readJson(path.join(runtime, 'node_modules', `sherpa-onnx-linux-${process.arch}`, 'package.json')).version !== packageSource.dependencies['sherpa-onnx-node']) throw fail('SPEECH_NPM_VERSION');
   metadata.components.npm = { dependencies: packageSource.dependencies, scriptsExecuted: false, lockSha256: await sha256(lockFile) }; persist();
   for (const { engine, entry } of selected) {
     if (!entry.files) {
@@ -244,7 +262,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process
     for (let i = 2; i < process.argv.length; i++) {
       const value = process.argv[i];
       if (value === '--plan' || value === '--apply') { if (explicitMode) throw fail('SPEECH_INSTALL_ARGUMENTS'); explicitMode = value; options.apply = value === '--apply'; }
-      else if (value === '--base' || value === '--models') { const next = process.argv[++i]; if (!next || next.startsWith('--')) throw fail('SPEECH_INSTALL_ARGUMENTS'); options[value.slice(2)] = next; }
+      else if (value === '--base' || value === '--models' || value === '--hf-endpoint') { const next = process.argv[++i]; if (!next || next.startsWith('--')) throw fail('SPEECH_INSTALL_ARGUMENTS'); options[value === '--hf-endpoint' ? 'hfEndpoint' : value.slice(2)] = next; }
       else throw fail('SPEECH_INSTALL_ARGUMENTS');
     }
     process.stdout.write(JSON.stringify(await installSpeech(options)) + '\n');

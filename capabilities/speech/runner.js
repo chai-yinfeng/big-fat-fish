@@ -42,7 +42,7 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
         const child = spawn(c.nodeExecutable, [workerFile, '--config', configFile], {
           detached: process.platform !== 'win32',
           stdio: ['pipe', 'pipe', 'ignore'],
-          env: { PATH: '/usr/bin:/bin', HOME: c.workRoot, TMPDIR: c.workRoot, LD_LIBRARY_PATH: [path.join(moduleRoot, 'lib'), path.join(path.dirname(moduleRoot), 'sherpa-onnx-linux-arm64', 'lib')].join(path.delimiter), OMP_NUM_THREADS: String(c.numThreads), OPENBLAS_NUM_THREADS: String(c.numThreads), HF_HUB_OFFLINE: '1', CUDA_VISIBLE_DEVICES: '', NO_COLOR: '1' },
+          env: { PATH: '/usr/bin:/bin', HOME: c.workRoot, TMPDIR: c.workRoot, LD_LIBRARY_PATH: [path.join(moduleRoot, 'lib'), path.join(path.dirname(moduleRoot), `sherpa-onnx-linux-${process.arch}`, 'lib')].join(path.delimiter), OMP_NUM_THREADS: String(c.numThreads), OPENBLAS_NUM_THREADS: String(c.numThreads), HF_HUB_OFFLINE: '1', CUDA_VISIBLE_DEVICES: '', NO_COLOR: '1' },
         });
         let output = '', overflow = false, timedOut = false, cancelled = false;
         const kill = () => { try { process.platform === 'win32' ? child.kill('SIGKILL') : process.kill(-child.pid, 'SIGKILL'); } catch {} };
