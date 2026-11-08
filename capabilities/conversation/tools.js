@@ -29,7 +29,7 @@ export const SCOPE_TOOL_SCHEMA = {
       action: { type: 'string', enum: ['evidence', 'propose', 'receipt', 'search', 'read', 'recall'] },
       id: { type: 'string', description: 'Proposal key (1–96 chars) for propose/receipt, or memory ID returned by search for read.' },
       query: { type: 'string', minLength: 1, maxLength: 512, description: 'Non-empty memory search query; search only. Returns bounded excerpts and IDs for read.' },
-      from: { type: 'string', maxLength: 40, description: 'Recall start: ISO 8601 date-time with seconds and explicit Z or ±HH:mm offset. Use Authority world time as the anchor.' },
+      from: { type: 'string', maxLength: 40, description: 'Recall start: ISO 8601 date-time with seconds and explicit Z or ±HH:mm offset. Use 当前世界时间 from the system prompt as the anchor.' },
       to: { type: 'string', maxLength: 40, description: 'Recall end, inclusive; same timezone-explicit ISO format. Recall returns existing important events, never new evidence.' },
       ref: { type: 'string', description: 'Observed evidence ref; propose only.' },
       type: { type: 'string', enum: Object.keys(payloadKeys) },

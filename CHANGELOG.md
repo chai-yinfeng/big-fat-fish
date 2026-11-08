@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- 新默认人格「大肥鱼」：知道自己是跑在 DeepSeek 上的 AI，经历只讲真实发生的事（聊天、记忆、主机时间、从旧 VM 搬到新主机），正向描述为主，10 条对话示例；执行器 system prompt 的基础说明和框架行改为自然中文。Authority context 默认/客户端上限 2400 → 4000 字符，有记忆时人格份额 40%（1600），默认人格（渲染约 1083 字符）不再被截断。只影响新世界和默认值，已有世界需在控制台人格页或 admin persona 接口更新。已验证：test:conversation/authority/memory/console/qq。未验证：真实模型下的语气效果。
 - 对话执行器改为基于 pi-agent-core 1.5.0 / pi-ai 1.5.0 的 companion-conversation 服务（UDS `POST /execute`，bearer 哈希认证）：会话由 streamId+memoryEpoch 派生、每会话一个私有 JSONL；每次模型请求前取 Authority context；companion_scope / companion_content 移植为作用域绑定的 AgentTool；32k 字符完整回合裁剪；超时/断开即中止；经 Unix socket 只访问 model-gateway，DeepSeek compat 回传 `reasoning_content`。release 中为 esbuild 单文件（约 1.2 MB），不含 node_modules。
 - QQ 改为把 scope、执行文本、查询文本、媒体引用与本回合 observation ref 交给执行器；删除 DSH inbox 与 worker route。
 - 彻底移除 DSH：capabilities/dsh、integrations/dsh、控制台旧 DSH 入口与 legacy client 构建、run-capability / wait-sdk-ready / web-rpc / access / verify-dialogue / verify-console-browser、isolation 的 capability/dsh 角色与 bin 包装、companion-dsh-* 单元、deploy/vm 旧验证文件；install-runtime.sh 只装私有 Node。新增 companion-conversation.service（不用 bwrap），companion-qq 依赖它；purge 改为删除受影响 stream 旧 epoch 的会话文件（execution-storage v2）；rotate-tokens 纳入 conversation caller token。

@@ -305,7 +305,7 @@ export class Authority extends MemoryDomain {
     e=this.entity(scope.entityId),
     query=input.query===undefined?'':input.query;
     text(query,2000,true);
-    const budget=integer(input.budgetChars===undefined?2400:input.budgetChars,0,16000),
+    const budget=integer(input.budgetChars===undefined?4000:input.budgetChars,0,16000),
     rows=this.candidates(scope,registered.policy,query,64);
     return{
       revision:this.store.get('revision'),
