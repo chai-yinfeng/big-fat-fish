@@ -10,6 +10,9 @@ const { build } = await import('esbuild');
 await build({
   absWorkingDir: here, entryPoints: ['main.mjs'], outfile, bundle: true, format: 'esm', platform: 'node', target: ['node24'],
   minify: false, sourcemap: false, legalComments: 'inline', logLevel: 'warning',
+  // pi-ai declares most modules side-effect free, but esbuild wraps them in lazy
+  // initializers (dynamic API imports); honouring that hint drops required init calls.
+  ignoreAnnotations: true,
   // Bundled CommonJS dependencies (openai etc.) may call require for Node built-ins.
   banner: { js: "import { createRequire as __companionCreateRequire } from 'node:module'; const require = __companionCreateRequire(import.meta.url);" },
 });
