@@ -25,7 +25,9 @@ docs/DEV_WORKFLOW.md. Do not scan legacy directories unless the task concerns th
   the rest of that session. Sending to anyone else or to a group needs its own approval.
 
 ## Release to production (details: docs/DEV_WORKFLOW.md "发布与回退")
-- Develop only on the Mac; the VM (myvm) is production only. Never patch the VM.
+- Develop only on the Mac; the production host (SSH alias home-agent, x86_64;
+  override with COMPANION_HOST) is production only. Never patch it. The old arm64
+  VM myvm is legacy, awaiting retirement.
 - The agent never runs sudo or companion-deploy and never asks for or handles the
   sudo password.
 - Agent part: tests pass → user approves the push to main → node --run stage:release
@@ -34,7 +36,7 @@ docs/DEV_WORKFLOW.md. Do not scan legacy directories unless the task concerns th
   git show <sha>:deploy/authority/companion-deploy/companion-deploy | shasum -a 256.
 - The user runs the commands, compares the hashes and answers y.
 - Then verify without sudo: cat /var/log/companion-deploy.status.json,
-  tail /var/log/companion-deploy.log, journalctl _UID=1001, and ss -ltn for
+  tail /var/log/companion-deploy.log, journalctl _UID=$(id -u companion), and ss -ltn for
   ports 3001/3081/3082/6099.
 - A failed health check auto-restores the previous release: diagnose from the logs,
   fix on the Mac, release again.

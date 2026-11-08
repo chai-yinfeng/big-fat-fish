@@ -50,10 +50,10 @@ home-agent 无法直连 Docker Hub，只能经本机代理 `http://127.0.0.1:789
 ## 登录（本机操作人）
 
 ```sh
-node deploy/qq/open-login.mjs myvm
+node deploy/qq/open-login.mjs            # 默认 home-agent；可写主机别名或设 COMPANION_HOST
 ```
 
-SSH 使用已有 `myvm` 别名。helper 只占本机 6099，不碰现有 3081/3082 隧道；端口已占用则拒绝。它通过 `ssh -t` 以 `sudo -u companion` 在内存读取 VM 实际 WebUI token（终端提示输入 sudo 密码），交给 macOS 默认浏览器（Linux 为 `xdg-open`），不输出含 token URL。用户在官方页面手动扫码；终端保持运行，Ctrl-C 只关闭这个 SSH 隧道。不要把登录页 URL、二维码、账号或私有配置贴进会话。浏览器历史/本机进程参数仍可能留有 token URL，操作人应把本机浏览器视为可信入口。
+SSH 使用已有主机别名（默认 `home-agent`）。helper 只占本机 6099，不碰现有 3081/3082 隧道；端口已占用则拒绝。它通过 `ssh -t` 以 `sudo -u companion` 在内存读取生产主机实际 WebUI token（终端提示输入 sudo 密码），交给 macOS 默认浏览器（Linux 为 `xdg-open`），不输出含 token URL。用户在官方页面手动扫码；终端保持运行，Ctrl-C 只关闭这个 SSH 隧道。不要把登录页 URL、二维码、账号或私有配置贴进会话。浏览器历史/本机进程参数仍可能留有 token URL，操作人应把本机浏览器视为可信入口。
 
 首次 QQ 登录后，上游 `ConfigBase` 会从 `onebot11.json` 继承并生成账号命名配置，保留随机 WS token，**不用手填 QQid，不存在先开无鉴权 WS 再补 token 的窗口**。默认未指定 `ACCOUNT`，由用户选择扫码。若以后 WebUI 修改 OneBot token，须操作人同步 worker 的 `private/onebot.token`；不要重跑准备工具期望覆盖已有账号配置。当前 helper 要求 WebUI token 仍为生成的 64 位 hex、端口及 prefix 未改。
 
@@ -74,11 +74,11 @@ SSH 使用已有 `myvm` 别名。helper 只占本机 6099，不碰现有 3081/30
 node --test deploy/qq/prepare.test.mjs
 ```
 
-上述初始内容检查不冒充真实运行验收。后续已在 VM 实际拉取、启动并由用户扫码，QQ 私聊和暂停边界通过；绑定、授权及 Authority 生命周期仍由产品管理面负责。
+上述初始内容检查不冒充真实运行验收。后续已在旧 VM（myvm，arm64）实际拉取、启动并由用户扫码，QQ 私聊和暂停边界通过；绑定、授权及 Authority 生命周期仍由产品管理面负责。
 
 ## 开机恢复（0.7.1）
 
-首次绑定、登录成功且世界处于维护暂停后，在 VM 运行：
+首次绑定、登录成功且世界处于维护暂停后，在生产主机运行：
 
 ```sh
 ~/.local/opt/companion/bin/node ~/src/dsh-companion/authority-0.7.1/deploy/qq/configure-recovery.mjs
@@ -91,8 +91,8 @@ QQ 服务等待 SDK HTTP 与产品插件真正就绪；WebSocket 已连接但 QQ
 ```sh
 # 当前状态，只读，不发送模型/聊天请求
 ~/.local/opt/companion/bin/node ~/src/dsh-companion/authority-0.7.1/deploy/qq/verify-recovery.mjs
-# 用户确认并执行完整 VM 重启后；须保留重启前的验证基线
+# 用户确认并执行完整主机重启后；须保留重启前的验证基线
 ~/.local/opt/companion/bin/node ~/src/dsh-companion/authority-0.7.1/deploy/qq/verify-recovery.mjs --new-boot
 ```
 
-不要在重启验收前再次运行配置命令覆盖基线。当前已实测同容器 restart 与完整 VM 重启免再次扫码，后台在首次 SSH 检查前启动；世界仍暂停、数据与绑定保留。不能保证 QQ 凭据永久有效或任何容器重建都免扫。
+不要在重启验收前再次运行配置命令覆盖基线。此前已在旧 VM（myvm）实测同容器 restart 与完整 VM 重启免再次扫码（home-agent 尚未验证），后台在首次 SSH 检查前启动；世界仍暂停、数据与绑定保留。不能保证 QQ 凭据永久有效或任何容器重建都免扫。
