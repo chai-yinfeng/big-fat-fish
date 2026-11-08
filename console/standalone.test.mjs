@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import vm from 'node:vm';
+import { loadConsole } from './test-harness.mjs';
 import { operatorRequest, consumeOperatorFragment, TOKEN_KEY } from './operator-client.js';
 import { speechPayload, referencePayload, inspectReferenceWav } from './runtime-client.js';
 const root = new URL('./', import.meta.url);
@@ -32,15 +32,15 @@ test('standalone uses its explicit same-origin loopback API and consumes only th
 test('standalone reference and speech actions are explicit, ephemeral and paused; audio URLs are revoked', async () => {
   const world = { world: { paused: true, revision: 1 }, persona: { revision: 1, value: {} }, counts: { facts: 0, notes: 0, experiences: 0, pending: 0 }, channels: [], bindings: [], model: { provider: 'deepseek', model: 'deepseek-flash', configured: true, status: 'configured' } };
   const runtime = { speech: { configurationRevision: 'runtime-r1', defaultTtsQuality: 'heavy', numThreads: 2, maxTextChars: 100, models: Object.fromEntries(['asr:light', 'asr:heavy', 'tts:light', 'tts:heavy'].map(key => [key, { model: 'test-' + key, componentsPresent: true, enabled: true, verified: true }])) }, voice: { profileId: 'default', origin: 'kokoro-local', hasReference: true, referenceConditioning: 'speaker-file-only', transcriptUsedForSynthesis: false }, imageGeneration: { configured: false, status: 'not_configured' } };
-  const states = ['operator-test', '', world, {}, 'runtime', false, '', '', '', '', 'deepseek-flash', null, null, null, runtime, { defaultTtsQuality: 'heavy', numThreads: 2, maxTextChars: 100 }];
+  const states = ['operator-test', '', world, {}, 'runtime', false, '', '', 'deepseek-flash', null, null, null, runtime, { defaultTtsQuality: 'heavy', numThreads: 2, maxTextChars: 100 }];
   const refs = [], calls = [], storageWrites = [], revoked = []; let stateIndex = 0, refIndex = 0, component, loaded, urlCount = 0;
   const React = { Fragment: 'fragment', useState: initial => { const i = stateIndex++; if (!(i in states)) states[i] = typeof initial === 'function' ? initial() : initial; return [states[i], value => { states[i] = value; }]; }, useRef: initial => refs[refIndex++] ||= { current: initial }, useEffect() {}, createElement: (type, props, ...children) => { if ((type === 'input' || type === 'textarea') && props.ref) props.ref.current ||= { value: '' }; return { type, props: props || {}, children: children.flat(Infinity) }; } };
   const storage = { getItem: () => 'operator-test', setItem: (...args) => storageWrites.push(args), removeItem() {} };
   const bytes = wav();
-  vm.runInNewContext(await fs.readFile(new URL('client.js', root), 'utf8'), { window: { location: { protocol: 'http:', hostname: '127.0.0.1', port: '19082', hash: '' }, sessionStorage: storage, __ModuleLoader__: { load: value => { loaded = value; } } }, sessionStorage: storage, AbortController, AbortSignal, setTimeout, clearTimeout, Blob, atob, btoa, URL: { createObjectURL: () => 'blob:test-' + (++urlCount), revokeObjectURL: url => revoked.push(url) },
+  loaded = await loadConsole({ window: { location: { protocol: 'http:', hostname: '127.0.0.1', port: '19082', hash: '' }, sessionStorage: storage }, sessionStorage: storage, AbortController, AbortSignal, setTimeout, clearTimeout, Blob, atob, btoa, URL: { createObjectURL: () => 'blob:test-' + (++urlCount), revokeObjectURL: url => revoked.push(url) },
     fetch: async (url, options) => { const payload = options.body && JSON.parse(options.body); calls.push({ url, payload }); if (url.endsWith('/voice/reference')) { assert.equal(refs[6].current.value, ''); assert.equal(refs[7].current.value, ''); assert.equal(refs[8].current.checked, false); } return response(url.endsWith('/world') ? world : url.endsWith('/voice/test') ? { audioBase64: bytes.toString('base64'), mime: 'audio/wav', durationMs: 3000, model: 'test-heavy' } : runtime); } });
-  loaded.factory(() => React).apply({ effect: fn => fn(), locale: { register: () => () => {}, bind: () => key => key }, slots: { inject: (_key, fn) => fn(), register: (_options, value) => { component = value; } } });
-  const render = () => { stateIndex = 0; refIndex = 0; return component({ t: key => key, standalone: true, createSession: () => assert.fail('standalone must hide this') }); };
+  component = loaded.factory(() => React).WorldConsole;
+  const render = () => { stateIndex = 0; refIndex = 0; return component({ t: key => key, standalone: true }); };
   const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...tree.children.flatMap(nodes)];
   const button = key => nodes(render()).find(n => n.type === 'button' && n.children.includes(key));
   assert.equal(calls.length, 0); assert.match(JSON.stringify(render()), /speechPanel.imageUnavailable/);
@@ -56,12 +56,12 @@ test('standalone reference and speech actions are explicit, ephemeral and paused
   assert.equal(storageWrites.length, 0); assert.doesNotMatch(JSON.stringify(render(), (key, value) => key === 'ref' ? undefined : value), /synthetic exact transcript|must-not-send-file-name/);
   await button('speechPanel.test').props.onClick(); let audio = nodes(render()).find(n => n.type === 'audio'); assert.equal(audio.props.autoPlay, undefined); assert.equal(audio.props.preload, 'none'); assert.equal(audio.props.src, 'blob:test-1');
   await button('speechPanel.test').props.onClick(); assert.deepEqual(revoked, ['blob:test-1']);
-  states[14] = { ...runtime, voice: { ...runtime.voice, origin: 'operator-authorized' } };
+  states[12] = { ...runtime, voice: { ...runtime.voice, origin: 'operator-authorized' } };
   button('speechPanel.remove').props.onClick(); assert.equal(calls.some(c => c.url.endsWith('/voice/reference/remove')), false);
   assert.ok(button('speechPanel.removeConfirm'));
   button('discard').props.onClick(); assert.equal(calls.some(c => c.url.endsWith('/voice/reference/remove')), false);
-  states[14] = { ...runtime, voice: { ...runtime.voice, cleanupPending: true } };
+  states[12] = { ...runtime, voice: { ...runtime.voice, cleanupPending: true } };
   assert.ok(button('speechPanel.retryCleanup')); assert.equal(button('speechPanel.upload'), undefined); assert.match(JSON.stringify(render()), /speechPanel.cleanupPending/);
   button('logout').props.onClick(); assert.deepEqual(revoked, ['blob:test-1', 'blob:test-2']);
-  states[0] = 'operator-test'; states[2] = { ...world, world: { ...world.world, paused: false } }; states[14] = runtime; states[15] = { ...runtime.speech }; assert.equal(button('speechPanel.test').props.disabled, true);
+  states[0] = 'operator-test'; states[2] = { ...world, world: { ...world.world, paused: false } }; states[12] = runtime; states[13] = { ...runtime.speech }; assert.equal(button('speechPanel.test').props.disabled, true);
 });

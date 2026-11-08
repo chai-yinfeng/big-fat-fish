@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 export function prepareQQ(base = path.join(os.homedir(), '.local/share/companion-world-v1')) {
   const file = path.join(base, 'operator/authority.json');
   const authority = JSON.parse(fs.readFileSync(file, 'utf8'));
-  for (const dir of ['qq-worker', 'qq-inbox', 'qq-data', 'ipc/qq-control']) fs.mkdirSync(path.join(base, dir), { recursive: true, mode: 0o700 });
+  for (const dir of ['qq-worker', 'qq-data', 'ipc/qq-control']) fs.mkdirSync(path.join(base, dir), { recursive: true, mode: 0o700 });
   const tokenFile = path.join(base, 'qq-worker/capability.token');
   if (!fs.existsSync(tokenFile)) fs.writeFileSync(tokenFile, randomBytes(32).toString('base64url') + '\n', { flag: 'wx', mode: 0o600 });
   const hash = value => createHash('sha256').update(value).digest('hex');
@@ -16,17 +16,13 @@ export function prepareQQ(base = path.join(os.homedir(), '.local/share/companion
   else if (!authority.credentials.some(c => c.capabilityId === 'qq' && c.hash === tokenHash)) throw new Error('QQ_CREDENTIAL_CONFLICT');
   if (!authority.capabilities.some(c => c.id === 'qq')) authority.capabilities.push({ id: 'qq', policy: 'conversation.v1' });
   authority.operator.qqSocketPath = '/authority/qq-control/control.sock';
-  const workerConfigFile = path.join(base, 'qq-worker/route.json'), inboxFile = path.join(base, 'qq-inbox/inbox.jsonl');
-  if (!fs.existsSync(workerConfigFile)) fs.writeFileSync(workerConfigFile, JSON.stringify({ enabled: false }) + '\n', { flag: 'wx', mode: 0o600 });
-  if (!fs.existsSync(inboxFile)) fs.writeFileSync(inboxFile, '', { flag: 'wx', mode: 0o600 });
   const cfg = {
     authority: { socketPath: path.join(base, 'ipc/authority/authority.sock'), tokenFile },
     controlSocket: path.join(base, 'ipc/qq-control/control.sock'),
     operatorTokenHash: hash(fs.readFileSync(path.join(base, 'operator/console.token'), 'utf8').trim()),
     onebotTokenFile: path.join(base, 'qq-runtime/private/onebot.token'),
-    accessFile: path.join(base, 'dsh-home/run/local-access.json'),
-    settingsFile: path.join(base, 'qq-data/settings.json'), stateFile: path.join(base, 'qq-data/dispatch.json'), inboxFile, workerConfigFile,
-    workerAuthoritySocket: '/run/companion/authority.sock', workerTokenFile: '/home/companion/qq-worker/capability.token', workerInboxFile: '/home/companion/qq-inbox/inbox.jsonl',
+    conversation: { socketPath: path.join(base, 'ipc/conversation/execute.sock'), tokenFile: path.join(base, 'conversation-config/caller.token') },
+    settingsFile: path.join(base, 'qq-data/settings.json'), stateFile: path.join(base, 'qq-data/dispatch.json'),
   };
   fs.writeFileSync(path.join(base, 'operator/qq-bridge.json'), JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
   fs.writeFileSync(file, JSON.stringify(authority, null, 2) + '\n', { mode: 0o600 });

@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import vm from 'node:vm';
-import { operatorRequest, operatorOrigin, personaPatch, bindAndCreate, validWorld, validModel, modelPayload, consumeOperatorFragment, TOKEN_KEY, qqPayload, validQQ } from './operator-client.js';
-import { createDshSession } from './dsh-client.js';
+import { operatorRequest, operatorOrigin, personaPatch, validWorld, validModel, modelPayload, consumeOperatorFragment, TOKEN_KEY, qqPayload, validQQ } from './operator-client.js';
+import { loadConsole } from './test-harness.mjs';
+import { flattenDictionary } from './view.js';
 const location = { protocol: 'http:', hostname: '127.0.0.1' };
 const response = (body, status = 200) => ({ ok: status < 400, status, json: async () => body });
 const root = new URL('./', import.meta.url);
@@ -63,19 +63,19 @@ test('QQ UI saves only a paused logged-in sender, clears it, and hides saved num
   const uid = '123456789';
   const qq = { loggedIn: true, connected: true, configured: true, callerConfigured: true, paused: true, allowedCallerUID: uid, token: 'must-not-render' };
   const world = { world: { paused: true, revision: 1 }, persona: { revision: 1, value: {} }, counts: { facts: 0, notes: 0, experiences: 0, pending: 0 }, channels: [{ id: 'qq', name: 'QQ', status: 'ready', enabled: true, boundStreams: 1 }], bindings: [{ sourceId: 'qq', conversationId: `qq:bot:private:${uid}`, personId: 'person:owner', audience: 'private' }], model: { provider: 'deepseek', model: 'deepseek-flash', configured: false, status: 'unconfigured' } };
-  const states = ['operator-test', '', world, {}, 'channels', false, '', '', '', '', 'deepseek-flash', qq], refs = [], calls = [], writes = [];
+  const states = ['operator-test', '', world, {}, 'channels', false, '', '', 'deepseek-flash', qq], refs = [], calls = [], writes = [];
   let cursor = 0, refCursor = 0, component, loaded;
   const React = { Fragment: 'fragment', useState: initial => { const index = cursor++; if (!(index in states)) states[index] = typeof initial === 'function' ? initial() : initial; return [states[index], value => { states[index] = value; }]; },
     useRef: initial => refs[refCursor++] ||= { current: initial }, useEffect() {}, createElement: (type, props, ...children) => { if (type === 'input' && props.ref) props.ref.current ||= { value: '' }; return { type, props: props || {}, children: children.flat(Infinity) }; } };
   const storage = { getItem: () => 'operator-test', setItem: (...args) => writes.push(args), removeItem: (...args) => writes.push(args) };
-  vm.runInNewContext(await readFile(new URL('client.js', root), 'utf8'), { window: { location: { ...location, hash: '' }, sessionStorage: storage, __ModuleLoader__: { load: value => { loaded = value; } } }, sessionStorage: storage,
+  loaded = await loadConsole({ window: { location: { ...location, hash: '' }, sessionStorage: storage }, sessionStorage: storage,
     AbortController, AbortSignal, setTimeout, clearTimeout, fetch: async (url, options) => {
       calls.push({ url, method: options.method, payload: options.body && JSON.parse(options.body) });
       if (options.method === 'POST') return response({ ok: true, value: qq });
       assert.equal(refs[1].current.value, '', 'caller input clears before status refresh');
       return response({ ok: true, value: url.endsWith('/qq') ? qq : world });
     } });
-  loaded.factory(() => React).apply({ effect: callback => callback(), locale: { register: () => () => {}, bind: () => key => key }, slots: { inject: (key, callback) => callback(), register: (options, value) => { component = value; } } });
+  component = loaded.factory(() => React).WorldConsole;
   const render = () => { cursor = 0; refCursor = 0; return component({ t: key => key }); };
   const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...tree.children.flatMap(nodes)];
   let tree = render(); assert.equal(calls.length, 0, 'render never requests QQ status');
@@ -88,10 +88,10 @@ test('QQ UI saves only a paused logged-in sender, clears it, and hides saved num
   await new Promise(setImmediate);
   assert.deepEqual(calls, [{ url: 'http://127.0.0.1:3082/qq', method: 'POST', payload: { allowedCallerUID: uid } }, { url: 'http://127.0.0.1:3082/qq', method: 'GET', payload: undefined }, { url: 'http://127.0.0.1:3082/world', method: 'GET', payload: undefined }]);
   assert.equal(writes.length, 0); assert.equal(input.props.ref.current.value, ''); assert.ok(!JSON.stringify(render()).includes(uid));
-  states[11] = { ...qq, loggedIn: false }; tree = render();
+  states[9] = { ...qq, loggedIn: false }; tree = render();
   assert.equal(nodes(tree).find(node => node.type === 'button' && node.children.includes('qqSave')).props.disabled, true);
   nodes(tree).find(node => node.type === 'form').props.onSubmit({ preventDefault() {} }); assert.equal(calls.length, 3);
-  states[11] = qq; states[2] = { ...world, world: { ...world.world, paused: false } }; tree = render();
+  states[9] = qq; states[2] = { ...world, world: { ...world.world, paused: false } }; tree = render();
   assert.equal(nodes(tree).find(node => node.type === 'button' && node.children.includes('qqSave')).props.disabled, true);
 });
 test('operator fragment is consumed once, removed immediately, and never stores invalid values', () => {
@@ -112,21 +112,6 @@ test('persona arrays and expected operator edit shape', () => {
     name: 'Fish', identity: 'companion', traits: ['calm', 'curious'], speechStyle: 'brief', boundaries: ['honest'], principles: [],
   });
 });
-test('binding precedes official DSH create and no operator headers leak', async () => {
-  const calls = [];
-  const result = await bindAndCreate({ sessionId: 'test-123', bind: async payload => { calls.push('bind'); assert.deepEqual(payload, { conversationId: 'test-123' }); },
-    create: payload => createDshSession({ payload, uuid: () => 'rpc-test', fetchImpl: async (url, options) => {
-      calls.push('create'); assert.equal(url, '/api/session/create'); assert.deepEqual(options.headers, { 'content-type': 'application/json' });
-      assert.equal(options.credentials, 'same-origin');
-      assert.deepEqual(JSON.parse(options.body), { type: 'client-request', rpcId: 'rpc-test', method: 'session/create', payload: { args: { request: { sessionId: 'test-123', cwd: '/home/companion/dsh', agentPreset: 'companion' } } } });
-      return response({ result: { ok: true, value: { sessionId: 'test-123' } } });
-    } }) });
-  assert.deepEqual(calls, ['bind', 'create']); assert.equal(result.id, 'test-123');
-});
-test('failed binding blocks DSH; failed DSH reports durable partial grant', async () => {
-  await assert.rejects(bindAndCreate({ sessionId: 'test-x', bind: async () => { throw new Error('denied'); }, create: () => assert.fail('must not create') }), /denied/);
-  await assert.rejects(bindAndCreate({ sessionId: 'test-x', bind: async () => {}, create: async () => { throw new Error('secret reflected'); } }), error => error.code === 'binding_created_session_failed' && error.sessionId === 'test-x' && !error.message.includes('secret'));
-});
 test('model UI keeps key ephemeral, clears it before refresh, and tests only on explicit click', async () => {
   const secret = 'test-model-key-never-store';
   const world = { world: { paused: true, revision: 1 }, persona: { revision: 1, value: {} }, counts: { facts: 0, notes: 0, experiences: 0, pending: 0 }, channels: [], bindings: [],
@@ -142,8 +127,8 @@ test('model UI keeps key ephemeral, clears it before refresh, and tests only on 
     return { type, props: props || {}, children: children.flat(Infinity) };
   } };
   const storage = { getItem: () => 'operator-test', setItem: (...args) => writes.push(args), removeItem: (...args) => writes.push(args) };
-  vm.runInNewContext(await readFile(new URL('client.js', root), 'utf8'), {
-    window: { location: { ...location, hash: '' }, sessionStorage: storage, __ModuleLoader__: { load: value => { loaded = value; } } }, sessionStorage: storage,
+  loaded = await loadConsole({
+    window: { location: { ...location, hash: '' }, sessionStorage: storage }, sessionStorage: storage,
     AbortController, AbortSignal, setTimeout, clearTimeout, fetch: async (url, options) => {
       calls.push({ url, payload: options.body && JSON.parse(options.body) });
       if (url.endsWith('/model')) return response({ ok: true, value: world.model });
@@ -152,8 +137,7 @@ test('model UI keeps key ephemeral, clears it before refresh, and tests only on 
       return response({ ok: true, value: world });
     },
   });
-  loaded.factory(() => React).apply({ effect: callback => callback(), locale: { register: () => () => {}, bind: () => key => key },
-    slots: { inject: (key, callback) => callback(), register: (options, value) => { component = value; } } });
+  component = loaded.factory(() => React).WorldConsole;
   const render = () => { cursor = 0; refCursor = 0; return component({ t: key => key }); };
   const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...tree.children.flatMap(nodes)];
   let tree = render(); assert.equal(calls.length, 0);
@@ -181,27 +165,21 @@ test('model UI keeps key ephemeral, clears it before refresh, and tests only on 
   assert.ok(JSON.stringify(tree).includes('modelPauseRequired'));
   nodes(tree).find(node => node.type === 'form').props.onSubmit({ preventDefault() {} });
   assert.equal(calls.length, 4, 'running world never saves model configuration');
-  states[2] = world; states[10] = 'deepseek-chat'; tree = render();
+  states[2] = world; states[8] = 'deepseek-chat'; tree = render();
   assert.equal(nodes(tree).find(node => node.type === 'button' && node.children.includes('modelSave')).props.disabled, true);
-  states[10] = 'deepseek-v4-pro'; tree = render();
+  states[8] = 'deepseek-v4-pro'; tree = render();
   assert.equal(nodes(tree).find(node => node.type === 'button' && node.children.includes('modelSave')).props.disabled, false);
 });
-test('generated module registration and bilingual resource metadata', async () => {
+test('bilingual resource metadata has matching keys and flattens to strings', async () => {
   const en = JSON.parse(await readFile(new URL('locale/en.json', root), 'utf8'));
   const zh = JSON.parse(await readFile(new URL('locale/zh.json', root), 'utf8'));
   assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort()); assert.ok(en.meta.title && zh.meta.description);
   const icon = await readFile(new URL('icon.svg', root), 'utf8'); assert.ok(icon.startsWith('<svg')); assert.ok(icon.length < 256 * 1024);
-  let loaded;
-  vm.runInNewContext(await readFile(new URL('client.js', root), 'utf8'), { window: { location: { hash: '' }, __ModuleLoader__: { load: value => { loaded = value; } } } });
-  assert.equal(loaded.id, '@local/companion');
-  const plugin = loaded.factory(name => { assert.equal(name, 'react'); return { createElement() {} }; });
-  const registrations = []; const dictionaries = {};
-  plugin.apply({ effect: callback => callback(), locale: { register: (namespace, locale, dictionary) => { dictionaries[locale] = dictionary; return () => {}; }, bind: () => key => key }, slots: { inject: (key, callback) => callback(), register: (options, component) => { registrations.push(options); return () => {}; } } });
-  assert.equal(registrations[0].name, 'settings.section'); assert.equal(registrations[0].id, 'companion-world');
-  for (const [locale, source] of Object.entries({ en, zh })) {
-    assert.equal(dictionaries[locale]['modelStatus.unconfigured'], source.modelStatus.unconfigured);
-    assert.equal(dictionaries[locale]['errors.request_failed'], source.errors.request_failed);
-    assert.equal(dictionaries[locale]['meta.title'], source.meta.title);
-    assert.ok(Object.values(dictionaries[locale]).every(value => typeof value === 'string'));
+  for (const source of [en, zh]) {
+    const flat = flattenDictionary(source);
+    assert.equal(flat['modelStatus.unconfigured'], source.modelStatus.unconfigured);
+    assert.equal(flat['errors.request_failed'], source.errors.request_failed);
+    assert.ok(Object.values(flat).every(value => typeof value === 'string'));
+    assert.deepEqual(Object.keys(flattenDictionary(en)).sort(), Object.keys(flattenDictionary(zh)).sort());
   }
 });

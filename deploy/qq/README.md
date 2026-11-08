@@ -81,18 +81,18 @@ node --test deploy/qq/prepare.test.mjs
 首次绑定、登录成功且世界处于维护暂停后，在生产主机运行：
 
 ```sh
-~/.local/opt/companion/bin/node ~/src/dsh-companion/authority-0.7.1/deploy/qq/configure-recovery.mjs
+~/.local/opt/companion/bin/node ~/src/dsh-companion/current/deploy/qq/configure-recovery.mjs
 ```
 
 它仅从已批准的私有设置读取账号，不输出值；保留原 token 和数据卷，配置 Docker ACCOUNT 以及官方 WebUI autoLoginAccount、启用本用户 Linger 与现有用户服务，并保存只含验证元数据的基线。环境改变时 compose up 可能重建容器，不能保证旧登录态仍有效；遇过期只提示用户正常扫码，不无限重试或修改设备信息。
 
-QQ 服务等待 SDK HTTP 与产品插件真正就绪；WebSocket 已连接但 QQ 慢登录时定期串行查询身份，断线迟到结果无效。不开新 supervisor，不补发旧消息，不自动恢复世界生活。
+QQ 服务依赖 companion-conversation 执行器服务（systemd Requires）；WebSocket 已连接但 QQ 慢登录时定期串行查询身份，断线迟到结果无效。不开新 supervisor，不补发旧消息，不自动恢复世界生活。
 
 ```sh
 # 当前状态，只读，不发送模型/聊天请求
-~/.local/opt/companion/bin/node ~/src/dsh-companion/authority-0.7.1/deploy/qq/verify-recovery.mjs
+~/.local/opt/companion/bin/node ~/src/dsh-companion/current/deploy/qq/verify-recovery.mjs
 # 用户确认并执行完整主机重启后；须保留重启前的验证基线
-~/.local/opt/companion/bin/node ~/src/dsh-companion/authority-0.7.1/deploy/qq/verify-recovery.mjs --new-boot
+~/.local/opt/companion/bin/node ~/src/dsh-companion/current/deploy/qq/verify-recovery.mjs --new-boot
 ```
 
 不要在重启验收前再次运行配置命令覆盖基线。此前已在旧 VM（myvm）实测同容器 restart 与完整 VM 重启免再次扫码（home-agent 尚未验证），后台在首次 SSH 检查前启动；世界仍暂停、数据与绑定保留。不能保证 QQ 凭据永久有效或任何容器重建都免扫。

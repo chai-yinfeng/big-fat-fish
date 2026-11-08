@@ -16,7 +16,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const sha = value => createHash('sha256').update(value).digest('hex');
 const idle = async () => [];
 
-// Synthetic world built by the real bootstrap/prepare code plus NapCat/DSH fixtures.
+// Synthetic world built by the real bootstrap/prepare code plus NapCat fixtures.
 function world(t, { webuiEqualsEnv = false } = {}) {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fish-rotate-')));
   t.after(() => { assert.ok(temp.startsWith(fs.realpathSync(os.tmpdir()) + path.sep + 'fish-rotate-')); fs.rmSync(temp, { recursive: true }); });
@@ -34,7 +34,6 @@ function world(t, { webuiEqualsEnv = false } = {}) {
   // WebUI token changed in the WebUI after first start: differs from the env value.
   fs.writeFileSync(path.join(runtime, 'data/config/webui.json'), JSON.stringify({ host: '0.0.0.0', port: 6099, prefix: '', token: webuiEqualsEnv ? webuiToken : randomBytes(32).toString('hex'), loginRate: 10 }, null, 4), { mode: 0o600 });
   fs.writeFileSync(path.join(runtime, 'data/qq/login.db'), 'QQ LOGIN FIXTURE', { mode: 0o600 });
-  fs.writeFileSync(path.join(base, 'dsh-home/.credentials.yaml'), `version: 1\n\nrefs:\n  UNRELATED_KEY: keep-this-value\n\nrecords:\n  client-connection/browser-session:\n    kind: grant\n    payload:\n      version: 1\n      secret: A${randomBytes(32).toString('base64url').slice(1)}\n  other-owner/grant:\n    kind: grant\n    payload:\n      access: unrelated-grant\n`, { mode: 0o600 });
   fs.writeFileSync(path.join(base, 'authority-data/authority.sqlite'), 'SQLite format 3\0persona and memory fixture', { mode: 0o600 });
   fs.writeFileSync(path.join(base, 'model-data/settings.json'), '{"provider":"deepseek","apiKey":"user-entered"}\n', { mode: 0o600 });
   fs.writeFileSync(path.join(base, 'qq-worker/capability.token.note'), 'not a token', { mode: 0o600 });
@@ -54,22 +53,21 @@ function walk(root, skip = () => false) {
   return out;
 }
 
-const TOKENS = ['operator/admin.token', 'operator/console.token', 'dsh-config/capability.token', 'dsh-config/model-gateway.token', 'qq-worker/capability.token', 'authority-content/control.token', 'qq-runtime/private/onebot.token'];
+const TOKENS = ['operator/admin.token', 'operator/console.token', 'dsh-config/capability.token', 'dsh-config/model-gateway.token', 'qq-worker/capability.token', 'conversation-config/caller.token', 'authority-content/control.token', 'qq-runtime/private/onebot.token'];
 function secrets(base) {
   const read = relative => fs.readFileSync(path.join(base, relative), 'utf8');
   const memory = fs.readdirSync(path.join(base, 'memory-config')).filter(name => name.endsWith('.token')).map(name => 'memory-config/' + name);
   const tokens = Object.fromEntries([...TOKENS, ...memory].map(relative => [relative, read(relative).trim()]));
   const webuiEnv = /^WEBUI_TOKEN=(.*)$/m.exec(read('qq-runtime/private/napcat.env'))[1];
   const webui = JSON.parse(read('qq-runtime/data/config/webui.json')).token;
-  const browser = /secret: (\S+)/.exec(read('dsh-home/.credentials.yaml'))[1];
-  return { tokens, memory, webuiEnv, webui, browser };
+  return { tokens, memory, webuiEnv, webui };
 }
 
 test('dry-run lists every planned change and writes nothing', async t => {
   const base = world(t), before = walk(base);
   const result = await rotateTokens({ base, dryRun: true, probe: idle });
   assert.equal(result.dryRun, true); assert.equal(result.backup, null);
-  for (const relative of ['operator/authority.json', 'operator/model-gateway.json', 'operator/qq-bridge.json', 'qq-runtime/private/napcat.env', 'qq-runtime/data/config/webui.json', 'qq-runtime/data/config/onebot11.json', 'qq-runtime/data/config/onebot11_10001.json', 'dsh-home/.credentials.yaml', ...TOKENS]) assert.ok(result.changedFiles.includes(relative), relative);
+  for (const relative of ['operator/authority.json', 'operator/model-gateway.json', 'operator/qq-bridge.json', 'qq-runtime/private/napcat.env', 'qq-runtime/data/config/webui.json', 'qq-runtime/data/config/onebot11.json', 'qq-runtime/data/config/onebot11_10001.json', 'operator/conversation.json', ...TOKENS]) assert.ok(result.changedFiles.includes(relative), relative);
   assert.ok(!result.changedFiles.includes('model-data/settings.json'));
   assert.deepEqual(walk(base), before);
   assert.ok(!fs.readdirSync(base).some(name => name.startsWith('rotation-backup-')));
@@ -80,7 +78,7 @@ test('rotation replaces every token and hash, preserves unrelated data, keeps a 
   const oldAuthority = JSON.parse(before.get('operator/authority.json').content);
   const result = await rotateTokens({ base, now: new Date('2026-11-04T01:02:03.004Z'), probe: idle });
   const out = JSON.stringify(result);
-  const oldStrings = [...Object.values(old.tokens), ...Object.values(old.tokens).map(sha), old.webuiEnv, old.webui, old.browser];
+  const oldStrings = [...Object.values(old.tokens), ...Object.values(old.tokens).map(sha), old.webuiEnv, old.webui];
   for (const value of oldStrings) assert.ok(!out.includes(value), 'summary must not contain secrets');
   const now = secrets(base);
   for (const [relative, value] of Object.entries(now.tokens)) {
@@ -94,6 +92,7 @@ test('rotation replaces every token and hash, preserves unrelated data, keeps a 
   const console_ = sha(now.tokens['operator/console.token']);
   assert.equal(authority.operator.tokenHash, console_); assert.equal(gateway.operatorTokenHash, console_); assert.equal(qq.operatorTokenHash, console_);
   assert.equal(gateway.inferenceTokenHash, sha(now.tokens['dsh-config/model-gateway.token']));
+  assert.equal(read('operator/conversation.json').callerTokenHash, sha(now.tokens['conversation-config/caller.token']));
   const credential = predicate => authority.credentials.find(predicate).hash;
   assert.equal(credential(row => row.role === 'admin'), sha(now.tokens['operator/admin.token']));
   assert.equal(credential(row => row.capabilityId === 'dsh-test'), sha(now.tokens['dsh-config/capability.token']));
@@ -102,7 +101,6 @@ test('rotation replaces every token and hash, preserves unrelated data, keeps a 
   // Plain-value consumers.
   for (const name of ['onebot11.json', 'onebot11_10001.json']) assert.equal(read('qq-runtime/data/config/' + name).network.websocketServers[0].token, now.tokens['qq-runtime/private/onebot.token']);
   assert.match(now.webuiEnv, /^[a-f0-9]{64}$/); assert.equal(now.webui, now.webuiEnv);
-  assert.notEqual(now.browser, old.browser); assert.match(now.browser, /^[A-Za-z0-9_-]{43}$/);
   // No old value remains anywhere outside the backup.
   const after = walk(base, relative => relative.startsWith('rotation-backup-'));
   for (const [relative, { content }] of after) for (const value of oldStrings) assert.ok(!content.includes(value), 'old value remains in ' + relative);
@@ -116,8 +114,6 @@ test('rotation replaces every token and hash, preserves unrelated data, keeps a 
   assert.equal(after.get('qq-runtime/data/config/webui.json').content, JSON.stringify(read('qq-runtime/data/config/webui.json'), null, 4));
   const strip = value => ({ ...value, operator: { ...value.operator, tokenHash: null }, credentials: value.credentials.map(row => ({ ...row, hash: null })) });
   assert.deepEqual(strip(authority), strip(oldAuthority));
-  const yaml = after.get('dsh-home/.credentials.yaml').content;
-  assert.equal(yaml, before.get('dsh-home/.credentials.yaml').content.replace(old.browser, now.browser));
   assert.equal(after.get('qq-runtime/private/napcat.env').content, before.get('qq-runtime/private/napcat.env').content.replace(old.webuiEnv, now.webuiEnv));
   // Backup mirrors the replaced files with their old contents.
   assert.equal(result.backup, path.join(base, 'rotation-backup-2026-11-04T01-02-03-004Z'));
@@ -172,5 +168,5 @@ test('CLI dry-run prints only a JSON summary', t => {
   catch (error) { if (/SERVICES_ACTIVE 127\.0\.0\.1/.test(error.stderr)) { t.skip('a local loopback port is in use on this machine'); return; } throw error; }
   const summary = JSON.parse(stdout);
   assert.equal(summary.dryRun, true);
-  for (const value of [...Object.values(old.tokens), ...Object.values(old.tokens).map(sha), old.webuiEnv, old.webui, old.browser]) assert.ok(!stdout.includes(value));
+  for (const value of [...Object.values(old.tokens), ...Object.values(old.tokens).map(sha), old.webuiEnv, old.webui]) assert.ok(!stdout.includes(value));
 });

@@ -1,8 +1,8 @@
 # Private model gateway
 
 Node 24, standard library only. The network-capable host gateway owns the real
-DeepSeek credential. The DSH worker gets only an opaque inference token and the
-inference socket; it must not see the settings file, launch configuration,
+DeepSeek credential. The conversation executor (and the content/memory workers)
+get only an opaque inference token and the inference socket; it must not see the settings file, launch configuration,
 operator credential, control socket, or Authority credential.
 
 ```sh
@@ -83,13 +83,14 @@ codes/messages, never upstream error text or headers. No prompt/response/key log
 For model changes, pause the world, drain/stop the worker tool loop, call `/cancel`,
 then update settings and start a new conversation as appropriate before resuming.
 The gateway cannot infer a conversation boundary from individual HTTP requests.
-Changing the console setting does not require a gateway/worker restart. Existing
-SDK adapter metadata must remain valid for both selectable models.
+Changing the console setting does not require a gateway/worker restart. The
+executor's model metadata must remain valid for both selectable models.
 
-The SDK adapter uses stable provider `companion`, model `deepseek` (application
-primary `companion/deepseek`), `openai-completions`, and explicit DeepSeek compat.
-A role-restricted bridge maps the worker's fixed localhost model port to only
-`inference.sock`; this module does not grant any worker network access.
+The conversation executor (`capabilities/conversation/model.js`) defines a pi-ai
+provider `companion`, model `deepseek`, API `openai-completions` with explicit
+DeepSeek compat (`thinkingFormat: deepseek`, replayed `reasoning_content`,
+`max_tokens`), and reaches only `inference.sock` through a Unix-socket fetch; it
+has no TCP network access.
 
 Tests use injected fetch mocks, not real DeepSeek calls. They exercise token
 isolation, paused gates, atomic private settings, SSE/tool/reasoning bytes, model

@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { connectWeb } from '../../integrations/dsh/web-rpc.js';
 
 // Read-only metadata verification; no prompts, platform sends, account IDs or keys.
 try {
@@ -16,11 +15,8 @@ try {
     const result = await r.json(); if (!r.ok || !result.ok) throw new Error('RECOVERY_API_UNAVAILABLE'); return result.value;
   };
   const world = await get('/world'), qq = await get('/qq');
-  const units = ['companion-authority.service', 'companion-model.service', 'companion-dsh-internal.service', 'companion-qq.service'];
+  const units = ['companion-authority.service', 'companion-model.service', 'companion-conversation.service', 'companion-qq.service'];
   const services = units.map(unit => ({ unit, active: execFileSync('systemctl', ['--user', 'show', unit, '-p', 'ActiveState', '--value'], { encoding: 'utf8' }).trim() === 'active', startedSecondsAfterBoot: Number(execFileSync('systemctl', ['--user', 'show', unit, '-p', 'ActiveEnterTimestampMonotonic', '--value'], { encoding: 'utf8' }).trim()) / 1000000 }));
-  const rpc = await connectWeb(JSON.parse(fs.readFileSync(path.join(base, 'dsh-home/run/local-access.json'), 'utf8')));
-  const inventory = await rpc('pluginInventory/list');
-  const sdkReady = inventory.entries.some(row => row.moduleName === '@local/companion' && row.enabled && row.fiberPhase === 'active');
   const dispatch = JSON.parse(fs.readFileSync(path.join(base, 'qq-data/dispatch.json'), 'utf8')).records;
   const fresh = Object.entries(dispatch).filter(([id]) => !before.dispatchKeys.includes(id)).map(([, value]) => value);
   const canonical = value => value.map(row => JSON.stringify(row)).sort().join('\n');
@@ -31,7 +27,7 @@ try {
   const result = {
     autoLoginSelectionSaved: account === quickSelection && account === environmentAccount,
     rebootObserved: bootChanged, linger: execFileSync('loginctl', ['show-user', os.userInfo().username, '-p', 'Linger', '--value'], { encoding: 'utf8' }).trim() === 'yes',
-    services, sdkReady, qqLoggedIn: qq.loggedIn && qq.connected && qq.configured,
+    services, qqLoggedIn: qq.loggedIn && qq.connected && qq.configured,
     worldPaused: world.world.paused, worldRevisionPreserved: world.world.revision === before.world.revision,
     frozenTimePreserved: world.world.worldNow === before.world.worldNow,
     personaRevisionPreserved: world.persona.revision === before.personaRevision,
@@ -39,6 +35,6 @@ try {
     bindingsPreserved: canonical(bindings) === canonical(before.bindings),
     noHistoricalSend: fresh.every(item => ['paused', 'interrupted'].includes(item.status)),
   };
-  result.verified = result.autoLoginSelectionSaved && result.linger && services.every(s => s.active) && sdkReady && result.qqLoggedIn && result.worldPaused && result.worldRevisionPreserved && result.frozenTimePreserved && result.personaRevisionPreserved && result.memoryCountsPreserved && result.bindingsPreserved && result.noHistoricalSend && (!process.argv.includes('--new-boot') || bootChanged);
+  result.verified = result.autoLoginSelectionSaved && result.linger && services.every(s => s.active) && result.qqLoggedIn && result.worldPaused && result.worldRevisionPreserved && result.frozenTimePreserved && result.personaRevisionPreserved && result.memoryCountsPreserved && result.bindingsPreserved && result.noHistoricalSend && (!process.argv.includes('--new-boot') || bootChanged);
   process.stdout.write(JSON.stringify(result) + '\n'); if (!result.verified) process.exitCode = 1;
 } catch { process.stderr.write('Recovery verification unavailable; no private response or credential was printed.\n'); process.exitCode = 1; }

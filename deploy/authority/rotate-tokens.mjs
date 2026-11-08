@@ -42,13 +42,16 @@ export const INVENTORY = [
     readers: ['memory worker (memory-worker.json operatorTokenFile)', 'purge-execution.mjs', 'deploy/qq/*', 'open-world.mjs', 'browser console sessionStorage (re-enter)'] },
   { file: 'dsh-config/capability.token', format: 'base64url',
     hashes: [{ file: 'operator/authority.json', field: 'credentials[role=capability,capabilityId!=qq].hash', check: credentialCount(row => row.role === 'capability' && row.capabilityId !== 'qq') }],
-    readers: ['DSH adapter (dsh-config/adapter.json, mounted)', 'content.json authority.tokenFile', 'model-gateway.json authority.tokenFile'] },
+    readers: ['content.json authority.tokenFile', 'model-gateway.json authority.tokenFile'] },
   { file: 'dsh-config/model-gateway.token', format: 'base64url', optional: true,
     hashes: [{ file: 'operator/model-gateway.json', field: 'inferenceTokenHash', check: (json, hash) => json.inferenceTokenHash === hash }],
-    readers: ['DSH env COMPANION_MODEL_GATEWAY_TOKEN (launch.py at start)', 'content.json gateway.tokenFile', 'memory-worker.json gateway.tokenFile'] },
+    readers: ['conversation.json gateway.tokenFile', 'content.json gateway.tokenFile', 'memory-worker.json gateway.tokenFile'] },
   { file: 'qq-worker/capability.token', format: 'base64url', optional: true,
     hashes: [{ file: 'operator/authority.json', field: 'credentials[capabilityId=qq].hash', check: credentialCount(row => row.role === 'capability' && row.capabilityId === 'qq') }],
-    readers: ['qq-bridge.json authority.tokenFile', 'DSH QQ worker route.json tokenFile (mounted)'] },
+    readers: ['qq-bridge.json authority.tokenFile', 'conversation.json authority.tokenFile'] },
+  { file: 'conversation-config/caller.token', format: 'base64url', optional: true,
+    hashes: [{ file: 'operator/conversation.json', field: 'callerTokenHash', check: (json, hash) => json.callerTokenHash === hash }],
+    readers: ['qq-bridge.json conversation.tokenFile (read per request)'] },
   { glob: 'memory-config/*.token', format: 'base64url', optional: true,
     hashes: [{ file: 'operator/authority.json', field: 'credentials[role=maintenance].hash', check: credentialCount(row => row.role === 'maintenance') }],
     readers: ['memory-worker.json authority.tokenFile'] },
@@ -60,22 +63,19 @@ export const INVENTORY = [
   { env: 'qq-runtime/private/napcat.env', key: 'WEBUI_TOKEN', format: 'hex', optional: true, hashes: [],
     plain: 'qq-runtime/data/config/webui.json token (NapCat WebUI, authoritative after first start)',
     readers: ['NapCat container env_file', 'deploy/qq/open-login.mjs, configure-recovery.mjs (webui.json)'] },
-  { yaml: 'dsh-home/.credentials.yaml', record: 'client-connection/browser-session', optional: true, hashes: [],
-    readers: ['DSH BrowserAuth cookie-signing secret (loaded at Connection activation; replacing it revokes all 3081 browser cookies)'] },
 ];
 
 // Directories whose files must not retain any old value afterwards (top level only).
-const SCAN_DIRS = ['operator', 'dsh-config', 'qq-worker', 'memory-config', 'authority-content', 'qq-runtime', 'qq-runtime/private', 'qq-runtime/data/config', 'dsh-home', 'dsh-home/run'];
-const SOCKETS = ['ipc/authority/authority.sock', 'ipc/operator/operator.sock', 'ipc/model/inference.sock', 'ipc/model-control/control.sock', 'ipc/qq-control/control.sock', 'ipc/content/content.sock'];
-const PORTS = [3001, 6099, 3081, 3082];
+const SCAN_DIRS = ['operator', 'dsh-config', 'qq-worker', 'conversation-config', 'memory-config', 'authority-content', 'qq-runtime', 'qq-runtime/private', 'qq-runtime/data/config'];
+const SOCKETS = ['ipc/authority/authority.sock', 'ipc/operator/operator.sock', 'ipc/model/inference.sock', 'ipc/model-control/control.sock', 'ipc/qq-control/control.sock', 'ipc/content/content.sock', 'ipc/conversation/execute.sock'];
+const PORTS = [3001, 6099, 3082];
 
 const fail = code => { throw Object.assign(new Error(code), { rotation: true }); };
 const count = (text, value) => value ? text.split(value).length - 1 : 0;
 function generate(format, old) {
   for (;;) {
     const value = format === 'hex' ? hex() : base64url();
-    // Leading letter keeps the value a safe YAML plain scalar (browser-session secret).
-    if (value !== old && (format === 'hex' || /^[A-Za-z]/.test(value))) return value;
+    if (value !== old) return value;
   }
 }
 
@@ -178,28 +178,6 @@ export function planRotation(base) {
         substitute(webui, oldWebui, next, 1, (value, token) => value.token === token);
       } else warnings.push('webui.json absent; only WEBUI_TOKEN env rotated');
       rotated.push(item.env + ' ' + item.key);
-    } else if (item.yaml) {
-      if (!exists(item.yaml)) { skipped.push(item.yaml + ' (absent)'); continue; }
-      const entry = text(item.yaml), lines = entry.after.split('\n');
-      // Block layout rendered by dsh-credentials-local (yaml Document.toString):
-      // records: / <i>client-connection/browser-session: / kind: grant / payload: / version: 1 / secret: X
-      const start = lines.findIndex(row => /^\s+client-connection\/browser-session:\s*$/.test(row));
-      const indent = start < 0 ? -1 : /^\s*/.exec(lines[start])[0].length;
-      let end = start + 1;
-      while (start >= 0 && end < lines.length && (lines[end].trim() === '' || /^\s*/.exec(lines[end])[0].length > indent)) end++;
-      const block = start < 0 ? [] : lines.slice(start + 1, end);
-      const secretRows = block.map((row, index) => [index, /^(\s+secret:\s*)(['"]?)([A-Za-z0-9_-]{43})\2(\s*)$/.exec(row)]).filter(([, match]) => match);
-      const recognized = start >= 0 && block.some(row => /^\s+kind:\s*grant\s*$/.test(row)) && block.some(row => /^\s+version:\s*1\s*$/.test(row)) && secretRows.length === 1 && count(entry.after, secretRows[0][1][3]) === 1;
-      if (!recognized) {
-        files.delete(item.yaml);
-        warnings.push(item.yaml + ' browser-session record absent or unrecognized; left unchanged');
-        continue;
-      }
-      const [index, match] = secretRows[0], old = match[3], next = generate('base64url', old);
-      lines[start + 1 + index] = match[1] + match[2] + next + match[2] + match[4];
-      entry.after = lines.join('\n');
-      remember(item.yaml + ' ' + item.record, old);
-      rotated.push(item.yaml + ' ' + item.record);
     }
   }
 
@@ -216,7 +194,7 @@ export function planRotation(base) {
   }
 
   // Residual scan: no old value may remain in any scanned config after the plan.
-  const known = new Set(INVENTORY.flatMap(item => [item.file, item.env, item.yaml]).filter(Boolean));
+  const known = new Set(INVENTORY.flatMap(item => [item.file, item.env]).filter(Boolean));
   for (const dir of SCAN_DIRS) {
     if (!exists(dir) || !fs.statSync(abs(dir)).isDirectory()) continue;
     for (const name of fs.readdirSync(abs(dir))) {

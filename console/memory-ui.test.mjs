@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import vm from 'node:vm';
+import { loadConsole } from './test-harness.mjs';
 
 test('memory and private diaries load only on explicit read; forgetting requires preview and pause', async () => {
   const world = { world: { paused: true, revision: 1 }, persona: { revision: 1, value: {} }, counts: { facts: 1, notes: 0, experiences: 0, pending: 0 }, channels: [], bindings: [], model: { provider: 'deepseek', model: 'deepseek-flash', configured: false, status: 'unconfigured' } };
@@ -11,9 +10,9 @@ test('memory and private diaries load only on explicit read; forgetting requires
   let cursor = 0, refCursor = 0, component, loaded;
   const React = { Fragment: 'fragment', useState: initial => { const i = cursor++; if (!(i in states)) states[i] = typeof initial === 'function' ? initial() : initial; return [states[i], value => { states[i] = value; }]; }, useRef: initial => refs[refCursor++] ||= { current: initial }, useEffect() {}, createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity) }) };
   const storage = { getItem: () => 'operator-test', setItem: (...args) => writes.push(args), removeItem() {} };
-  vm.runInNewContext(await readFile(new URL('./client.js', import.meta.url), 'utf8'), { window: { location: { protocol: 'http:', hostname: '127.0.0.1', hash: '' }, sessionStorage: storage, __ModuleLoader__: { load: value => { loaded = value; } } }, sessionStorage: storage, AbortController, AbortSignal, setTimeout, clearTimeout,
+  loaded = await loadConsole({ window: { location: { protocol: 'http:', hostname: '127.0.0.1', hash: '' }, sessionStorage: storage }, sessionStorage: storage, AbortController, AbortSignal, setTimeout, clearTimeout,
     fetch: async (url, options) => { calls.push({ url, payload: options.body && JSON.parse(options.body) }); return { ok: true, status: 200, json: async () => ({ ok: true, value: url.endsWith('/forget-preview') ? preview : url.endsWith('/world') ? world : memory }) }; } });
-  loaded.factory(() => React).apply({ effect: fn => fn(), locale: { register: () => () => {}, bind: () => key => key }, slots: { inject: (_key, fn) => fn(), register: (_options, value) => { component = value; } } });
+  component = loaded.factory(() => React).WorldConsole;
   const render = () => { cursor = 0; refCursor = 0; return component({ t: key => key }); };
   const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...tree.children.flatMap(nodes)];
   const button = key => nodes(render()).find(n => n.type === 'button' && n.children.includes(key));
@@ -28,5 +27,5 @@ test('memory and private diaries load only on explicit read; forgetting requires
   await button('memoryForgetConfirm').props.onClick();
   assert.deepEqual(calls.find(c => c.url.endsWith('/memory/forget')).payload, { entityId: 'entity:test', ids: ['m1'], expectedMemoryEpoch: 0, expectedRevision: 4 });
   assert.equal(states[7], 'memoryCleanupPending'); assert.equal(writes.length, 0);
-  button('overview').props.onClick(); assert.equal(states[12], null); assert.equal(states[13], null);
+  button('overview').props.onClick(); assert.equal(states[10], null); assert.equal(states[11], null);
 });

@@ -12,13 +12,10 @@ case "$(uname -m)" in
   x86_64) NODE_ARCH=x64; NODE_SHA256=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75 ;;
   *) printf 'Expected Linux ARM64 or x86_64\n' >&2; exit 1 ;;
 esac
-DSH_VERSION=0.2.1-rc.3
-PNPM_VERSION=10.30.0
 NODE_HOME="$PREFIX/node-v$NODE_VERSION-linux-$NODE_ARCH"
-RUNTIME="$PREFIX/dsh-$DSH_VERSION"
 ARCHIVE="$CACHE/node-v$NODE_VERSION-linux-$NODE_ARCH.tar.xz"
 # First-install only: reject existing tools before changing any runtime package.
-for tool in node npm pnpm dsh; do
+for tool in node npm; do
   [[ ! -e "$PREFIX/bin/$tool" && ! -L "$PREFIX/bin/$tool" ]] || { printf 'Existing runtime requires inspection; do not rerun first-install: %s\n' "$PREFIX/bin/$tool" >&2; exit 1; }
 done
 mkdir -p "$PREFIX" "$CACHE" "$PREFIX/bin"
@@ -32,18 +29,8 @@ if [[ ! -x "$NODE_HOME/bin/node" ]]; then
   [[ ! -e "$NODE_HOME" ]] || { printf 'Existing partial Node directory requires inspection: %s\n' "$NODE_HOME" >&2; exit 1; }
   tar -xJf "$ARCHIVE" -C "$PREFIX" --no-same-owner
 fi
-export PATH="$NODE_HOME/bin:$PREFIX/bin:$PATH"
-mkdir -p "$RUNTIME"
-"$NODE_HOME/bin/node" "$NODE_HOME/lib/node_modules/npm/bin/npm-cli.js" install \
-  --prefix "$RUNTIME" --save-exact --ignore-scripts --no-fund --no-audit \
-  --fetch-timeout=120000 --fetch-retries=2 \
-  "@deepseek-ai/dsh@$DSH_VERSION" "pnpm@$PNPM_VERSION"
 ln -s "$NODE_HOME/bin/node" "$PREFIX/bin/node"
 printf '#!/usr/bin/env bash\nexec "%s" "%s" "$@"\n' "$NODE_HOME/bin/node" "$NODE_HOME/lib/node_modules/npm/bin/npm-cli.js" > "$PREFIX/bin/npm"
-printf '#!/usr/bin/env bash\nexec "%s" "%s" "$@"\n' "$NODE_HOME/bin/node" "$RUNTIME/node_modules/pnpm/bin/pnpm.cjs" > "$PREFIX/bin/pnpm"
-printf '#!/usr/bin/env bash\nexport PATH="%s/bin:%s/bin:$PATH"\nexec "%s" "%s" "$@"\n' "$PREFIX" "$NODE_HOME" "$NODE_HOME/bin/node" "$RUNTIME/node_modules/@deepseek-ai/dsh/lib/bin.js" > "$PREFIX/bin/dsh"
-chmod 700 "$PREFIX/bin/npm" "$PREFIX/bin/pnpm" "$PREFIX/bin/dsh"
+chmod 700 "$PREFIX/bin/npm"
 "$PREFIX/bin/node" --version
-"$PREFIX/bin/pnpm" --version
-"$PREFIX/bin/dsh" --version
 printf 'Runtime installed under %s (system Node unchanged)\n' "$PREFIX"

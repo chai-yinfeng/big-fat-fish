@@ -13,7 +13,7 @@ export function prepareContent(base = path.join(os.homedir(), '.local/share/comp
   const authorityFile = path.join(base, 'operator/authority.json'), authority = JSON.parse(fs.readFileSync(authorityFile, 'utf8'));
   const layoutFile = path.join(base, 'operator/execution-storage.json');
   const layout = JSON.parse(fs.readFileSync(layoutFile, 'utf8'));
-  if (layout.version !== 1 || layout.sessionsRoot !== 'dsh-home/sessions') throw Error('CONTENT_STORAGE_LAYOUT');
+  if (layout.version !== 2 || layout.sessionsRoot !== 'conversation-data/sessions') throw Error('CONTENT_STORAGE_LAYOUT');
   prepareSpeech(base, runtime);
   for (const directory of ['ipc/content', 'authority-content', 'media-data']) fs.mkdirSync(path.join(base, directory), { recursive: true, mode: 0o700 });
   const tokenFile = path.join(base, 'authority-content/control.token');

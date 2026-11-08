@@ -1,4 +1,4 @@
-// Browser-only transport. Never attach this bearer to DSH RPC or NativeHost.
+// Browser-only transport. Never attach this bearer to the conversation executor or model tools.
 export const TOKEN_KEY = 'companion-world:operator:v1';
 // Only this operator access code may enter sessionStorage; never model credentials.
 export function consumeOperatorFragment({ location, history, storage }) {
@@ -76,16 +76,4 @@ export function validWorld(value) {
     && Number.isSafeInteger(value.persona?.revision) && value.persona.value && value.counts
     && ['facts', 'notes', 'experiences', 'pending'].every(key => Number.isFinite(value.counts[key]))
     && Array.isArray(value.channels) && Array.isArray(value.bindings) && validModel(value.model);
-}
-export async function bindAndCreate({ sessionId, bind, create }) {
-  const id = sessionId.trim();
-  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,119}$/.test(id)) throw Object.assign(new Error('invalid_session_id'), { code: 'invalid_session_id' });
-  await bind({ conversationId: id });
-  try {
-    const result = await create({ request: { sessionId: id, cwd: '/home/companion/dsh', agentPreset: 'companion' } });
-    if (result?.ok === false) throw new Error('session_create_failed');
-    return { id, result };
-  } catch {
-    throw Object.assign(new Error('binding_created_session_failed'), { code: 'binding_created_session_failed', sessionId: id });
-  }
 }
