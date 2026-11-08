@@ -32,7 +32,7 @@ export function createContentOperator({ speechConfigFile, worldStatus, speechFac
   function projected({ config, revision }) {
     const s = runner.status(), models = {};
     for (const [key, value] of Object.entries(s.models || {})) {
-      if (/^(?:asr:(?:default|fast)|tts:[a-z0-9-]{1,40})$/.test(key) && value) models[key] = { model: typeof value.model === 'string' ? value.model : '', componentsPresent: value.componentsPresent === true, enabled: value.enabled === true, verified: value.verified === true };
+      if (/^(?:asr:default|tts:[a-z0-9-]{1,40})$/.test(key) && value) models[key] = { model: typeof value.model === 'string' ? value.model : '', componentsPresent: value.componentsPresent === true, enabled: value.enabled === true, verified: value.verified === true };
     }
     // Never project paths, transcripts or upload IDs.
     const profiles = Object.values(config.voiceProfiles).map(p => {

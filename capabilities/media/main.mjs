@@ -26,8 +26,7 @@ try {
     const image = await sharp(data, { limitInputPixels: 40000000, animated: false, page: 0, pages: 1 }).rotate().resize(512, 512, { fit: 'inside', withoutEnlargement: true }).flatten({ background: '#ffffff' }).jpeg({ quality: 85 }).toBuffer();
     return { data: image, mime: 'image/jpeg' };
   };
-  const speechDefaults = () => ({ maxAudioSeconds: JSON.parse(fs.readFileSync(cfg.speechConfigFile, 'utf8')).maxAudioSeconds || 30 });
-  const service = new MediaService({ store, speech, ...gateway, normalizeImage, workRoot: cfg.workRoot, speechDefaults });
+  const service = new MediaService({ store, speech, ...gateway, normalizeImage, workRoot: cfg.workRoot });
   const worldStatus = async () => (await authority.health()).world;
   const operator = createContentOperator({ speechConfigFile: cfg.speechConfigFile, worldStatus, speechFactory: () => speech });
   server = createContentServer({ ...cfg.control, service, worldStatus, operatorCall: (input, options) => operator.call(input, options) });

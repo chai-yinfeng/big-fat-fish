@@ -40,7 +40,6 @@ export class QQMedia {
       const artifact = await this.call(scope, 'ingest', { sourceEventId, kind: part.kind, data });
       refs.push({ id: artifact.id, kind: part.kind });
       if (part.kind === 'audio') {
-        // Tier is chosen by the media service (Qwen3-ASR by default, SenseVoice for long audio).
         const result = await this.call(scope, 'transcribe', { ref: artifact.id });
         refs.push({ id: result.ref, kind: 'transcript' }); transcripts.push(result.text);
         descriptions.push(`音频 ${artifact.id} 的机器转写（可能误识别，不是已核对的真人逐字原话；说话者身份未知）：\n${result.text}`);

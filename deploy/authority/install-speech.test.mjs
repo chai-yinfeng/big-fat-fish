@@ -27,7 +27,7 @@ test('--archive-dir copies are used only when size and pinned sha256 match', asy
   await assert.rejects(localArchive(dir, 'link.tar.bz2', expected), { code: 'SPEECH_INSTALL_TARGET' });
 });
 
-test('prepared manifest pins both ASR archive digests and the plan rejects a changed pin', async t => {
+test('prepared manifest pins the Qwen3-ASR archive digest (no SenseVoice) and the plan rejects a changed pin', async t => {
   const root = tempRoot(t), base = path.join(root, 'companion-world-v1');
   fs.mkdirSync(path.join(base, 'operator'), { recursive: true }); fs.writeFileSync(path.join(base, 'operator/authority.json'), '{}');
   prepareSpeech(base, path.join(root, 'runtime'));
@@ -35,6 +35,8 @@ test('prepared manifest pins both ASR archive digests and the plan rejects a cha
   for (const entry of manifest.models.filter(m => !m.files)) { assert.match(entry.sha256, /^[a-f0-9]{64}$/); assert.ok(entry.bytes > 0); assert.equal(entry.digestPendingDownload, undefined); }
   const plan = speechInstallPlan({ base, models: 'asr', archiveDir: root });
   assert.equal(plan.archiveDir, root); assert.equal(plan.writesPerformed, false);
+  assert.deepEqual(plan.selected, ['qwen3-asr-0.6b-int8-2026-03-25']); assert.equal(manifest.models.some(m => /sensevoice/.test(m.id)), false);
+  assert.deepEqual(speechInstallPlan({ base }).selected, ['qwen3-asr-0.6b-int8-2026-03-25', 'qwen3-tts-1.7b-base-q4-k-m']);
   assert.throws(() => speechInstallPlan({ base, archiveDir: 'relative/dir' }), { code: 'SPEECH_INSTALL_ARGUMENTS' });
   assert.throws(() => speechInstallPlan({ base, archiveDir: path.join(root, 'missing') }), { code: 'SPEECH_INSTALL_ARGUMENTS' });
   manifest.models[0].sha256 = '0'.repeat(64); fs.writeFileSync(manifestFile, JSON.stringify(manifest));

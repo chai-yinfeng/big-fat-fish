@@ -58,7 +58,7 @@ UI 可单独 node --run build:console（输出 console/dist；没有 dev/watch/H
 语音安装在该主机上建议：`ops/install-speech.mjs --apply --models all --model-source modelscope
 --proxy http://127.0.0.1:7890 --hf-endpoint https://hf-mirror.com --archive-dir <目录>`（GGUF 走
 ModelScope 直连并校验固定 sha256；npm、git clone 走代理；小型模型卡走 hf-mirror）。该主机经代理下载
-GitHub release 失败（SSL_ERROR_SYSCALL），两个 sherpa ASR 压缩包须先在 Mac 上下载再拷到 `<目录>`，
+GitHub release 失败（SSL_ERROR_SYSCALL），sherpa Qwen3-ASR 压缩包须先在 Mac 上下载再拷到 `<目录>`，
 安装器按 manifest 固定的 sha256 校验。安装后在控制台“音色”中登记参考录音。发布与安装工具按
 `process.arch` / `uname -m` 在 arm64 与 x64 之间选择私有 Node、CMake、sherpa 原生包和
 NapCat 平台。

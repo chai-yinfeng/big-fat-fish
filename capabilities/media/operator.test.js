@@ -15,11 +15,11 @@ function wave(seconds = 3, channels = 1) {
 function fixture(t) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fish-content-operator-'))), workRoot = path.join(root, 'work');
   fs.mkdirSync(path.join(workRoot, 'reference'), { recursive: true });
-  const models = { asr: { default: { id: 'asr-default', engine: 'fake-only', files: {} }, fast: { id: 'asr-fast', engine: 'fake-only', files: {} } }, tts: { 'llama-tts': { id: 'tts-qwen3', engine: 'llama-tts' } } };
-  const configFile = path.join(root, 'speech.json'), config = { schemaVersion: 2, nodeExecutable: process.execPath, sherpaModule: path.join(root, 'fake-sherpa.js'), workRoot, inputRoots: [root], numThreads: 8, timeoutMs: 180000, maxTextChars: 120, maxAudioSeconds: 30, maxFastAudioSeconds: 120, defaultVoice: null, voiceProfiles: {}, models };
+  const models = { asr: { default: { id: 'asr-default', engine: 'fake-only', files: {} } }, tts: { 'llama-tts': { id: 'tts-qwen3', engine: 'llama-tts' } } };
+  const configFile = path.join(root, 'speech.json'), config = { schemaVersion: 2, nodeExecutable: process.execPath, sherpaModule: path.join(root, 'fake-sherpa.js'), workRoot, inputRoots: [root], numThreads: 8, timeoutMs: 180000, maxTextChars: 120, maxAudioSeconds: 30, defaultVoice: null, voiceProfiles: {}, models };
   fs.writeFileSync(configFile, JSON.stringify(config), { mode: 0o600 });
   let world = { paused: true, revision: 3 }, synth, calls = 0, removeFile = file => fs.unlinkSync(file);
-  const runner = { status: () => ({ models: Object.fromEntries(['asr:default', 'asr:fast', 'tts:llama-tts'].map(key => [key, { model: key.replace(':', '-'), componentsPresent: true, enabled: true, verified: true, secretPath: '/must-not-leak', apiKey: 'must-not-leak' }])) }), synthesize: async args => { calls++; if (synth) return synth(args); fs.writeFileSync(args.outputFile, wave()); return { model: 'tts-qwen3' }; } };
+  const runner = { status: () => ({ models: Object.fromEntries(['asr:default', 'asr:fast-removed', 'tts:llama-tts'].map(key => [key, { model: key.replace(':', '-'), componentsPresent: true, enabled: true, verified: true, secretPath: '/must-not-leak', apiKey: 'must-not-leak' }])) }), synthesize: async args => { calls++; if (synth) return synth(args); fs.writeFileSync(args.outputFile, wave()); return { model: 'tts-qwen3' }; } };
   const worldStatus = async () => world;
   const operator = createContentOperator({ speechConfigFile: configFile, worldStatus, speechFactory: () => runner, unlinkReference: file => removeFile(file) });
   t.after(() => { assert.equal(path.dirname(root), fs.realpathSync(os.tmpdir())); assert.match(path.basename(root), /^fish-content-operator-/); fs.rmSync(root, { recursive: true }); });
@@ -36,7 +36,7 @@ test('private operator status is safe and read-only; settings need pause, known 
   await app.start(); t.after(() => app.close());
   f.setWorld({ paused: false, revision: 3 });
   const response = await request(socketPath, token, { action: 'status' }); assert.equal(response.status, 200);
-  const status = response.value.value; assert.equal(status.voices.defaultVoice, null); assert.deepEqual(status.voices.profiles, []); assert.equal(status.voices.transcriptUsedForSynthesis, false); assert.deepEqual(Object.keys(status.speech.models), ['asr:default', 'asr:fast', 'tts:llama-tts']); assert.equal(JSON.stringify(status).includes('must-not-leak'), false); assert.deepEqual(fs.readFileSync(f.configFile), before);
+  const status = response.value.value; assert.equal(status.voices.defaultVoice, null); assert.deepEqual(status.voices.profiles, []); assert.equal(status.voices.transcriptUsedForSynthesis, false); assert.deepEqual(Object.keys(status.speech.models), ['asr:default', 'tts:llama-tts']); assert.equal(JSON.stringify(status).includes('must-not-leak'), false); assert.deepEqual(fs.readFileSync(f.configFile), before);
   const configure = { action: 'configure', expectedRevision: status.speech.configurationRevision, worldRevision: 3, numThreads: 16, maxTextChars: 64 };
   const { worldRevision: _pinned, ...unpinned } = configure;
   assert.equal((await request(socketPath, token, configure)).status, 409);

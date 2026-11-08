@@ -29,7 +29,7 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
       job.inputFile = inputPath(c, job.inputFile);
       const info = wavInfo(job.inputFile);
       if (info.format !== 1 || info.bits !== 16) throw failure('SPEECH_AUDIO_FORMAT');
-      if (info.durationMs > (job.quality === 'fast' ? c.maxFastAudioSeconds : c.maxAudioSeconds) * 1000) throw failure('SPEECH_AUDIO_LIMIT');
+      if (info.durationMs > c.maxAudioSeconds * 1000) throw failure('SPEECH_AUDIO_LIMIT');
     } else {
       if (typeof job.text !== 'string' || !job.text.trim() || [...job.text].length > c.maxTextChars) throw failure('SPEECH_REQUEST');
       if (e.engine === 'llama-tts') trustedReference(c, profile);
@@ -88,9 +88,9 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
     }
   }
   return {
-    transcribe({ inputFile, quality = 'default', language = 'auto', signal }) {
-      if (!['auto', 'zh', 'en', 'yue', 'ja', 'ko'].includes(language) || !ASR_TIERS.includes(quality)) return Promise.reject(failure('SPEECH_REQUEST'));
-      return enqueue({ kind: 'asr', inputFile, quality, language }, signal);
+    transcribe({ inputFile, language = 'auto', signal }) {
+      if (!['auto', 'zh', 'en', 'yue', 'ja', 'ko'].includes(language)) return Promise.reject(failure('SPEECH_REQUEST'));
+      return enqueue({ kind: 'asr', inputFile, quality: 'default', language }, signal);
     },
     /** voiceProfile is an operator-registered voice id (omitted -> defaultVoice). */
     synthesize({ text, outputFile, voiceProfile, signal }) { return enqueue({ kind: 'tts', text, outputFile, voiceProfile }, signal); },

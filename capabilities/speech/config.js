@@ -3,7 +3,8 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 
 export const SCHEMA_VERSION = 2;
-export const ASR_TIERS = ['default', 'fast'];
+// Single ASR engine (Qwen3-ASR) under models.asr.default; SenseVoice may be re-added later.
+export const ASR_TIERS = ['default'];
 export const VOICE_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 export const USAGE_SCOPES = ['private', 'public'];
 export const failure = code => Object.assign(new Error(code), { code });
@@ -29,7 +30,7 @@ export function loadSpeechConfig(file) {
   // old operator/speech.json aside and re-run deploy/authority/prepare-speech.mjs.
   if (c?.schemaVersion !== SCHEMA_VERSION) throw failure('SPEECH_CONFIG_SCHEMA');
   if (!absolute(c.workRoot) || !Array.isArray(c.inputRoots) || !c.inputRoots.length || !c.inputRoots.every(absolute) || !absolute(c.nodeExecutable) || !absolute(c.sherpaModule) || !plain(c.models) || !plain(c.models.asr) || !plain(c.models.tts) || !Number.isInteger(c.numThreads) || c.numThreads < 1 || c.numThreads > 16) throw failure('SPEECH_CONFIG');
-  if (!Number.isInteger(c.maxTextChars) || c.maxTextChars < 1 || c.maxTextChars > 120 || !Number.isInteger(c.maxAudioSeconds) || c.maxAudioSeconds < 1 || c.maxAudioSeconds > 30 || !Number.isInteger(c.maxFastAudioSeconds) || c.maxFastAudioSeconds < 1 || c.maxFastAudioSeconds > 120 || !Number.isInteger(c.timeoutMs) || c.timeoutMs < 1000 || c.timeoutMs > 300000) throw failure('SPEECH_CONFIG');
+  if (!Number.isInteger(c.maxTextChars) || c.maxTextChars < 1 || c.maxTextChars > 120 || !Number.isInteger(c.maxAudioSeconds) || c.maxAudioSeconds < 1 || c.maxAudioSeconds > 30 || !Number.isInteger(c.timeoutMs) || c.timeoutMs < 1000 || c.timeoutMs > 300000) throw failure('SPEECH_CONFIG');
   if (Object.entries(c.models.tts).some(([key, e]) => !plain(e) || e.engine !== key || typeof e.id !== 'string')) throw failure('SPEECH_CONFIG');
   if (!plain(c.voiceProfiles) || Object.entries(c.voiceProfiles).some(([id, p]) => !validVoice(c, id, p))) throw failure('SPEECH_CONFIG');
   if (c.defaultVoice !== null && !Object.hasOwn(c.voiceProfiles, c.defaultVoice)) throw failure('SPEECH_CONFIG');
@@ -51,7 +52,7 @@ export function outputPath(c, file) {
   if (!inside(root, parent) || fs.existsSync(file)) throw failure('SPEECH_PATH');
   return path.join(parent, path.basename(file));
 }
-/** ASR tiers are 'default' (Qwen3-ASR) and 'fast' (SenseVoice); TTS entries are keyed by engine. */
+/** ASR uses models.asr.default (Qwen3-ASR); TTS entries are keyed by engine. */
 export function engineFor(c, kind, key) {
   if (kind === 'asr' ? !ASR_TIERS.includes(key) : kind !== 'tts' || typeof key !== 'string') throw failure('SPEECH_REQUEST');
   const engine = Object.hasOwn(c.models[kind], key) ? c.models[kind][key] : undefined;

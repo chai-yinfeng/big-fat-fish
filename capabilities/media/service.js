@@ -30,8 +30,8 @@ const source = value => typeof value === 'string' && value.length > 0 && value.l
 /** Platform-neutral file perception and expression. A generated artifact or an
  * attached reply part is not a delivery receipt and never records an experience. */
 export class MediaService {
-  constructor({ store, speech, vision, search, fetchPage, normalizeImage, workRoot, speechDefaults = () => ({ maxAudioSeconds: 30 }) }) {
-    Object.assign(this, { store, speech, vision, search, fetchPage, normalizeImage, speechDefaults });
+  constructor({ store, speech, vision, search, fetchPage, normalizeImage, workRoot }) {
+    Object.assign(this, { store, speech, vision, search, fetchPage, normalizeImage });
     if (!path.isAbsolute(workRoot)) throw fail('MEDIA_WORK_ROOT');
     fs.mkdirSync(workRoot, { recursive: true, mode: 0o700 });
     if (fs.lstatSync(workRoot).isSymbolicLink()) throw fail('MEDIA_WORK_ROOT');
@@ -58,10 +58,8 @@ export class MediaService {
     if (action === 'transcribe') {
       const original = this.store.read(input.ref, scope);
       if (original.meta.kind !== 'audio') throw fail('MEDIA_KIND_REQUIRED');
-      // Default tier is Qwen3-ASR (bounded length); longer audio goes to the fast
-      // SenseVoice tier up front rather than failing and silently falling back.
-      const quality = input.quality || (original.meta.durationMs > (this.speechDefaults().maxAudioSeconds || 30) * 1000 ? 'fast' : 'default');
-      const result = await this.speech.transcribe({ inputFile: original.file, quality, signal: input.signal });
+      // Qwen3-ASR only; audio over its limit fails with SPEECH_AUDIO_LIMIT (no fallback engine).
+      const result = await this.speech.transcribe({ inputFile: original.file, signal: input.signal });
       if (typeof result.text !== 'string' || !result.text.trim() || result.text.length > 16000) throw fail('MEDIA_TRANSCRIPTION_INVALID');
       const transcript = this.store.put({ scope, sourceEventId: original.meta.sourceEventId, kind: 'transcript', mime: 'text/plain; charset=utf-8', data: Buffer.from(result.text), parents: [original.meta.id] });
       return { text: result.text, ref: transcript.id, sourceRef: original.meta.id, model: result.model, derived: true, isNewEvidence: false, isVerbatimUserText: false };

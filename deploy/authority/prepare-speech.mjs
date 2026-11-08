@@ -15,7 +15,6 @@ export function prepareSpeech(base = path.join(os.homedir(), '.local/share/compa
   fs.mkdirSync(path.join(workRoot, 'reference'), { recursive: true, mode: 0o700 });
   const modelRoot = path.join(base, 'speech-models');
   const model = name => path.join(modelRoot, name);
-  const sense = model('sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17');
   const qwen = model('sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25');
   const gguf = model('qwen3-tts-1.7b-base-gguf');
   const config = {
@@ -29,14 +28,12 @@ export function prepareSpeech(base = path.join(os.homedir(), '.local/share/compa
     timeoutMs: 180000,
     maxTextChars: 120,
     maxAudioSeconds: 30,
-    maxFastAudioSeconds: 120,
     // Voices are registered by the operator (console upload); none exist initially.
     defaultVoice: null,
     voiceProfiles: {},
     models: {
       asr: {
         default: { id: 'qwen3-asr-0.6b-int8-2026-03-25', engine: 'sherpa-qwen3-asr', files: { convFrontend: path.join(qwen, 'conv_frontend.onnx'), encoder: path.join(qwen, 'encoder.int8.onnx'), decoder: path.join(qwen, 'decoder.int8.onnx'), tokenizer: path.join(qwen, 'tokenizer') } },
-        fast: { id: 'sensevoice-small-int8-2024-07-17', engine: 'sherpa-sensevoice', files: { model: path.join(sense, 'model.int8.onnx'), tokens: path.join(sense, 'tokens.txt') } },
       },
       tts: {
         'llama-tts': { id: 'qwen3-tts-1.7b-base-q4-k-m', engine: 'llama-tts', executable: path.join(runtime, 'llama.cpp/build/bin/llama-tts'), model: path.join(gguf, 'Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf'), mmproj: path.join(gguf, 'mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf'), maxFrames: 1024, language: 'zh' },
@@ -49,7 +46,6 @@ export function prepareSpeech(base = path.join(os.homedir(), '.local/share/compa
     models: [
       // Archive digests were observed on a direct GitHub download (2026-11-08), not published by upstream.
       { id: config.models.asr.default.id, source: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2', modelscope: null, modelscopeTodo: 'ModelScope path for this exact archive not confirmed; GitHub release or a pre-fetched copy via --archive-dir', upstream: 'Qwen/Qwen3-ASR-0.6B', upstreamRevision: '5eb144179a02acc5e5ba31e748d22b0cf3e303b0', license: 'Apache-2.0 upstream; retain export provenance', bytes: 878702423, sha256: '393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96' },
-      { id: config.models.asr.fast.id, source: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2', modelscope: null, modelscopeTodo: 'ModelScope path for this exact archive not confirmed; GitHub release or a pre-fetched copy via --archive-dir', license: 'Verify the selected artifact LICENSE; current upstream SenseVoice card points to FunASR MODEL_LICENSE, not the sherpa runtime Apache license.', bytes: 163002883, sha256: '7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e' },
       // ModelScope serves the same GGUF files (sha256 identical to the HF snapshot);
       // its revision is a moving branch, so the fixed sha256 below is what pins it.
       { id: config.models.tts['llama-tts'].id, source: 'https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF', revision: 'ca27d74bc954b73dadab5b71ca265d87fc861a7c', modelscope: 'https://www.modelscope.cn/models/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF', modelscopeRevision: 'master', upstream: 'Qwen/Qwen3-TTS-12Hz-1.7B-Base', upstreamRevision: 'fd4b254389122332181a7c3db7f27e918eec64e3', license: 'Apache-2.0 upstream', files: [

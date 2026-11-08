@@ -47,12 +47,11 @@ async function run(c, job) {
   if (job.kind === 'asr') {
     job.inputFile = inputPath(c, job.inputFile);
     const info = wavInfo(job.inputFile);
-    if (info.durationMs > (job.quality === 'fast' ? c.maxFastAudioSeconds : c.maxAudioSeconds) * 1000) throw failure('SPEECH_AUDIO_LIMIT');
+    if (info.durationMs > c.maxAudioSeconds * 1000) throw failure('SPEECH_AUDIO_LIMIT');
     if (info.format !== 1 || info.bits !== 16) throw failure('SPEECH_AUDIO_FORMAT');
     const sherpa = require(c.sherpaModule), f = e.files;
     const modelConfig = { tokens: f.tokens || '', numThreads: c.numThreads, provider: 'cpu', debug: 0 };
-    if (e.engine === 'sherpa-sensevoice') modelConfig.senseVoice = { model: f.model, useInverseTextNormalization: 1, language: job.language };
-    else if (e.engine === 'sherpa-qwen3-asr') modelConfig.qwen3Asr = { convFrontend: f.convFrontend, encoder: f.encoder, decoder: f.decoder, tokenizer: f.tokenizer, hotwords: '', maxNewTokens: 1024 };
+    if (e.engine === 'sherpa-qwen3-asr') modelConfig.qwen3Asr = { convFrontend: f.convFrontend, encoder: f.encoder, decoder: f.decoder, tokenizer: f.tokenizer, hotwords: '', maxNewTokens: 1024 };
     else throw failure('SPEECH_NOT_CONFIGURED');
     const recognizer = new sherpa.OfflineRecognizer({ featConfig: { sampleRate: 16000, featureDim: 80 }, modelConfig });
     const wave = sherpa.readWave(job.inputFile), stream = recognizer.createStream();

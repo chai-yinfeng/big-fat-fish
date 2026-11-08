@@ -21,11 +21,11 @@ function characterErrorRate(expected, actual) {
  * changes the world, sends QQ media, reads a human recording or calls a provider. */
 // ASR input is first synthesized from the fixed public sentence with a registered
 // voice (no human recording is read), then transcribed by the selected ASR tier.
-export async function benchmarkSpeech({ base = path.join(os.homedir(), '.local/share/companion-world-v1'), kind, quality = 'default', voice, enableOnSuccess = false }) {
-  if (!path.isAbsolute(base) || path.basename(base) !== 'companion-world-v1' || !['asr', 'tts'].includes(kind) || !['default', 'fast'].includes(quality)) throw Error('SPEECH_BENCH_ARGUMENTS');
+export async function benchmarkSpeech({ base = path.join(os.homedir(), '.local/share/companion-world-v1'), kind, voice, enableOnSuccess = false }) {
+  if (!path.isAbsolute(base) || path.basename(base) !== 'companion-world-v1' || !['asr', 'tts'].includes(kind)) throw Error('SPEECH_BENCH_ARGUMENTS');
   base = fs.realpathSync(base);
   const configFile = path.join(base, 'operator/speech.json'), c = JSON.parse(fs.readFileSync(configFile, 'utf8'));
-  const key = kind === 'tts' ? resolveVoice(c, voice).engine : quality;
+  const key = kind === 'tts' ? resolveVoice(c, voice).engine : 'default';
   const selected = c.models[kind][key], local = structuredClone(c);
   // The benchmark can test a disabled backend without changing the live
   // setting first. Only an explicit successful admission can enable that backend.
@@ -43,7 +43,7 @@ export async function benchmarkSpeech({ base = path.join(os.homedir(), '.local/s
       const spoken = await runner.synthesize({ text: TEST_TEXT, outputFile, voiceProfile: voice });
       const artifact = store.put({ scope, sourceEventId, kind: 'audio', mime: 'audio/wav', data: fs.readFileSync(outputFile), durationMs: spoken.durationMs });
       const asrStarted = performance.now();
-      const value = await runner.transcribe({ inputFile: store.read(artifact.id, scope).file, quality });
+      const value = await runner.transcribe({ inputFile: store.read(artifact.id, scope).file });
       const elapsedMs = Math.round(performance.now() - asrStarted), cer = characterErrorRate(TEST_TEXT, value.text);
       result = { kind, key, voice: voice || c.defaultVoice, model: value.model, passed: cer <= 0.3, elapsedMs, audioDurationMs: value.durationMs, rtf: elapsedMs / value.durationMs, characterErrorRate: cer, inputArtifact: artifact.id, input: 'fixed-public-text-synthesized-locally', coldProcess: true };
     } else {
@@ -51,7 +51,7 @@ export async function benchmarkSpeech({ base = path.join(os.homedir(), '.local/s
       const elapsedMs = Math.round(performance.now() - started), data = fs.readFileSync(outputFile);
       const artifact = store.put({ scope, sourceEventId, kind: 'audio', mime: 'audio/wav', data, durationMs: value.durationMs });
       const checkStarted = performance.now();
-      const check = await runner.transcribe({ inputFile: store.read(artifact.id, scope).file, quality: 'fast' });
+      const check = await runner.transcribe({ inputFile: store.read(artifact.id, scope).file });
       const cer = characterErrorRate(TEST_TEXT, check.text);
       result = { kind, key, voice: voice || c.defaultVoice, model: value.model, passed: cer <= 0.3, elapsedMs, audioDurationMs: value.durationMs, rtf: elapsedMs / value.durationMs, sampleRate: value.sampleRate, artifact: artifact.id, characterErrorRate: cer, roundTripAsrElapsedMs: Math.round(performance.now() - checkStarted), input: 'fixed-public-synthetic-text', coldProcess: true, humanAuditioned: false };
     }
@@ -81,7 +81,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process
     for (let i = 0; i < args.length; i++) {
       if (args[i] === '--run') continue;
       if (args[i] === '--enable-on-success') options.enableOnSuccess = true;
-      else if (['--base', '--kind', '--quality', '--voice'].includes(args[i]) && args[i + 1]) { const key = args[i].slice(2); options[key] = args[++i]; }
+      else if (['--base', '--kind', '--voice'].includes(args[i]) && args[i + 1]) { const key = args[i].slice(2); options[key] = args[++i]; }
       else throw Error('SPEECH_BENCH_ARGUMENTS');
     }
     const value = await benchmarkSpeech(options); console.log(JSON.stringify(value)); if (!value.passed) process.exitCode = 1;

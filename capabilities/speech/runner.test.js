@@ -22,11 +22,11 @@ function fixture(t) {
   assert.equal(prepared.modelsInstalled, false);
   const configFile = path.join(root, 'operator/speech.json'), c = JSON.parse(fs.readFileSync(configFile, 'utf8'));
   assert.equal(c.schemaVersion, 2); assert.equal(c.numThreads, 8); assert.equal(c.defaultVoice, null); assert.deepEqual(c.voiceProfiles, {});
-  assert.equal(c.models.asr.default.engine, 'sherpa-qwen3-asr'); assert.equal(c.models.asr.fast.engine, 'sherpa-sensevoice'); assert.deepEqual(Object.keys(c.models.tts), ['llama-tts']);
+  assert.equal(c.models.asr.default.engine, 'sherpa-qwen3-asr'); assert.deepEqual(Object.keys(c.models.asr), ['default']); assert.equal(Object.hasOwn(c, 'maxFastAudioSeconds'), false); assert.deepEqual(Object.keys(c.models.tts), ['llama-tts']);
   assert.equal(Object.hasOwn(c.models.tts, 'light'), false);
   const component = path.join(root, 'synthetic.component'); fs.writeFileSync(component, 'synthetic');
   c.sherpaModule = component;
-  for (const tier of ['default', 'fast']) c.models.asr[tier] = { id: 'asr-' + tier, engine: 'test-only', files: { model: component } };
+  c.models.asr.default = { id: 'asr-default', engine: 'test-only', files: { model: component } };
   c.models.tts = { 'test-only': { id: 'tts-test', engine: 'test-only', files: { model: component } } };
   c.voiceProfiles = { actress: voice('actress', 'private'), synthetic: voice('synthetic', 'public') };
   c.defaultVoice = 'actress';
@@ -50,21 +50,20 @@ test('trusted speech paths stay in input/work roots, including symlink escapes; 
   assert.equal(fs.existsSync(inputFile), true);
 });
 
-test('one selected child runs at a time; ASR tiers are default/fast with separate length caps', async t => {
+test('one selected child runs at a time; Qwen3-ASR only, audio over its cap is a clear error with no fallback', async t => {
   const { root, runner, configFile, c, inputFile, wav } = fixture(t);
   const results = await Promise.all([runner.transcribe({ inputFile }), runner.transcribe({ inputFile })]);
   assert.ok(results.every(x => x.derived && x.model === 'asr-default'));
   assert.equal(fs.readFileSync(path.join(root, 'speech-data/trace'), 'utf8'), 'start default\nend\nstart default\nend\n');
-  await assert.rejects(runner.transcribe({ inputFile, quality: 'heavy' }), { code: 'SPEECH_REQUEST' });
   const long = Buffer.alloc(44 + 24000 * 2 * 31); wav.copy(long, 0, 0, 44);
   long.writeUInt32LE(long.length - 8, 4); long.writeUInt32LE(24000, 24); long.writeUInt32LE(48000, 28); long.writeUInt32LE(long.length - 44, 40);
   const at24k = path.join(root, 'media-data/31-seconds-at-24k.wav'); fs.writeFileSync(at24k, long);
-  assert.equal((await runner.transcribe({ inputFile: at24k, quality: 'fast' })).durationMs, 31000);
   await assert.rejects(runner.transcribe({ inputFile: at24k }), { code: 'SPEECH_AUDIO_LIMIT' });
+  await assert.rejects(runner.transcribe({ inputFile: at24k, quality: 'fast' }), { code: 'SPEECH_AUDIO_LIMIT' });
+  assert.deepEqual(Object.keys(runner.status().models), ['asr:default', 'tts:test-only']);
   c.models.asr.default.files.model = path.join(root, 'missing-model'); fs.writeFileSync(configFile, JSON.stringify(c));
   await assert.rejects(runner.transcribe({ inputFile }), { code: 'SPEECH_NOT_CONFIGURED' });
   assert.equal(runner.status().models['asr:default'].componentsPresent, false);
-  assert.equal(runner.status().models['asr:fast'].componentsPresent, true);
   c.models.tts['test-only'].enabled = false; fs.writeFileSync(configFile, JSON.stringify(c));
   await assert.rejects(runner.synthesize({ text: '测试', outputFile: path.join(root, 'speech-data/disabled.wav') }), { code: 'SPEECH_MODEL_DISABLED' });
   assert.equal(runner.status().models['tts:test-only'].enabled, false);

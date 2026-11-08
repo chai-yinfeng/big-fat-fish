@@ -50,7 +50,7 @@ All responses use `{ok:true,value}` / safe error envelopes. Standalone loads GET
 {
   speech: {
     configurationRevision: 'opaque revision', numThreads: 8, maxTextChars: 100,
-    models: { 'asr:default': {model,componentsPresent,enabled,verified}, 'asr:fast': {...}, 'tts:llama-tts': {...} }
+    models: { 'asr:default': {model,componentsPresent,enabled,verified}, 'tts:llama-tts': {...} }
   },
   voices: {
     defaultVoice: 'actress' /* or null */,

@@ -48,19 +48,17 @@ export function proxyEnv(proxy) {
 const LLAMA_COMMIT = '8642541b255bfb5dc39cd351a178be09013a55d6';
 const SOURCES = {
   'qwen3-asr-0.6b-int8-2026-03-25': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2',
-  'sensevoice-small-int8-2024-07-17': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2',
   'qwen3-tts-1.7b-base-q4-k-m': 'https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF',
 };
 // sha256 observed on a direct GitHub download (2026-11-08); upstream publishes none.
 // Must match the manifest written by prepare-speech.mjs.
 const ARCHIVES = {
   'qwen3-asr-0.6b-int8-2026-03-25': { bytes: 878702423, sha256: '393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96' },
-  'sensevoice-small-int8-2024-07-17': { bytes: 163002883, sha256: '7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e' },
 };
 // Confirmed via the ModelScope file API: same names, sizes and sha256 as GGUF_FILES.
-// TODO(speech-install): ModelScope paths for the two sherpa ASR archives are not
+// TODO(speech-install): a ModelScope path for the sherpa Qwen3-ASR archive is not
 // confirmed. GitHub release assets fail from home-agent even via the proxy, so fetch
-// them elsewhere and pass --archive-dir; the pinned sha256 is still checked.
+// it elsewhere and pass --archive-dir; the pinned sha256 is still checked.
 /** A pre-fetched copy of a sha256-pinned download: the file `<dir>/<name>` if
  * present (regular file, digest and size must match), null if absent. */
 export async function localArchive(dir, name, expected) {
@@ -112,7 +110,7 @@ function directory(root, relative) {
 }
 function modelSelections(config, manifest, models) {
   if (config.schemaVersion !== 2 || manifest.schemaVersion !== 2) throw fail('SPEECH_CONFIG_SCHEMA');
-  const selections = [['asr', 'default'], ['asr', 'fast'], ...(models === 'all' ? [['tts', 'llama-tts']] : [])];
+  const selections = [['asr', 'default'], ...(models === 'all' ? [['tts', 'llama-tts']] : [])];
   return selections.map(([kind, key]) => {
     const engine = config.models[kind][key], entry = manifest.models.find(m => m.id === engine?.id);
     if (!entry || entry.source !== SOURCES[entry.id]) throw fail('SPEECH_INSTALL_MANIFEST');
