@@ -35,7 +35,6 @@
     "components":"Local components",
     "admission":"Enabled / acceptance",
     "asr:default":"ASR (default, Qwen3-ASR)",
-    "asr:fast":"ASR (fast, SenseVoice)",
     "tts":"TTS (Qwen3-TTS)",
     "present":"Present",
     "missing":"Missing",

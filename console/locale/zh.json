@@ -35,7 +35,6 @@
     "components":"本地组件",
     "admission":"启用与验收",
     "asr:default":"语音识别（默认，Qwen3-ASR）",
-    "asr:fast":"语音识别（快速，SenseVoice）",
     "tts":"语音合成（Qwen3-TTS）",
     "present":"组件存在",
     "missing":"组件缺失",
