@@ -71,7 +71,7 @@ Private and public model inputs/calls are separate. With no public material ther
 
 ## Operator API and forgetting
 
-Separate operator socket/bearer; ordinary sources and maintenance workers have no owner credential. Existing `/world`, pause/persona/channel operations remain. GET `/world` does not return private diary text or automatically invoke memory listing.
+Separate operator socket/bearer; ordinary sources and maintenance workers have no owner credential. Existing `/world`, pause/persona/channel operations remain. `/world` includes `persona.default` (the code default); `/persona` accepts every persona field; `/persona/preview {patch}` is read-only and returns `{text,chars,limit}`. GET `/world` does not return private diary text or automatically invoke memory listing.
 
 - GET `/entities`; POST `/entities {id,persona?}`.
 - GET `/memory/status`; GET `/memory?entityId=...&limit=50&beforeRevision=...` explicitly lists selected entity memory and private/public diaries. Owner-only, never an automatic ordinary-chat read.

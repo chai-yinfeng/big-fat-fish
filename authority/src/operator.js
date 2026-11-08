@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { DEFAULT_PERSONA } from '../../core/src/persona.js';
 
 function object(value, fields) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !fields.includes(key))) throw Object.assign(new Error('Invalid operation'), { statusCode: 400, code: 'INVALID_REQUEST' });
@@ -23,7 +24,7 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
     const bindings = state.streams.map(row => ({ sourceId: row.capabilityId, conversationId: row.streamId, entityId: row.entityId, personId: row.personId, audience: row.audience }));
     const qq = qqControl ? await qqControl('/qq', undefined, authorization).catch(() => null) : undefined;
     return {
-      world: authority.worldStatus(), persona: { revision: state.personaRevision, value: state.persona },
+      world: authority.worldStatus(), persona: { revision: state.personaRevision, value: state.persona, default: DEFAULT_PERSONA },
       counts: { facts: state.facts.length, notes: state.notes.length, experiences: state.experiences.length, pending: authority.health().pending },
       channels: [
         { id: 'qq', name: 'QQ', status: qq === null ? 'error' : !qq ? 'not_configured' : !qq.loggedIn ? 'waiting_login' : !qq.configured ? 'not_configured' : qq.connected ? 'ready' : 'disconnected', enabled: Boolean(qq?.configured && qq.loggedIn && qq.connected), boundStreams: bindings.filter(row => row.sourceId === 'qq').length },
@@ -115,10 +116,10 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         authority.bindActor({ capabilityId: 'qq', externalActorId: `qq:${expectedSelfId}:user:${body.allowedCallerUID}`, personId: 'person:owner' });
         authority.bindStream({ capabilityId: 'qq', streamId: `qq:${expectedSelfId}:private:${body.allowedCallerUID}`, personId: 'person:owner', audience: 'private' });
         value = await qqControl('/qq', { expectedSelfId, allowedCallerUID: body.allowedCallerUID }, req.headers.authorization);
-      } else if (req.url === '/persona') {
-        object(body, ['entityId', 'expectedRevision', 'patch']);
-        object(body.patch, ['name', 'identity', 'traits', 'speechStyle', 'boundaries', 'principles']);
-        value = authority.revisePersona({ ...body, reason: 'Explicit world console edit' });
+      } else if (req.url === '/persona' || req.url === '/persona/preview') {
+        object(body, req.url === '/persona' ? ['entityId', 'expectedRevision', 'patch'] : ['entityId', 'patch']);
+        object(body.patch, Object.keys(DEFAULT_PERSONA));
+        value = req.url === '/persona' ? authority.revisePersona({ ...body, reason: 'Explicit world console edit' }) : authority.previewPersona(body);
       } else { respond(404, { ok: false, error: { code: 'NOT_FOUND', message: 'Unknown console operation' } }); return; }
       respond(200, { ok: true, value });
     } catch (error) {

@@ -40,7 +40,7 @@ UI tests evaluate the shared view through `test-harness.mjs` with an injected fa
 
 ## Real operations retained
 
-GET/world, world pause/resume, persona edits, model configuration/test, QQ paused/logged-in private-sender binding, and explicit memory/diary operations are retained. Memory is not auto-read with overview; forgetting still previews, requires pause, sends `expectedMemoryEpoch`/`expectedRevision` from the preview and leaves cleanup pending until canonical API state says otherwise. Pause/resume sends only `{paused}` and persona edits only `{patch}`; Authority accepts an optional `expectedRevision` on both and rejects it with 409 only when it is stale. No fake zero counts or status switches substitute for unavailable APIs.
+GET/world, world pause/resume, persona edits, model configuration/test, QQ paused/logged-in private-sender binding, and explicit memory/diary operations are retained. Memory is not auto-read with overview; forgetting still previews, requires pause, sends `expectedMemoryEpoch`/`expectedRevision` from the preview and leaves cleanup pending until canonical API state says otherwise. Pause/resume sends only `{paused}` and persona edits only `{patch}` (every persona field, including examples); `POST /persona/preview` renders an unsaved patch exactly as the context persona block and returns its length against the 1600-character persona share, without writing. Persona JSON export/import and "load default persona" only fill the editor; saving stays explicit; Authority accepts an optional `expectedRevision` on both and rejects it with 409 only when it is stale. No fake zero counts or status switches substitute for unavailable APIs.
 
 ## New controlled runtime contract
 

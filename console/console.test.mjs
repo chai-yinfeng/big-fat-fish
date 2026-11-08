@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { operatorRequest, operatorOrigin, personaPatch, validWorld, validModel, modelPayload, consumeOperatorFragment, TOKEN_KEY, qqPayload, validQQ } from './operator-client.js';
+import { operatorRequest, operatorOrigin, personaPatch, personaDraft, personaExport, personaImport, validWorld, validModel, modelPayload, consumeOperatorFragment, TOKEN_KEY, qqPayload, validQQ } from './operator-client.js';
 import { loadConsole } from './test-harness.mjs';
 import { flattenDictionary } from './view.js';
 const location = { protocol: 'http:', hostname: '127.0.0.1' };
@@ -108,9 +108,47 @@ test('operator fragment is consumed once, removed immediately, and never stores 
   assert.equal(replacements.length, 3);
 });
 test('persona arrays and expected operator edit shape', () => {
-  assert.deepEqual(personaPatch({ name: 'Fish', identity: 'companion', traits: ' calm \n\n curious', speechStyle: 'brief', boundaries: 'honest', principles: '' }), {
-    name: 'Fish', identity: 'companion', traits: ['calm', 'curious'], speechStyle: 'brief', boundaries: ['honest'], principles: [],
+  assert.deepEqual(personaPatch({ name: 'Fish', identity: 'companion', traits: ' calm \n\n curious', speechStyle: 'brief', boundaries: 'honest', principles: '', examples: [{ user: 'hi', assistant: 'hey' }] }), {
+    name: 'Fish', userCallName: '', identity: 'companion', speechStyle: 'brief', relationshipStage: '', traits: ['calm', 'curious'], boundaries: ['honest'], principles: [], examples: [{ user: 'hi', assistant: 'hey' }],
   });
+});
+test('persona export round-trips through import; import fills defaults and rejects foreign fields', () => {
+  const defaults = { name: 'Default', userCallName: '你', identity: 'd', traits: ['t'], boundaries: [], speechStyle: 's', relationshipStage: 'new', principles: [], examples: [{ user: 'u', assistant: 'a' }] };
+  const draft = personaDraft({ ...defaults, name: 'Anime', traits: ['元气', '中二'], examples: [{ user: '早', assistant: '早安！' }] });
+  assert.deepEqual(personaImport(personaExport(draft), defaults), draft);
+  assert.deepEqual(personaImport(JSON.stringify({ persona: { name: 'Wrapped' } }), defaults), personaDraft({ ...defaults, name: 'Wrapped' }));
+  for (const bad of ['not json', '[]', '{"mood":"x"}', '{"traits":"one"}', '{"examples":[{"user":"only"}]}']) assert.throws(() => personaImport(bad, defaults), /invalid_persona_file/);
+});
+test('persona panel edits examples, previews the unsaved draft and warns when truncated', async () => {
+  const persona = { name: 'Fish', userCallName: '你', identity: 'i', traits: [], boundaries: [], speechStyle: 's', relationshipStage: 'new', principles: [], examples: [{ user: 'a', assistant: '1' }, { user: 'b', assistant: '2' }] };
+  const world = { world: { paused: true, revision: 1 }, persona: { revision: 4, value: persona, default: { ...persona, name: 'Default', examples: [] } }, counts: { facts: 0, notes: 0, experiences: 0, pending: 0 }, channels: [], bindings: [], model: { provider: 'deepseek', model: 'deepseek-flash', configured: false, status: 'unconfigured' } };
+  const states = ['operator-test', '', world, null, 'persona']; const calls = []; let cursor = 0, refCursor = 0; const refs = [];
+  const React = { Fragment: 'fragment', useState: initial => { const i = cursor++; if (!(i in states)) states[i] = typeof initial === 'function' ? initial() : initial; return [states[i], value => { states[i] = value; }]; },
+    useRef: initial => refs[refCursor++] ||= { current: initial }, useEffect() {}, createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity) }) };
+  const storage = { getItem: () => 'operator-test', setItem() {}, removeItem() {} };
+  const loaded = await loadConsole({ window: { location: { ...location, hash: '' }, sessionStorage: storage }, sessionStorage: storage, AbortController, AbortSignal, setTimeout, clearTimeout,
+    fetch: async (url, options) => { const payload = JSON.parse(options.body); calls.push({ url, payload }); return response({ ok: true, value: { text: 'x'.repeat(1700), chars: 1700, limit: 1600 } }); } });
+  const component = loaded.factory(() => React).WorldConsole;
+  states[3] = personaDraft(persona);
+  const render = () => { cursor = 0; refCursor = 0; return component({ t: key => key }); };
+  const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...tree.children.flatMap(nodes)];
+  const buttons = key => nodes(render()).filter(n => n.type === 'button' && n.children.includes(key));
+  assert.ok(nodes(render()).some(n => n.props.name === 'userCallName') && nodes(render()).some(n => n.props.name === 'relationshipStage'));
+  assert.equal(buttons('personaPanel.moveUp')[0].props.disabled, true);
+  buttons('personaPanel.moveDown')[0].props.onClick();
+  assert.equal(states[3].examples.map(e => e.user).join(), 'b,a');
+  buttons('personaPanel.addExample')[0].props.onClick();
+  nodes(render()).find(n => n.props.name === 'example-2-user').props.onChange({ target: { value: 'c' } });
+  buttons('personaPanel.removeExample')[0].props.onClick();
+  assert.equal(JSON.stringify(states[3].examples), JSON.stringify([{ user: 'a', assistant: '1' }, { user: 'c', assistant: '' }]));
+  buttons('personaPanel.preview')[0].props.onClick(); await new Promise(setImmediate);
+  assert.equal(calls.length, 1); assert.ok(calls[0].url.endsWith('/persona/preview'));
+  assert.equal(JSON.stringify(calls[0].payload.patch.examples), JSON.stringify(states[3].examples));
+  let tree = JSON.stringify(render()); assert.match(tree, /1700 \/ 1600/); assert.match(tree, /personaPanel.previewTruncated/);
+  nodes(render()).find(n => n.props.name === 'name').props.onChange({ target: { value: 'Changed' } });
+  assert.doesNotMatch(JSON.stringify(render()), /previewTruncated/, 'a stale preview is hidden after edits');
+  buttons('personaPanel.loadDefault')[0].props.onClick();
+  assert.equal(states[3].name, 'Default'); assert.equal(states[3].examples.length, 0); assert.equal(calls.length, 1, 'loading the default never saves');
 });
 test('model UI keeps key ephemeral, clears it before refresh, and tests only on explicit click', async () => {
   const secret = 'test-model-key-never-store';
