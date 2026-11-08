@@ -62,3 +62,22 @@ test('non-product root, live writers, old layouts and symlink targets are refuse
   fs.writeFileSync(path.join(f.base, 'operator/execution-storage.json'), JSON.stringify({ version: 1, sessionsRoot: 'dsh-home/sessions' }));
   await assert.rejects(purgeExecution({ base: f.base, plan: f.plan, checkStopped }), /STORAGE_UNVERIFIED/);
 });
+
+test('purge CLI asks the operator API on --operator-port (default 3082) and refuses a bad port', async t => {
+  const { spawn } = await import('node:child_process'), http = await import('node:http');
+  const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fish-purge-cli-'))), base = path.join(temp, 'companion-world-v1');
+  t.after(() => fs.rmSync(temp, { recursive: true }));
+  fs.mkdirSync(path.join(base, 'operator'), { recursive: true });
+  fs.writeFileSync(path.join(base, 'operator/console.token'), 'synthetic-operator-token\n');
+  const plan = path.join(temp, 'plan.json'); fs.writeFileSync(plan, '{}');
+  let seen;
+  const server = http.createServer((req, res) => { seen = req.url; res.end(JSON.stringify({ ok: true, value: { world: { paused: false } } })); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
+  const run = (...extra) => new Promise(resolve => {
+    const child = spawn(process.execPath, [new URL('./purge-execution.mjs', import.meta.url).pathname, '--base', base, '--plan', plan, ...extra], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let err = ''; child.stderr.on('data', c => err += c); child.on('close', code => resolve({ code, err: err.trim() }));
+  });
+  assert.deepEqual(await run('--operator-port', String(server.address().port)), { code: 1, err: 'WORLD_MUST_BE_PAUSED' });
+  assert.equal(seen, '/world');
+  assert.deepEqual(await run('--operator-port', '0'), { code: 1, err: 'PURGE_ARGUMENTS_REQUIRED' });
+});

@@ -20,3 +20,11 @@ test('explicit pending cleanup stops writers, purges, acknowledges and restarts;
   assert.equal((await worker.runOnce()).status, 'pending');
   assert.deepEqual(actions, ['stop', 'purge', 'start']);
 });
+
+test('operator URL stays on loopback, defaults to 3082 and accepts only a valid configured port', async () => {
+  const { operatorURL } = await import('./cleanup.js');
+  assert.equal(operatorURL(), 'http://127.0.0.1:3082');
+  assert.equal(operatorURL(undefined), 'http://127.0.0.1:3082');
+  assert.equal(operatorURL(13082), 'http://127.0.0.1:13082');
+  for (const bad of [0, 65536, '13082', 1.5, null]) assert.throws(() => operatorURL(bad), /MEMORY_CONFIG/);
+});
