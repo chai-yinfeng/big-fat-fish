@@ -41,39 +41,48 @@ UI 可单独 node --run build:console（输出 console/dist；没有 dev/watch/H
 
 ## 开发只在 Mac
 
-开发、测试和构建只在 Mac 本机 checkout 进行；VM（myvm）只运行正式服务，不在 VM 上
-改源码。代码只通过下面的发布流程到达 VM，不用 rsync、git pull 或手工复制。开发 QQ
+开发、测试和构建只在 Mac 本机 checkout 进行；生产主机只运行正式服务，不在生产主机上
+改源码。代码只通过下面的发布流程到达生产主机，不用 rsync、git pull 或手工复制。开发 QQ
 用测试发送口/独立账号，不能和正式桥重复回应。
 
-## VM 访问与远程命令
+## 生产主机访问与远程命令
 
-VM（myvm）只用于生产。服务以专用用户 companion（uid 1001，密码锁定、不可登录，
+生产主机为 home-agent（Beelink SER8，x86_64，Ubuntu 24.04，经 Tailscale 的 SSH 别名
+`home-agent`）。Mac 辅助脚本默认连它，可用环境变量 `COMPANION_HOST=<ssh 别名>` 覆盖。
+旧的 arm64 VM（myvm）已退为旧环境、待退役，不再作为发布目标。home-agent 上全新初始化
+世界，不安装 DSH；该主机无法直连 huggingface.co（语音安装用 `--hf-endpoint
+https://hf-mirror.com`），Docker Hub 只能经本机代理 127.0.0.1:7890。发布与安装工具按
+`process.arch` / `uname -m` 在 arm64 与 x64 之间选择私有 Node、CMake、sherpa 原生包和
+NapCat 平台。
+
+生产主机只用于生产。服务以专用用户 companion（uid 由主机分配，不固定；密码锁定、不可登录，
 home 0700）运行，由 root 通过 `systemctl --user -M companion@ ...` 管理。人类和
-Agent 都以 blackmagic 身份 SSH 登录：没有 docker/lxd 权限，sudo 需要人类输入
-密码；blackmagic 属于 adm 组，不用 sudo 就能只读查看 companion 的日志和部署记录
+Agent 都以 blackmagic 身份 SSH 登录：sudo 需要人类输入密码；旧 VM 上 blackmagic 没有
+docker/lxd 权限，而 home-agent 上它目前在 docker、lxd 组（等价 root），交给 Agent 前须先
+按 AGENTS.md 隔离；blackmagic 属于 adm 组，不用 sudo 就能只读查看 companion 的日志和部署记录
 （两个部署文件为 root:adm 0640，不含密钥；/var/lib/companion-deploy/state.json
 仍只有 root 可读），查看命令见“发布与回退”第 3 步。
 
 需要私有 token 的 Mac 辅助脚本（open-world、deploy/qq/open-login、
 verify-standalone-console、verify-console-browser、verify-dialogue）都经
-deploy/authority/companion-sudo.mjs 以 `ssh -t myvm sudo -u companion` 读取，由用户
-在终端输入 sudo 密码；Agent 不运行它们。verify-live 只能在 VM 上以 companion 身份
+deploy/authority/companion-sudo.mjs 以 `ssh -t <生产主机> sudo -u companion` 读取，由用户
+在终端输入 sudo 密码；Agent 不运行它们。verify-live 只能在生产主机上以 companion 身份
 运行，且对正式世界只允许 status。
 
 ```sh
-# 用户在 Mac 项目根执行；token 经 sudo -u companion 读取，会提示输入 myvm 的 sudo 密码：
+# 用户在 Mac 项目根执行；token 经 sudo -u companion 读取，会提示输入生产主机的 sudo 密码：
 node deploy/authority/open-world.mjs
 node deploy/authority/open-world.mjs --open-only
-node deploy/qq/open-login.mjs myvm   # NapCat WebUI 扫码登录
+node deploy/qq/open-login.mjs        # NapCat WebUI 扫码登录（默认 home-agent）
 ```
 
 失败时只输出错误码（如 FORWARD_PORT_OCCUPIED、SUDO_FAILED、TOKEN_READ_FAILED），
 不输出 token；token 只交给系统浏览器，operator fragment 即时消费移除。关闭本机转发
-不等于停止 VM 服务或退出 QQ。不要为更新此 GUI 另起 Vite 服务器。
+不等于停止生产服务或退出 QQ。不要为更新此 GUI 另起 Vite 服务器。
 
 远程命令尽量合并为一次调用，只返回有限长度的摘要。
 
-## VM 布局
+## 生产主机布局
 
 ```text
 产品：/home/companion/src/dsh-companion/current → authority-<版本>-<sha>
@@ -99,11 +108,11 @@ NapCat WebUI 6099 / OneBot WS 3001（沿用旧记录，未在新布局下复核�
 
 ## 长期运行的清理
 
-VM 上会随时间增长的内容及负责清理的人：
+生产主机上会随时间增长的内容及负责清理的人：
 
 | 内容 | 位置 | 清理方式 |
 | --- | --- | --- |
-| 旧 release | /home/companion/src/dsh-companion/authority-*-<sha> | companion-deploy 自动保留最近 3 个及 current/previous；旧版 authority-0.10.0、0.9.0 不会自动删除 |
+| 旧 release | /home/companion/src/dsh-companion/authority-*-<sha> | companion-deploy 自动保留最近 3 个及 current/previous；旧 VM 上的 authority-0.10.0、0.9.0 不会自动删除 |
 | 上传的发布包 | ~blackmagic/releases/*.tar.gz(.sha256) | 手动删除 |
 | unit 快照与 Git 镜像 | /var/lib/companion-deploy/unit-snapshots/、mirror.git | 手动（root）；不要删掉 current/previous 对应的快照 |
 | systemd 日志 | journald | `sudo journalctl --vacuum-size=…` / `--vacuum-time=…` |
@@ -127,14 +136,15 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    ```
 
    它会 git fetch、构建前端、运行 build-release、生成确定性的
-   .build/releases/<release>.tar.gz 与 .sha256，scp 到 myvm:~/releases/，并打印
+   .build/releases/<release>.tar.gz 与 .sha256，scp 到 <生产主机>:~/releases/，并打印
    部署命令。本地试构建用 `node deploy/authority/stage-release.mjs --no-upload`
-   （未推送的提交需再加 `--allow-unpublished`，这样的包会被 VM 拒绝）。
+   （未推送的提交需再加 `--allow-unpublished`，这样的包会被 companion-deploy 拒绝）。
+   目标主机取 `COMPANION_HOST`，默认 home-agent。
 
 2. 用户在有 TTY 的终端上部署：
 
    ```sh
-   ssh -t myvm 'sudo companion-deploy deploy ~blackmagic/releases/<release>.tar.gz'
+   ssh -t home-agent 'sudo companion-deploy deploy ~blackmagic/releases/<release>.tar.gz'
    ```
 
    companion-deploy 把包复制到 root 目录后校验 .sha256、安全解包（拒绝绝对路径、
@@ -145,7 +155,7 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    daemon-reload → 原子切换 current → 启动 → 健康检查（全部单元无 failed、
    3081/3082 在监听、约 20 秒内无重启）。失败则自动恢复上一个 release 及其 unit
    快照并以非零退出。只重启 companion 服务和 socket，不碰 NapCat，不重启机器。
-   保留最近 3 个部署管理的 release 及 current/previous；旧的 authority-0.10.0、
+   保留最近 3 个部署管理的 release 及 current/previous；旧 VM 上的 authority-0.10.0、
    authority-0.9.0 从不删除。日志在 /var/log/companion-deploy.log，摘要在
    /var/log/companion-deploy.status.json（均 root:adm 0640，Agent 可直接 cat）。
 
@@ -157,30 +167,30 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
 3. 部署后核查（Agent，无需 sudo）：
 
    ```sh
-   ssh myvm 'cat /var/log/companion-deploy.status.json'   # current/previous、last.ok
-   ssh myvm 'tail -n 20 /var/log/companion-deploy.log'
-   ssh myvm 'journalctl _UID=1001 --since -15min --no-pager | tail -n 80'
-   ssh myvm "ss -Hltn | grep -E ':(3001|3081|3082|6099) '"
+   ssh home-agent 'cat /var/log/companion-deploy.status.json'   # current/previous、last.ok
+   ssh home-agent 'tail -n 20 /var/log/companion-deploy.log'
+   ssh home-agent 'journalctl _UID=$(id -u companion) --since -15min --no-pager | tail -n 80'
+   ssh home-agent "ss -Hltn | grep -E ':(3001|3081|3082|6099) '"
    ```
 
    last.ok 为 false 表示部署已被拒绝或健康检查失败并自动恢复了 previous：从日志
-   诊断，在 Mac 上修复后重新发布，不在 VM 上打补丁。2026-11 教训：release 经
+   诊断，在 Mac 上修复后重新发布，不在生产主机上打补丁。2026-11 教训：release 经
    `current` 符号链接运行，入口判断必须用 realpath（否则进程静默退出 0）；由
    model-gateway/entrypoint.test.mjs 强制检查。
 
 4. 回退与查看：
 
    ```sh
-   ssh -t myvm 'sudo companion-deploy rollback'   # 用户执行：切回 previous 及其 unit 快照
-   ssh myvm 'cat /var/log/companion-deploy.status.json'   # 无需 sudo
-   ssh -t myvm 'sudo companion-deploy status'     # 用户执行：另含各单元状态
-   ssh -t myvm 'sudo companion-deploy list'       # 用户执行：列出所有 release 目录
+   ssh -t home-agent 'sudo companion-deploy rollback'   # 用户执行：切回 previous 及其 unit 快照
+   ssh home-agent 'cat /var/log/companion-deploy.status.json'   # 无需 sudo
+   ssh -t home-agent 'sudo companion-deploy status'     # 用户执行：另含各单元状态
+   ssh -t home-agent 'sudo companion-deploy list'       # 用户执行：列出所有 release 目录
    ```
 
    current、previous 与最近一次结果可不用 sudo 从 status JSON 读取；单元状态与
    release 目录清单在 companion 的 0700 目录下，只能由用户 sudo 查看。
 
-   第一次部署前的旧 unit（写死 authority-0.10.0）也会被快照，rollback 可完整
+   旧 VM 上第一次部署前的旧 unit（写死 authority-0.10.0）也会被快照，rollback 可完整
    恢复它们。再次 rollback 会切回刚才的版本。
 
 数据库/配置迁移不在部署范围内：新 release 的 authority SCHEMA_VERSION 与当前
@@ -202,7 +212,7 @@ python3 /home/companion/src/dsh-companion/current/ops/isolation/launch.py dsh --
 
 已有 profile 禁止用 from-default-profile 覆盖。
 
-首次安装（用户在 VM 上执行一次）：
+首次安装（用户在生产主机上执行一次）：
 
 ```sh
 sudo install -d -o root -g root -m 0700 /var/lib/companion-deploy
