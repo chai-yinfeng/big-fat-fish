@@ -1,7 +1,7 @@
 // Shared UI for the standalone browser entry.
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
-import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, validWorld, validQQ, qqPayload, modelPayload } from './operator-client.js';
+import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validWorld, validQQ, qqPayload, modelPayload } from './operator-client.js';
 import { validRuntime, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
@@ -50,6 +50,7 @@ export function WorldConsole({ t, standalone = false }) {
   const referenceTranscriptInput = useRef(null);
   const referenceConsentInput = useRef(null);
   const audioObjectURL = useRef(null);
+  const [personaPreview, setPersonaPreview] = useState(null);
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -103,7 +104,7 @@ export function WorldConsole({ t, standalone = false }) {
     const value = await request('/world', undefined, credential);
     if (!validWorld(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
     if (!mounted.current || generation.current !== current) return;
-    setData(value); setDraft(personaDraft(value.persona.value)); setModelName(value.model.model || 'deepseek-flash');
+    setData(value); setDraft(personaDraft(value.persona.value)); setPersonaPreview(null); setModelName(value.model.model || 'deepseek-flash');
   }
   async function loadQQ(credential = token) {
     const current = generation.current;
@@ -146,8 +147,59 @@ export function WorldConsole({ t, standalone = false }) {
     return h('form', { onSubmit: event => { event.preventDefault(); void run(async () => {
       await request('/persona', { patch: personaPatch(draft) }); await load(); setNotice(t('saved'));
     }); } }, h('h2', null, `${t('personaRevision')}: ${data.persona.revision}`), text('arrayHint'),
-    ...['name', 'identity', 'traits', 'speechStyle', 'boundaries', 'principles'].map(key => field(key, key !== 'name')),
+    ...['name', 'userCallName', 'relationshipStage', 'identity', 'traits', 'speechStyle', 'boundaries', 'principles'].map(key => field(key, !['name', 'userCallName', 'relationshipStage'].includes(key))),
+    text('personaPanel.neutralHint'), personaExamples(), personaPreviewCard(), personaFiles(),
     h('div', { className: 'bff-actions' }, h('button', { type: 'submit', disabled: busy }, t('save')), button('discard', () => setDraft(personaDraft(data.persona.value)))), text('conflictHint'));
+  }
+  function personaExamples() {
+    const examples = draft.examples;
+    const change = next => setDraft({ ...draft, examples: next });
+    const move = (from, to) => { const next = [...examples]; next.splice(to, 0, next.splice(from, 1)[0]); change(next); };
+    return h('fieldset', { className: 'bff-card' }, h('legend', null, t('personaPanel.examples')),
+      examples.length ? null : text('personaPanel.noExamples'),
+      ...examples.map((entry, index) => h('div', { key: index, className: 'bff-card' },
+        ...['user', 'assistant'].map(side => h('label', { key: side }, h('span', null, `${index + 1}. ${t(side === 'user' ? 'personaPanel.exampleUser' : 'personaPanel.exampleAssistant')}`),
+          h('textarea', { name: `example-${index}-${side}`, value: entry[side], disabled: busy, onChange: event => change(examples.map((item, i) => i === index ? { ...item, [side]: event.target.value } : item)) }))),
+        h('div', { className: 'bff-actions' },
+          button('personaPanel.moveUp', () => move(index, index - 1), { disabled: busy || index === 0 }),
+          button('personaPanel.moveDown', () => move(index, index + 1), { disabled: busy || index === examples.length - 1 }),
+          button('personaPanel.removeExample', () => change(examples.filter((_, i) => i !== index)))))),
+      h('div', { className: 'bff-actions' }, button('personaPanel.addExample', () => change([...examples, { user: '', assistant: '' }]))));
+  }
+  function personaPreviewCard() {
+    const source = JSON.stringify(personaPatch(draft));
+    const current = personaPreview?.source === source ? personaPreview : null;
+    return h('section', { className: 'bff-card' }, h('h2', null, t('personaPanel.previewTitle')), text('personaPanel.previewHint'),
+      h('div', { className: 'bff-actions' }, button('personaPanel.preview', () => run(async () => {
+        const value = await request('/persona/preview', { patch: JSON.parse(source) });
+        setPersonaPreview({ source, text: value.text, chars: value.chars, limit: value.limit });
+      }))),
+      current && h(React.Fragment, null,
+        h('p', null, `${t('personaPanel.previewCount')}: ${current.chars} / ${current.limit}`),
+        h('p', current.chars > current.limit ? { role: 'alert' } : { className: 'bff-muted' }, t(current.chars > current.limit ? 'personaPanel.previewTruncated' : 'personaPanel.previewFits')),
+        h('textarea', { readOnly: true, value: current.text, rows: 16, 'aria-label': t('personaPanel.previewTitle') })));
+  }
+  function personaFiles() {
+    function exportJSON() {
+      const url = URL.createObjectURL(new Blob([personaExport(draft)], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url; link.download = `persona-${(draft.name || 'persona').replace(/[^\p{L}\p{N}_-]+/gu, '_')}-r${data.persona.revision}.json`;
+      link.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
+    }
+    async function importJSON(event) {
+      const file = event.target.files?.[0]; event.target.value = '';
+      if (!file) return;
+      setError(''); setNotice('');
+      try {
+        if (file.size > 98304) throw new Error('too large');
+        setDraft(personaImport(await file.text(), data.persona.default)); setNotice(t('personaPanel.imported'));
+      } catch { setError(t('personaPanel.invalidFile')); }
+    }
+    return h('section', { className: 'bff-card' }, text('personaPanel.importHint'),
+      h('div', { className: 'bff-actions' },
+        button('personaPanel.export', exportJSON),
+        h('label', null, h('span', null, t('personaPanel.import')), h('input', { type: 'file', accept: 'application/json,.json', disabled: busy, onChange: event => { void importJSON(event); } })),
+        data.persona.default && button('personaPanel.loadDefault', () => { setDraft(personaDraft(data.persona.default)); setNotice(t('personaPanel.defaultLoaded')); })));
   }
   function qqSettings() {
     return h('section', { className: 'bff-card' }, h('h2', null, t('qqTitle')), text('qqPrivateHint'),

@@ -40,7 +40,7 @@ export function operatorOrigin(location, { sameOrigin = false } = {}) {
 }
 export async function operatorRequest({ location, token, path, payload, fetchImpl = fetch, signal, sameOrigin = false }) {
   if (!token) throw Object.assign(new Error('authorization_required'), { code: 'authorization_required' });
-  if (!['/world', '/world/pause', '/persona', '/model', '/model/test', '/qq', '/memory', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path)) throw new Error('unsupported_operator_path');
+  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path)) throw new Error('unsupported_operator_path');
   if (['/model', '/model/test', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
   if (path === '/runtime' && payload !== undefined) throw new Error('operator_get_required');
   const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}`, {
@@ -61,15 +61,35 @@ export async function operatorRequest({ location, token, path, payload, fetchImp
   }
   return body.value;
 }
+const PERSONA_TEXT = ['name', 'userCallName', 'identity', 'speechStyle', 'relationshipStage'], PERSONA_LISTS = ['traits', 'boundaries', 'principles'];
+export const PERSONA_FIELDS = [...PERSONA_TEXT, ...PERSONA_LISTS, 'examples'];
 export function personaPatch(draft) {
   const patch = {};
-  for (const key of ['name', 'identity', 'speechStyle']) patch[key] = draft[key] || '';
-  for (const key of ['traits', 'boundaries', 'principles']) patch[key] = (draft[key] || '').split('\n').map(line => line.trim()).filter(Boolean);
+  for (const key of PERSONA_TEXT) patch[key] = draft[key] || '';
+  for (const key of PERSONA_LISTS) patch[key] = (draft[key] || '').split('\n').map(line => line.trim()).filter(Boolean);
+  patch.examples = (draft.examples || []).map(({ user, assistant }) => ({ user: user || '', assistant: assistant || '' }));
   return patch;
 }
 export function personaDraft(value) {
-  return Object.fromEntries(['name', 'identity', 'traits', 'speechStyle', 'boundaries', 'principles'].map(key => [key,
-    Array.isArray(value[key]) ? value[key].join('\n') : value[key] || '']));
+  return Object.fromEntries(PERSONA_FIELDS.map(key => [key, key === 'examples'
+    ? (Array.isArray(value.examples) ? value.examples : []).map(({ user, assistant }) => ({ user: user || '', assistant: assistant || '' }))
+    : Array.isArray(value[key]) ? value[key].join('\n') : value[key] || '']));
+}
+/** Export format: the persona fields as pretty JSON, the same shape import accepts. */
+export function personaExport(draft) {
+  return JSON.stringify(personaPatch(draft), null, 2) + '\n';
+}
+/** Import a persona file into an editor draft; omitted fields take the default persona's values. Saving stays explicit. */
+export function personaImport(source, defaults) {
+  let value;
+  try { value = JSON.parse(source); } catch { value = null; }
+  if (value?.persona && typeof value.persona === 'object') value = value.persona;
+  const bad = !value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !PERSONA_FIELDS.includes(key))
+    || PERSONA_TEXT.some(key => key in value && typeof value[key] !== 'string')
+    || PERSONA_LISTS.some(key => key in value && (!Array.isArray(value[key]) || value[key].some(item => typeof item !== 'string')))
+    || ('examples' in value && (!Array.isArray(value.examples) || value.examples.some(item => typeof item?.user !== 'string' || typeof item?.assistant !== 'string')));
+  if (bad) throw Object.assign(new Error('invalid_persona_file'), { code: 'invalid_persona_file' });
+  return personaDraft({ ...defaults, ...value });
 }
 export function validWorld(value) {
   return value && typeof value.world?.paused === 'boolean' && Number.isSafeInteger(value.world.revision)

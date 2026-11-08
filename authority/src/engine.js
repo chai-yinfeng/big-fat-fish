@@ -3,7 +3,7 @@ import { Store, DEFAULT_ENTITY_ID } from './store.js';
 import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
 import { POLICIES, validatePayload, review } from './policies.js';
 import { normalizePersona, validatePersonaPatch } from '../../core/src/persona.js';
-import { renderContext } from './context.js';
+import { renderContext, DEFAULT_CONTEXT_CHARS, personaShare, personaContextText } from './context.js';
 import { MemoryDomain } from './memory.js';
 export {
   DEFAULT_ENTITY_ID
@@ -152,6 +152,15 @@ export class Authority extends MemoryDomain {
         entityId:e.id,revision,personaRevision,persona
       };
     });
+  }
+  /** Read-only: the persona block a patch would render into context, and its share of the default budget. */
+  previewPersona(input){
+    closed(input,['entityId','patch'],['patch']);
+    jsonValue(input.patch);
+    validated(()=>validatePersonaPatch(input.patch));
+    const e=this.entity(input.entityId??DEFAULT_ENTITY_ID),
+    text=personaContextText(validated(()=>normalizePersona({...JSON.parse(e.persona),...input.patch})));
+    return{text,chars:text.length,limit:personaShare(DEFAULT_CONTEXT_CHARS)};
   }
   contentScope(capabilityId, input) {
     closed(input, ['streamId', 'memoryEpoch', 'sourceEventId'], ['streamId', 'memoryEpoch']);
@@ -305,7 +314,7 @@ export class Authority extends MemoryDomain {
     e=this.entity(scope.entityId),
     query=input.query===undefined?'':input.query;
     text(query,2000,true);
-    const budget=integer(input.budgetChars===undefined?2400:input.budgetChars,0,16000),
+    const budget=integer(input.budgetChars===undefined?DEFAULT_CONTEXT_CHARS:input.budgetChars,0,16000),
     rows=this.candidates(scope,registered.policy,query,64);
     return{
       revision:this.store.get('revision'),

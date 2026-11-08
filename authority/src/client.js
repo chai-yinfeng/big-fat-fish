@@ -38,7 +38,7 @@ export class AuthorityClient {
   }
   async context(value) {
     closed(value, ['streamId', 'query', 'budgetChars'], ['streamId']);
-    if (!text(value.streamId) || (value.query !== undefined && (typeof value.query !== 'string' || value.query.length > 512)) || (value.budgetChars !== undefined && (!Number.isInteger(value.budgetChars) || value.budgetChars < 1 || value.budgetChars > 2400))) throw fail('INVALID_REQUEST');
+    if (!text(value.streamId) || (value.query !== undefined && (typeof value.query !== 'string' || value.query.length > 512)) || (value.budgetChars !== undefined && (!Number.isInteger(value.budgetChars) || value.budgetChars < 1 || value.budgetChars > 4000))) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/context', value);
   }
   async memorySearch(value) {

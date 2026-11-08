@@ -37,7 +37,7 @@ Raw observations and rejected proposals remain private evidence until explicit f
 `AuthorityClient` uses fixed routes, bounded JSON and generic errors; no arbitrary HTTP/admin operation.
 
 - `observe({eventId,streamId,actorId,role,text,at,origin?})`, `submit({proposalId,observationId,type,payload})`, `getReceipt(id)` retain the original semantics. Forgotten event replay returns `{observationId,duplicate:true,forgotten:true}` without retaining the supplied text. New proposals referencing an erased source are refused.
-- `context({streamId,query?,budgetChars?})` -> `{revision,entityId,memoryEpoch,personaRevision,text,scope,world}`. Default budget 2400 characters; class API maximum 16000, restricted client maximum 2400. Persona/memory share a fair budget; evidence-bearing lines are atomic. SDK history/tool schemas/metadata have their own budgets and are not included in this character cap.
+- `context({streamId,query?,budgetChars?})` -> `{revision,entityId,memoryEpoch,personaRevision,text,scope,world}`. Default budget 4000 characters; class API maximum 16000, restricted client maximum 4000. When memories exist the persona gets up to 40% (1600 characters at the default budget) and memory groups share the rest fairly; evidence-bearing lines are atomic. SDK history/tool schemas/metadata have their own budgets and are not included in this character cap.
 - `memorySearch({streamId,query,limit?:8,budgetChars?:2400})` via POST `/v1/memory/search` -> `{entityId,memoryEpoch,items:[{id,type,excerpt,importance,pinned,revision}],text,world}`. Limit maximum 32.
 - `memoryRead({streamId,id})` via POST `/v1/memory/read` -> `{entityId,memoryEpoch,item|null}`. ID lookup still enforces the current stream's entity/person/audience. It cannot read private diaries, inner notes or superseded entries.
 - `memoryRecall({streamId,fromAt,toAt,limit?:8,budgetChars?:2400})` via POST `/v1/memory/recall` returns only authorized important/pinned fact/experience candidates with `{id,text,recordedAt,eventAt,dateBasis,importance,pinned}` and `isNewEvidence:false`. Limit maximum 16. This is a query, not an automatic anniversary scheduler or a newly happened experience.
@@ -71,7 +71,7 @@ Private and public model inputs/calls are separate. With no public material ther
 
 ## Operator API and forgetting
 
-Separate operator socket/bearer; ordinary sources and maintenance workers have no owner credential. Existing `/world`, pause/persona/channel operations remain. GET `/world` does not return private diary text or automatically invoke memory listing.
+Separate operator socket/bearer; ordinary sources and maintenance workers have no owner credential. Existing `/world`, pause/persona/channel operations remain. `/world` includes `persona.default` (the code default); `/persona` accepts every persona field; `/persona/preview {patch}` is read-only and returns `{text,chars,limit}`. GET `/world` does not return private diary text or automatically invoke memory listing.
 
 - GET `/entities`; POST `/entities {id,persona?}`.
 - GET `/memory/status`; GET `/memory?entityId=...&limit=50&beforeRevision=...` explicitly lists selected entity memory and private/public diaries. Owner-only, never an automatic ordinary-chat read.

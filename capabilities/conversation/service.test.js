@@ -43,7 +43,7 @@ test('plain reply: Authority context in the system prompt, real-input query, pri
   assert.equal(body.messages[0].role, 'system');
   assert.match(body.messages[0].content, /大肥鱼，说话简短/); assert.match(body.messages[0].content, /revision=3; personaRevision=2/);
   assert.match(body.messages[0].content, /2026-11-01T00:00:00.000Z/); assert.match(body.messages[0].content, /obs-1/);
-  assert.deepEqual(contexts(f.authority.state).map(r => r.body), [{ streamId: scope.streamId, query: '你好', budgetChars: 2400 }]);
+  assert.deepEqual(contexts(f.authority.state).map(r => r.body), [{ streamId: scope.streamId, query: '你好', budgetChars: 4000 }]);
   const file = path.join(f.sessionsDir, conversationSessionId(scope.streamId, 0) + '.jsonl');
   assert.equal(fs.statSync(file).mode & 0o777, 0o600); assert.equal(fs.statSync(f.sessionsDir).mode & 0o777, 0o700);
   const run = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -63,7 +63,7 @@ test('tool loop replays reasoning_content and reuses the same query for every re
   assert.equal(assistant.reasoning_content, 'R1-need-evidence');
   assert.equal(assistant.tool_calls[0].function.name, 'companion_scope');
   assert.deepEqual(JSON.parse(toolMessages(second)[0].content), { evidence, unavailable: [] });
-  assert.deepEqual(contexts(f.authority.state).filter(r => r.body.budgetChars === 2400).map(r => r.body.query), ['我喜欢红茶', '我喜欢红茶']);
+  assert.deepEqual(contexts(f.authority.state).filter(r => r.body.budgetChars === 4000).map(r => r.body.query), ['我喜欢红茶', '我喜欢红茶']);
   // A later run (also after a restart) replays every earlier assistant with its reasoning_content.
   f.gateway.state.script.push(reply('还记得', 'R3'));
   await f.restart().execute(request('还记得吗'));
