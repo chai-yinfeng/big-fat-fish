@@ -8,8 +8,8 @@
 | 目录 | 职责 |
 |---|---|
 | authority | 唯一世界、人格、记忆权威及用户 operator API |
-| console | 独立世界控制台；同时保留旧 DSH 入口兼容 |
-| capabilities/conversation、integrations/dsh | 中立执行契约与当前 DSH 实现 |
+| console | 独立世界控制台（同源 operator 入口） |
+| capabilities/conversation | 执行契约与基于 pi-agent-core 的对话执行器服务（companion-conversation） |
 | capabilities/qq、media、speech、memory | 渠道、受控素材、本地文件语音与记忆维护 |
 | model-gateway | 私有模型出口及预算，不拥有角色记忆 |
 | deploy | 完整发布与运维入口；不可直接修改正式版本目录 |
@@ -19,7 +19,7 @@ plugin、preset、adapters、voice-runtime、旧 asr/tts/ui 等是保留的历�
 不是当前发布装配；仅在任务涉及 legacy 时读取或运行。
 
 当前限制：
-- 默认对话执行仍经 DSH 适配器，独立控制台不等于运行时已去 DSH。
+- 对话执行器只经私有 model-gateway 访问 DeepSeek；尚未在生产主机上实际部署和真实对话验收。
 - Qwen3-TTS 只用 speaker-file 条件，参考转写不参与合成（不是完整 ICL 克隆）。
 - Kokoro 已弃用，仅作为现有合成参考来源，待移除。
 - 图片生成、家庭群、Live2D 未启用。
@@ -29,11 +29,13 @@ plugin、preset、adapters、voice-runtime、旧 asr/tts/ui 等是保留的历�
 在本项目根执行，不依赖 Playground 的目录位置：
 
 ```sh
-# 使用已安装的 pnpm；本地依赖只装在 console，不安装到正式运行时。
+# 本地依赖只装在开发 checkout，不安装到正式运行时（release 里是打包后的单文件）。
 pnpm --dir console install --frozen-lockfile --ignore-workspace --ignore-scripts
+npm --prefix capabilities/conversation ci --ignore-scripts
 
 git config --local core.hooksPath .githooks
 node --run test:qq       # 按变更选择模块，不默认每次全测
+node --run test:conversation
 node --run test:speech
 node --run build:console
 node --run test          # 迁移、跨层变更或发布前

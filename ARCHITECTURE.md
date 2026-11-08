@@ -2,7 +2,7 @@
 
 ## 产品与依赖方向
 
-本仓库是独立 Git 项目，不属于 DSH 实现 checkout。发行根是 Node 服务产物，嵌套的 capability-bundle 是可选 DSH 接入包；不以 DSH 创造模式拥有世界或人格。
+本仓库是独立 Git 项目。发行根是 Node 服务产物；对话执行器打包为单个 ESM 文件随 release 发布，不带 node_modules。
 
 ```text
 Authority（世界/实体/身份/人格/记忆，唯一SQLite writer）
@@ -12,27 +12,26 @@ Conversation port       scoped content port
 QQBridge               media / speech / vision / web
         ↓                     ↓
 注入 Executor          opaque artifacts、机器感知、待发送parts
-        ↓                     ↓
-integrations/dsh       QQ delivery adapter → 实际回执
+        ↓ UDS /execute        ↓
+companion-conversation QQ delivery adapter → 实际回执
+(pi-agent-core)  → model-gateway（UDS）→ DeepSeek
 ```
 
-当前默认 Executor 是 DSH，其 session/Agent/tool loop 经 pi-ai 模型适配器调用 DeepSeek。可另接 Pi agent-core、AI SDK 等成熟循环，但新后端仍需满足会话持久化、取消、预算与原文清理契约。
+默认 Executor 是 companion-conversation：pi-agent-core 的 Agent/tool loop，经 pi-ai `openai-completions`（DeepSeek compat，回传 `reasoning_content`）和 Unix socket fetch 只访问私有 model-gateway。会话 ID 由执行器按 streamId+memoryEpoch 派生，每个会话一个私有 JSONL；每次模型请求前取 Authority context（查询为本回合真实输入）；超时或调用方断开即 abort，同一会话串行。
 
 当前限制：
-- 运行时尚未去 DSH；替换执行器不是只改一个 import。
+- 尚未在生产主机部署与真实对话验收；systemd 加固在 user manager 下依赖非特权 user namespace，未在 home-agent 验证。
 
 ## 实际源码边界
 
 - `authority/`：独立 canonical service、规则审核、实体/人/受众与来源约束。没有 Cordis、DSH Session、QQ SDK 或供应商 SDK 依赖。
 - `core/src/persona.js`、`core/src/util.js`：当前 Authority 复用的纯数据逻辑；其它旧 core 不是新服务的第二权威。
-- `capabilities/conversation/`：纯会话与文本执行契约；执行器 duck-typed 注入，不包含 session/create 等 DSH RPC。
-- `integrations/dsh/`：DSH 会话执行、Web RPC 传输。默认装配会选择它，不把它塞回业务规则。
-- `capabilities/dsh/`：DSH Host 插件适配、当前 turn 与来源验证、两个受限模型工具。它是集成层，不是本体。
-- `capabilities/qq/bridge.js`：认证私聊的串行入口、去重、epoch、投递回执；不导入 DSH backend。QQ main 是显式选择执行 backend 的应用装配点。
+- `capabilities/conversation/`：执行契约（executor.js，duck-typed）、渠道侧 UDS 客户端，以及执行器服务（agent/tools/sessions/window/model/server，main.mjs 入口）。两个受限模型工具 `companion_scope`、`companion_content` 的作用域由执行请求绑定，模型不能指定 entity/person/stream/path/epoch；evidence 只返回本回合 QQ 传入的 observation ref。
+- `capabilities/qq/bridge.js`：认证私聊的串行入口、去重、epoch、投递回执；把 scope 与 prepared 输入交给执行器。QQ main 是选择执行 backend（UDS 客户端）的应用装配点。
 - `capabilities/media/`：文件引用、ACL、来源派生、感知/合成/附件表达；不解析 OneBot 字段。平台原生表情描述是 opaque 数据，仅所属渠道解释。
 - `capabilities/speech/`：纯本地文件 ASR/TTS provider，单请求只跑选中引擎。无麦克风、音箱、虚拟声卡、声纹身份或实时直播假设。
 - `model-gateway/`：固定供应商出口、私有 Key、取消与有界预算；不拥有实体/人格/记忆。新增视觉与网页仍经 Authority 作用域授权后使用。
-- [console](<console/README.md>)：共享视图同时构建独立网页与旧 DSH 兼容入口。独立管理页由 operator 同源入口提供，不需要 DSH boot/slots/session RPC；管理世界状态、人格、模型、QQ 绑定、记忆、语音参数与授权参考录音。
+- [console](<console/README.md>)：独立管理页由 operator 同源入口提供；管理世界状态、人格、模型、QQ 绑定、记忆、语音参数与授权参考录音。
 - `plugin/`、`adapter-plugin/`、旧 `voice-runtime/` 等保留源码，未重新发行/启用。根默认 test 指向当前产品，旧检查只在显式 legacy 脚本中。
 
 当前限制：
@@ -61,7 +60,7 @@ QQ 收语音：认证消息 → get_record 转 WAV → MediaRef → 本地 ASR �
 
 ASR/OCR/视觉描述不是真人逐字输入。只有附件时 Core 原观察保留平台占位和 origin:attachment；机器文字只进入执行上下文，不能凭占位生成真人事实/经历/appraisal。真人文字确认可成为新的普通证据。自述笔记仍是自述，不是对他人的独立核验。
 
-自管原件缓存默认七个真实日；聊天转写并不因此自动全部删除。自然记忆衰减仍按世界时间。明确忘记按原始事件删除自管文件及下游描述/转写，停 content/SDK/QQ writers 后清原始执行与临时音频；不删除无关资料、合成参考、QQ登录卷。
+自管原件缓存默认七个真实日；聊天转写并不因此自动全部删除。自然记忆衰减仍按世界时间。明确忘记按原始事件删除自管文件及下游描述/转写，停 content/conversation/QQ writers 后删除受影响 stream 旧 epoch 的执行会话与临时音频；不删除无关资料、合成参考、QQ登录卷。
 
 当前限制：
 - 忘记无法清除平台客户端、供应商或外部导出中的副本。

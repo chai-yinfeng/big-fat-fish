@@ -15,12 +15,16 @@ git log -3 --oneline
 
 ## 依赖与定向检查
 
-Node ≥24；前端使用 console 内的锁文件。Mac 与 Linux 的原生依赖不能直接互拷。
-使用已有 pnpm 安装 console 依赖，不修改全局 npm 配置或生产运行时：
+Node ≥24；前端使用 console 内的 pnpm 锁文件，对话执行器使用 capabilities/conversation
+内的 npm 锁文件（固定 @earendil-works/pi-agent-core、pi-ai 1.5.0 与 esbuild 0.25.11）。
+Mac 与 Linux 的原生依赖不能直接互拷。依赖只装在开发 checkout，不修改全局 npm 配置或生产运行时；
+release 中执行器是 esbuild 打包的单文件，不含 node_modules：
 
 ```sh
 pnpm --dir console install --frozen-lockfile --ignore-workspace --ignore-scripts
+npm --prefix capabilities/conversation ci --ignore-scripts
 node --run test:authority
+node --run test:conversation
 node --run test:qq
 node --run test:speech
 node --run test:media
@@ -89,11 +93,13 @@ node deploy/qq/open-login.mjs        # NapCat WebUI 扫码登录（默认 home-a
 正式数据：/home/companion/.local/share/companion-world-v1
 私有运行时：/home/companion/.local/opt/companion
 用户单元：/home/companion/.config/systemd/user/companion-*
-3082 独立世界控制台与 operator API / 3081 DSH 执行适配页
+会话记录：/home/companion/.local/share/companion-world-v1/conversation-data/sessions（每会话一个 JSONL）
+执行器：companion-conversation（UDS ipc/conversation/execute.sock，无 TCP 端口）
+3082 独立世界控制台与 operator API（唯一由 companion 单元监听的 TCP 端口）
 NapCat WebUI 6099 / OneBot WS 3001（沿用旧记录，未在新布局下复核）
 ```
 
-主机入口均只监听回环；内部推理端口 3090 只在 worker 私网。运行中的世界状态
+主机入口均只监听回环；执行器、Authority、model-gateway 之间只走 Unix socket。运行中的世界状态
 （暂停、revision、QQ 登录等）以控制台和 status JSON 为准，文档不记录快照。
 
 ## 控制台操作要点
@@ -153,7 +159,9 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    在 main 上。显示版本、提交、标题和日期后要求输入 y。随后：停 companion-*
    单元 → 安装只读 release（属主 companion）→ 快照旧 unit 并安装新 unit →
    daemon-reload → 原子切换 current → 启动 → 健康检查（全部单元无 failed、
-   3081/3082 在监听、约 20 秒内无重启）。失败则自动恢复上一个 release 及其 unit
+   3082 在监听、约 20 秒内无重启）。全新主机（没有任何 release 与 companion 单元）
+   首次 deploy 只安装 release、单元与 current，不启动服务；完成下文一次性初始化后由用户执行
+   `sudo companion-deploy start` 启动并做同样的健康检查（失败则再次停止服务）。失败则自动恢复上一个 release 及其 unit
    快照并以非零退出。只重启 companion 服务和 socket，不碰 NapCat，不重启机器。
    保留最近 3 个部署管理的 release 及 current/previous；旧 VM 上的 authority-0.10.0、
    authority-0.9.0 从不删除。日志在 /var/log/companion-deploy.log，摘要在
@@ -170,7 +178,7 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    ssh home-agent 'cat /var/log/companion-deploy.status.json'   # current/previous、last.ok
    ssh home-agent 'tail -n 20 /var/log/companion-deploy.log'
    ssh home-agent 'journalctl _UID=$(id -u companion) --since -15min --no-pager | tail -n 80'
-   ssh home-agent "ss -Hltn | grep -E ':(3001|3081|3082|6099) '"
+   ssh home-agent "ss -Hltn | grep -E ':(3001|3082|6099) '"
    ```
 
    last.ok 为 false 表示部署已被拒绝或健康检查失败并自动恢复了 previous：从日志
@@ -203,14 +211,15 @@ release 不同则部署被拒绝，迁移须另行人工完成。回退只切换
 ```sh
 # 仅全新数据根不存在时；已有世界禁止重跑 bootstrap：
 /home/companion/.local/opt/companion/bin/node /home/companion/src/dsh-companion/current/ops/bootstrap.mjs
-# 已有世界只补对应基础设施，保留 Key/人格/绑定：
+# 已有世界只补对应基础设施，保留 Key/人格/绑定（bootstrap 已含 conversation 配置）：
 /home/companion/.local/opt/companion/bin/node /home/companion/src/dsh-companion/current/ops/prepare-memory.mjs
 /home/companion/.local/opt/companion/bin/node /home/companion/src/dsh-companion/current/ops/prepare-content.mjs
-# 官方包管理入口：
-python3 /home/companion/src/dsh-companion/current/ops/isolation/launch.py dsh -- plugin --profile companion add /opt/companion/release/capability-bundle
+/home/companion/.local/opt/companion/bin/node /home/companion/src/dsh-companion/current/ops/prepare-conversation.mjs
 ```
 
-已有 profile 禁止用 from-default-profile 覆盖。
+全新主机顺序：用户安装私有 Node（deploy/vm/install-runtime.sh，不再安装 DSH/pnpm）→
+首次 `companion-deploy deploy`（不启动服务）→ 以 companion 身份运行 bootstrap、prepare-memory、
+prepare-content → `sudo companion-deploy start`。旧 DSH 会话历史不迁移，长期记忆在 Authority。
 
 首次安装（用户在生产主机上执行一次）：
 

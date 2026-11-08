@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+- 对话执行器改为基于 pi-agent-core 1.5.0 / pi-ai 1.5.0 的 companion-conversation 服务（UDS `POST /execute`，bearer 哈希认证）：会话由 streamId+memoryEpoch 派生、每会话一个私有 JSONL；每次模型请求前取 Authority context；companion_scope / companion_content 移植为作用域绑定的 AgentTool；32k 字符完整回合裁剪；超时/断开即中止；经 Unix socket 只访问 model-gateway，DeepSeek compat 回传 `reasoning_content`。release 中为 esbuild 单文件（约 1.2 MB），不含 node_modules。
+- QQ 改为把 scope、执行文本、查询文本、媒体引用与本回合 observation ref 交给执行器；删除 DSH inbox 与 worker route。
+- 彻底移除 DSH：capabilities/dsh、integrations/dsh、控制台旧 DSH 入口与 legacy client 构建、run-capability / wait-sdk-ready / web-rpc / access / verify-dialogue / verify-console-browser、isolation 的 capability/dsh 角色与 bin 包装、companion-dsh-* 单元、deploy/vm 旧验证文件；install-runtime.sh 只装私有 Node。新增 companion-conversation.service（systemd 加固，不用 bwrap），companion-qq 依赖它；purge 改为删除受影响 stream 旧 epoch 的会话文件（execution-storage v2）；rotate-tokens 纳入 conversation caller token。
+- companion-deploy：健康检查只看 3082；全新主机首次 deploy 只安装不启动，新增 `companion-deploy start`。
+- 已验证：本机全量 `node --run test`（含新增 conversation 测试：假 gateway/Authority 的真实 UDS、经真实 model-gateway 服务的 reasoning_content 回传）、companion-deploy 与 isolation Python 测试、本地 release 构建。未验证：生产主机部署、user manager 下 systemd 加固（依赖非特权 user namespace）、真实 DeepSeek 多轮工具调用。
 - 文档整理：删除根目录 DEVELOPMENT.md，其中仍有效的 VM 布局、管理页面命令、一次性维护命令和控制台操作要点并入 docs/DEV_WORKFLOW.md。
 - AGENTS.md 写明执行器方向：现行默认仍是 DSH 适配，计划在执行器接口后用 pi-agent-core 实现新执行器，DSH 不再作为未来聊天入口；机器转写/描述须标注为派生内容。
 - 移除公开文档中指向本地 notes/ 的死链；各模块 README 的测试/限制段压缩为简短的"测试覆盖 / 当前限制"。
