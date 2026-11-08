@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { loadSpeechConfig, inputPath, outputPath, engineFor, componentsPresent, wavInfo, failure, resolveVoice, trustedReference, ASR_TIERS } from './config.js';
 
 const workerDefault = fileURLToPath(new URL('./worker.mjs', import.meta.url));
-const publicErrors = new Set(['SPEECH_CANCELLED', 'SPEECH_NOT_CONFIGURED', 'SPEECH_CONFIG_SCHEMA', 'SPEECH_MODEL_DISABLED', 'SPEECH_REQUEST', 'SPEECH_PATH', 'SPEECH_AUDIO_FORMAT', 'SPEECH_AUDIO_LIMIT', 'SPEECH_INCOMPLETE', 'SPEECH_REFERENCE_REQUIRED', 'SPEECH_VOICE_UNKNOWN', 'SPEECH_VOICE_SCOPE', 'SPEECH_TIMEOUT']);
+const publicErrors = new Set(['SPEECH_CANCELLED', 'SPEECH_NOT_CONFIGURED', 'SPEECH_CONFIG_SCHEMA', 'SPEECH_MODEL_DISABLED', 'SPEECH_REQUEST', 'SPEECH_PATH', 'SPEECH_AUDIO_FORMAT', 'SPEECH_AUDIO_LIMIT', 'SPEECH_INCOMPLETE', 'SPEECH_REFERENCE_REQUIRED', 'SPEECH_VOICE_UNKNOWN', 'SPEECH_TIMEOUT']);
 
 /** Trusted host interface only. The model-facing layer uses artifact IDs, never these paths. */
 export function createLocalSpeechRunner({ configFile, workerFile = workerDefault }) {
@@ -20,7 +20,7 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
   async function run(job, signal) {
     if (signal?.aborted) throw failure('SPEECH_CANCELLED');
     const c = loadSpeechConfig(configFile);
-    const profile = job.kind === 'tts' ? resolveVoice(c, job.voiceProfile, job.audience) : undefined;
+    const profile = job.kind === 'tts' ? resolveVoice(c, job.voiceProfile) : undefined;
     const key = job.kind === 'tts' ? profile.engine : job.quality, e = engineFor(c, job.kind, key);
     if (e.enabled === false) throw failure('SPEECH_MODEL_DISABLED');
     if (!componentsPresent(c, job.kind, key)) throw failure('SPEECH_NOT_CONFIGURED');
@@ -92,9 +92,8 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
       if (!['auto', 'zh', 'en', 'yue', 'ja', 'ko'].includes(language) || !ASR_TIERS.includes(quality)) return Promise.reject(failure('SPEECH_REQUEST'));
       return enqueue({ kind: 'asr', inputFile, quality, language }, signal);
     },
-    /** voiceProfile is an operator-registered voice id (omitted -> defaultVoice).
-     * audience is the trusted conversation audience; private-scope voices need 'private'. */
-    synthesize({ text, outputFile, voiceProfile, audience, signal }) { return enqueue({ kind: 'tts', text, outputFile, voiceProfile, audience }, signal); },
+    /** voiceProfile is an operator-registered voice id (omitted -> defaultVoice). */
+    synthesize({ text, outputFile, voiceProfile, signal }) { return enqueue({ kind: 'tts', text, outputFile, voiceProfile }, signal); },
     status() {
       try {
         const c = loadSpeechConfig(configFile);

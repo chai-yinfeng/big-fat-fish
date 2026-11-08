@@ -8,7 +8,7 @@ import { toSimplifiedChinese } from './text.js';
 
 process.umask(0o077);
 const require = createRequire(import.meta.url);
-const allowedErrors = new Set(['SPEECH_NOT_CONFIGURED', 'SPEECH_REQUEST', 'SPEECH_AUDIO_FORMAT', 'SPEECH_AUDIO_LIMIT', 'SPEECH_PATH', 'SPEECH_INCOMPLETE', 'SPEECH_REFERENCE_REQUIRED', 'SPEECH_VOICE_UNKNOWN', 'SPEECH_VOICE_SCOPE']);
+const allowedErrors = new Set(['SPEECH_NOT_CONFIGURED', 'SPEECH_REQUEST', 'SPEECH_AUDIO_FORMAT', 'SPEECH_AUDIO_LIMIT', 'SPEECH_PATH', 'SPEECH_INCOMPLETE', 'SPEECH_REFERENCE_REQUIRED', 'SPEECH_VOICE_UNKNOWN']);
 
 async function nativeTts(c, e, profile, job) {
   const { file: reference } = trustedReference(c, profile);
@@ -40,7 +40,7 @@ async function nativeTts(c, e, profile, job) {
 }
 
 async function run(c, job) {
-  const profile = job.kind === 'tts' ? resolveVoice(c, job.voiceProfile, job.audience) : undefined;
+  const profile = job.kind === 'tts' ? resolveVoice(c, job.voiceProfile) : undefined;
   const key = job.kind === 'tts' ? profile.engine : job.quality;
   const e = engineFor(c, job.kind, key);
   if (!componentsPresent(c, job.kind, key)) throw failure('SPEECH_NOT_CONFIGURED');

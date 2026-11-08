@@ -52,7 +52,7 @@ channel.deliver(parts) -> sent / failed / unknown receipts
 
 QQ 收语音：认证消息 → get_record 转 WAV → MediaRef → 本地 ASR → 明确机器转写的执行上下文。QQ 发语音：最终回复文本 → 本地 TTS 文件 → QQ adapter 提交 record → 成功回执才记录已发送；不调用服务器的录音或播放设备。图片与表情也由 adapter 下载/封装，不把容器路径交给业务模型。
 
-默认文字，用户明确要求才合成语音。本地失败不自动上传云。音色是 operator 配置里的注册表（voice id → 授权上传的参考录音、参考语言、usageScope），请求只能给 voice id（缺省用 defaultVoice），不能给路径；usageScope 为 private 的音色只在 private 受众下可用。不从用户 QQ 语音提取音色。
+默认文字，用户明确要求才合成语音。本地失败不自动上传云。音色是 operator 配置里的注册表（voice id → 授权上传的参考录音、参考语言、usageScope），请求只能给 voice id（缺省用 defaultVoice），不能给路径；usageScope（private=家人朋友内部使用，含群聊；public=可公开发布）目前只记录不强制，留给将来的公开发布渠道（B站/直播）。不从用户 QQ 语音提取音色。
 
 当前限制：
 - 参考录音只作 speaker-file 条件，转写不参与合成，不是完整 ICL 克隆。

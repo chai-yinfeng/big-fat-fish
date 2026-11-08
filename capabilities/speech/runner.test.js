@@ -45,7 +45,7 @@ test('trusted speech paths stay in input/work roots, including symlink escapes; 
   const link = path.join(root, 'media-data/link.wav'); fs.symlinkSync(outside, link);
   await assert.rejects(runner.transcribe({ inputFile: outside }), { code: 'SPEECH_PATH' });
   await assert.rejects(runner.transcribe({ inputFile: link }), { code: 'SPEECH_PATH' });
-  await assert.rejects(runner.synthesize({ text: '测试', outputFile: path.join(root, 'out.wav'), audience: 'private' }), { code: 'SPEECH_PATH' });
+  await assert.rejects(runner.synthesize({ text: '测试', outputFile: path.join(root, 'out.wav') }), { code: 'SPEECH_PATH' });
   assert.equal(fs.existsSync(path.join(root, 'speech-data/trace')), false);
   assert.equal(fs.existsSync(inputFile), true);
 });
@@ -66,25 +66,24 @@ test('one selected child runs at a time; ASR tiers are default/fast with separat
   assert.equal(runner.status().models['asr:default'].componentsPresent, false);
   assert.equal(runner.status().models['asr:fast'].componentsPresent, true);
   c.models.tts['test-only'].enabled = false; fs.writeFileSync(configFile, JSON.stringify(c));
-  await assert.rejects(runner.synthesize({ text: '测试', audience: 'private', outputFile: path.join(root, 'speech-data/disabled.wav') }), { code: 'SPEECH_MODEL_DISABLED' });
+  await assert.rejects(runner.synthesize({ text: '测试', outputFile: path.join(root, 'speech-data/disabled.wav') }), { code: 'SPEECH_MODEL_DISABLED' });
   assert.equal(runner.status().models['tts:test-only'].enabled, false);
 });
 
-test('voice ids resolve only through operator config; private voices need a private audience', async t => {
+test('voice ids resolve only through operator config; usageScope is a label, not an audience gate', async t => {
   const { root, runner, configFile, c } = fixture(t);
   const out = name => path.join(root, 'speech-data', name + '.wav');
-  assert.deepEqual(await runner.synthesize({ text: '测试', outputFile: out('default'), audience: 'private' }), { model: 'tts-test', durationMs: 20, sampleRate: 16000, mime: 'audio/wav' });
-  await runner.synthesize({ text: '测试', outputFile: out('public'), voiceProfile: 'synthetic', audience: 'shared' });
-  assert.match(fs.readFileSync(path.join(root, 'speech-data/trace'), 'utf8'), /^start actress\nend\nstart synthetic\nend\n$/);
-  await assert.rejects(runner.synthesize({ text: '测试', outputFile: out('shared'), audience: 'shared' }), { code: 'SPEECH_VOICE_SCOPE' });
-  await assert.rejects(runner.synthesize({ text: '测试', outputFile: out('missing-audience') }), { code: 'SPEECH_VOICE_SCOPE' });
-  await assert.rejects(runner.synthesize({ text: '测试', outputFile: out('unknown'), voiceProfile: 'nobody', audience: 'private' }), { code: 'SPEECH_VOICE_UNKNOWN' });
-  await assert.rejects(runner.synthesize({ text: '测试', outputFile: out('path'), voiceProfile: '/etc/passwd', audience: 'private' }), { code: 'SPEECH_VOICE_UNKNOWN' });
-  await assert.rejects(runner.synthesize({ text: '测试', outputFile: out('proto'), voiceProfile: '__proto__', audience: 'private' }), { code: 'SPEECH_VOICE_UNKNOWN' });
-  for (const name of ['shared', 'missing-audience', 'unknown', 'path', 'proto']) assert.equal(fs.existsSync(out(name)), false);
+  assert.deepEqual(await runner.synthesize({ text: '测试', outputFile: out('default') }), { model: 'tts-test', durationMs: 20, sampleRate: 16000, mime: 'audio/wav' });
+  await runner.synthesize({ text: '测试', outputFile: out('public'), voiceProfile: 'synthetic' });
+  await runner.synthesize({ text: '测试', outputFile: out('private-named'), voiceProfile: 'actress', audience: 'shared' });
+  assert.match(fs.readFileSync(path.join(root, 'speech-data/trace'), 'utf8'), /^start actress\nend\nstart synthetic\nend\nstart actress\nend\n$/);
+  await assert.rejects(runner.synthesize({ text: '测试', outputFile: out('unknown'), voiceProfile: 'nobody' }), { code: 'SPEECH_VOICE_UNKNOWN' });
+  await assert.rejects(runner.synthesize({ text: '测试', outputFile: out('path'), voiceProfile: '/etc/passwd' }), { code: 'SPEECH_VOICE_UNKNOWN' });
+  await assert.rejects(runner.synthesize({ text: '测试', outputFile: out('proto'), voiceProfile: '__proto__' }), { code: 'SPEECH_VOICE_UNKNOWN' });
+  for (const name of ['unknown', 'path', 'proto']) assert.equal(fs.existsSync(out(name)), false);
   assert.deepEqual(runner.status().voices.map(v => [v.id, v.usageScope]), [['actress', 'private'], ['synthetic', 'public']]);
   c.defaultVoice = null; fs.writeFileSync(configFile, JSON.stringify(c));
-  await assert.rejects(runner.synthesize({ text: '测试', outputFile: out('none'), audience: 'private' }), { code: 'SPEECH_REFERENCE_REQUIRED' });
+  await assert.rejects(runner.synthesize({ text: '测试', outputFile: out('none') }), { code: 'SPEECH_REFERENCE_REQUIRED' });
 });
 
 test('config schema: old schema refused, llama-tts voices cannot claim transcript use, thread cap is 16', t => {
@@ -98,7 +97,7 @@ test('config schema: old schema refused, llama-tts voices cannot claim transcrip
   write({ ...c, voiceProfiles: { ...c.voiceProfiles, actress: { ...c.voiceProfiles.actress, usageScope: 'everyone' } } }); assert.throws(() => loadSpeechConfig(configFile), { code: 'SPEECH_CONFIG' });
   const llama = { ...c, models: { ...c.models, tts: { 'llama-tts': { id: 'qwen3-tts', engine: 'llama-tts' } } }, voiceProfiles: { actress: { ...c.voiceProfiles.actress, engine: 'llama-tts', useReferenceText: true } } };
   write(llama); assert.throws(() => loadSpeechConfig(configFile), { code: 'SPEECH_CONFIG' });
-  llama.voiceProfiles.actress.useReferenceText = false; write(llama); assert.equal(resolveVoice(loadSpeechConfig(configFile), undefined, 'private').engine, 'llama-tts');
+  llama.voiceProfiles.actress.useReferenceText = false; write(llama); assert.equal(resolveVoice(loadSpeechConfig(configFile)).engine, 'llama-tts');
 });
 
 test('a reference is trusted only with its matching manifest, voice id and transcript', t => {
@@ -119,7 +118,7 @@ test('child exit failure is sanitized and does not poison the next queued reques
   const { root, runner, inputFile } = fixture(t);
   await assert.rejects(runner.transcribe({ inputFile, language: 'en' }), error => error.code === 'SPEECH_WORKER_FAILED' && error.message === 'SPEECH_WORKER_FAILED');
   const controller = new AbortController(), outputFile = path.join(root, 'speech-data/cancelled.wav');
-  const pending = runner.synthesize({ text: 'cancelled synthetic speech', outputFile, audience: 'private', signal: controller.signal });
+  const pending = runner.synthesize({ text: 'cancelled synthetic speech', outputFile, signal: controller.signal });
   const timer = setTimeout(() => controller.abort(), 40);
   await assert.rejects(pending, { code: 'SPEECH_CANCELLED' }); clearTimeout(timer);
   assert.equal(fs.existsSync(outputFile), false);

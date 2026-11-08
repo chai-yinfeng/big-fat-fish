@@ -25,7 +25,7 @@ export async function benchmarkSpeech({ base = path.join(os.homedir(), '.local/s
   if (!path.isAbsolute(base) || path.basename(base) !== 'companion-world-v1' || !['asr', 'tts'].includes(kind) || !['default', 'fast'].includes(quality)) throw Error('SPEECH_BENCH_ARGUMENTS');
   base = fs.realpathSync(base);
   const configFile = path.join(base, 'operator/speech.json'), c = JSON.parse(fs.readFileSync(configFile, 'utf8'));
-  const key = kind === 'tts' ? resolveVoice(c, voice, 'private').engine : quality;
+  const key = kind === 'tts' ? resolveVoice(c, voice).engine : quality;
   const selected = c.models[kind][key], local = structuredClone(c);
   // The benchmark can test a disabled backend without changing the live
   // setting first. Only an explicit successful admission can enable that backend.
@@ -40,14 +40,14 @@ export async function benchmarkSpeech({ base = path.join(os.homedir(), '.local/s
   const started = performance.now(); let result;
   try {
     if (kind === 'asr') {
-      const spoken = await runner.synthesize({ text: TEST_TEXT, outputFile, voiceProfile: voice, audience: 'private' });
+      const spoken = await runner.synthesize({ text: TEST_TEXT, outputFile, voiceProfile: voice });
       const artifact = store.put({ scope, sourceEventId, kind: 'audio', mime: 'audio/wav', data: fs.readFileSync(outputFile), durationMs: spoken.durationMs });
       const asrStarted = performance.now();
       const value = await runner.transcribe({ inputFile: store.read(artifact.id, scope).file, quality });
       const elapsedMs = Math.round(performance.now() - asrStarted), cer = characterErrorRate(TEST_TEXT, value.text);
       result = { kind, key, voice: voice || c.defaultVoice, model: value.model, passed: cer <= 0.3, elapsedMs, audioDurationMs: value.durationMs, rtf: elapsedMs / value.durationMs, characterErrorRate: cer, inputArtifact: artifact.id, input: 'fixed-public-text-synthesized-locally', coldProcess: true };
     } else {
-      const value = await runner.synthesize({ text: TEST_TEXT, outputFile, voiceProfile: voice, audience: 'private' });
+      const value = await runner.synthesize({ text: TEST_TEXT, outputFile, voiceProfile: voice });
       const elapsedMs = Math.round(performance.now() - started), data = fs.readFileSync(outputFile);
       const artifact = store.put({ scope, sourceEventId, kind: 'audio', mime: 'audio/wav', data, durationMs: value.durationMs });
       const checkStarted = performance.now();

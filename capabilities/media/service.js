@@ -79,9 +79,9 @@ export class MediaService {
       if (typeof input.text !== 'string' || !input.text.trim() || [...input.text].length > 120 || !source(input.sourceEventId)) throw fail('MEDIA_SPEECH_INPUT');
       const file = path.join(this.workRoot, 'tts-' + randomUUID() + '.wav');
       try {
-        // voiceProfile is an operator-registered id (omitted -> default voice); the
-        // speech layer resolves it from operator config and checks the stream audience.
-        const result = await this.speech.synthesize({ text: input.text, outputFile: file, voiceProfile: input.voiceProfile, audience: scope.audience, signal: input.signal });
+        // voiceProfile is an operator-registered id (omitted -> default voice),
+        // resolved by the speech layer from operator config only.
+        const result = await this.speech.synthesize({ text: input.text, outputFile: file, voiceProfile: input.voiceProfile, signal: input.signal });
         if (!fs.existsSync(file) || fs.lstatSync(file).isSymbolicLink() || !fs.statSync(file).isFile() || fs.statSync(file).size > this.store.maxBytes) throw fail('MEDIA_SYNTHESIS_INVALID');
         const data = fs.readFileSync(file), durationMs = wavDuration(data);
         return { ...this.store.put({ scope, sourceEventId: input.sourceEventId, kind: 'audio', mime: 'audio/wav', data, durationMs }), model: result.model, generated: true, delivered: false };

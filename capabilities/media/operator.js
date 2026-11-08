@@ -182,8 +182,7 @@ export function createContentOperator({ speechConfigFile, worldStatus, speechFac
         trustedReference(config, p);
         const root = fs.realpathSync(config.workRoot), file = path.join(root, 'tts-' + randomUUID() + '.wav');
         try {
-          // Operator audition is a private listening session, so private-scope voices are allowed.
-          const result = await runner.synthesize({ text: PUBLIC_TEST_TEXT, outputFile: file, voiceProfile: p.id, audience: 'private', signal });
+          const result = await runner.synthesize({ text: PUBLIC_TEST_TEXT, outputFile: file, voiceProfile: p.id, signal });
           await paused(input, signal);
           if (path.dirname(file) !== root || fs.lstatSync(file).isSymbolicLink() || !fs.lstatSync(file).isFile()) throw fail('CONTENT_OPERATOR_AUDIO_INVALID', 503);
           const info = wavInfo(file, 5 * 1024 * 1024), data = fs.readFileSync(file);

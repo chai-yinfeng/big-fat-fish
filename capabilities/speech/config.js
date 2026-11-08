@@ -66,15 +66,13 @@ export function componentsPresent(c, kind, key) {
     try { const stat = fs.statSync(file); return stat.isDirectory() || stat.isFile() && stat.size > 0; } catch { return false; }
   });
 }
-/** Resolves a voice id only through operator config; never a caller path. A
- * private-scope voice (e.g. a real person's recording) is only for private audiences. */
-export function resolveVoice(c, voiceId, audience) {
+/** Resolves a voice id only through operator config; never a caller path.
+ * usageScope is a recorded label only: every current audience may use any voice. */
+export function resolveVoice(c, voiceId) {
   const id = voiceId === undefined || voiceId === null ? c.defaultVoice : voiceId;
   if (id === null) throw failure('SPEECH_REFERENCE_REQUIRED');
   if (typeof id !== 'string' || !VOICE_ID.test(id) || !Object.hasOwn(c.voiceProfiles, id)) throw failure('SPEECH_VOICE_UNKNOWN');
-  const profile = c.voiceProfiles[id];
-  if (profile.usageScope === 'private' && audience !== 'private') throw failure('SPEECH_VOICE_SCOPE');
-  return profile;
+  return c.voiceProfiles[id];
 }
 // Registered operator audio is private data, never a model-selected path. The
 // pinned native CLI consumes only speaker audio; the transcript is provenance,

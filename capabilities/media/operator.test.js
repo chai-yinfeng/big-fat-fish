@@ -94,7 +94,7 @@ test('local audition names a voice, has no external action, cleans output and ex
   const f = fixture(t), registered = await f.operator.call(upload(await f.operator.call({ action: 'status' }), 'actress'));
   let seen; f.setSynth(async args => { seen = args; fs.writeFileSync(args.outputFile, wave()); return { model: 'tts-qwen3' }; });
   const result = await f.operator.call({ action: 'test', voiceId: 'actress', worldRevision: 3 });
-  assert.equal(result.mime, 'audio/wav'); assert.equal(result.model, 'tts-qwen3'); assert.equal(result.voiceId, 'actress'); assert.equal(result.transcriptUsedForSynthesis, false); assert.equal(seen.voiceProfile, 'actress'); assert.equal(seen.audience, 'private');
+  assert.equal(result.mime, 'audio/wav'); assert.equal(result.model, 'tts-qwen3'); assert.equal(result.voiceId, 'actress'); assert.equal(result.transcriptUsedForSynthesis, false); assert.equal(seen.voiceProfile, 'actress'); assert.equal(Object.hasOwn(seen, 'audience'), false);
   assert.equal(Buffer.from(result.audioBase64, 'base64').length, wave().length); assert.equal(fs.readdirSync(f.workRoot).some(x => x.startsWith('tts-')), false);
   await assert.rejects(f.operator.call({ action: 'test', voiceId: 'nobody', worldRevision: 3 }), { code: 'CONTENT_OPERATOR_VOICE_MISSING' });
   await assert.rejects(f.operator.call({ action: 'test', quality: 'heavy', worldRevision: 3 }), { statusCode: 400 });
