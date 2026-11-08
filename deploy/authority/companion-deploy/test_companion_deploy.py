@@ -512,6 +512,7 @@ class PreflightTests(Fixture):
         self.system.preflight_result = (0, 'PREFLIGHT WARN memory-worker.json IGNORED_LEGACY_FIELD purgeModule\nPREFLIGHT OK checked=9 failures=0 warnings=1\n')
         self.assertEqual(self.deployer.deploy(tarball), name)
         self.assertIn('PREFLIGHT WARN memory-worker.json IGNORED_LEGACY_FIELD purgeModule', self.system.said)
+        self.assertIn('PREFLIGHT OK checked=9 failures=0 warnings=1', self.system.said)
 
 
 class FreshHostPreflightTests(Fixture):

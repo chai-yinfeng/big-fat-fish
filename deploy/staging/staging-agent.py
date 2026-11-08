@@ -281,8 +281,8 @@ def lifecycle(from_tarball, to_tarball):
     from_name, to_name = (Path(t).name[:-len('.tar.gz')] for t in (from_tarball, to_tarball))
     results, started = [], time.time()
 
-    def step(name, action):
-        if results and not results[-1][1]:
+    def step(name, action, always=False):
+        if not always and any(ok is not True for _n, ok, _d in results):
             results.append((name, None, 'skipped'))
             return None
         print('== %s' % name, flush=True)
@@ -327,7 +327,7 @@ def lifecycle(from_tarball, to_tarball):
     step('prune-from', prune)
     step('restart-all', restart)
     step('smoke', smoke)
-    step('prod-untouched', prod_untouched)
+    step('prod-untouched', prod_untouched, always=True)
 
     failed = any(ok is False for _n, ok, _d in results)
     print('\n== STAGING SUMMARY %s -> %s (%ds)' % (from_name, to_name, time.time() - started))

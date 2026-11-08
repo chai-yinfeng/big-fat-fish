@@ -54,7 +54,8 @@ UNIT_PATTERN = re.compile(r'^companion-[A-Za-z0-9-]+\.(service|socket)$')
 SCHEMA_PATTERN = re.compile(r'^export const SCHEMA_VERSION = (\d+);$', re.M)
 PREFLIGHT_TIMEOUT_SECONDS = 120
 # Only these lines of the release's own preflight output are shown or logged (codes, labels, key names).
-PREFLIGHT_LINE = re.compile(r'^PREFLIGHT (FAIL|WARN) [A-Za-z0-9._-]{1,64} [A-Z][A-Z0-9_]{0,63}( [A-Za-z0-9._-]{1,128})?$')
+PREFLIGHT_LINE = re.compile(r'^PREFLIGHT ((FAIL|WARN) [A-Za-z0-9._-]{1,64} [A-Z][A-Z0-9_]{0,63}( [A-Za-z0-9._-]{1,128})?'
+                            r'|(OK|REFUSED) checked=\d+ failures=\d+ warnings=\d+)$')
 
 
 class DeployError(Exception):
