@@ -41,8 +41,8 @@ companion-conversation QQ delivery adapter → 实际回执
 ## 媒体不是平台动作
 
 ```ts
-speech.transcribe({inputFile, quality}) -> attributed transcript
-speech.synthesize({text, outputFile, quality, voiceProfile}) -> WAV metadata
+speech.transcribe({inputFile}) -> attributed transcript
+speech.synthesize({text, outputFile, voiceProfile, audience}) -> WAV metadata
 vision.inspect(imageRef) -> attributed description
 web.search(query) / web.read(url) -> bounded external content
 channel.deliver(parts) -> sent / failed / unknown receipts
@@ -52,7 +52,7 @@ channel.deliver(parts) -> sent / failed / unknown receipts
 
 QQ 收语音：认证消息 → get_record 转 WAV → MediaRef → 本地 ASR → 明确机器转写的执行上下文。QQ 发语音：最终回复文本 → 本地 TTS 文件 → QQ adapter 提交 record → 成功回执才记录已发送；不调用服务器的录音或播放设备。图片与表情也由 adapter 下载/封装，不把容器路径交给业务模型。
 
-默认文字，用户明确要求才合成语音。本地失败不自动上传云，不默认轻重双跑。Qwen Base 重 TTS 使用 operator 授权上传的参考录音；未上传时使用 Kokoro 先前生成的固定合成参考。不从用户 QQ 语音提取音色。
+默认文字，用户明确要求才合成语音。本地失败不自动上传云。音色是 operator 配置里的注册表（voice id → 授权上传的参考录音、参考语言、usageScope），请求只能给 voice id（缺省用 defaultVoice），不能给路径；usageScope（private=家人朋友内部使用，含群聊；public=可公开发布）目前只记录不强制，留给将来的公开发布渠道（B站/直播）。不从用户 QQ 语音提取音色。
 
 当前限制：
 - 参考录音只作 speaker-file 条件，转写不参与合成，不是完整 ICL 克隆。
@@ -68,15 +68,15 @@ ASR/OCR/视觉描述不是真人逐字输入。只有附件时 Core 原观察保
 
 ## CPU 与预算
 
-- ASR：轻档 SenseVoice int8；重档 Qwen3-ASR 0.6B sherpa int8。
-- TTS：Qwen3-TTS 1.7B Base Q4 + Q8 mmproj，经 CPU-only llama.cpp；未配置时默认质量按重档显示。Kokoro v1.1-zh int8 轻档已弃用，仅作为现有合成参考来源，待移除。
-- 单本地任务串行子进程，用完退出；轻 ASR ≤120秒，重 ASR ≤30秒，合成 ≤120字。不同时常驻四个模型。
-- 重模型默认 disabled，显式 CPU 基准通过才可准入；文件已下载、编译完成、基准通过、真人试听是不同状态。
+- ASR：仅 Qwen3-ASR 0.6B sherpa int8（≤30秒，超长报 SPEECH_AUDIO_LIMIT，不回退其它引擎）；SenseVoice 已移除，以后可再加。
+- TTS：Qwen3-TTS 1.7B Base Q4 + Q8 mmproj，经 CPU-only llama.cpp，只按参考音频条件生成；engine 字段留给以后的其它适配器（如 CosyVoice 3 / VoxCPM2，未实现）。
+- 单本地任务串行子进程，用完退出；合成 ≤120字；线程数 1–16（生产主机 8 最快）。不同时常驻多个模型。
+- 文件已下载、编译完成、CPU 基准通过、真人试听是不同状态。
 - content 用户服务限 2 核/4GiB，不修改全局 GPU/Node/PATH。
 - Flash 视觉默认512缩图/动图首帧；网页仅公网 search/fetch，无登录cookies或点击购买。默认全产品每UTC日 vision12/web20次，先预留，失败也占。
 - 两个模型工具的 schema 按 4chars/token 估计比旧 memory-only 多约252 tokens（估算，非 provider 实测）。
 
 当前限制：
 - 实际延迟、内存和音质须实测，不能由模型大小或 synthetic tests 推断。
-- 重档 TTS 是较新的集成，生产成熟度未充分验证。
+- Qwen3-TTS 是较新的集成，生产成熟度未充分验证。
 

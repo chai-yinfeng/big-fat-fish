@@ -73,10 +73,11 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       const body = await json(req, req.url === '/voice/reference' ? 3 * 1024 * 1024 : 98304);
       let value;
       const contentActions = {
-        '/speech': ['configure', ['expectedRevision', 'defaultTtsQuality', 'numThreads', 'maxTextChars']],
-        '/voice/reference': ['reference', ['expectedRevision', 'audioBase64', 'transcript', 'authorized']],
-        '/voice/reference/remove': ['removeReference', ['expectedRevision', 'confirmed']],
-        '/voice/test': ['test', ['quality']],
+        '/speech': ['configure', ['expectedRevision', 'numThreads', 'maxTextChars']],
+        '/voice/reference': ['reference', ['expectedRevision', 'voiceId', 'label', 'language', 'usageScope', 'audioBase64', 'transcript', 'authorized']],
+        '/voice/reference/remove': ['removeReference', ['expectedRevision', 'voiceId', 'confirmed']],
+        '/voice/default': ['setDefaultVoice', ['expectedRevision', 'voiceId']],
+        '/voice/test': ['test', ['voiceId']],
       };
       if (Object.hasOwn(contentActions, req.url)) {
         if (!contentOperator) throw Object.assign(new Error('Content runtime unavailable'), { statusCode: 503 });

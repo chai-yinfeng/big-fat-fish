@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { loadSpeechConfig, inputPath, outputPath, engineFor, componentsPresent, wavInfo, failure } from './config.js';
+import { loadSpeechConfig, inputPath, outputPath, engineFor, componentsPresent, wavInfo, failure, resolveVoice, trustedReference, ASR_TIERS } from './config.js';
 
 const workerDefault = fileURLToPath(new URL('./worker.mjs', import.meta.url));
-const publicErrors = new Set(['SPEECH_CANCELLED', 'SPEECH_NOT_CONFIGURED', 'SPEECH_MODEL_DISABLED', 'SPEECH_REQUEST', 'SPEECH_PATH', 'SPEECH_AUDIO_FORMAT', 'SPEECH_AUDIO_LIMIT', 'SPEECH_INCOMPLETE', 'SPEECH_REFERENCE_REQUIRED', 'SPEECH_TIMEOUT']);
+const publicErrors = new Set(['SPEECH_CANCELLED', 'SPEECH_NOT_CONFIGURED', 'SPEECH_CONFIG_SCHEMA', 'SPEECH_MODEL_DISABLED', 'SPEECH_REQUEST', 'SPEECH_PATH', 'SPEECH_AUDIO_FORMAT', 'SPEECH_AUDIO_LIMIT', 'SPEECH_INCOMPLETE', 'SPEECH_REFERENCE_REQUIRED', 'SPEECH_VOICE_UNKNOWN', 'SPEECH_TIMEOUT']);
 
 /** Trusted host interface only. The model-facing layer uses artifact IDs, never these paths. */
 export function createLocalSpeechRunner({ configFile, workerFile = workerDefault }) {
@@ -19,21 +19,25 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
   };
   async function run(job, signal) {
     if (signal?.aborted) throw failure('SPEECH_CANCELLED');
-    const c = loadSpeechConfig(configFile), e = engineFor(c, job.kind, job.quality);
+    const c = loadSpeechConfig(configFile);
+    const profile = job.kind === 'tts' ? resolveVoice(c, job.voiceProfile) : undefined;
+    const key = job.kind === 'tts' ? profile.engine : job.quality, e = engineFor(c, job.kind, key);
     if (e.enabled === false) throw failure('SPEECH_MODEL_DISABLED');
-    if (!componentsPresent(c, job.kind, job.quality)) throw failure('SPEECH_NOT_CONFIGURED');
+    if (!componentsPresent(c, job.kind, key)) throw failure('SPEECH_NOT_CONFIGURED');
     let reservedOutput, jobDir;
     if (job.kind === 'asr') {
       job.inputFile = inputPath(c, job.inputFile);
       const info = wavInfo(job.inputFile);
       if (info.format !== 1 || info.bits !== 16) throw failure('SPEECH_AUDIO_FORMAT');
-      if (info.durationMs > (job.quality === 'heavy' ? c.maxHeavyAudioSeconds : c.maxAudioSeconds) * 1000) throw failure('SPEECH_AUDIO_LIMIT');
+      if (info.durationMs > c.maxAudioSeconds * 1000) throw failure('SPEECH_AUDIO_LIMIT');
     } else {
-      if (typeof job.text !== 'string' || !job.text.trim() || [...job.text].length > c.maxTextChars || job.voiceProfile !== 'default') throw failure('SPEECH_REQUEST');
+      if (typeof job.text !== 'string' || !job.text.trim() || [...job.text].length > c.maxTextChars) throw failure('SPEECH_REQUEST');
+      if (e.engine === 'llama-tts') trustedReference(c, profile);
+      job.voiceProfile = profile.id;
       job.outputFile = outputPath(c, job.outputFile);
       fs.closeSync(fs.openSync(job.outputFile, 'wx', 0o600));
       reservedOutput = job.outputFile;
-      if (job.quality === 'heavy') { jobDir = fs.mkdtempSync(path.join(fs.realpathSync(c.workRoot), 'speech-job-')); job.jobDir = jobDir; }
+      if (e.engine === 'llama-tts') { jobDir = fs.mkdtempSync(path.join(fs.realpathSync(c.workRoot), 'speech-job-')); job.jobDir = jobDir; }
     }
     try {
       const result = await new Promise((resolve, reject) => {
@@ -84,16 +88,19 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
     }
   }
   return {
-    transcribe({ inputFile, quality = 'light', language = 'auto', signal }) {
+    transcribe({ inputFile, language = 'auto', signal }) {
       if (!['auto', 'zh', 'en', 'yue', 'ja', 'ko'].includes(language)) return Promise.reject(failure('SPEECH_REQUEST'));
-      return enqueue({ kind: 'asr', inputFile, quality, language }, signal);
+      return enqueue({ kind: 'asr', inputFile, quality: 'default', language }, signal);
     },
-    synthesize({ text, outputFile, quality = 'light', voiceProfile = 'default', signal }) { return enqueue({ kind: 'tts', text, outputFile, quality, voiceProfile }, signal); },
+    /** voiceProfile is an operator-registered voice id (omitted -> defaultVoice). */
+    synthesize({ text, outputFile, voiceProfile, signal }) { return enqueue({ kind: 'tts', text, outputFile, voiceProfile }, signal); },
     status() {
       try {
         const c = loadSpeechConfig(configFile);
-        return { configured: true, cpuOnly: true, models: Object.fromEntries(['asr', 'tts'].flatMap(kind => ['light', 'heavy'].map(quality => [`${kind}:${quality}`, { model: engineFor(c, kind, quality).id, componentsPresent: componentsPresent(c, kind, quality), enabled: engineFor(c, kind, quality).enabled !== false, verified: engineFor(c, kind, quality).cpuBenchmark?.passed === true && engineFor(c, kind, quality).cpuBenchmark?.model === engineFor(c, kind, quality).id }]))), voiceProfile: { id: 'default', auditioned: c.voiceProfiles.default.auditioned === true, referenceOrigin: 'kokoro-local' } };
-      } catch { return { configured: false, code: 'SPEECH_NOT_CONFIGURED' }; }
+        const entry = (kind, key) => { const e = engineFor(c, kind, key); return { model: e.id, componentsPresent: componentsPresent(c, kind, key), enabled: e.enabled !== false, verified: e.cpuBenchmark?.passed === true && e.cpuBenchmark?.model === e.id }; };
+        const models = Object.fromEntries([...ASR_TIERS.filter(tier => Object.hasOwn(c.models.asr, tier)).map(tier => ['asr:' + tier, entry('asr', tier)]), ...Object.keys(c.models.tts).map(key => ['tts:' + key, entry('tts', key)])]);
+        return { configured: true, cpuOnly: true, models, defaultVoice: c.defaultVoice, voices: Object.values(c.voiceProfiles).map(p => ({ id: p.id, engine: p.engine, usageScope: p.usageScope, auditioned: p.auditioned === true })) };
+      } catch (error) { return { configured: false, code: error.code === 'SPEECH_CONFIG_SCHEMA' ? error.code : 'SPEECH_NOT_CONFIGURED' }; }
     },
   };
 }

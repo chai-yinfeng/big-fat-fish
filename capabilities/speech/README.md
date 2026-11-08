@@ -7,110 +7,84 @@ This is a trusted Host adapter, not a model-facing filesystem or cloning tool. N
 ```js
 import { createLocalSpeechRunner } from './capabilities/speech/runner.js';
 const speech = createLocalSpeechRunner({ configFile: '/absolute/operator/speech.json' });
-await speech.transcribe({ inputFile: '/allowed-media/input.wav', quality: 'light' });
-await speech.synthesize({ text: '你好。', outputFile: '/speech-work/new-output.wav', quality: 'heavy', voiceProfile: 'default' });
+await speech.transcribe({ inputFile: '/allowed-media/input.wav' });
+await speech.synthesize({ text: '你好。', outputFile: '/speech-work/new-output.wav', voiceProfile: 'actress' /* omit -> defaultVoice */ });
 ```
 
-- `transcribe` returns `{text,model,durationMs,derived:true}`. The result is machine transcription, not a verified literal user statement. `durationMs` is audio duration, not processing time. Input must already be **mono PCM16 RIFF WAV**, with its real sample rate between 8 and 48kHz, at most 120 seconds for light ASR and 30 seconds for heavy ASR (16MiB file ceiling). The wrapper passes the real `readWave` rate to `acceptWaveform`; sherpa's existing native OfflineStream resamples to the model's 16kHz feature rate. This is not a newly written resampler, and 24kHz QQ WAV is not rejected merely for its rate. QQ AMR/SILK/Opus decoding still belongs to the media boundary; an extension is not proof of codec.
-- `synthesize` returns `{model,durationMs,sampleRate,mime:'audio/wav'}` only after a valid, nonempty WAV exists. The output path must be new and below `workRoot`. Sending this file and recording a successful QQ receipt are separate operations; WAV generation alone does not prove QQ playback.
-- `language` defaults to `auto`; SenseVoice accepts the supported language hint. The Qwen3 sherpa backend currently uses its model's automatic language identification; this wrapper does not claim an explicit language-forcing feature for that backend.
-- Missing config/runtime/weights gives `SPEECH_NOT_CONFIGURED`; disabled models give `SPEECH_MODEL_DISABLED`, without silent fallback. `status()` distinguishes component presence, enabled state and a matching operator CPU-benchmark admission record. `verified:true` only refers to that bounded synthetic benchmark, never human-auditioned quality, long-form reliability or realtime performance. Heavy defaults are disabled until explicit admission.
-- Each runner serializes its requests. The trusted caller should keep one runner per product process. Each request launches one child that loads only the selected model, then exits. Heavy TTS invokes the registered native CLI in that process group. Timeout kills the whole group, including native descendants. Successful child exit is collected before a result is released. Both methods accept an optional trusted `AbortSignal`: already-cancelled/queued jobs never start a child, and active cancellation kills the whole process group and returns `SPEECH_CANCELLED`, removing partial output. The signal is never serialized into the JSON job.
-- Configuration, executable/module locations, model paths and the synthetic reference are trusted operator inputs, never LLM arguments. Stderr and native prompt logs are not returned. Child environment excludes provider credentials. Native TTS receives a private temporary prompt file, not reply text in process arguments; the parent removes it even after timeout.
-- `workerFile` is a constructor-only test seam. It is not an operator JSON field or an external tool parameter.
+- `transcribe` returns `{text,model,durationMs,derived:true}`. The result is machine transcription, not a verified literal user statement. `durationMs` is audio duration, not processing time. Input must already be **mono PCM16 RIFF WAV**, 8–48kHz (sherpa's native OfflineStream resamples to 16kHz), at most `maxAudioSeconds` (1–30), 16MiB file ceiling; longer audio fails with `SPEECH_AUDIO_LIMIT` (there is no second ASR engine to fall back to). QQ AMR/SILK/Opus decoding belongs to the media boundary.
+- `synthesize` returns `{model,durationMs,sampleRate,mime:'audio/wav'}` only after a valid, nonempty WAV exists. The output path must be new and below `workRoot`. Sending this file and recording a successful QQ receipt are separate operations.
+- `language` (default `auto`) is validated but Qwen3-ASR uses its own language identification.
+- Error codes: missing config/runtime/weights `SPEECH_NOT_CONFIGURED`; schema-1 config `SPEECH_CONFIG_SCHEMA`; disabled engine `SPEECH_MODEL_DISABLED`; unknown voice id `SPEECH_VOICE_UNKNOWN`; no default voice or a reference failing its checks `SPEECH_REFERENCE_REQUIRED`. `status()` reports component presence, enabled state, a matching operator CPU-benchmark record (`verified:true` only refers to that bounded synthetic benchmark), `defaultVoice` and the voice list (id, engine, usage scope, audition flag).
+- Each runner serializes its requests; keep one runner per product process. Each request launches one child that loads only the selected model, then exits. Timeout or a trusted `AbortSignal` kills the whole process group (including the native TTS CLI) and removes partial output (`SPEECH_TIMEOUT` / `SPEECH_CANCELLED`). The signal is never serialized into the JSON job.
+- Configuration, executable/module locations, model paths and voice references are trusted operator inputs, never LLM arguments. Stderr and native prompt logs are not returned. Child environment excludes provider credentials. Native TTS receives a private temporary prompt file, not reply text in process arguments.
+- `workerFile` is a constructor-only test seam, not an operator JSON field or tool parameter.
 
-## Four registered engines
+## Engines (config schema 2)
 
-| Operation | Light (default) | Heavy (explicit request) |
+| Operation | Key | Engine |
 |---|---|---|
-| ASR | sherpa SenseVoiceSmall 2024-07-17 int8 | sherpa Qwen3-ASR-0.6B 2026-03-25 int8 |
-| TTS | sherpa Kokoro v1.1 Chinese/English int8 | llama.cpp Qwen3-TTS-1.7B Base Q4_K_M + Q8 mmproj |
+| ASR | `models.asr.default` | sherpa Qwen3-ASR-0.6B 2026-03-25 int8 |
+| TTS | `models.tts['llama-tts']` | llama.cpp `llama-tts` Qwen3-TTS-12Hz-1.7B Base Q4_K_M + Q8 mmproj |
 
-All sherpa configs fix `provider:'cpu'`, debug off and two threads by default. Kokoro uses the actual Node-addon class API (`OfflineTts`, `GenerationConfig`, `writeWave`); ASR uses `OfflineRecognizer` and object-form `acceptWaveform`, not legacy WASM APIs. The pinned npm release is `sherpa-onnx-node@2.0.1` with its matching Linux ARM64 optional package.
+Sherpa configs fix `provider:'cpu'` and debug off. `numThreads` is 1–16; preparation writes 8, which was fastest on the production Ryzen 8845HS (8C/16T): llama-tts RTF ≈1.1, Qwen3-ASR RTF ≈0.1–0.15. SenseVoiceSmall (RTF ≈0.013, less accurate) was removed because Qwen3-ASR latency is acceptable; it can be re-added later as another `models.asr` entry. The pinned npm release is `sherpa-onnx-node@2.0.1`; npm installs the host's `sherpa-onnx-linux-x64` or `-arm64` native package.
 
-Heavy TTS is **Base using a synthetic reference**, not CustomVoice/VoiceDesign and not a general voice-cloning API. The only public `voiceProfile` is `default`. Its initial Kokoro speaker index is a reproducible, **not yet auditioned** benchmark choice, not a recorded user preference.
+Qwen3-ASR output passes through `toSimplifiedChinese` (`text.js`), currently an identity hook. Stock Qwen3-ASR normally answers in Simplified; one benchmark clip came back Traditional with Chinese numerals, so a conversion may be added later.
 
-### Synthetic reference setup
+Possible future TTS backups (not implemented): CosyVoice 3 (cross-lingual mode) and VoxCPM2 (reference-only mode). Both worked on the production CPU at RTF ≈3–5. Adding one means a new `models.tts[<engine>]` entry plus a worker adapter.
 
-After the operator has installed and verified the Kokoro components, run explicitly:
+## Voices
 
-```sh
-node capabilities/speech/setup-reference.mjs --config /absolute/operator/speech.json
-```
+`voiceProfiles` maps a voice id (`[a-z0-9][a-z0-9-]{0,39}`) to `{id,label,engine,referencePath,referenceTranscript,referenceLanguage,useReferenceText,usageScope,auditioned}`; `defaultVoice` is one of those ids or `null`. Voices are registered by the operator through the content operator port / console (see `capabilities/media/OPERATOR.md`), never by the model.
 
-This asks the light runner to speak one fixed public sentence, records the matching text, origin, Kokoro model/speaker, audio metadata and SHA256 beside the reference, and preserves a matching existing reference. It does not consume any QQ/audio input. Heavy TTS requires this matching `kokoro-local` record and its WAV hash; it cannot take a reference path, uploaded voice, speaker ID, prompt text or clone request from the model. Voice changes require operator configuration and regeneration of this synthetic reference, with human audition handled outside the runner.
+- `engine` names a `models.tts` entry; only `llama-tts` exists.
+- `referencePath` must be `workRoot/reference/operator-<uuid>.wav` with a sibling manifest whose origin is `operator-authorized` and whose sha256, voice id and transcript match, plus a consent timestamp. Reference audio is mono PCM16, 3–20s.
+- `referenceTranscript` is provenance. `llama-tts` v0.8.0 conditions only on `--tts-speaker-file` (no ICL/transcript input), so `useReferenceText` must be `false` for it. This is also the right choice for cross-lingual voices (e.g. a Japanese reference speaking Chinese): passing the transcript to engines that support it caused accent or prompt leakage in benchmarks. Output language is the engine's `language` (`zh`).
+- `usageScope` is a recorded label: `private` = internal use among the user's family and friends (e.g. a real voice actress's clip; private and group chats alike), `public` = may be published (e.g. a purely synthetic voice). It is not enforced now; enforcement belongs to a future public-publishing channel (Bilibili/live), which does not exist yet.
 
-The pinned `llama-tts` v0.8.0 demo exits 0 even at its frame limit. This wrapper therefore parses its version-specific completion summary and requires **0 < generated frames < maxFrames** before accepting output. Reaching the limit, missing completion summary, nonzero exit or timeout is a failure and the partial output is removed. It does not claim completeness from the existence of a WAV. Its upstream explicitly calls this binary a playground rather than production-ready; the wrapper's boundaries do not turn it into a verified production speech engine.
+The pinned `llama-tts` v0.8.0 exits 0 even at its frame limit, so the wrapper parses its completion summary and requires **0 < generated frames < maxFrames**; reaching the limit, a missing summary, nonzero exit or timeout is a failure and the partial output is removed. Upstream calls this binary a playground, not production-ready.
 
-## Operator preparation and later installation
+## Operator preparation
 
-`ops/prepare-speech.mjs` only creates private directories, a configuration and a model provenance manifest. It does **not** install packages, download weights, generate references or call models. Existing operator config is preserved. Default locations:
-
-- runtime: `~/.local/opt/companion/speech-node`
-- models: `base/speech-models`
-- work and synthetic reference: `base/speech-data`
-- input: `base/media-data`
-
-After explicit installation authorization, the isolated npm prefix can install `sherpa-onnx-node@2.0.1` with the private Node24 runtime. Do not use the Mac plugin profile, global npm, or assume Ubuntu26's Python3.14 wheels. The model manifest contains download sources, pending archive digests, licenses and fixed GGUF SHA256 values. Download each selected archive only once, inspect its actual extracted layout/LICENSE and record its digest; do not manufacture an expected checksum for mutable GitHub release assets. The config points to extracted files, not remote IDs, and no `from_pretrained` downloader runs here.
-
-Native TTS uses upstream `ggml-org/llama.cpp` **v0.8.0**, commit `8642541b255bfb5dc39cd351a178be09013a55d6`. CPU-only build example (commands for later authorized setup, not performed by preparation):
-
-```sh
-cmake -S /trusted/llama.cpp -B /trusted/llama.cpp/build \
-  -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DGGML_METAL=OFF
-cmake --build /trusted/llama.cpp/build --target llama-tts -j2
-```
-
-Register its absolute executable path in config. Runtime fixes `--device none`, `-ngl 0`, `--no-mmproj-offload`; no GPU is assumed for either talker or codec. The two GGUF files must both be present:
-
-- `Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf`: 1,035,965,280 bytes; SHA256 `8d18c94acb2addd042f97da63c98be144eafa76d0d9495177eab65130cf85129`
-- `mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf`: 446,422,912 bytes; SHA256 `6fd65188839bcd6ecc91b277ad471e22a0edfada4699a0fe82f1165c18cfcce2`
-
-The fixed GGUF snapshot is `ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF@ca27d74bc954b73dadab5b71ca265d87fc861a7c`. Archive/file bytes are **not RSS or a latency benchmark**. The current VM has no proven realtime Qwen result. Full precision Qwen1.7B PyTorch variants are not the selected runtime and exceed this VM's comfortable memory budget. Never keep all four models resident, automatically run light+heavy for comparison, or mask OOM by falling back to an unauthorized cloud API.
-
-## Test coverage / current limits
-
-- `node --test capabilities/speech/runner.test.js` uses a fake child: path boundaries/symlink escape, serialized jobs, missing engine, sanitized failure/recovery. The installer is checked only via syntax and a temporary `--plan` fixture.
-- Not covered: real model loading, intelligibility, latency or `--apply`. Benchmark procedure for after installation approval:
-
-After installation approval, perform one public 5–10 second Chinese input and one short public TTS sentence per selected engine. Record cold load + end-to-end time, a second inference **in the same process** if evaluating warm behavior, peak RSS, output duration, omissions/intelligibility, and RTF (`processing seconds / audio seconds`). Re-launching the CLI is not a warm-model benchmark. `/usr/bin/time -v` can record peak RSS when GNU time is already available. Use the runner's 180-second timeout and bounded inputs; timeout/OOM/incomplete output keeps that heavy option unavailable, not falsely successful. Do not write benchmark speech into the persona's memory.
+`deploy/authority/prepare-speech.mjs` (`ops/` in a release) only creates private directories, a schema-2 configuration with no voices and a model provenance manifest. It installs, downloads and runs nothing. An existing schema-2 config is preserved; a schema-1 config or manifest is refused with `SPEECH_CONFIG_SCHEMA` — move both files aside and re-run (no migration; no production speech config existed when schema 2 was introduced). Default locations: runtime `~/.local/opt/companion/speech-node`, models `base/speech-models`, work and references `base/speech-data`, input `base/media-data`.
 
 ## Explicit private installer (not run during development)
 
-The installer defaults to `--plan`: it validates an existing canonical `companion-world-v1` root and its Authority marker, reports components/estimated disk, and performs **no network request or write**. Missing speech config is reported as `prepared:false`; only `--apply` may invoke the preparation helper. A Linux arm64 or x64 private **Node24** process is required for applying; npm installs the matching `sherpa-onnx-linux-<arch>` native package and the installer requires it. No apt/sudo, system Node replacement, profile edit, service restart, inference, synthetic reference generation or persona reset is performed.
-
 ```sh
-# In the complete production release; this command is still read-only.
 "$HOME/.local/opt/companion/bin/node" /absolute/release/ops/install-speech.mjs --plan --models all
-# Only after the user explicitly authorizes downloads/install/build:
-"$HOME/.local/opt/companion/bin/node" /absolute/release/ops/install-speech.mjs --apply --models light
-# Later, after authorizing the heavy downloads/build:
-"$HOME/.local/opt/companion/bin/node" /absolute/release/ops/install-speech.mjs --apply --models all
-# Optional where huggingface.co is unreachable (e.g. home-agent): fetch the same pinned
-# revisions from the mirror; sizes and sha256 are still checked against the manifest.
-"$HOME/.local/opt/companion/bin/node" /absolute/release/ops/install-speech.mjs --apply --models all --hf-endpoint https://hf-mirror.com
+# Only after the user explicitly authorizes downloads/install/build. On home-agent:
+"$HOME/.local/opt/companion/bin/node" /absolute/release/ops/install-speech.mjs --apply --models all \
+  --model-source modelscope --proxy http://127.0.0.1:7890 --hf-endpoint https://hf-mirror.com \
+  --archive-dir /absolute/dir/with/sherpa-archive
 ```
 
-`--hf-endpoint` accepts only `https://huggingface.co` (default) or `https://hf-mirror.com`. It rewrites only `huggingface.co` download URLs; recorded sources stay the canonical huggingface.co URLs. The upstream model card has no published digest, so a mirrored copy is recorded as observed only.
+- `--plan` (default) validates the canonical `companion-world-v1` root and its Authority marker and performs no network request or write. `--apply` requires Linux arm64/x64 and the private Node 24.
+- `--models asr` installs the private npm runtime (sherpa 2.0.1 + sharp 0.35.5) and the Qwen3-ASR archive; `all` (default) adds the two Qwen3-TTS GGUFs and builds `llama-tts`.
+- `--model-source huggingface|modelscope` (default huggingface) chooses where the GGUFs come from. ModelScope `ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF` serves byte-identical files; the fixed sha256 and sizes below are checked either way, and the manifest keeps the canonical Hugging Face source. The sherpa Qwen3-ASR archive has no confirmed ModelScope path (TODO in the manifest) and comes from GitHub releases, which fail from home-agent even via the proxy (`SSL_ERROR_SYSCALL`).
+- `--hf-endpoint https://hf-mirror.com` rewrites only huggingface.co URLs (GGUFs when the source is huggingface, and the small upstream model card).
+- `--proxy http://host:port` is used for GitHub, npm and git: the installer re-runs itself under `node --use-env-proxy` with `HTTPS_PROXY`, and passes the proxy to npm/git children. ModelScope and hf-mirror are excluded via `NO_PROXY` (they were faster or only worked without the proxy).
+- `--archive-dir <absolute dir>`: a sha256-pinned download whose exact filename is present there (regular file) is copied from it instead of fetched; size and sha256 must still match, otherwise `SPEECH_DOWNLOAD_DIGEST`. Fetch the ASR archive on a machine with GitHub access and copy it over.
+- ASR archive pin (observed on a direct GitHub download, 2026-11-08; upstream publishes no digest): `sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2`, 878,702,423 bytes, SHA256 `393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96`
+- Downloads are cached privately; the model card and license are unpinned and recorded as observed. Tar extraction uses Python `tarfile` with `filter='data'` plus path/type/link preflight. Existing model directories are never overwritten; failed staging directories are left for diagnosis.
+- `all` uses [official CMake 4.4.5](https://github.com/Kitware/CMake/releases/tag/v4.4.5) for the host architecture (sha256 checked against the publisher list), clones only the pinned llama.cpp `v0.8.0` (commit `8642541b255bfb5dc39cd351a178be09013a55d6`), verifies a clean tree, and builds only `llama-tts` CPU-only (`-j2`). Runtime fixes `--device none`, `-ngl 0`, `--no-mmproj-offload`.
+- GGUF snapshot `ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF@ca27d74bc954b73dadab5b71ca265d87fc861a7c`:
+  - `Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf`: 1,035,965,280 bytes; SHA256 `8d18c94acb2addd042f97da63c98be144eafa76d0d9495177eab65130cf85129`
+  - `mmproj-Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf`: 446,422,912 bytes; SHA256 `6fd65188839bcd6ecc91b277ad471e22a0edfada4699a0fe82f1165c18cfcce2`
+- Disk reserves (estimates): 3–4GiB `asr`, 8–12GiB `all`. Metadata records observed digests, npm lock hash and `inferenceVerified:false`; failures print fixed codes only.
 
-`--models light` installs the pinned private npm runtime (sherpa2.0.1 + sharp0.35.5), SenseVoice and Kokoro only; `all` additionally installs Qwen3-ASR int8, the two pinned Qwen3-TTS GGUFs, and builds the native TTS CLI. Default selection is `all`, explicitly shown by the plan. Npm uses its private Node's own CLI with `--ignore-scripts --omit=dev`, fixed public registry, private cache, and no user/global npm config. Its generated lock digest is recorded.
+After installation, register a voice in the console, audition it, and optionally run `ops/benchmark-speech.mjs --run --kind tts|asr [--voice <id>]`. The benchmark synthesizes a fixed public sentence with a registered voice and transcribes it; it reads no human recording besides the registered reference and never writes into persona memory.
 
-Model sources come from the prepared speech manifest and must match the registered public sources/revision. Downloads are cached privately; archive SHA256 values are recorded as **observed**, not fabricated publisher verification. The known GGUF hashes and portable CMake hash are checked strictly. Tar extraction uses Python standard `tarfile` with `filter='data'` plus preflight relative-path/type/link checks; the extracted top-level folder must match the registered package. Archive LICENSE/data files are preserved. Existing model directories are never overwritten: installer-owned receipts can resume; an unknown preexisting directory stops for operator inspection. Failed partial downloads/staging directories are left private for diagnosis, not recursively deleted by guessed paths.
+## Test coverage / current limits
 
-Because the host may lack CMake, `all` uses [official CMake 4.4.5 Linux aarch64 or x86_64](https://github.com/Kitware/CMake/releases/tag/v4.4.5) (chosen by host architecture) in the private runtime only. The archive hashes (aarch64 `301d5063ab259577c1b57ce5490b1aab9ea5c56dc4c822f73499553dab94925f`, x86_64 `ed85135c5a5135b45e50423cb406dea04ca3338da0b8ef3c9ede963559680be0`) were checked against the [publisher checksum list](https://github.com/Kitware/CMake/releases/download/v4.4.5/cmake-4.4.5-SHA-256.txt). It clones only the public pinned llama.cpp tag, verifies the exact commit and clean tracked source, selects Unix Makefiles (no Ninja required), disables CUDA/Vulkan/Metal/OpenSSL, and builds only `llama-tts -j2`. Source and license remain private alongside the build.
-
-Plan disk estimates are **2–3GiB light**, **8–12GiB all**, including retained download cache and native source/build. They are planning reserves, not measured installation sizes or RAM. The script requires at least 3/12GiB currently free before the respective apply. Its private installation metadata records observed digests, component steps, npm lock hash and `inferenceVerified:false`; failures print fixed codes only. No claim is made that a successful compilation yields acceptable Chinese TTS latency or correctness: run the separate synthetic-reference step and small benchmark only after installation and human approval.
+- `runner.test.js` uses a fake child: path boundaries/symlink escape, serialized jobs, the ASR length cap, voice resolution, schema refusal, reference manifest checks, sanitized failure/recovery. The installer is checked via pure helpers (`cmakeFor`, `hfUrl`, `ggufUrl`, `proxyEnv`, `localArchive`) and a prepared-manifest plan fixture.
+- Not covered: real model loading, intelligibility, latency, `--apply`, and the ModelScope/proxy download path on the host.
 
 ## Source evidence
 
-- [Sherpa Node-addon installation / ARM support](https://k2-fsa.github.io/sherpa/onnx/javascript-api/install.html)
-- [Actual SenseVoice class example](https://github.com/k2-fsa/sherpa-onnx/blob/master/nodejs-addon-examples/test_asr_non_streaming_sense_voice.js)
-- [Native offline stream resampling implementation](https://github.com/k2-fsa/sherpa-onnx/blob/master/sherpa-onnx/csrc/offline-stream.cc)
-- [Actual Qwen3-ASR class example](https://github.com/k2-fsa/sherpa-onnx/blob/master/nodejs-addon-examples/test_asr_non_streaming_qwen3_asr.js)
-- [Actual Kokoro class example](https://github.com/k2-fsa/sherpa-onnx/blob/master/nodejs-addon-examples/test_tts_non_streaming_kokoro_zh_en_lexicon.js)
-- [Kokoro bundles](https://k2-fsa.github.io/sherpa/onnx/tts/pretrained_models/kokoro.html)
+- [Sherpa Node-addon installation](https://k2-fsa.github.io/sherpa/onnx/javascript-api/install.html)
+- [Qwen3-ASR class example](https://github.com/k2-fsa/sherpa-onnx/blob/master/nodejs-addon-examples/test_asr_non_streaming_qwen3_asr.js)
+- [Native offline stream resampling](https://github.com/k2-fsa/sherpa-onnx/blob/master/sherpa-onnx/csrc/offline-stream.cc)
 - [Qwen3-ASR int8 files](https://k2-fsa.github.io/sherpa/onnx/qwen3-asr/pretrained.html)
 - [llama.cpp pinned TTS source and completion semantics](https://github.com/ggml-org/llama.cpp/blob/v0.8.0/tools/tts/tts.cpp)
-- [GGUF metadata and immutable snapshot file hashes](https://huggingface.co/api/models/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF/tree/ca27d74bc954b73dadab5b71ca265d87fc861a7c?recursive=true)
+- [GGUF snapshot file hashes](https://huggingface.co/api/models/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF/tree/ca27d74bc954b73dadab5b71ca265d87fc861a7c?recursive=true)
 
-Runtime Apache/MIT licenses are not blanket licenses for every speech weight, voice or phonemizer. Retain each pinned artifact's own notices. In particular, current upstream SenseVoice links a custom FunASR model license; Kokoro model Apache2 does not erase bundled espeak/data terms.
+Runtime Apache/MIT licenses are not blanket licenses for every speech weight or voice. Retain each pinned artifact's own notices. Cloning a real person's voice needs that person's consent regardless of model license.

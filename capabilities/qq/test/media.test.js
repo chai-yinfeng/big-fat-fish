@@ -17,7 +17,7 @@ function fixture(t) {
   const store = new ArtifactStore({ root: path.join(root, 'artifacts') }), observed = [], sent = [], executions = [];
   let tts = 0, nextId = 500;
   const qualities = [];
-  const service = new MediaService({ store, workRoot: path.join(root, 'work'), speech: { transcribe: async () => ({ text: '你好，我回来了', model: 'synthetic-asr' }), synthesize: async ({ outputFile, quality }) => { qualities.push(quality); tts++; fs.writeFileSync(outputFile, wav()); return { model: 'synthetic-tts' }; } }, normalizeImage: async data => ({ data, mime: 'image/gif' }), vision: async () => ({ description: '一张合成测试表情图', model: 'synthetic-vision', derived: true }), search: async () => ({}), fetchPage: async () => ({}) });
+  const service = new MediaService({ store, workRoot: path.join(root, 'work'), speech: { transcribe: async () => ({ text: '你好，我回来了', model: 'synthetic-asr' }), synthesize: async ({ outputFile, voiceProfile }) => { qualities.push(voiceProfile); tts++; fs.writeFileSync(outputFile, wav()); return { model: 'synthetic-tts' }; } }, normalizeImage: async data => ({ data, mime: 'image/gif' }), vision: async () => ({ description: '一张合成测试表情图', model: 'synthetic-vision', derived: true }), search: async () => ({}), fetchPage: async () => ({}) });
   const scope = { entityId: 'entity:test', streamId: 'qq:100:private:200', personId: 'person:owner', audience: 'private', memoryEpoch: 0 };
   const content = { call: input => service.call({ ...scope, streamId: input.streamId, memoryEpoch: input.memoryEpoch }, input) };
   const onebot = { call: async (action, params) => { if (action === 'get_login_info') return { user_id: '100' }; if (action === 'get_record') return { base64: wav().toString('base64') }; if (action === 'get_image') return { base64: 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' }; if (action === 'send_private_msg') { sent.push(params); return { message_id: nextId++ }; } throw Error('unexpected action'); } };
@@ -42,7 +42,7 @@ test('QQ voice becomes derived input, never a fabricated verbatim observation; d
 test('explicit speech creates a record only after synthesis; authorized image attachment gets its own receipt', async t => {
   const f = fixture(t); await f.bridge.connection(true);
   await f.bridge.receive(f.event(2, [{ type: 'text', data: { text: '请用语音告诉我，你在吗' } }]));
-  assert.equal(f.tts(), 1); assert.deepEqual(f.qualities, ['heavy']); assert.equal(f.sent[0].message[0].type, 'record'); assert.match(f.sent[0].message[0].data.file, /^base64:\/\//);
+  assert.equal(f.tts(), 1); assert.deepEqual(f.qualities, [undefined]); assert.equal(f.sent[0].message[0].type, 'record'); assert.match(f.sent[0].message[0].data.file, /^base64:\/\//);
   assert.match(f.observed.at(-1).text, /已发送语音/);
   f.executor.execute = async request => { const image = f.store.records().find(r => r.kind === 'image'); await f.content.call({ action: 'attach', streamId: 'qq:100:private:200', memoryEpoch: 0, requestId: request.requestId, ref: image.id }); return '给你这张图。'; };
   await f.bridge.receive(f.event(3, [{ type: 'text', data: { text: '把这张表情包发回来' } }, { type: 'image', data: { file: 'trusted-image-reference', emoji_id: 'fixture' } }]));

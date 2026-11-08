@@ -36,7 +36,7 @@ test('operator purge removes retired conversation sessions of affected streams o
   media.put({ scope, sourceEventId: 'media-source', kind: 'transcript', mime: 'text/plain', data: Buffer.from('private fixture transcript'), parents: [original.id] });
   const retained = media.put({ scope, sourceEventId: 'other-source', kind: 'image', mime: 'image/png', data: Buffer.from('unrelated fixture image') });
   fs.mkdirSync(path.join(f.base, 'speech-data/reference'), { recursive: true });
-  fs.writeFileSync(path.join(f.base, 'speech-data/reference/default.wav'), 'kokoro synthetic voice');
+  fs.writeFileSync(path.join(f.base, 'speech-data/reference/default.wav'), 'synthetic voice reference');
   const scratch = path.join(f.base, 'speech-data/tts-11111111-1111-1111-1111-111111111111.wav'); fs.writeFileSync(scratch, 'unfinished source speech');
   const layoutFile = path.join(f.base, 'operator/execution-storage.json'), layout = JSON.parse(fs.readFileSync(layoutFile));
   layout.media = { root: 'media-data', workRoot: 'speech-data' }; fs.writeFileSync(layoutFile, JSON.stringify(layout));

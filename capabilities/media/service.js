@@ -30,8 +30,8 @@ const source = value => typeof value === 'string' && value.length > 0 && value.l
 /** Platform-neutral file perception and expression. A generated artifact or an
  * attached reply part is not a delivery receipt and never records an experience. */
 export class MediaService {
-  constructor({ store, speech, vision, search, fetchPage, normalizeImage, workRoot, speechDefaults = () => ({ defaultTtsQuality: 'heavy' }) }) {
-    Object.assign(this, { store, speech, vision, search, fetchPage, normalizeImage, speechDefaults });
+  constructor({ store, speech, vision, search, fetchPage, normalizeImage, workRoot }) {
+    Object.assign(this, { store, speech, vision, search, fetchPage, normalizeImage });
     if (!path.isAbsolute(workRoot)) throw fail('MEDIA_WORK_ROOT');
     fs.mkdirSync(workRoot, { recursive: true, mode: 0o700 });
     if (fs.lstatSync(workRoot).isSymbolicLink()) throw fail('MEDIA_WORK_ROOT');
@@ -58,7 +58,8 @@ export class MediaService {
     if (action === 'transcribe') {
       const original = this.store.read(input.ref, scope);
       if (original.meta.kind !== 'audio') throw fail('MEDIA_KIND_REQUIRED');
-      const result = await this.speech.transcribe({ inputFile: original.file, quality: input.quality || 'light', signal: input.signal });
+      // Qwen3-ASR only; audio over its limit fails with SPEECH_AUDIO_LIMIT (no fallback engine).
+      const result = await this.speech.transcribe({ inputFile: original.file, signal: input.signal });
       if (typeof result.text !== 'string' || !result.text.trim() || result.text.length > 16000) throw fail('MEDIA_TRANSCRIPTION_INVALID');
       const transcript = this.store.put({ scope, sourceEventId: original.meta.sourceEventId, kind: 'transcript', mime: 'text/plain; charset=utf-8', data: Buffer.from(result.text), parents: [original.meta.id] });
       return { text: result.text, ref: transcript.id, sourceRef: original.meta.id, model: result.model, derived: true, isNewEvidence: false, isVerbatimUserText: false };
@@ -76,7 +77,9 @@ export class MediaService {
       if (typeof input.text !== 'string' || !input.text.trim() || [...input.text].length > 120 || !source(input.sourceEventId)) throw fail('MEDIA_SPEECH_INPUT');
       const file = path.join(this.workRoot, 'tts-' + randomUUID() + '.wav');
       try {
-        const result = await this.speech.synthesize({ text: input.text, outputFile: file, quality: input.quality || this.speechDefaults().defaultTtsQuality || 'heavy', voiceProfile: input.voiceProfile || 'default', signal: input.signal });
+        // voiceProfile is an operator-registered id (omitted -> default voice),
+        // resolved by the speech layer from operator config only.
+        const result = await this.speech.synthesize({ text: input.text, outputFile: file, voiceProfile: input.voiceProfile, signal: input.signal });
         if (!fs.existsSync(file) || fs.lstatSync(file).isSymbolicLink() || !fs.statSync(file).isFile() || fs.statSync(file).size > this.store.maxBytes) throw fail('MEDIA_SYNTHESIS_INVALID');
         const data = fs.readFileSync(file), durationMs = wavDuration(data);
         return { ...this.store.put({ scope, sourceEventId: input.sourceEventId, kind: 'audio', mime: 'audio/wav', data, durationMs }), model: result.model, generated: true, delivered: false };

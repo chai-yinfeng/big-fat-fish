@@ -1,25 +1,29 @@
 const fail = code => Object.assign(new Error(code), { code });
+const VOICE_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const validProfile = p => VOICE_ID.test(p?.id) && typeof p.label === 'string' && typeof p.engine === 'string' && typeof p.referenceLanguage === 'string'
+  && ['private', 'public'].includes(p.usageScope) && ['useReferenceText', 'auditioned', 'hasReference'].every(k => typeof p[k] === 'boolean');
 export function validRuntime(value) {
-  const s = value?.speech;
-  return typeof s?.configurationRevision === 'string' && ['light', 'heavy'].includes(s.defaultTtsQuality)
-    && Number.isInteger(s.numThreads) && Number.isInteger(s.maxTextChars)
-    && ['asr:light', 'asr:heavy', 'tts:light', 'tts:heavy'].every(key => typeof s.models?.[key]?.model === 'string'
-      && ['componentsPresent', 'enabled', 'verified'].every(k => typeof s.models[key][k] === 'boolean'))
-    && value.voice?.profileId === 'default' && ['kokoro-local', 'operator-authorized'].includes(value.voice.origin)
-    && typeof value.voice.hasReference === 'boolean' && (value.voice.cleanupPending === undefined || typeof value.voice.cleanupPending === 'boolean')
+  const s = value?.speech, v = value?.voices;
+  return typeof s?.configurationRevision === 'string' && Number.isInteger(s.numThreads) && Number.isInteger(s.maxTextChars)
+    && s.models && typeof s.models === 'object' && Object.values(s.models).every(m => typeof m?.model === 'string'
+      && ['componentsPresent', 'enabled', 'verified'].every(k => typeof m[k] === 'boolean'))
+    && Array.isArray(v?.profiles) && v.profiles.every(validProfile) && (v.defaultVoice === null || v.profiles.some(p => p.id === v.defaultVoice))
+    && typeof v.cleanupPending === 'boolean'
     && value.imageGeneration?.configured === false && value.imageGeneration.status === 'not_configured';
 }
 export function speechPayload(revision, draft) {
   const numThreads = Number(draft.numThreads), maxTextChars = Number(draft.maxTextChars);
-  if (typeof revision !== 'string' || !revision || !['light', 'heavy'].includes(draft.defaultTtsQuality)
-    || !Number.isInteger(numThreads) || numThreads < 1 || numThreads > 2 || !Number.isInteger(maxTextChars) || maxTextChars < 1 || maxTextChars > 120) throw fail('invalid_speech_parameters');
-  return { expectedRevision: revision, defaultTtsQuality: draft.defaultTtsQuality, numThreads, maxTextChars };
+  if (typeof revision !== 'string' || !revision
+    || !Number.isInteger(numThreads) || numThreads < 1 || numThreads > 16 || !Number.isInteger(maxTextChars) || maxTextChars < 1 || maxTextChars > 120) throw fail('invalid_speech_parameters');
+  return { expectedRevision: revision, numThreads, maxTextChars };
 }
-export function referencePayload(revision, audioBase64, transcript, authorized) {
+export function referencePayload(revision, audioBase64, transcript, authorized, voice) {
   if (!authorized) throw fail('reference_authorization_required');
   if (typeof transcript !== 'string' || !transcript.trim() || [...transcript.trim()].length > 1000) throw fail('reference_transcript_required');
+  const label = typeof voice?.label === 'string' ? voice.label.trim() : '';
+  if (!VOICE_ID.test(voice?.voiceId || '') || !label || [...label].length > 64 || !/^[a-z]{2,3}$/.test(voice.language || '') || !['private', 'public'].includes(voice.usageScope)) throw fail('invalid_voice_fields');
   if (typeof revision !== 'string' || !revision || typeof audioBase64 !== 'string' || !audioBase64) throw fail('invalid_reference_audio');
-  return { expectedRevision: revision, audioBase64, transcript: transcript.trim(), authorized: true };
+  return { expectedRevision: revision, voiceId: voice.voiceId, label, language: voice.language, usageScope: voice.usageScope, audioBase64, transcript: transcript.trim(), authorized: true };
 }
 export function inspectReferenceWav(bytes) {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength < 44 || bytes.byteLength > 2 * 1024 * 1024) throw fail('invalid_reference_audio');

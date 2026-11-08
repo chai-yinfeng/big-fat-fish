@@ -49,25 +49,25 @@ All responses use `{ok:true,value}` / safe error envelopes. Standalone loads GET
 ```js
 {
   speech: {
-    configurationRevision: 'opaque revision',
-    defaultTtsQuality: 'light' /* or heavy */, numThreads: 2, maxTextChars: 100,
-    models: { 'asr:light': {model,componentsPresent,enabled,verified}, /* four known keys */ }
+    configurationRevision: 'opaque revision', numThreads: 8, maxTextChars: 100,
+    models: { 'asr:default': {model,componentsPresent,enabled,verified}, 'tts:llama-tts': {...} }
   },
-  voice: {
-    profileId:'default', origin:'kokoro-local' /* or operator-authorized */,
-    hasReference:true, cleanupPending:false,
-    // Optional truthful backend limitations:
+  voices: {
+    defaultVoice: 'actress' /* or null */,
+    profiles: [{ id, label, engine, referenceLanguage, usageScope /* private|public */, useReferenceText:false, auditioned, hasReference }],
+    cleanupPending:false,
     referenceConditioning:'speaker-file-only', transcriptUsedForSynthesis:false
   },
   imageGeneration:{configured:false,status:'not_configured'}
 }
 ```
 
-- POST/speech `{expectedRevision,defaultTtsQuality,numThreads,maxTextChars}`; UI1–4threads/1–120chars, save only paused. Server independently enforces limits and revision. Re-read/runtime after success, never invent a state from the draft.
-- POST/voice/reference `{expectedRevision,audioBase64,transcript,authorized:true}`; transcript required, client bound≤2000chars, rights checkbox explicitly authorizes local long-term reference storage. Paused only. Existing operator reference must be explicitly removed first; no silent replacement.
-- POST/voice/test `{quality:'heavy'}`; paused only, fixed public sentence, local only, no QQ send/resume/cloud. UI timeout240seconds. Result `{audioBase64,mime:'audio/wav',durationMs,model}`; optional backend limitation fields do not become quality certification.
-- POST/voice/reference/remove `{expectedRevision,confirmed:true}` after a separate UI confirmation. Only the operator-entered reference is removed and the retained synthetic fallback restored, not other user media/history/weights. If `cleanupPending:true`, explain that fallback already occurred but physical cleanup is unfinished, allow explicit retry, and prevent new reference upload.
-- The pinned CPU runner is speaker-file-only. Qwen Base supports cloning, but this adapter does not feed the transcript into full ICL continuation. The transcript registers provenance. UI explicitly does not promise exact cloning or naturalness from a successful test.
+- POST/speech `{expectedRevision,numThreads,maxTextChars}`; UI 1–16 threads/1–120 chars, save only paused. Server independently enforces limits and revision. Re-read/runtime after success, never invent a state from the draft.
+- POST/voice/reference `{expectedRevision,voiceId,label,language,usageScope,audioBase64,transcript,authorized:true}` registers a new voice; transcript required (≤1000 chars, provenance only), rights checkbox explicitly authorizes local long-term reference storage. Paused only. An existing voice id is rejected; no silent replacement. The first voice becomes the default.
+- POST/voice/default `{expectedRevision,voiceId}` sets the default voice.
+- POST/voice/test `{voiceId}`; paused only, fixed public sentence, local only, no QQ send/resume/cloud. UI timeout 240 seconds. Result `{audioBase64,mime:'audio/wav',durationMs,model,voiceId}`; optional backend limitation fields do not become quality certification.
+- POST/voice/reference/remove `{expectedRevision,voiceId,confirmed:true}` after a separate UI confirmation. Only that voice and its operator-entered reference are removed, not other user media/history/weights; removing the default leaves no default. If `cleanupPending:true`, physical cleanup is unfinished: allow explicit retry (`voiceId` omitted) and prevent new uploads.
+- The pinned CPU runner is speaker-file-only. Qwen Base supports cloning, but this adapter does not feed the transcript into full ICL continuation. UI explicitly does not promise exact cloning or naturalness from a successful test.
 - Image generation is explicitly not configured. Understanding/sending images is not image generation; no fake enable/generate button exists.
 
 ## Test coverage / current limits

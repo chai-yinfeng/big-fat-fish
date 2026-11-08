@@ -19,11 +19,12 @@ test('standalone assets contain their own runtime and never load DSH boot, slots
 test('standalone uses its explicit same-origin loopback API and consumes only the access fragment', async () => {
   const writes = [], replaced = [], token = 's'.repeat(43), page = { protocol: 'http:', hostname: '127.0.0.1', port: '19082', pathname: '/', search: '', hash: '#companion-operator=' + token };
   assert.equal(consumeOperatorFragment({ location: page, history: { state: null, replaceState: (...args) => replaced.push(args) }, storage: { setItem: (...args) => writes.push(args) } }), true);
-  const payload = speechPayload('revision-one', { defaultTtsQuality: 'heavy', numThreads: '2', maxTextChars: '100' });
+  const payload = speechPayload('revision-one', { numThreads: '8', maxTextChars: '100' });
   await operatorRequest({ location: page, sameOrigin: true, token, path: '/speech', payload, fetchImpl: async (url, options) => { assert.equal(url, 'http://127.0.0.1:19082/speech'); assert.equal(options.mode, 'same-origin'); assert.equal(options.credentials, 'omit'); assert.deepEqual(JSON.parse(options.body), payload); return response({}); } });
   assert.deepEqual(writes, [[TOKEN_KEY, token]]); assert.deepEqual(replaced, [[null, '', '/']]);
   await assert.rejects(operatorRequest({ location: { ...page, hostname: 'untrusted.example' }, sameOrigin: true, token, path: '/runtime', fetchImpl: () => assert.fail() }), /loopback_required/);
-  assert.throws(() => speechPayload('r', { defaultTtsQuality: 'heavy', numThreads: 0, maxTextChars: 100 }), /invalid_speech_parameters/);
+  assert.throws(() => speechPayload('r', { numThreads: 0, maxTextChars: 100 }), /invalid_speech_parameters/); assert.throws(() => speechPayload('r', { numThreads: 17, maxTextChars: 100 }), /invalid_speech_parameters/);
+  assert.throws(() => referencePayload('r', 'YWJj', 'text', true, { voiceId: '../x', label: 'x', language: 'ja', usageScope: 'private' }), /invalid_voice_fields/);
   assert.throws(() => referencePayload('r', 'YWJj', 'text', false), /reference_authorization_required/);
   assert.equal(inspectReferenceWav(wav()).durationMs, 3000);
   assert.throws(() => inspectReferenceWav(new Uint8Array([1, 2, 3])), /invalid_reference_audio/);
@@ -31,37 +32,39 @@ test('standalone uses its explicit same-origin loopback API and consumes only th
 
 test('standalone reference and speech actions are explicit, ephemeral and paused; audio URLs are revoked', async () => {
   const world = { world: { paused: true, revision: 1 }, persona: { revision: 1, value: {} }, counts: { facts: 0, notes: 0, experiences: 0, pending: 0 }, channels: [], bindings: [], model: { provider: 'deepseek', model: 'deepseek-flash', configured: true, status: 'configured' } };
-  const runtime = { speech: { configurationRevision: 'runtime-r1', defaultTtsQuality: 'heavy', numThreads: 2, maxTextChars: 100, models: Object.fromEntries(['asr:light', 'asr:heavy', 'tts:light', 'tts:heavy'].map(key => [key, { model: 'test-' + key, componentsPresent: true, enabled: true, verified: true }])) }, voice: { profileId: 'default', origin: 'kokoro-local', hasReference: true, referenceConditioning: 'speaker-file-only', transcriptUsedForSynthesis: false }, imageGeneration: { configured: false, status: 'not_configured' } };
-  const states = ['operator-test', '', world, {}, 'runtime', false, '', '', 'deepseek-flash', null, null, null, runtime, { defaultTtsQuality: 'heavy', numThreads: 2, maxTextChars: 100 }];
+  const profile = { id: 'actress', label: 'Synthetic actress', engine: 'llama-tts', referenceLanguage: 'ja', usageScope: 'private', useReferenceText: false, auditioned: false, hasReference: true };
+  const runtime = { speech: { configurationRevision: 'runtime-r1', numThreads: 8, maxTextChars: 100, models: Object.fromEntries(['asr:default', 'asr:fast', 'tts:llama-tts'].map(key => [key, { model: 'test-' + key, componentsPresent: true, enabled: true, verified: true }])) }, voices: { defaultVoice: 'actress', profiles: [profile, { ...profile, id: 'synthetic', label: 'Synthetic public', usageScope: 'public' }], cleanupPending: false, referenceConditioning: 'speaker-file-only', transcriptUsedForSynthesis: false }, imageGeneration: { configured: false, status: 'not_configured' } };
+  const states = ['operator-test', '', world, {}, 'runtime', false, '', '', 'deepseek-flash', null, null, null, runtime, { numThreads: 8, maxTextChars: 100 }];
   const refs = [], calls = [], storageWrites = [], revoked = []; let stateIndex = 0, refIndex = 0, component, loaded, urlCount = 0;
   const React = { Fragment: 'fragment', useState: initial => { const i = stateIndex++; if (!(i in states)) states[i] = typeof initial === 'function' ? initial() : initial; return [states[i], value => { states[i] = value; }]; }, useRef: initial => refs[refIndex++] ||= { current: initial }, useEffect() {}, createElement: (type, props, ...children) => { if ((type === 'input' || type === 'textarea') && props.ref) props.ref.current ||= { value: '' }; return { type, props: props || {}, children: children.flat(Infinity) }; } };
   const storage = { getItem: () => 'operator-test', setItem: (...args) => storageWrites.push(args), removeItem() {} };
   const bytes = wav();
   loaded = await loadConsole({ window: { location: { protocol: 'http:', hostname: '127.0.0.1', port: '19082', hash: '' }, sessionStorage: storage }, sessionStorage: storage, AbortController, AbortSignal, setTimeout, clearTimeout, Blob, atob, btoa, URL: { createObjectURL: () => 'blob:test-' + (++urlCount), revokeObjectURL: url => revoked.push(url) },
-    fetch: async (url, options) => { const payload = options.body && JSON.parse(options.body); calls.push({ url, payload }); if (url.endsWith('/voice/reference')) { assert.equal(refs[6].current.value, ''); assert.equal(refs[7].current.value, ''); assert.equal(refs[8].current.checked, false); } return response(url.endsWith('/world') ? world : url.endsWith('/voice/test') ? { audioBase64: bytes.toString('base64'), mime: 'audio/wav', durationMs: 3000, model: 'test-heavy' } : runtime); } });
+    fetch: async (url, options) => { const payload = options.body && JSON.parse(options.body); calls.push({ url, payload }); if (url.endsWith('/voice/reference')) { assert.equal(refs[6].current.value, ''); assert.equal(refs[7].current.value, ''); assert.equal(refs[8].current.checked, false); } return response(url.endsWith('/world') ? world : url.endsWith('/voice/test') ? { audioBase64: bytes.toString('base64'), mime: 'audio/wav', durationMs: 3000, model: 'test-tts' } : runtime); } });
   component = loaded.factory(() => React).WorldConsole;
   const render = () => { stateIndex = 0; refIndex = 0; return component({ t: key => key, standalone: true }); };
   const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...tree.children.flatMap(nodes)];
   const button = key => nodes(render()).find(n => n.type === 'button' && n.children.includes(key));
+  const buttons = key => nodes(render()).filter(n => n.type === 'button' && n.children.includes(key));
   assert.equal(calls.length, 0); assert.match(JSON.stringify(render()), /speechPanel.imageUnavailable/);
   states[4] = 'channels'; assert.doesNotMatch(JSON.stringify(render()), /sessionTitle/); states[4] = 'runtime';
   const saveForm = nodes(render()).find(n => n.type === 'form' && n.children.some(c => c?.type === 'button' && c.children.includes('speechPanel.save')));
   saveForm.props.onSubmit({ preventDefault() {} }); await new Promise(setImmediate);
-  assert.deepEqual(calls[0], { url: 'http://127.0.0.1:19082/speech', payload: { expectedRevision: 'runtime-r1', defaultTtsQuality: 'heavy', numThreads: 2, maxTextChars: 100 } });
-  render(); refs[6].current = { value: 'ignored-file-name.wav', files: [{ size: bytes.length, name: 'must-not-send-file-name.wav', arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length) }] }; refs[7].current.value = 'synthetic exact transcript'; refs[8].current.checked = true;
+  assert.deepEqual(calls[0], { url: 'http://127.0.0.1:19082/speech', payload: { expectedRevision: 'runtime-r1', numThreads: 8, maxTextChars: 100 } });
+  render(); refs[6].current = { value: 'ignored-file-name.wav', files: [{ size: bytes.length, name: 'must-not-send-file-name.wav', arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length) }] }; refs[7].current.value = 'synthetic exact transcript'; refs[8].current.checked = true; states[16] = { voiceId: 'new-voice', label: 'New voice', language: 'ja', usageScope: 'private' };
   const upload = nodes(render()).find(n => n.type === 'form' && n.children.some(c => c?.type === 'button' && c.children.includes('speechPanel.upload')));
   upload.props.onSubmit({ preventDefault() {} }); await new Promise(setImmediate);
   const submitted = calls.find(c => c.url.endsWith('/voice/reference'));
-  assert.deepEqual(Object.keys(submitted.payload).sort(), ['audioBase64', 'authorized', 'expectedRevision', 'transcript']); assert.equal(submitted.payload.authorized, true); assert.equal(submitted.payload.transcript, 'synthetic exact transcript');
+  assert.deepEqual(Object.keys(submitted.payload).sort(), ['audioBase64', 'authorized', 'expectedRevision', 'label', 'language', 'transcript', 'usageScope', 'voiceId']); assert.equal(submitted.payload.voiceId, 'new-voice'); assert.equal(submitted.payload.authorized, true); assert.equal(submitted.payload.transcript, 'synthetic exact transcript');
   assert.equal(storageWrites.length, 0); assert.doesNotMatch(JSON.stringify(render(), (key, value) => key === 'ref' ? undefined : value), /synthetic exact transcript|must-not-send-file-name/);
-  await button('speechPanel.test').props.onClick(); let audio = nodes(render()).find(n => n.type === 'audio'); assert.equal(audio.props.autoPlay, undefined); assert.equal(audio.props.preload, 'none'); assert.equal(audio.props.src, 'blob:test-1');
+  await buttons('speechPanel.test')[1].props.onClick(); assert.deepEqual(calls.at(-1).payload, { voiceId: 'synthetic' }); let audio = nodes(render()).find(n => n.type === 'audio'); assert.equal(audio.props.autoPlay, undefined); assert.equal(audio.props.preload, 'none'); assert.equal(audio.props.src, 'blob:test-1');
   await button('speechPanel.test').props.onClick(); assert.deepEqual(revoked, ['blob:test-1']);
-  states[12] = { ...runtime, voice: { ...runtime.voice, origin: 'operator-authorized' } };
+  await button('speechPanel.makeDefault').props.onClick(); assert.deepEqual(calls.find(c => c.url.endsWith('/voice/default')).payload, { expectedRevision: 'runtime-r1', voiceId: 'synthetic' });
   button('speechPanel.remove').props.onClick(); assert.equal(calls.some(c => c.url.endsWith('/voice/reference/remove')), false);
   assert.ok(button('speechPanel.removeConfirm'));
   button('discard').props.onClick(); assert.equal(calls.some(c => c.url.endsWith('/voice/reference/remove')), false);
-  states[12] = { ...runtime, voice: { ...runtime.voice, cleanupPending: true } };
+  states[12] = { ...runtime, voices: { ...runtime.voices, cleanupPending: true } };
   assert.ok(button('speechPanel.retryCleanup')); assert.equal(button('speechPanel.upload'), undefined); assert.match(JSON.stringify(render()), /speechPanel.cleanupPending/);
   button('logout').props.onClick(); assert.deepEqual(revoked, ['blob:test-1', 'blob:test-2']);
-  states[0] = 'operator-test'; states[2] = { ...world, world: { ...world.world, paused: false } }; states[12] = runtime; states[13] = { ...runtime.speech }; assert.equal(button('speechPanel.test').props.disabled, true);
+  states[0] = 'operator-test'; states[2] = { ...world, world: { ...world.world, paused: false } }; states[12] = runtime; states[13] = { ...runtime.speech }; assert.ok(buttons('speechPanel.test').every(b => b.props.disabled === true));
 });

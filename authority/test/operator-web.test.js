@@ -23,9 +23,11 @@ test('standalone shell is public-only static; runtime controls require operator,
   assert.equal((await call('GET', '/world', undefined, false)).status, 401); assert.equal((await call('GET', '/runtime', undefined, false)).status, 401);
   assert.notEqual((await call('GET', '/../operator/console.token', undefined, false)).status, 200);
   assert.equal((await call('GET', '/runtime')).status, 200); assert.equal(operation.action, 'status');
-  const settings = { expectedRevision: 'synthetic', defaultTtsQuality: 'heavy', numThreads: 2, maxTextChars: 100 };
+  const settings = { expectedRevision: 'synthetic', numThreads: 8, maxTextChars: 100 };
   assert.equal((await call('POST', '/speech', { ...settings, worldRevision: 999 })).status, 400);
   assert.equal((await call('POST', '/speech', settings)).status, 200); assert.equal(operation.action, 'configure'); assert.equal(operation.input.worldRevision, authority.worldStatus().revision);
+  assert.equal((await call('POST', '/voice/default', { expectedRevision: 'synthetic', voiceId: 'synthetic-voice' })).status, 200); assert.equal(operation.action, 'setDefaultVoice');
+  assert.equal((await call('POST', '/voice/default', { expectedRevision: 'synthetic', voiceId: 'synthetic-voice', referencePath: '/untrusted' })).status, 400);
   authority.setWorldPaused({ paused: false, expectedRevision: authority.worldStatus().revision });
-  assert.equal((await call('POST', '/voice/test', { quality: 'heavy' })).status, 409);
+  assert.equal((await call('POST', '/voice/test', { voiceId: 'synthetic-voice' })).status, 409);
 });
