@@ -8,6 +8,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import signal
 import socket
@@ -150,7 +151,7 @@ def main():
         # production launcher, FD validation/closure and exec environment run too.
         synthetic = root / 'release/synthetic.py'
         synthetic.write_text('import sys\nCONFIG=' + repr(config) + '\nCONFIG["role"]="authority" if "--config" in sys.argv else "capability"\n' + PAYLOAD)
-        fake_node = root / 'runtime/node-v24.22.2-linux-arm64/bin/node'
+        fake_node = root / ('runtime/node-v24.22.2-linux-' + {'aarch64': 'arm64', 'x86_64': 'x64'}[platform.machine()] + '/bin/node')
         fake_node.parent.mkdir(parents=True)
         fake_node.write_text('#!/bin/sh\nexec /usr/bin/python3 /opt/companion/release/synthetic.py "$@"\n')
         fake_node.chmod(0o700)

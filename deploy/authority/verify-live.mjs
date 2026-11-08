@@ -88,7 +88,7 @@ function physical() {
     assert.match(group, /^\/user.slice\//);
     const pids = fs.readFileSync('/sys/fs/cgroup' + group + '/cgroup.procs', 'utf8').trim().split(/\s+/).filter(Boolean);
     // Node 24 reports comm=MainThread on this kernel; verify the pinned executable instead.
-    const nodes = pids.filter(pid => { try { return fs.readlinkSync(`/proc/${pid}/exe`) === '/opt/companion/runtime/node-v24.22.2-linux-arm64/bin/node'; } catch { return false; } });
+    const nodes = pids.filter(pid => { try { return fs.readlinkSync(`/proc/${pid}/exe`) === `/opt/companion/runtime/node-v24.22.2-linux-${process.arch}/bin/node`; } catch { return false; } });
     assert.ok(nodes.length > 0);
     for (const pid of nodes) {
       const root = `/proc/${pid}/root`;

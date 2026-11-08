@@ -1,2 +1,4 @@
 #!/bin/sh
-exec /opt/companion/runtime/node-v24.22.2-linux-arm64/bin/node /opt/companion/runtime/dsh-0.2.1-rc.3/node_modules/pnpm/bin/pnpm.cjs "$@"
+case "$(uname -m)" in aarch64) arch=arm64 ;; x86_64) arch=x64 ;; *) echo "unsupported machine: $(uname -m)" >&2; exit 1 ;; esac
+NODE_HOME=/opt/companion/runtime/node-v24.22.2-linux-$arch
+exec "$NODE_HOME"/bin/node /opt/companion/runtime/dsh-0.2.1-rc.3/node_modules/pnpm/bin/pnpm.cjs "$@"
