@@ -54,8 +54,11 @@ UI 可单独 node --run build:console（输出 console/dist；没有 dev/watch/H
 生产主机为 home-agent（Beelink SER8，x86_64，Ubuntu 24.04，经 Tailscale 的 SSH 别名
 `home-agent`）。Mac 辅助脚本默认连它，可用环境变量 `COMPANION_HOST=<ssh 别名>` 覆盖。
 旧的 arm64 VM（myvm）已退为旧环境、待退役，不再作为发布目标。home-agent 上全新初始化
-世界，不安装 DSH；该主机无法直连 huggingface.co（语音安装用 `--hf-endpoint
-https://hf-mirror.com`），Docker Hub 只能经本机代理 127.0.0.1:7890。发布与安装工具按
+世界，不安装 DSH；该主机无法直连 huggingface.co，Docker Hub 只能经本机代理 127.0.0.1:7890。
+语音安装在该主机上建议：`ops/install-speech.mjs --apply --models all --model-source modelscope
+--proxy http://127.0.0.1:7890 --hf-endpoint https://hf-mirror.com`（GGUF 走 ModelScope 直连并校验
+固定 sha256；GitHub 资源、npm 和 git clone 走代理；只有小型模型卡走 hf-mirror）。sherpa ASR 压缩包
+暂只有 GitHub 来源，曾经代理返回 504，失败时需人工排查。安装后在控制台“音色”中登记参考录音。发布与安装工具按
 `process.arch` / `uname -m` 在 arm64 与 x64 之间选择私有 Node、CMake、sherpa 原生包和
 NapCat 平台。
 home-agent 网络问题一律先走本机代理 `http://127.0.0.1:7890`（git/curl/pip/npm/Docker；PyPI 可用清华镜像），交给用户的联网命令须提示加代理，详见 AGENTS.md。
@@ -110,6 +113,8 @@ NapCat WebUI 6099 / OneBot WS 3001（沿用旧记录，未在新布局下复核�
 - QQ：扫码后只在暂停且已登录时绑定本人发送号（须与机器人号不同）。当前仅本人私聊，
   不开群、广播或自动加好友。
 - 语音识别在本地，但转写会进入 DeepSeek 对话，不是全本地对话。
+- 音色：暂停后在“音色”中上传参考 WAV 登记（ID、名称、参考语言、使用范围），可设默认、试听、移除。
+  “仅私聊”音色（真人录音）不会用于共享对话；没有默认音色时语音请求改回文字。
 - 暂停：冻结世界、拒绝新模型/记忆效果、取消在途请求；不补算停机期间、不补发消息。
   已交给供应商/平台的请求不可撤回，仍可能计费。恢复须用户明确操作。
 
