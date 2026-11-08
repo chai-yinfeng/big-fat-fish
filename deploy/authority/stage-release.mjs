@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Builds a release from a clean, published commit, packs a deterministic tarball
-// and uploads it to the VM agent inbox. It never deploys: the human runs
-// companion-deploy as root on the VM. Usage:
+// and uploads it to the production host's agent inbox (COMPANION_HOST, default
+// home-agent). It never deploys: the human runs companion-deploy as root there. Usage:
 //   node deploy/authority/stage-release.mjs [--no-upload [--allow-unpublished]]
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,8 +9,8 @@ import zlib from 'node:zlib';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { PRODUCTION_HOST as HOST } from './companion-sudo.mjs';
 
-const HOST = 'myvm';
 const INBOX = 'releases';
 const project = fileURLToPath(new URL('../../', import.meta.url));
 

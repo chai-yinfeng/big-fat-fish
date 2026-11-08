@@ -4,7 +4,10 @@
 import { spawn } from 'node:child_process';
 
 export const WORLD = '/home/companion/.local/share/companion-world-v1';
-export const SUDO_PROMPT = '[sudo] myvm password for your SSH user (input hidden): ';
+/** SSH alias of the production host; override with COMPANION_HOST. */
+export const PRODUCTION_HOST = process.env.COMPANION_HOST || 'home-agent';
+if (!/^[A-Za-z0-9][A-Za-z0-9_.@-]*$/.test(PRODUCTION_HOST)) throw Error('INVALID_SSH_HOST');
+export const SUDO_PROMPT = '[sudo] production host password for your SSH user (input hidden): ';
 const BEGIN = '@@companion-file@@', END = '@@companion-end@@';
 
 /** Remote command printing each file between markers, so sudo noise cannot mix in. */
@@ -35,7 +38,7 @@ export function failureCode(status, output) {
 /** Upper-case error codes are ours and safe to print; anything else is generic. */
 export const errorCode = error => /^[A-Z][A-Z0-9_]+$/.test(error?.message || '') ? error.message : 'UNEXPECTED_ERROR';
 
-export function readCompanionFiles(files, { host = 'myvm', spawnImpl = spawn } = {}) {
+export function readCompanionFiles(files, { host = PRODUCTION_HOST, spawnImpl = spawn } = {}) {
   const command = sudoReadCommand(files);
   return new Promise((resolve, reject) => {
     const child = spawnImpl('ssh', ['-t', host, command], { stdio: ['inherit', 'pipe', 'inherit'] });

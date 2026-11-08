@@ -2,11 +2,11 @@
 // Operator machine only. Keep this process alive while scanning in the OS browser.
 import { spawn, execFileSync } from 'node:child_process';
 import net from 'node:net';
-import { WORLD, readCompanionFile, errorCode, webuiToken } from '../authority/companion-sudo.mjs';
+import { WORLD, PRODUCTION_HOST, readCompanionFile, errorCode, webuiToken } from '../authority/companion-sudo.mjs';
 
 const WEBUI_CONFIG = WORLD + '/qq-runtime/data/config/webui.json';
 
-const host = process.argv[2] || 'myvm';
+const host = process.argv[2] || PRODUCTION_HOST;
 const openOnly = process.argv[3] === '--open-only';
 let tunnel;
 let stopping = false;

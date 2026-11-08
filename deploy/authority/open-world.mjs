@@ -2,7 +2,7 @@
 // Independent operator console. No DSH page, SDK access token or boot payload.
 import { spawn, execFileSync } from 'node:child_process';
 import net from 'node:net';
-import { WORLD, readCompanionFile, errorCode } from './companion-sudo.mjs';
+import { WORLD, PRODUCTION_HOST, readCompanionFile, errorCode } from './companion-sudo.mjs';
 // Production world belongs to the dedicated `companion` user (home 0700); the
 // SSH user reads it only through sudo, prompted on this terminal.
 const COMPANION_CONSOLE_TOKEN = WORLD + '/operator/console.token';
@@ -14,7 +14,7 @@ const portReady = () => new Promise(resolve => { const socket = net.connect(3082
 try {
   if (!openOnly) {
     if (await portReady()) throw Error('FORWARD_PORT_OCCUPIED');
-    tunnel = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=30', '-N', '-L', '127.0.0.1:3082:127.0.0.1:3082', 'myvm'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    tunnel = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ExitOnForwardFailure=yes', '-o', 'ServerAliveInterval=30', '-N', '-L', '127.0.0.1:3082:127.0.0.1:3082', PRODUCTION_HOST], { stdio: ['ignore', 'ignore', 'pipe'] });
     tunnel.on('error', () => stop(1));
     tunnel.on('exit', code => { if (!stopping) { process.stderr.write('World console SSH forwarding stopped.\n'); stop(code || 1); } });
     tunnel.stderr.resume();
