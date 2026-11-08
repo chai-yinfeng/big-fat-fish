@@ -39,7 +39,19 @@ export function createContentOperator({ speechConfigFile, worldStatus, speechFac
       let hasReference = false; try { trustedReference(config, p); hasReference = true; } catch {}
       return { id: p.id, label: p.label, engine: p.engine, referenceLanguage: p.referenceLanguage, usageScope: p.usageScope, useReferenceText: p.useReferenceText, auditioned: p.auditioned === true, hasReference };
     });
-    return { speech: { configurationRevision: revision, numThreads: config.numThreads, maxTextChars: config.maxTextChars, models }, voices: { defaultVoice: config.defaultVoice, profiles, cleanupPending: config.pendingReferenceCleanup !== undefined, referenceConditioning: 'speaker-file-only', transcriptUsedForSynthesis: false }, imageGeneration: { configured: false, status: 'not_configured' } };
+    return { speech: { status: 'ready', configurationRevision: revision, numThreads: config.numThreads, maxTextChars: config.maxTextChars, models }, voices: { defaultVoice: config.defaultVoice, profiles, cleanupPending: config.pendingReferenceCleanup !== undefined, referenceConditioning: 'speaker-file-only', transcriptUsedForSynthesis: false }, imageGeneration: { configured: false, status: 'not_configured' } };
+  }
+  /** Status degrades instead of failing: a missing, schema-1 or invalid config is reported by a stable reason code. */
+  function unavailable() {
+    let status = 'config_invalid';
+    try { fs.lstatSync(speechConfigFile); } catch (error) { if (error.code === 'ENOENT') status = 'not_configured'; }
+    if (status === 'config_invalid') { try { loadSpeechConfig(speechConfigFile); } catch (error) { if (error.code === 'SPEECH_CONFIG_SCHEMA') status = 'config_schema_outdated'; } }
+    return { speech: { status }, voices: null, imageGeneration: { configured: false, status: 'not_configured' } };
+  }
+  function statusView() {
+    let current;
+    try { current = read(); } catch { return unavailable(); }
+    return projected(current);
   }
   async function paused(input, signal) {
     if (signal?.aborted) throw fail('CONTENT_OPERATOR_CANCELLED', 409);
@@ -92,7 +104,7 @@ export function createContentOperator({ speechConfigFile, worldStatus, speechFac
     if (!model?.componentsPresent || !model.enabled) throw fail('CONTENT_OPERATOR_MODEL_UNAVAILABLE', 503);
   }
   async function call(input, { signal } = {}) {
-    if (input?.action === 'status') { closed(input, ['action', 'worldRevision'], ['action']); return projected(read()); }
+    if (input?.action === 'status') { closed(input, ['action', 'worldRevision'], ['action']); return statusView(); }
     if (busy) throw fail('CONTENT_OPERATOR_BUSY', 409);
     busy = true;
     try {

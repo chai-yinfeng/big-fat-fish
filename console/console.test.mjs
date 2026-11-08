@@ -221,3 +221,11 @@ test('bilingual resource metadata has matching keys and flattens to strings', as
     assert.deepEqual(Object.keys(flattenDictionary(en)).sort(), Object.keys(flattenDictionary(zh)).sort());
   }
 });
+test('uppercase Authority error codes map to localized console codes without echoing messages', async () => {
+  const fail = (code, status) => operatorRequest({ location, token: 'test-only', path: '/persona', payload: { patch: {} }, fetchImpl: async () => response({ ok: false, error: { code, message: 'reflected test-only' } }, status) });
+  for (const [code, mapped] of [['VALIDATION_ERROR', 'validation_error'], ['INVALID_REQUEST', 'invalid_request'], ['BODY_TOO_LARGE', 'body_too_large'], ['OPERATION_FAILED', 'operation_failed'], ['UNKNOWN_THING', 'request_failed'], ['TOSTRING', 'request_failed']]) {
+    await assert.rejects(fail(code, code === 'BODY_TOO_LARGE' ? 413 : 500), error => error.code === mapped && !error.message.includes('reflected'));
+  }
+  const en = JSON.parse(await readFile(new URL('locale/en.json', root), 'utf8')), zh = JSON.parse(await readFile(new URL('locale/zh.json', root), 'utf8'));
+  for (const key of ['validation_error', 'invalid_request', 'body_too_large', 'operation_failed']) assert.ok(en.errors[key] && zh.errors[key]);
+});

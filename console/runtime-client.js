@@ -2,9 +2,13 @@ const fail = code => Object.assign(new Error(code), { code });
 const VOICE_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const validProfile = p => VOICE_ID.test(p?.id) && typeof p.label === 'string' && typeof p.engine === 'string' && typeof p.referenceLanguage === 'string'
   && ['private', 'public'].includes(p.usageScope) && ['useReferenceText', 'auditioned', 'hasReference'].every(k => typeof p[k] === 'boolean');
+export const SPEECH_UNAVAILABLE = ['not_configured', 'config_schema_outdated', 'config_invalid'];
 export function validRuntime(value) {
   const s = value?.speech, v = value?.voices;
-  return typeof s?.configurationRevision === 'string' && Number.isInteger(s.numThreads) && Number.isInteger(s.maxTextChars)
+  // A degraded status carries only its reason; the rest of the runtime view still renders.
+  if (SPEECH_UNAVAILABLE.includes(s?.status)) return Object.keys(s).length === 1 && v === null
+    && value.imageGeneration?.configured === false && value.imageGeneration.status === 'not_configured';
+  return s?.status === 'ready' && typeof s.configurationRevision === 'string' && Number.isInteger(s.numThreads) && Number.isInteger(s.maxTextChars)
     && s.models && typeof s.models === 'object' && Object.values(s.models).every(m => typeof m?.model === 'string'
       && ['componentsPresent', 'enabled', 'verified'].every(k => typeof m[k] === 'boolean'))
     && Array.isArray(v?.profiles) && v.profiles.every(validProfile) && (v.defaultVoice === null || v.profiles.some(p => p.id === v.defaultVoice))

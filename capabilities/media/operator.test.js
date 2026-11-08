@@ -30,6 +30,21 @@ const request = (socketPath, token, body) => new Promise((resolve, reject) => {
   const data = Buffer.from(JSON.stringify(body)), req = http.request({ socketPath, path: '/operator', method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', 'content-length': data.length } }, res => { let raw = ''; res.on('data', c => raw += c); res.on('end', () => resolve({ status: res.statusCode, value: JSON.parse(raw) })); }); req.on('error', reject); req.end(data);
 });
 
+test('status degrades with a stable reason when the speech config is missing, schema-1 or invalid; mutations still fail', async t => {
+  const f = fixture(t), config = JSON.parse(fs.readFileSync(f.configFile, 'utf8'));
+  assert.equal((await f.operator.call({ action: 'status' })).speech.status, 'ready');
+  for (const [write, reason] of [
+    [() => fs.writeFileSync(f.configFile, JSON.stringify({ ...config, schemaVersion: 1 })), 'config_schema_outdated'],
+    [() => fs.writeFileSync(f.configFile, '{not json'), 'config_invalid'],
+    [() => fs.writeFileSync(f.configFile, JSON.stringify({ ...config, numThreads: 0 })), 'config_invalid'],
+    [() => fs.rmSync(f.configFile), 'not_configured'],
+  ]) {
+    write();
+    assert.deepEqual(await f.operator.call({ action: 'status' }), { speech: { status: reason }, voices: null, imageGeneration: { configured: false, status: 'not_configured' } });
+  }
+  await assert.rejects(f.operator.call({ action: 'configure', expectedRevision: 'x', worldRevision: 3, numThreads: 2, maxTextChars: 10 }), { statusCode: 503 });
+});
+
 test('private operator status is safe and read-only; settings need pause, known fields and configuration CAS', async t => {
   const f = fixture(t), before = fs.readFileSync(f.configFile), token = 'synthetic-content-control-token-not-real', tokenFile = path.join(f.root, 'control.token'), socketPath = path.join(f.root, 'operator.sock'); fs.writeFileSync(tokenFile, token);
   const app = createContentServer({ socketPath, tokenFile, worldStatus: f.worldStatus, service: { call: () => { throw Error('model route not used'); } }, operatorCall: f.operator.call });

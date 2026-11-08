@@ -91,7 +91,8 @@ export function WorldConsole({ t, standalone = false }) {
     try { await action(); }
     catch (caught) {
       if (!mounted.current || generation.current !== current) return;
-      clearAudio(); clearReferenceInputs(); setData(null);
+      // Keep the loaded world on screen; only an authorization failure clears state.
+      clearAudio(); clearReferenceInputs();
       if (caught.code === 'authorization_required') forget();
       setError(describeError(caught));
     } finally {
@@ -117,7 +118,7 @@ export function WorldConsole({ t, standalone = false }) {
     const current = generation.current, value = await request('/runtime', undefined, credential);
     if (!validRuntime(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
     if (!mounted.current || generation.current !== current) return;
-    setRuntimeInfo(value); setSpeechDraft({ numThreads: value.speech.numThreads, maxTextChars: value.speech.maxTextChars });
+    setRuntimeInfo(value); setSpeechDraft(value.speech.status === 'ready' ? { numThreads: value.speech.numThreads, maxTextChars: value.speech.maxTextChars } : null);
   }
   useEffect(() => { if (token) void run(async () => { await load(token); if (standalone && tab === 'runtime') await loadRuntime(token); }); }, [token]);
   useEffect(() => { if (token && tab === 'channels') void run(() => loadQQ(token)); }, [token, tab]);
@@ -291,7 +292,7 @@ export function WorldConsole({ t, standalone = false }) {
         }), { disabled: busy || !data.world.paused }), button('discard', () => setForgetPreview(null))));
   }
   function speechSettings() {
-    const paused = data.world.paused, voices = runtimeInfo?.voices;
+    const paused = data.world.paused, voices = runtimeInfo?.voices, unavailable = runtimeInfo && runtimeInfo.speech.status !== 'ready';
     const removeConfirmation = id => h('div', { role: 'alertdialog', 'aria-label': t('speechPanel.remove') }, text('speechPanel.removeWarning'),
       button('speechPanel.removeConfirm', () => run(async () => { await request('/voice/reference/remove', { expectedRevision: runtimeInfo.speech.configurationRevision, ...(id === true ? {} : { voiceId: id }), confirmed: true }); clearAudio(); setConfirmRemove(false); await loadRuntime(); setNotice(t('speechPanel.removeSubmitted')); }), { disabled: busy || !paused }), button('discard', () => setConfirmRemove(false)));
     const audition = id => run(async () => {
@@ -303,7 +304,7 @@ export function WorldConsole({ t, standalone = false }) {
     const ttsReady = engine => runtimeInfo.speech.models['tts:' + engine]?.componentsPresent && runtimeInfo.speech.models['tts:' + engine]?.enabled;
     return h(React.Fragment, null,
       h('section', { className: 'bff-card' }, h('div', { className: 'bff-head' }, h('h2', null, t('speechPanel.title')), button('speechPanel.refresh', () => run(loadRuntime))),
-        text('speechPanel.localHint'), !runtimeInfo ? text('speechPanel.pending') : h(React.Fragment, null,
+        text('speechPanel.localHint'), !runtimeInfo ? text('speechPanel.pending') : unavailable ? h('p', { role: 'alert' }, t('speechPanel.unavailable.' + runtimeInfo.speech.status)) : h(React.Fragment, null,
           h('div', { className: 'bff-table' }, h('table', null,
             h('thead', null, h('tr', null, ...['role', 'model', 'components', 'admission'].map(key => h('th', { key, scope: 'col' }, t('speechPanel.' + key))))),
             h('tbody', null, ...Object.entries(runtimeInfo.speech.models).map(([key, model]) => h('tr', { key },
@@ -318,7 +319,7 @@ export function WorldConsole({ t, standalone = false }) {
               ...[['numThreads', 1, 16], ['maxTextChars', 1, 120]].map(([key, min, max]) => h('label', { key }, h('span', null, t('speechPanel.' + key)), h('input', { type: 'number', min, max, step: 1, required: true, value: speechDraft[key], disabled: busy || !paused, onChange: e => setSpeechDraft({ ...speechDraft, [key]: e.target.value }) })))),
             !paused && text('speechPanel.pauseRequired'),
             h('button', { type: 'submit', disabled: busy || !paused }, t('speechPanel.save'))))),
-      runtimeInfo && h('section', { className: 'bff-card' }, h('h2', null, t('speechPanel.voiceTitle')),
+      runtimeInfo && !unavailable && h('section', { className: 'bff-card' }, h('h2', null, t('speechPanel.voiceTitle')),
         text('speechPanel.voiceHint'), text('speechPanel.conditioningHint'),
         !voices.profiles.length ? h('p', { role: 'status' }, t('speechPanel.noVoices')) : h('div', { className: 'bff-table' }, h('table', null,
           h('thead', null, h('tr', null, ...['voiceLabel', 'voiceLanguage', 'voiceScope', 'voiceReference', 'voiceActions'].map(key => h('th', { key, scope: 'col' }, t('speechPanel.' + key))))),

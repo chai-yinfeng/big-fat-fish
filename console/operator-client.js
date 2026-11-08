@@ -38,6 +38,8 @@ export function operatorOrigin(location, { sameOrigin = false } = {}) {
   if (sameOrigin) return `http://${host}${location.port ? ':' + location.port : ''}`;
   return `http://${host}:3082`;
 }
+// Authority operator codes (never its message) mapped to localized console codes.
+const SERVER_ERRORS = { VALIDATION_ERROR: 'validation_error', INVALID_REQUEST: 'invalid_request', BODY_TOO_LARGE: 'body_too_large', OPERATION_FAILED: 'operation_failed', CONFLICT: 'revision_conflict' };
 export async function operatorRequest({ location, token, path, payload, fetchImpl = fetch, signal, sameOrigin = false }) {
   if (!token) throw Object.assign(new Error('authorization_required'), { code: 'authorization_required' });
   if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path)) throw new Error('unsupported_operator_path');
@@ -56,7 +58,8 @@ export async function operatorRequest({ location, token, path, payload, fetchImp
     // Do not echo a remote message: it could reflect the credential or request headers.
     const code = response.status === 401 || response.status === 403 ? 'authorization_required'
       : response.status === 409 ? 'revision_conflict'
-      : typeof body?.error?.code === 'string' && /^[a-z_]{1,64}$/.test(body.error.code) ? body.error.code : 'request_failed';
+      : typeof body?.error?.code === 'string' && /^[a-z_]{1,64}$/.test(body.error.code) ? body.error.code
+      : Object.hasOwn(SERVER_ERRORS, body?.error?.code) ? SERVER_ERRORS[body.error.code] : 'request_failed';
     throw Object.assign(new Error(code), { code, status: response.status });
   }
   return body.value;

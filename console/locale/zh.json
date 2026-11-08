@@ -27,6 +27,7 @@
   "standaloneSetupHint":"配置修改通过受控 operator API 完成，不安装插件、不重置人格、不自动恢复世界。模型、音色参考与世界记忆分别管理。",
   "speechPanel":{
     "title":"本地语音与默认参数",
+    "unavailable":{"not_configured":"语音尚未配置：服务器上没有 speech.json。请在主机上运行 ops/prepare-speech.mjs 生成配置。","config_schema_outdated":"语音配置是旧版格式（schema 1），新版不再读取。请在主机上把 operator/speech.json 和 speech-models.json 移到别处备份，再重新运行 ops/prepare-speech.mjs。","config_invalid":"语音配置无法读取或内容不合法。请检查主机上的 operator/speech.json；其他设置不受影响。"},
     "refresh":"刷新语音状态",
     "localHint":"语音识别与合成使用服务器本地文件引擎，不要求麦克风、音箱或 GPU。保存参数不代表音色已经通过真人试听。",
     "pending":"尚未读取运行状态，点击刷新后以真实 API 结果为准。",
@@ -81,5 +82,5 @@
     "imageTitle":"图片生成",
     "imageUnavailable":"尚未配置图片生成引擎。当前看图和发送图片不等于能够生成图片；此处没有虚假的可用开关。"
   },
-  "errors":{"invalid_voice_fields":"请填写音色 ID（小写字母、数字、连字符，最多 40 个）、显示名称（最多 64 字）、2–3 位小写语言代码，并选择使用范围。","invalid_speech_parameters":"请检查 1–16 个线程和 1–120 字的合成上限。","invalid_reference_audio":"请选择 3–20 秒、最大 2 MiB 的单声道 PCM16 WAV；不能仅改文件扩展名。","reference_authorization_required":"需要明确确认音频使用权和本地参考长期保存授权。","reference_transcript_required":"请填写逐字稿（1–1000 字符），不要留空。","authorization_required":"缺少授权、授权过期或被拒绝，请重新输入 operator 令牌。", "loopback_required":"请通过 HTTP 回环地址（localhost、127.0.0.1 或 ::1）打开产品。远程地址或 HTTPS 页面无法使用该 operator 入口。", "invalid_response":"API 响应不符合契约，请检查服务版本后刷新。", "request_failed":"操作失败，请检查 operator 服务并明确重试。", "revision_conflict":"版本已变化，请刷新世界后重新应用修改。", "network":"无法连接 operator API，请检查端口 3082、CORS 与服务状态。", "invalid_qq_uid":"请输入仅由数字组成的本人发消息 QQ 号。"}
+  "errors":{"invalid_voice_fields":"请填写音色 ID（小写字母、数字、连字符，最多 40 个）、显示名称（最多 64 字）、2–3 位小写语言代码，并选择使用范围。","invalid_speech_parameters":"请检查 1–16 个线程和 1–120 字的合成上限。","invalid_reference_audio":"请选择 3–20 秒、最大 2 MiB 的单声道 PCM16 WAV；不能仅改文件扩展名。","reference_authorization_required":"需要明确确认音频使用权和本地参考长期保存授权。","reference_transcript_required":"请填写逐字稿（1–1000 字符），不要留空。","authorization_required":"缺少授权、授权过期或被拒绝，请重新输入 operator 令牌。", "loopback_required":"请通过 HTTP 回环地址（localhost、127.0.0.1 或 ::1）打开产品。远程地址或 HTTPS 页面无法使用该 operator 入口。", "invalid_response":"API 响应不符合契约，请检查服务版本后刷新。", "request_failed":"操作失败，请检查 operator 服务并明确重试。", "revision_conflict":"版本已变化，请刷新世界后重新应用修改。", "network":"无法连接 operator API，请检查端口 3082、CORS 与服务状态。", "invalid_qq_uid":"请输入仅由数字组成的本人发消息 QQ 号。", "validation_error":"内容不符合字段要求，请检查后重试。", "invalid_request":"请求格式不对，请刷新页面后重试。", "body_too_large":"提交的内容太大，请缩小后重试。", "operation_failed":"服务端操作失败，请查看服务日志后明确重试。"}
 }
