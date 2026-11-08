@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { loadSpeechConfig, inputPath, outputPath, engineFor, componentsPresent, wavInfo, failure, resolveVoice, trustedReference, ASR_TIERS } from './config.js';
+import { loadSpeechConfig, inputPath, outputPath, engineFor, componentsPresent, wavInfo, failure, resolveVoice, trustedReference, ASR_TIERS, asrLimitSeconds, vadPresent, SINGLE_PASS_SECONDS } from './config.js';
 
 const workerDefault = fileURLToPath(new URL('./worker.mjs', import.meta.url));
 const publicErrors = new Set(['SPEECH_CANCELLED', 'SPEECH_NOT_CONFIGURED', 'SPEECH_CONFIG_SCHEMA', 'SPEECH_MODEL_DISABLED', 'SPEECH_REQUEST', 'SPEECH_PATH', 'SPEECH_AUDIO_FORMAT', 'SPEECH_AUDIO_LIMIT', 'SPEECH_INCOMPLETE', 'SPEECH_REFERENCE_REQUIRED', 'SPEECH_VOICE_UNKNOWN', 'SPEECH_TIMEOUT']);
@@ -29,7 +29,8 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
       job.inputFile = inputPath(c, job.inputFile);
       const info = wavInfo(job.inputFile);
       if (info.format !== 1 || info.bits !== 16) throw failure('SPEECH_AUDIO_FORMAT');
-      if (info.durationMs > c.maxAudioSeconds * 1000) throw failure('SPEECH_AUDIO_LIMIT');
+      // Over 30 s needs the VAD model; status().longAudio says whether it is installed.
+      if (info.durationMs > asrLimitSeconds(c) * 1000) throw failure('SPEECH_AUDIO_LIMIT');
     } else {
       if (typeof job.text !== 'string' || !job.text.trim() || [...job.text].length > c.maxTextChars) throw failure('SPEECH_REQUEST');
       if (e.engine === 'llama-tts') trustedReference(c, profile);
@@ -99,7 +100,9 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
         const c = loadSpeechConfig(configFile);
         const entry = (kind, key) => { const e = engineFor(c, kind, key); return { model: e.id, componentsPresent: componentsPresent(c, kind, key), enabled: e.enabled !== false, verified: e.cpuBenchmark?.passed === true && e.cpuBenchmark?.model === e.id }; };
         const models = Object.fromEntries([...ASR_TIERS.filter(tier => Object.hasOwn(c.models.asr, tier)).map(tier => ['asr:' + tier, entry('asr', tier)]), ...Object.keys(c.models.tts).map(key => ['tts:' + key, entry('tts', key)])]);
-        return { configured: true, cpuOnly: true, models, defaultVoice: c.defaultVoice, voices: Object.values(c.voiceProfiles).map(p => ({ id: p.id, engine: p.engine, usageScope: p.usageScope, auditioned: p.auditioned === true })) };
+        // timeoutMs bounds the whole request, i.e. every chunk of a long recording.
+        const longAudio = { vadPresent: vadPresent(c), singlePassSeconds: SINGLE_PASS_SECONDS, maxAudioSeconds: asrLimitSeconds(c), timeoutMs: c.timeoutMs, ...(vadPresent(c) ? {} : { hint: 'SPEECH_VAD_NOT_INSTALLED: audio over 30 s fails with SPEECH_AUDIO_LIMIT; run ops/install-speech.mjs --apply --models vad' }) };
+        return { configured: true, cpuOnly: true, models, longAudio, defaultVoice: c.defaultVoice, voices: Object.values(c.voiceProfiles).map(p => ({ id: p.id, engine: p.engine, usageScope: p.usageScope, auditioned: p.auditioned === true })) };
       } catch (error) { return { configured: false, code: error.code === 'SPEECH_CONFIG_SCHEMA' ? error.code : 'SPEECH_NOT_CONFIGURED' }; }
     },
   };

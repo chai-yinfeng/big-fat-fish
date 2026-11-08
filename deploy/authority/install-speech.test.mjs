@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { cmakeFor, hfUrl, ggufUrl, proxyEnv, localArchive, speechInstallPlan } from './install-speech.mjs';
+import { cmakeFor, hfUrl, ggufUrl, proxyEnv, localArchive, speechInstallPlan, VAD, vadUrl, registerVad } from './install-speech.mjs';
 import { prepareSpeech } from './prepare-speech.mjs';
 
 function tempRoot(t) {
@@ -35,8 +35,12 @@ test('prepared manifest pins the Qwen3-ASR archive digest (no SenseVoice) and th
   for (const entry of manifest.models.filter(m => !m.files)) { assert.match(entry.sha256, /^[a-f0-9]{64}$/); assert.ok(entry.bytes > 0); assert.equal(entry.digestPendingDownload, undefined); }
   const plan = speechInstallPlan({ base, models: 'asr', archiveDir: root });
   assert.equal(plan.archiveDir, root); assert.equal(plan.writesPerformed, false);
-  assert.deepEqual(plan.selected, ['qwen3-asr-0.6b-int8-2026-03-25']); assert.equal(manifest.models.some(m => /sensevoice/.test(m.id)), false);
-  assert.deepEqual(speechInstallPlan({ base }).selected, ['qwen3-asr-0.6b-int8-2026-03-25', 'qwen3-tts-1.7b-base-q4-k-m']);
+  assert.deepEqual(plan.selected, ['qwen3-asr-0.6b-int8-2026-03-25', 'silero-vad-v5.1.2']); assert.equal(manifest.models.some(m => /sensevoice/.test(m.id)), false);
+  assert.deepEqual(speechInstallPlan({ base }).selected, ['qwen3-asr-0.6b-int8-2026-03-25', 'qwen3-tts-1.7b-base-q4-k-m', 'silero-vad-v5.1.2']);
+  const vadPlan = speechInstallPlan({ base, models: 'vad', modelSource: 'modelscope' });
+  assert.deepEqual(vadPlan.selected, ['silero-vad-v5.1.2']); assert.equal(vadPlan.writesPerformed, false); assert.equal(vadPlan.vadSource, vadUrl('modelscope'));
+  const vadEntry = manifest.models.find(m => m.id === VAD.id);
+  assert.deepEqual([vadEntry.source, vadEntry.bytes, vadEntry.sha256], [VAD.source, VAD.bytes, VAD.sha256]);
   assert.throws(() => speechInstallPlan({ base, archiveDir: 'relative/dir' }), { code: 'SPEECH_INSTALL_ARGUMENTS' });
   assert.throws(() => speechInstallPlan({ base, archiveDir: path.join(root, 'missing') }), { code: 'SPEECH_INSTALL_ARGUMENTS' });
   manifest.models[0].sha256 = '0'.repeat(64); fs.writeFileSync(manifestFile, JSON.stringify(manifest));
@@ -71,4 +75,29 @@ test('--proxy accepts only a bare http(s) origin and bypasses ModelScope/hf-mirr
   const env = proxyEnv('http://127.0.0.1:7890');
   assert.equal(env.HTTPS_PROXY, 'http://127.0.0.1:7890'); assert.equal(env.https_proxy, 'http://127.0.0.1:7890'); assert.match(env.NO_PROXY, /modelscope\.cn/); assert.match(env.NO_PROXY, /hf-mirror\.com/);
   for (const bad of ['socks5://127.0.0.1:1080', 'http://user:secret@127.0.0.1:7890', 'http://127.0.0.1:7890/path', 'not a url']) assert.throws(() => proxyEnv(bad), { code: 'SPEECH_INSTALL_ARGUMENTS' });
+});
+
+test('the VAD is one sha256-pinned file from GitHub or the identical ModelScope copy', () => {
+  assert.equal(VAD.sha256, '2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f'); assert.equal(VAD.bytes, 2327524);
+  assert.equal(vadUrl(), 'https://raw.githubusercontent.com/snakers4/silero-vad/6478567951ae5c9979ad7b234185b5515f4be7a1/src/silero_vad/data/silero_vad.onnx');
+  assert.equal(vadUrl('modelscope'), 'https://www.modelscope.cn/models/pengzhendong/silero-vad/resolve/370539c71ec0ac703627938064cf31c1852186d7/v5/silero_vad.onnx');
+  assert.throws(() => vadUrl('mirror'), { code: 'SPEECH_INSTALL_ARGUMENTS' });
+});
+
+test('installing the VAD registers it in a pre-VAD config and manifest without a schema change', t => {
+  const root = tempRoot(t), base = path.join(root, 'companion-world-v1');
+  fs.mkdirSync(path.join(base, 'operator'), { recursive: true });
+  prepareSpeech(base, path.join(root, 'runtime'));
+  const config = JSON.parse(fs.readFileSync(path.join(base, 'operator/speech.json'), 'utf8')), manifest = JSON.parse(fs.readFileSync(path.join(base, 'operator/speech-models.json'), 'utf8'));
+  const file = config.models.vad.file;
+  // The shape production has today: no models.vad, maxAudioSeconds 30, no manifest entry.
+  delete config.models.vad; config.maxAudioSeconds = 30; manifest.models = manifest.models.filter(m => m.id !== VAD.id);
+  const registered = registerVad(config, manifest, file);
+  assert.equal(registered.changed, true); assert.equal(config.models.vad, undefined);
+  assert.deepEqual(registered.config.models.vad, { id: VAD.id, engine: 'sherpa-silero-vad', file }); assert.equal(registered.config.maxAudioSeconds, 120); assert.equal(registered.config.schemaVersion, 2);
+  assert.equal(registered.manifest.models.filter(m => m.id === VAD.id).length, 1);
+  assert.equal(registerVad(registered.config, registered.manifest, file).changed, false);
+  assert.equal(registerVad({ ...config, maxAudioSeconds: 20 }, manifest, file).config.maxAudioSeconds, 20);
+  assert.throws(() => registerVad(registered.config, registered.manifest, path.join(root, 'other.onnx')), { code: 'SPEECH_INSTALL_MANIFEST' });
+  assert.throws(() => registerVad(config, { ...manifest, models: [...manifest.models, { id: VAD.id, source: VAD.source, bytes: VAD.bytes, sha256: '0'.repeat(64) }] }, file), { code: 'SPEECH_INSTALL_MANIFEST' });
 });
