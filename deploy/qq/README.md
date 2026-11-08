@@ -53,7 +53,7 @@ home-agent 无法直连 Docker Hub，只能经本机代理 `http://127.0.0.1:789
 node deploy/qq/open-login.mjs            # 默认 home-agent；可写主机别名或设 COMPANION_HOST
 ```
 
-SSH 使用已有主机别名（默认 `home-agent`）。helper 只占本机 6099，不碰现有 3081/3082 隧道；端口已占用则拒绝。它通过 `ssh -t` 以 `sudo -u companion` 在内存读取生产主机实际 WebUI token（终端提示输入 sudo 密码），交给 macOS 默认浏览器（Linux 为 `xdg-open`），不输出含 token URL。用户在官方页面手动扫码；终端保持运行，Ctrl-C 只关闭这个 SSH 隧道。不要把登录页 URL、二维码、账号或私有配置贴进会话。浏览器历史/本机进程参数仍可能留有 token URL，操作人应把本机浏览器视为可信入口。
+SSH 使用已有主机别名（默认 `home-agent`）。helper 只占本机 6099，不碰现有 3081/3082 隧道；端口已占用则拒绝。它通过 `ssh -t` 以 `sudo -u companion` 在内存读取生产主机实际 WebUI token（终端提示输入 sudo 密码），以 `http://127.0.0.1:6099/webui/web_login?token=…` 交给 macOS 默认浏览器（Linux 为 `xdg-open`），不输出含 token URL。登录页收到 URL token 会自动提交；不用上游日志里的 `/webui/?token=`，因为浏览器里留有过期 WebUI 凭证（1 小时或 NapCat 重启即失效）时，那个入口会先进仪表盘、鉴权失败后跳到不带 token 的登录页。若仍停在登录页，手动粘贴 token 即可。用户在官方页面手动扫码；终端保持运行，Ctrl-C 只关闭这个 SSH 隧道。不要把登录页 URL、二维码、账号或私有配置贴进会话。浏览器历史/本机进程参数仍可能留有 token URL，操作人应把本机浏览器视为可信入口。
 
 首次 QQ 登录后，上游 `ConfigBase` 会从 `onebot11.json` 继承并生成账号命名配置，保留随机 WS token，**不用手填 QQid，不存在先开无鉴权 WS 再补 token 的窗口**。默认未指定 `ACCOUNT`，由用户选择扫码。若以后 WebUI 修改 OneBot token，须操作人同步 worker 的 `private/onebot.token`；不要重跑准备工具期望覆盖已有账号配置。当前 helper 要求 WebUI token 仍为生成的 64 位 hex、端口及 prefix 未改。
 
@@ -71,7 +71,7 @@ SSH 使用已有主机别名（默认 `home-agent`）。helper 只占本机 6099
 本地仅纯内容测试，不生成真实 token 或运行目录：
 
 ```sh
-node --test deploy/qq/prepare.test.mjs
+node --test deploy/qq/*.test.mjs
 ```
 
 上述初始内容检查不冒充真实运行验收。后续已在旧 VM（myvm，arm64）实际拉取、启动并由用户扫码，QQ 私聊和暂停边界通过；绑定、授权及 Authority 生命周期仍由产品管理面负责。
