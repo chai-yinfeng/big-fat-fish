@@ -1,0 +1,379 @@
+#!/usr/bin/python3
+"""Release lifecycle test on the dev host, as the unprivileged agent account.
+
+Uploaded and driven by deploy/staging/run.mjs from the Mac. It reuses
+companion-deploy itself (same deploy, preflight, unit, health and retention
+code) with a staging Config/System: everything lives below
+~/companion-staging, which acts as the service HOME. Units are renamed
+companion-staging-*, the operator socket listens on 127.0.0.1:13082, and the
+memory and QQ units are limited to Unix sockets, so no release (old ones have
+3082/3001 hard-coded) can reach production ports. No sudo, no QQ login, no
+model key, no provider call.
+
+  staging-agent.py lifecycle --from <tarball> --to <tarball>
+  staging-agent.py reset
+"""
+import argparse
+import http.client
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+HERE = Path(__file__).resolve().parent
+ROOT = Path.home() / 'companion-staging'
+TOOLS, INBOX = ROOT / 'tools', ROOT / 'inbox'
+UNITS_DIR = Path.home() / '.config/systemd/user'  # where the agent's user manager reads units
+NODE_CACHE = Path.home() / '.cache/companion-staging'  # outside ROOT: survives --reset
+PREFIX = 'companion-staging-'
+OPERATOR_PORT, ONEBOT_PORT = 13082, 13001
+PROD_PORTS = (3001, 3082, 6099)
+UNIX_ONLY = ('memory', 'qq')  # their old code dials 127.0.0.1:3082 / :3001
+PROXY = 'http://127.0.0.1:7890'
+BASE = ROOT / '.local/share/companion-world-v1'
+NODE = ROOT / '.local/opt/companion/bin/node'
+JOURNAL_LINES = 15
+
+
+def load_companion_deploy(path=TOOLS / 'companion-deploy'):
+    loader = importlib.machinery.SourceFileLoader('companion_deploy', str(path))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader('companion_deploy', loader))
+    loader.exec_module(module)
+    # Only staging units are ever listed, replaced or removed in the agent's unit directory.
+    module.UNIT_PATTERN = re.compile(r'^' + PREFIX + r'[A-Za-z0-9-]+\.(service|socket)$')
+    return module
+
+
+def staging_unit(name, text, root=ROOT):
+    """Production unit -> staging unit: renamed, HOME and paths below root, staging port, Unix-only workers."""
+    if not name.startswith('companion-') or name.startswith(PREFIX):
+        raise ValueError('unexpected unit name: ' + name)
+    role = name[len('companion-'):].rsplit('.', 1)[0]
+    text = re.sub(r'\bcompanion-([A-Za-z0-9-]+\.(?:service|socket))\b', lambda m: PREFIX + m.group(1), text)
+    text = text.replace('%h/', str(root) + '/').replace('127.0.0.1:3082', '127.0.0.1:%d' % OPERATOR_PORT)
+    extra = 'Environment=HOME=%s\n' % root
+    if role in UNIX_ONLY:
+        extra += 'RestrictAddressFamilies=AF_UNIX\n'
+    if '[Service]\n' in text:
+        text = text.replace('[Service]\n', '[Service]\n' + extra, 1)
+    if '%h' in text or re.search(r'\b(%s)\b' % '|'.join(map(str, PROD_PORTS)), text):
+        raise ValueError('unit still names the production home or a production port: ' + name)
+    return PREFIX + name[len('companion-'):], text
+
+
+def safe_root(root=ROOT, home=None):
+    """The only directory --reset removes: exactly ~/companion-staging, a real directory owned by us."""
+    home = Path(home or Path.home())
+    if not home.is_absolute() or len(home.parts) < 3 or Path(root) != home / 'companion-staging' \
+            or Path(root).is_symlink() or os.path.realpath(root) != str(root):
+        raise SystemExit('refusing: staging root is not exactly <home>/companion-staging')
+    if Path(root).exists() and Path(root).stat().st_uid != os.getuid():
+        raise SystemExit('refusing: staging root is not owned by this user')
+    return Path(root)
+
+
+def build(cd):
+    class StagingSystem(cd.System):
+        def owner(self):
+            return os.getuid(), os.getgid()
+
+        def log_group(self):
+            return os.getgid()
+
+        def fchown(self, fd, uid, gid):
+            pass
+
+        def systemctl(self, *args, check=True):
+            env = {**os.environ, 'XDG_RUNTIME_DIR': os.environ.get('XDG_RUNTIME_DIR', '/run/user/%d' % os.getuid())}
+            result = subprocess.run(['systemctl', '--user', *args], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180, env=env)
+            if check and result.returncode:
+                raise cd.DeployError('systemctl %s failed: %s' % (' '.join(args), result.stderr.strip()[-400:]))
+            return result
+
+        def git(self, *args):
+            # Staging tests unpublished commits; publication on origin main is companion-deploy's job in production.
+            stdout = 'staging: origin main not checked\n-\n' if 'log' in args else ''
+            return subprocess.CompletedProcess(args, 0, stdout, '')
+
+        def confirm(self, prompt):
+            self.say(prompt + 'y (staging)')
+            return True
+
+        def preflight(self, release):
+            env = {'PATH': '/usr/bin:/bin', 'HOME': str(ROOT), 'LANG': 'C.UTF-8'}
+            return subprocess.run([str(NODE), str(Path(release) / 'ops/preflight.mjs')], cwd=str(ROOT), env=env,
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=cd.PREFLIGHT_TIMEOUT_SECONDS)
+
+        def say(self, text):
+            for line in str(text).splitlines():
+                print('  | ' + line, flush=True)
+
+    class StagingDeployer(cd.Deployer):
+        def prepare_dirs(self):
+            for path in (self.config.state_dir, self.config.snapshots, self.config.work, self.config.releases, self.config.units):
+                path.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+        def release_units(self, release_dir):
+            target = self.config.state_dir / 'staging-units' / Path(release_dir).name
+            if not target.is_dir():
+                target.mkdir(mode=0o700, parents=True)
+                for unit in sorted(cd.Deployer.release_units(release_dir).iterdir()):
+                    name, text = staging_unit(unit.name, unit.read_text())
+                    (target / name).write_text(text)
+            return target
+
+        def preflight(self, release_dir):
+            if not (Path(release_dir) / 'ops/preflight.mjs').is_file():
+                self.system.say('PREFLIGHT SKIPPED: %s has no ops/preflight.mjs (production companion-deploy refuses it)' % Path(release_dir).name)
+                return []
+            return super().preflight(release_dir)
+
+    config = cd.Config(home=ROOT, state=ROOT / 'deploy-state', log=ROOT / 'deploy.log', status=ROOT / 'deploy.status.json',
+                       user=os.environ.get('USER') or str(os.getuid()), ports=(OPERATOR_PORT,))
+    config.units = UNITS_DIR
+    return StagingDeployer(config, StagingSystem(config))
+
+
+# ---------------------------------------------------------------- steps
+
+def run(command, **kwargs):
+    env = {'PATH': '/usr/bin:/bin', 'HOME': str(ROOT), 'LANG': 'C.UTF-8', **kwargs.pop('env', {})}
+    result = subprocess.run(command, cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=kwargs.pop('timeout', 300))
+    if result.returncode:
+        tail = (result.stderr or result.stdout).strip().splitlines()[-3:]
+        raise RuntimeError('%s exited %d: %s' % (Path(command[1] if len(command) > 1 else command[0]).name, result.returncode, ' / '.join(tail)))
+    return result.stdout
+
+
+def install_runtime():
+    cache = ROOT / '.cache/companion-deploy'
+    cache.mkdir(parents=True, exist_ok=True)
+    NODE_CACHE.mkdir(parents=True, exist_ok=True)
+    for archive in NODE_CACHE.glob('node-v*-linux-*.tar.xz'):
+        shutil.copyfile(archive, cache / archive.name)
+    run(['/usr/bin/bash', str(TOOLS / 'install-runtime.sh')], env={'HTTPS_PROXY': PROXY, 'https_proxy': PROXY}, timeout=600)
+    for archive in cache.glob('node-v*-linux-*.tar.xz'):
+        if not (NODE_CACHE / archive.name).exists():
+            shutil.copyfile(archive, NODE_CACHE / archive.name)
+    return run([str(NODE), '--version']).strip()
+
+
+def initialize(release):
+    """The fresh-host steps from docs/DEV_WORKFLOW.md, run by the from-release itself."""
+    ops = ROOT / 'src/companion' / release / 'ops'
+    for script in ('bootstrap.mjs', 'prepare-memory.mjs', 'prepare-content.mjs'):
+        run([str(NODE), str(ops / script)])
+    run([str(NODE), str(ROOT / 'src/companion' / release / 'deploy/qq/prepare.mjs')])
+    # Staging-only values (old releases ignore the port fields; their units are Unix-only anyway).
+    edit('memory-worker.json', lambda c: c.update(operatorPort=OPERATOR_PORT))
+    edit('qq-bridge.json', lambda c: c.update(onebotPort=ONEBOT_PORT))
+    origins = ['http://127.0.0.1:%d' % OPERATOR_PORT, 'http://localhost:%d' % OPERATOR_PORT]
+    edit('authority.json', lambda c: c['operator'].update(origins=sorted(set(c['operator']['origins']) | set(origins))))
+    return 'bootstrap, prepare-memory, prepare-content, qq prepare; staging ports set'
+
+
+def edit(label, change):
+    path = BASE / 'operator' / label
+    config = json.loads(path.read_text())
+    change(config)
+    temporary = path.with_name('.' + label + '.tmp')
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as handle:
+        handle.write(json.dumps(config, indent=2) + '\n')
+    os.replace(temporary, path)
+
+
+def operator(method, route, body=None):
+    token = (BASE / 'operator/console.token').read_text().strip()
+    connection = http.client.HTTPConnection('127.0.0.1', OPERATOR_PORT, timeout=15)
+    headers = {'authorization': 'Bearer ' + token}
+    payload = None
+    if body is not None:
+        payload, headers['content-type'] = json.dumps(body), 'application/json'
+    connection.request(method, route, body=payload, headers=headers)
+    response = connection.getresponse()
+    text = response.read().decode('utf8', 'replace')
+    connection.close()
+    try:
+        value = json.loads(text)
+    except ValueError:
+        value = None
+    if response.status != 200 or not isinstance(value, dict) or value.get('ok') is not True:
+        code = (value or {}).get('error', {}).get('code') if isinstance(value, dict) else None
+        raise RuntimeError('%s %s -> %d %s' % (method, route, response.status, code or ''))
+    return value['value']
+
+
+def unix_post(path, route, token=None):
+    """HTTP POST over a Unix socket; returns the status code."""
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(15)
+    client.connect(str(path))
+    headers = 'POST %s HTTP/1.1\r\nHost: staging\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n' % route
+    if token:
+        headers += 'Authorization: Bearer %s\r\n' % token
+    client.sendall((headers + '\r\n{}').encode())
+    status = client.recv(64).decode('latin1').split(' ')
+    client.close()
+    return int(status[1])
+
+
+def smoke():
+    done = []
+    world = operator('GET', '/world')
+    assert 'world' in world and 'persona' in world, 'GET /world shape'
+    done.append('GET /world paused=%s' % world['world'].get('paused'))
+    runtime = operator('GET', '/runtime')
+    done.append('GET /runtime speech=%s' % ((runtime.get('speech') or {}).get('status') if isinstance(runtime, dict) else '?'))
+    qq = operator('GET', '/qq')
+    done.append('GET /qq loggedIn=%s connected=%s' % (qq.get('loggedIn'), qq.get('connected')))
+    operator('GET', '/memory')
+    done.append('GET /memory')
+    name = world['persona']['value']['name']
+    preview = operator('POST', '/persona/preview', {'patch': {'name': name}})
+    done.append('POST /persona/preview' + (' chars=%s' % preview.get('chars') if isinstance(preview, dict) and 'chars' in preview else ''))
+    operator('POST', '/persona', {'patch': {'name': name}, 'expectedRevision': world['persona']['revision']})
+    after = operator('GET', '/world')['persona']['revision']
+    done.append('POST /persona revision %s->%s' % (world['persona']['revision'], after))
+    sock = BASE / 'ipc/conversation/execute.sock'
+    caller = (BASE / 'conversation-config/caller.token').read_text().strip()
+    unauthenticated, authenticated = unix_post(sock, '/execute'), unix_post(sock, '/execute', caller)
+    if unauthenticated != 401 or not 400 <= authenticated < 500 or authenticated == 401:
+        raise RuntimeError('conversation /execute answered %d without and %d with the caller token' % (unauthenticated, authenticated))
+    done.append('conversation /execute 401 unauthenticated, %d with caller token (no model key: no turn run)' % authenticated)
+    return '; '.join(done)
+
+
+def prod_untouched():
+    """Production listeners must still be there, and no staging process may own them."""
+    out = subprocess.run(['ss', '-Hltnp'], capture_output=True, text=True, timeout=10).stdout
+    mine = [line for line in out.splitlines() if re.search(r':(%s)\s' % '|'.join(map(str, PROD_PORTS)), line) and 'users:' in line]
+    if mine:
+        raise RuntimeError('a staging process listens on a production port')
+    return 'no staging listener on %s' % ', '.join(map(str, PROD_PORTS))
+
+
+def diagnostics(deployer):
+    lines = []
+    try:
+        names = deployer.installed_units()
+        for name, (state, restarts) in sorted(deployer.unit_states(names).items()):
+            lines.append('  unit %-40s %-9s restarts=%s' % (name, state, restarts))
+            if (state != 'active' and name.endswith('.service')) or restarts not in ('0', ''):
+                journal = subprocess.run(['journalctl', '_UID=%d' % os.getuid(), '_SYSTEMD_USER_UNIT=' + name, '-n', str(JOURNAL_LINES), '--no-pager', '-o', 'cat'],
+                                         capture_output=True, text=True, timeout=20).stdout.strip().splitlines()
+                lines += ['    ' + line[:200] for line in journal[-JOURNAL_LINES:]]
+    except Exception as error:  # diagnostics never hide the original failure
+        lines.append('  diagnostics unavailable: %s' % error.__class__.__name__)
+    return lines
+
+
+def lifecycle(from_tarball, to_tarball):
+    cd = load_companion_deploy()
+    deployer = build(cd)
+    from_name, to_name = (Path(t).name[:-len('.tar.gz')] for t in (from_tarball, to_tarball))
+    results, started = [], time.time()
+
+    def step(name, action):
+        if results and not results[-1][1]:
+            results.append((name, None, 'skipped'))
+            return None
+        print('== %s' % name, flush=True)
+        try:
+            detail = action()
+            results.append((name, True, detail or ''))
+            return detail
+        except (Exception, SystemExit) as error:
+            results.append((name, False, '%s: %s' % (error.__class__.__name__, str(error)[:600])))
+            return None
+
+    def clean():
+        extra = sorted(p.name for p in ROOT.iterdir() if p.name not in ('tools', 'inbox'))
+        if extra or [p for p in UNITS_DIR.glob(PREFIX + '*')]:
+            raise RuntimeError('staging is not clean (%s); run with --reset' % (', '.join(extra[:5]) or 'leftover units'))
+        return 'fresh %s' % ROOT
+
+    def restart():
+        names = deployer.installed_units()
+        deployer.stop_all(names)
+        deployer.start_all(names)
+        problems = deployer.health(names)
+        if problems:
+            raise RuntimeError('; '.join(problems))
+        return '%d units healthy after restart' % len(names)
+
+    def prune():
+        state = deployer.load_state()
+        if not deployer.remove_failed_release(from_name) or (ROOT / 'src/companion' / from_name).exists():
+            raise RuntimeError('could not prune ' + from_name)
+        state['installed'] = [i for i in state['installed'] if i['release'] != from_name]
+        state['previous'] = None  # its directory is gone; staging never rolls back
+        deployer.save_state(state)
+        return 'removed %s (current %s)' % (from_name, deployer.active_release())
+
+    step('clean', clean)
+    step('runtime', install_runtime)
+    step('install-from', lambda: deployer.deploy(from_tarball) and 'first install of %s, nothing started' % from_name)
+    step('init-world', lambda: initialize(from_name))
+    step('start-from', lambda: deployer.start() and 'healthy; GET /world ok paused=%s' % operator('GET', '/world')['world'].get('paused'))
+    step('upgrade (preflight, switch, health)', lambda: deployer.deploy(to_tarball) and 'current %s' % deployer.active_release())
+    step('prune-from', prune)
+    step('restart-all', restart)
+    step('smoke', smoke)
+    step('prod-untouched', prod_untouched)
+
+    failed = any(ok is False for _n, ok, _d in results)
+    print('\n== STAGING SUMMARY %s -> %s (%ds)' % (from_name, to_name, time.time() - started))
+    for name, ok, detail in results:
+        print('%-36s %-4s %s' % (name, {True: 'PASS', False: 'FAIL', None: 'SKIP'}[ok], detail))
+    if failed:
+        for line in diagnostics(deployer):
+            print(line)
+    print('STAGING %s' % ('FAILED' if failed else 'PASSED'))
+    return 1 if failed else 0
+
+
+def reset():
+    root = safe_root()
+    names = sorted(p.name for p in UNITS_DIR.glob(PREFIX + '*') if re.match(r'^' + PREFIX + r'[A-Za-z0-9-]+\.(service|socket)$', p.name))
+    env = {**os.environ, 'XDG_RUNTIME_DIR': os.environ.get('XDG_RUNTIME_DIR', '/run/user/%d' % os.getuid())}
+    if names:
+        subprocess.run(['systemctl', '--user', 'stop', *names], capture_output=True, timeout=180, env=env)
+        subprocess.run(['systemctl', '--user', 'reset-failed', *names], capture_output=True, timeout=60, env=env)
+        for name in names:
+            (UNITS_DIR / name).unlink()
+        subprocess.run(['systemctl', '--user', 'daemon-reload'], capture_output=True, timeout=60, env=env)
+    if root.exists():
+        for current, dirs, _files in os.walk(root):
+            os.chmod(current, 0o700)  # releases are sealed 0555
+        shutil.rmtree(root)
+    print('reset: removed %d staging units and %s' % (len(names), root))
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest='command', required=True)
+    life = sub.add_parser('lifecycle')
+    life.add_argument('--from', dest='source', required=True)
+    life.add_argument('--to', dest='target', required=True)
+    sub.add_parser('reset')
+    options = parser.parse_args(argv)
+    if os.geteuid() == 0:
+        raise SystemExit('staging must not run as root')
+    os.umask(0o077)
+    if options.command == 'reset':
+        return reset()
+    safe_root()
+    return lifecycle(Path(options.source).resolve(), Path(options.target).resolve())
+
+
+if __name__ == '__main__':
+    sys.exit(main())
