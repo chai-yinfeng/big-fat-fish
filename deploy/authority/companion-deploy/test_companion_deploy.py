@@ -288,6 +288,69 @@ class DeployTests(Fixture):
         self.assertIsNone(state['previous'])
         self.assertIn('deploy-failed', self.config.log.read_text())
 
+    def test_failed_release_is_removed_so_the_same_tarball_can_be_deployed_again(self):
+        tarball, name = self.release(self.commits[1])
+        self.system.broken.add(name)
+        with self.assertRaisesRegex(cd.DeployError, 'failed health check'):
+            self.deployer.deploy(tarball)
+        self.assertFalse(os.path.lexists(self.config.releases / name))
+        self.assertTrue((self.config.releases / 'authority-0.10.0').is_dir())
+        state = json.loads(self.config.state_file.read_text())
+        self.assertNotIn(name, [i['release'] for i in state['installed']])
+        record = [json.loads(line) for line in self.config.log.read_text().splitlines()][-1]
+        self.assertEqual((record['action'], record['removed_failed'], record['stopped_units']), ('deploy-failed', name, False))
+        # Restored release is healthy: services keep running, nothing is stopped after the restore.
+        self.assertEqual(self.system.calls[-1][0], 'show')
+        self.system.broken.discard(name)
+        self.assertEqual(self.deployer.deploy(tarball), name)
+        self.assertEqual(self.current(), name)
+
+    def test_unhealthy_restore_stops_all_units(self):
+        tarball, name = self.release(self.commits[1])
+        self.system.broken.update({name, 'authority-0.10.0'})
+        with self.assertRaisesRegex(cd.DeployError, 'restored release is unhealthy too, companion units stopped'):
+            self.deployer.deploy(tarball)
+        self.assertEqual(self.current(), 'authority-0.10.0')
+        self.assertFalse(os.path.lexists(self.config.releases / name))
+        stops = [i for i, c in enumerate(self.system.calls) if c[0] == 'stop']
+        starts = [i for i, c in enumerate(self.system.calls) if c[0] == 'start']
+        self.assertGreater(stops[-1], starts[-1])
+        self.assertEqual(sorted(self.system.calls[stops[-1]][1:]), sorted(self.legacy_units))
+        record = [json.loads(line) for line in self.config.log.read_text().splitlines()][-1]
+        self.assertTrue(record['stopped_units'])
+        self.assertTrue(record['restore_problems'])
+        self.assertTrue(any('Stopped all companion units' in s for s in self.system.said))
+
+    def test_unhealthy_restore_after_failed_rollback_stops_all_units(self):
+        tarball, name = self.release(self.commits[1])
+        self.deployer.deploy(tarball)
+        self.system.broken.update({name, 'authority-0.10.0'})
+        with self.assertRaisesRegex(cd.DeployError, 'rollback to authority-0.10.0 failed .*companion units stopped'):
+            self.deployer.rollback()
+        self.assertEqual(self.current(), name)
+        self.assertTrue((self.config.releases / name).is_dir())  # rollback never removes releases
+        stops = [i for i, c in enumerate(self.system.calls) if c[0] == 'stop']
+        starts = [i for i, c in enumerate(self.system.calls) if c[0] == 'start']
+        self.assertGreater(stops[-1], starts[-1])
+        record = [json.loads(line) for line in self.config.log.read_text().splitlines()][-1]
+        self.assertEqual((record['action'], record['stopped_units']), ('rollback-failed', True))
+
+    def test_remove_failed_release_spares_current_symlinks_and_other_paths(self):
+        tarball, name = self.release(self.commits[1])
+        self.deployer.deploy(tarball)
+        self.assertFalse(self.deployer.remove_failed_release(name))  # what `current` names
+        self.assertTrue((self.config.releases / name).is_dir())
+        outside = self.root / 'outside'
+        outside.mkdir()
+        (outside / 'keep').write_text('x')
+        link = 'authority-0.11.0-' + 'c' * 12
+        os.symlink(outside, self.config.releases / link)
+        self.assertFalse(self.deployer.remove_failed_release(link))
+        self.assertTrue((outside / 'keep').exists())
+        self.assertFalse(self.deployer.remove_failed_release('../outside'))
+        self.assertFalse(self.deployer.remove_failed_release('current'))
+        self.assertTrue((outside / 'keep').exists())
+
     def test_failed_start_command_also_restores(self):
         tarball, name = self.release(self.commits[1])
         original = self.system.systemctl

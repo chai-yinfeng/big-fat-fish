@@ -52,7 +52,7 @@ def build_command(role, base, release, runtime, ops, arguments=()):
     if Path('/etc/ld.so.cache').is_file():
         args += ['--ro-bind', '/etc/ld.so.cache', '/etc/ld.so.cache']
     env = {'PATH': NODE_HOME + '/bin:/usr/bin:/bin',
-           'LANG': 'C.UTF-8', 'TZ': 'America/New_York', 'HOME': '/tmp'}
+           'LANG': 'C.UTF-8', 'TZ': 'Asia/Shanghai', 'HOME': '/tmp'}
     args += ['--bind', existing(base + '/authority-data'), '/authority/state',
              '--bind', existing(base + '/ipc/authority'), '/authority/ipc',
              '--bind', existing(base + '/ipc/operator'), '/authority/operator',

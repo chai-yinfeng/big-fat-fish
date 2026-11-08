@@ -1,6 +1,6 @@
 # Authority memory boundary v2 (0.9 content extension; database schema unchanged)
 
-Authority is the independent canonical service. It has no DSH Session, browser, platform SDK or provider dependency. DSH and QQ are optional source/execution adapters, not separate personalities. One SQLite writer may manage multiple isolated companion entities.
+Authority is the independent canonical service. It has no DSH Session, browser, platform SDK or provider dependency. QQ and the console are channel adapters, not separate personalities. One SQLite writer may manage multiple isolated companion entities.
 
 ## Identity and ownership
 

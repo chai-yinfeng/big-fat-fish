@@ -518,11 +518,43 @@ class Deployer:
         return self.health(names)
 
     def restore(self, release, snapshot, failed_units):
+        """Returns (problems, stopped): an unhealthy restore is stopped instead of left in a restart loop."""
         self.system.say('Restoring %s with its unit snapshot %s' % (release, snapshot))
         problems = self.activate(release, self.config.snapshots / snapshot, failed_units)
+        stopped = False
         if problems:
             self.system.say('WARNING: restored release is not healthy either: ' + '; '.join(problems))
-        return problems
+            try:
+                self.stop_all(self.installed_units())
+                stopped = True
+                self.system.say('Stopped all companion units; fix the cause, then run: companion-deploy start')
+            except (DeployError, OSError) as error:
+                problems.append('could not stop companion units: %s' % error)
+                self.system.say('WARNING: could not stop companion units: %s' % error)
+        return problems, stopped
+
+    def remove_failed_release(self, release):
+        """Delete a just-installed release that failed its health check. Returns True if removed.
+
+        Only the exact directory under config.releases, never a symlink and never what `current` names.
+        """
+        path = self.config.releases / release
+        if not RELEASE_PATTERN.match(release) or path.parent != self.config.releases:
+            return False
+        link = self.current_link()
+        if link.is_symlink() and os.readlink(link) == release:
+            return False
+        if path.is_symlink() or not path.is_dir():
+            return False
+        try:
+            # Directories were sealed 0555; make them writable without following symlinks.
+            for _root, _dirs, _files, fd in os.fwalk(path, follow_symlinks=False):
+                os.fchmod(fd, 0o700)
+            shutil.rmtree(path)
+        except OSError as error:
+            self.system.say('WARNING: could not remove failed release %s: %s' % (release, error))
+            return False
+        return True
 
     # retention
     def retain(self, state):
@@ -604,11 +636,18 @@ class Deployer:
             problems = self.activate(top, target / 'ops/isolation/units', previous_units)
             if problems:
                 self.system.say('Health check FAILED: ' + '; '.join(problems))
-                restore_problems = self.restore(active, snapshot, self.installed_units())
+                restore_problems, stopped = self.restore(active, snapshot, self.installed_units())
+                removed_failed = None
+                if self.remove_failed_release(top):
+                    removed_failed = top
+                    state['installed'] = [i for i in state['installed'] if i['release'] != top]
+                    self.system.say('Removed failed release %s' % top)
                 self.log('deploy-failed', release=top, revision=revision, restored=active, problems=problems,
-                         restore_problems=restore_problems)
+                         restore_problems=restore_problems, stopped_units=stopped, removed_failed=removed_failed)
                 self.save_state(state)
-                raise DeployError('deploy of %s failed health check; restored %s' % (top, active))
+                raise DeployError('deploy of %s failed health check; restored %s%s' % (
+                    top, active, '; restored release is unhealthy too, companion units stopped' if stopped else
+                    ('; restored release is unhealthy too' if restore_problems else '')))
             state['previous'] = {'release': active, 'snapshot': snapshot}
             state['current'] = {'release': top}
             removed = self.retain(state)
@@ -695,9 +734,12 @@ class Deployer:
         problems = self.activate(previous['release'], self.config.snapshots / previous['snapshot'], current_units)
         if problems:
             self.system.say('Health check FAILED after rollback: ' + '; '.join(problems))
-            self.restore(active, snapshot, self.installed_units())
-            self.log('rollback-failed', release=previous['release'], restored=active, problems=problems)
-            raise DeployError('rollback to %s failed health check; restored %s' % (previous['release'], active))
+            restore_problems, stopped = self.restore(active, snapshot, self.installed_units())
+            self.log('rollback-failed', release=previous['release'], restored=active, problems=problems,
+                     restore_problems=restore_problems, stopped_units=stopped)
+            raise DeployError('rollback to %s failed health check; restored %s%s' % (
+                previous['release'], active, '; restored release is unhealthy too, companion units stopped' if stopped else
+                ('; restored release is unhealthy too' if restore_problems else '')))
         state['current'] = {'release': previous['release']}
         state['previous'] = {'release': active, 'snapshot': snapshot}
         self.save_state(state)

@@ -162,7 +162,10 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    3082 在监听、约 20 秒内无重启）。全新主机（没有任何 release 与 companion 单元）
    首次 deploy 只安装 release、单元与 current，不启动服务；完成下文一次性初始化后由用户执行
    `sudo companion-deploy start` 启动并做同样的健康检查（失败则再次停止服务）。失败则自动恢复上一个 release 及其 unit
-   快照并以非零退出。只重启 companion 服务和 socket，不碰 NapCat，不重启机器。
+   快照，删除失败的 release 目录（同一个包修好环境后可直接重新 deploy），并以非零退出；
+   若恢复后的 release 也不健康，则停止全部 companion 服务和 socket，不留在重启循环里
+   （rollback 失败同理），排除原因后用 `sudo companion-deploy start`。
+   只重启 companion 服务和 socket，不碰 NapCat，不重启机器。
    保留最近 3 个部署管理的 release 及 current/previous；旧 VM 上的 authority-0.10.0、
    authority-0.9.0 从不删除。日志在 /var/log/companion-deploy.log，摘要在
    /var/log/companion-deploy.status.json（均 root:adm 0640，Agent 可直接 cat）。
@@ -205,8 +208,17 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
 release 不同则部署被拒绝，迁移须另行人工完成。回退只切换代码与 unit，不覆盖
 数据库、人设、记忆或登录态。
 
-一次性维护命令须以 companion 身份运行（需要人类 sudo，并按 AGENTS.md 先获批准）；
-在新布局下的确切调用方式尚未验证：
+一次性维护命令须以 companion 身份运行（需要人类 sudo，并按 AGENTS.md 先获批准）。
+全新主机上用户在自己的账号下执行：
+
+```sh
+# 已在 home-agent 验证：
+sudo -u companion -H bash -c 'cd ~ && N=~/.local/opt/companion/bin/node R=~/src/companion/current/ops && $N $R/bootstrap.mjs && $N $R/prepare-memory.mjs && $N $R/prepare-content.mjs'
+# NapCat prepare：只写配置/token（含 qq-runtime/private/onebot.token），不启动容器；首次 start 前必须运行
+sudo -u companion -H bash -c 'cd ~ && ~/.local/opt/companion/bin/node ~/src/companion/current/deploy/qq/prepare.mjs'
+```
+
+单独运行时的各命令：
 
 ```sh
 # 仅全新数据根不存在时；已有世界禁止重跑 bootstrap：
@@ -219,14 +231,21 @@ release 不同则部署被拒绝，迁移须另行人工完成。回退只切换
 
 全新主机顺序：用户安装私有 Node（deploy/vm/install-runtime.sh，不再安装 DSH/pnpm）→
 首次 `companion-deploy deploy`（不启动服务）→ 以 companion 身份运行 bootstrap、prepare-memory、
-prepare-content → `sudo companion-deploy start`。旧 DSH 会话历史不迁移，长期记忆在 Authority。
+prepare-content 和 NapCat prepare（`deploy/qq/prepare.mjs`，否则 companion-qq 因缺 onebot.token
+反复退出）→ `sudo companion-deploy start`。旧 DSH 会话历史不迁移，长期记忆在 Authority。
 
 首次安装（用户在生产主机上执行一次）：
 
 ```sh
 sudo install -d -o root -g root -m 0700 /var/lib/companion-deploy
+# 二选一。可直连 GitHub 的主机：
 sudo git clone --mirror https://github.com/chai-yinfeng/big-fat-fish.git /var/lib/companion-deploy/mirror.git
+# home-agent 需经本机代理访问 GitHub，写入镜像自身的配置：
+sudo git clone -c http.https://github.com/.proxy=http://127.0.0.1:7890 --mirror https://github.com/chai-yinfeng/big-fat-fish.git /var/lib/companion-deploy/mirror.git
 ```
+
+companion-deploy 运行 git 时设置 GIT_CONFIG_NOSYSTEM 并使用自己的 HOME，只有镜像仓库本地
+配置生效，所以代理必须用 `clone -c` 写进镜像，不能放在 /etc/gitconfig 或 ~/.gitconfig。
 
 之后以及每次 companion-deploy 有改动时，按顺序升级（用户执行；<SHA> 是 main 上
 已审阅的提交，Agent 给出该提交的期望 sha256）：
