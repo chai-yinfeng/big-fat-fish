@@ -11,7 +11,7 @@ export function prepareModel(base = path.join(os.homedir(), '.local/share/compan
   const authority = JSON.parse(fs.readFileSync(authorityPath, 'utf8'));
   const operatorToken = fs.readFileSync(path.join(base, 'operator/console.token'), 'utf8').trim();
   for (const dir of ['model-data', 'ipc/model', 'ipc/model-control']) fs.mkdirSync(path.join(base, dir), { recursive: true, mode: 0o700 });
-  const tokenFile = path.join(base, 'dsh-config/model-gateway.token');
+  const tokenFile = path.join(base, 'service-config/inference.token');
   if (!fs.existsSync(tokenFile)) fs.writeFileSync(tokenFile, randomBytes(32).toString('base64url') + '\n', { flag: 'wx', mode: 0o600 });
   const inferenceToken = fs.readFileSync(tokenFile, 'utf8').trim();
   const hash = value => createHash('sha256').update(value).digest('hex');
@@ -20,7 +20,7 @@ export function prepareModel(base = path.join(os.homedir(), '.local/share/compan
     inferenceSocket: path.join(base, 'ipc/model/inference.sock'),
     controlSocket: path.join(base, 'ipc/model-control/control.sock'),
     inferenceTokenHash: hash(inferenceToken), operatorTokenHash: hash(operatorToken),
-    authority: { socketPath: path.join(base, 'ipc/authority/authority.sock'), tokenFile: path.join(base, 'dsh-config/capability.token') },
+    authority: { socketPath: path.join(base, 'ipc/authority/authority.sock'), tokenFile: path.join(base, 'service-config/health.token') },
   };
   fs.writeFileSync(path.join(base, 'operator/model-gateway.json'), JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
   authority.operator.modelSocketPath = '/authority/model-control/control.sock';

@@ -64,7 +64,7 @@ class Config:
                  log='/var/log/companion-deploy.log', status='/var/log/companion-deploy.status.json',
                  origin=ORIGIN_URL, git_protocol='https', user=SERVICE_USER):
         self.home = Path(home)
-        self.releases = self.home / 'src/dsh-companion'
+        self.releases = self.home / 'src/companion'
         self.units = self.home / '.config/systemd/user'
         self.state_dir = Path(state)
         self.mirror = self.state_dir / 'mirror.git'
@@ -401,7 +401,7 @@ class Deployer:
         unit = self.config.units / 'companion-authority.service'
         if not unit.exists() and not unit.is_symlink() and not (self.config.units.is_dir() and self.installed_units()):
             return None
-        match = re.search(r'%h/src/dsh-companion/(authority-[^/\s]+)/', unit.read_text() if unit.is_file() else '')
+        match = re.search(r'%h/src/companion/(authority-[^/\s]+)/', unit.read_text() if unit.is_file() else '')
         if not match:
             raise DeployError('cannot determine the active release')
         return match.group(1)

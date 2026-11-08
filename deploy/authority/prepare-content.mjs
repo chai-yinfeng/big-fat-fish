@@ -22,8 +22,8 @@ export function prepareContent(base = path.join(os.homedir(), '.local/share/comp
   if (!fs.existsSync(configFile)) fs.writeFileSync(configFile, JSON.stringify({
     store: { root: path.join(base, 'media-data'), ttlMs: 7 * 86400000, maxBytes: 8 * 1024 * 1024 },
     workRoot: path.join(base, 'speech-data'), speechConfigFile: path.join(base, 'operator/speech.json'),
-    authority: { socketPath: path.join(base, 'ipc/authority/authority.sock'), tokenFile: path.join(base, 'dsh-config/capability.token') },
-    gateway: { socketPath: path.join(base, 'ipc/model/inference.sock'), tokenFile: path.join(base, 'dsh-config/model-gateway.token') },
+    authority: { socketPath: path.join(base, 'ipc/authority/authority.sock'), tokenFile: path.join(base, 'service-config/health.token') },
+    gateway: { socketPath: path.join(base, 'ipc/model/inference.sock'), tokenFile: path.join(base, 'service-config/inference.token') },
     sharpModule: path.join(runtime, 'node_modules/sharp'),
     control: { socketPath: path.join(base, 'ipc/content/content.sock'), tokenFile },
   }, null, 2) + '\n', { mode: 0o600, flag: 'wx' });

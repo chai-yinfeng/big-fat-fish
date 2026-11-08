@@ -26,7 +26,6 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       world: authority.worldStatus(), persona: { revision: state.personaRevision, value: state.persona },
       counts: { facts: state.facts.length, notes: state.notes.length, experiences: state.experiences.length, pending: authority.health().pending },
       channels: [
-        { id: 'dsh-test', name: 'DSH 测试对话', status: 'available', enabled: true, boundStreams: bindings.filter(row => row.sourceId === 'dsh-test').length },
         { id: 'qq', name: 'QQ', status: qq === null ? 'error' : !qq ? 'not_configured' : !qq.loggedIn ? 'waiting_login' : !qq.configured ? 'not_configured' : qq.connected ? 'ready' : 'disconnected', enabled: Boolean(qq?.configured && qq.loggedIn && qq.connected), boundStreams: bindings.filter(row => row.sourceId === 'qq').length },
       ], bindings, model: modelControl ? await modelControl('/model', undefined, authorization) : { provider: 'deepseek', model: 'deepseek-flash', configured: false, status: 'unconfigured' },
     };
@@ -119,10 +118,6 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         object(body, ['entityId', 'expectedRevision', 'patch']);
         object(body.patch, ['name', 'identity', 'traits', 'speechStyle', 'boundaries', 'principles']);
         value = authority.revisePersona({ ...body, reason: 'Explicit world console edit' });
-      } else if (req.url === '/test-conversations') {
-        object(body, ['conversationId']);
-        authority.bindStream({ capabilityId: 'dsh-test', streamId: body.conversationId, personId: 'person:owner', audience: 'private' });
-        value = { sourceId: 'dsh-test', conversationId: body.conversationId, personId: 'person:owner' };
       } else { respond(404, { ok: false, error: { code: 'NOT_FOUND', message: 'Unknown console operation' } }); return; }
       respond(200, { ok: true, value });
     } catch (error) {

@@ -53,7 +53,7 @@ function walk(root, skip = () => false) {
   return out;
 }
 
-const TOKENS = ['operator/admin.token', 'operator/console.token', 'dsh-config/capability.token', 'dsh-config/model-gateway.token', 'qq-worker/capability.token', 'conversation-config/caller.token', 'authority-content/control.token', 'qq-runtime/private/onebot.token'];
+const TOKENS = ['operator/admin.token', 'operator/console.token', 'service-config/health.token', 'service-config/inference.token', 'qq-worker/capability.token', 'conversation-config/caller.token', 'authority-content/control.token', 'qq-runtime/private/onebot.token'];
 function secrets(base) {
   const read = relative => fs.readFileSync(path.join(base, relative), 'utf8');
   const memory = fs.readdirSync(path.join(base, 'memory-config')).filter(name => name.endsWith('.token')).map(name => 'memory-config/' + name);
@@ -91,11 +91,11 @@ test('rotation replaces every token and hash, preserves unrelated data, keeps a 
   const authority = read('operator/authority.json'), gateway = read('operator/model-gateway.json'), qq = read('operator/qq-bridge.json');
   const console_ = sha(now.tokens['operator/console.token']);
   assert.equal(authority.operator.tokenHash, console_); assert.equal(gateway.operatorTokenHash, console_); assert.equal(qq.operatorTokenHash, console_);
-  assert.equal(gateway.inferenceTokenHash, sha(now.tokens['dsh-config/model-gateway.token']));
+  assert.equal(gateway.inferenceTokenHash, sha(now.tokens['service-config/inference.token']));
   assert.equal(read('operator/conversation.json').callerTokenHash, sha(now.tokens['conversation-config/caller.token']));
   const credential = predicate => authority.credentials.find(predicate).hash;
   assert.equal(credential(row => row.role === 'admin'), sha(now.tokens['operator/admin.token']));
-  assert.equal(credential(row => row.capabilityId === 'dsh-test'), sha(now.tokens['dsh-config/capability.token']));
+  assert.equal(credential(row => row.capabilityId === 'health'), sha(now.tokens['service-config/health.token']));
   assert.equal(credential(row => row.capabilityId === 'qq'), sha(now.tokens['qq-worker/capability.token']));
   assert.equal(credential(row => row.role === 'maintenance'), sha(now.tokens[now.memory[0]]));
   // Plain-value consumers.

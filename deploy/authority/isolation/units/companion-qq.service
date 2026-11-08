@@ -5,7 +5,7 @@ After=companion-authority.service companion-conversation.service
 
 [Service]
 Type=exec
-ExecStart=%h/.local/opt/companion/bin/node %h/src/dsh-companion/current/capabilities/qq/main.mjs --config %h/.local/share/companion-world-v1/operator/qq-bridge.json
+ExecStart=%h/.local/opt/companion/bin/node %h/src/companion/current/capabilities/qq/main.mjs --config %h/.local/share/companion-world-v1/operator/qq-bridge.json
 UMask=0077
 NoNewPrivileges=true
 KillMode=control-group

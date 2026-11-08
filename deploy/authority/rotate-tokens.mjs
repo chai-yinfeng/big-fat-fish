@@ -40,10 +40,10 @@ export const INVENTORY = [
       { file: 'operator/qq-bridge.json', field: 'operatorTokenHash', check: (json, hash) => json.operatorTokenHash === hash },
     ],
     readers: ['memory worker (memory-worker.json operatorTokenFile)', 'purge-execution.mjs', 'deploy/qq/*', 'open-world.mjs', 'browser console sessionStorage (re-enter)'] },
-  { file: 'dsh-config/capability.token', format: 'base64url',
+  { file: 'service-config/health.token', format: 'base64url',
     hashes: [{ file: 'operator/authority.json', field: 'credentials[role=capability,capabilityId!=qq].hash', check: credentialCount(row => row.role === 'capability' && row.capabilityId !== 'qq') }],
     readers: ['content.json authority.tokenFile', 'model-gateway.json authority.tokenFile'] },
-  { file: 'dsh-config/model-gateway.token', format: 'base64url', optional: true,
+  { file: 'service-config/inference.token', format: 'base64url', optional: true,
     hashes: [{ file: 'operator/model-gateway.json', field: 'inferenceTokenHash', check: (json, hash) => json.inferenceTokenHash === hash }],
     readers: ['conversation.json gateway.tokenFile', 'content.json gateway.tokenFile', 'memory-worker.json gateway.tokenFile'] },
   { file: 'qq-worker/capability.token', format: 'base64url', optional: true,
@@ -66,7 +66,7 @@ export const INVENTORY = [
 ];
 
 // Directories whose files must not retain any old value afterwards (top level only).
-const SCAN_DIRS = ['operator', 'dsh-config', 'qq-worker', 'conversation-config', 'memory-config', 'authority-content', 'qq-runtime', 'qq-runtime/private', 'qq-runtime/data/config'];
+const SCAN_DIRS = ['operator', 'service-config', 'qq-worker', 'conversation-config', 'memory-config', 'authority-content', 'qq-runtime', 'qq-runtime/private', 'qq-runtime/data/config'];
 const SOCKETS = ['ipc/authority/authority.sock', 'ipc/operator/operator.sock', 'ipc/model/inference.sock', 'ipc/model-control/control.sock', 'ipc/qq-control/control.sock', 'ipc/content/content.sock', 'ipc/conversation/execute.sock'];
 const PORTS = [3001, 6099, 3082];
 

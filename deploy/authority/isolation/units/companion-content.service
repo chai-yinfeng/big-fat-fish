@@ -5,7 +5,7 @@ After=companion-authority.service companion-model.service
 
 [Service]
 Type=exec
-ExecStart=%h/.local/opt/companion/bin/node %h/src/dsh-companion/current/capabilities/media/main.mjs --config %h/.local/share/companion-world-v1/operator/content.json
+ExecStart=%h/.local/opt/companion/bin/node %h/src/companion/current/capabilities/media/main.mjs --config %h/.local/share/companion-world-v1/operator/content.json
 UMask=0077
 NoNewPrivileges=true
 KillMode=control-group

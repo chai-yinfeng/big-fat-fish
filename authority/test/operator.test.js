@@ -11,8 +11,6 @@ import { createOperatorServer } from '../src/operator.js';
 test('operator UI uses its separate credential and real world/persona operations', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'world-operator-'));
   const authority = new Authority({ file: path.join(dir, 'world.sqlite'), initialPaused: true });
-  authority.registerCapability({ id: 'dsh-test', policy: 'conversation.v1' });
-  authority.bindActor({ capabilityId: 'dsh-test', externalActorId: 'test-owner', personId: 'person:owner' });
   const token = 'o'.repeat(43), socketPath = path.join(dir, 'operator.sock');
   let resumed = 0;
   const app = createOperatorServer({ authority, socketPath, tokenHash: createHash('sha256').update(token).digest('hex'), origins: ['http://127.0.0.1:3081'], onResume: () => { resumed++; } });
@@ -27,13 +25,14 @@ test('operator UI uses its separate credential and real world/persona operations
   const first = await call('GET', '/world');
   assert.equal(first.cors, 'http://127.0.0.1:3081');
   assert.equal(first.body.value.world.paused, true);
-  assert.equal(first.body.value.channels[1].status, 'not_configured');
+  assert.deepEqual(first.body.value.channels.map(channel => channel.id), ['qq']);
+  assert.equal(first.body.value.channels[0].status, 'not_configured');
   assert.equal((await call('POST', '/world/pause', { paused: false })).body.value.paused, false);
   assert.equal(resumed, 1);
   assert.equal((await call('POST', '/world/pause', { paused: true, expectedRevision: 1 })).status, 409);
   assert.equal((await call('POST', '/world/pause', { paused: true })).body.value.paused, true);
-  assert.equal((await call('POST', '/test-conversations', { conversationId: 'test-first' })).body.value.sourceId, 'dsh-test');
+  assert.equal((await call('POST', '/test-conversations', { conversationId: 'test-first' })).status, 404);
   const edited = await call('POST', '/persona', { patch: { name: '大肥鱼' } });
   assert.equal(edited.body.value.personaRevision, 2);
-  assert.equal((await call('GET', '/world')).body.value.bindings.length, 1);
+  assert.equal((await call('GET', '/world')).body.value.bindings.length, 0);
 });

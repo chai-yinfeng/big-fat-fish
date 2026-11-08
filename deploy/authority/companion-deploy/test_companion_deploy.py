@@ -85,7 +85,7 @@ class Fixture(unittest.TestCase):
         home = self.root / 'home'
         home.mkdir()
         if not self.fresh:
-            (home / 'src/dsh-companion').mkdir(parents=True)
+            (home / 'src/companion').mkdir(parents=True)
             (home / '.config/systemd/user').mkdir(parents=True)
         self.config = cd.Config(home=home, state=self.root / 'state', log=self.root / 'deploy.log',
                                 status=self.root / 'deploy.status.json',
@@ -94,12 +94,12 @@ class Fixture(unittest.TestCase):
         self.deployer = cd.Deployer(self.config, self.system)
         # Legacy layout: versioned dirs, units hard-coded to authority-0.10.0, no `current`.
         for legacy in () if self.fresh else ('authority-0.10.0', 'authority-0.9.0'):
-            store = home / 'src/dsh-companion' / legacy / 'authority/src/store.js'
+            store = home / 'src/companion' / legacy / 'authority/src/store.js'
             store.parent.mkdir(parents=True)
             store.write_text('export const SCHEMA_VERSION = 2;\n')
         self.legacy_units = {}
         for unit in [] if self.fresh else sorted(UNITS.iterdir()):
-            text = unit.read_text().replace('%h/src/dsh-companion/current/', '%h/src/dsh-companion/authority-0.10.0/')
+            text = unit.read_text().replace('%h/src/companion/current/', '%h/src/companion/authority-0.10.0/')
             (self.config.units / unit.name).write_text(text)
             self.legacy_units[unit.name] = text
         # Origin with a main history and an unpublished side commit.
@@ -207,7 +207,7 @@ class ExtractTests(Fixture):
 class DeployTests(Fixture):
     def test_repository_units_follow_current_not_a_version(self):
         for unit in UNITS.iterdir():
-            self.assertNotRegex(unit.read_text(), r'dsh-companion/authority-')
+            self.assertNotRegex(unit.read_text(), r'src/companion/authority-')
 
     def test_manifest_mismatch_extra_and_missing_files_are_refused(self):
         for mutate, message in [(lambda t: (t / 'package.json').write_text('{"evil":1}\n'), 'sha256 mismatch'),
@@ -252,7 +252,7 @@ class DeployTests(Fixture):
         tarball, name = self.release(self.commits[1])
         self.assertEqual(self.deployer.deploy(tarball), name)
         self.assertEqual(self.current(), name)
-        self.assertTrue(all('dsh-companion/current/' in t or 'dsh-companion' not in t for t in self.units().values()))
+        self.assertTrue(all('src/companion/current/' in t or 'src/companion' not in t for t in self.units().values()))
         release = self.config.releases / name
         self.assertEqual(release.stat().st_mode & 0o777, 0o555)
         self.assertEqual((release / 'package.json').stat().st_mode & 0o777, 0o444)

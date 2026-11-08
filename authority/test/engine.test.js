@@ -174,15 +174,15 @@ test('learning source is external not a human alias, self knowledge cannot retri
 
 test('assistant self notes do not require a fake human alias', t => {
   const { a } = fixture(t);
-  const assistant = observe(a, { actorId: 'dsh:model', role: 'assistant' });
+  const assistant = observe(a, { actorId: 'conversation:model', role: 'assistant' });
   submit(a, assistant, { type: 'self.note', payload: { text: 'MODEL_SELF_NOTE', kind: 'outer', quote: 'tea' } });
   submit(a, assistant, { proposalId: 'assistant-fact' });
   assert.deepEqual(a.processPending().map(r => r.status), ['accepted', 'rejected']);
   assert.match(a.context('chat', { streamId: 'two' }).text, /MODEL_SELF_NOTE/);
   assert.doesNotMatch(a.context('chat', { streamId: 'bob' }).text, /MODEL_SELF_NOTE/);
-  assert.ok(!a.snapshot().actors.some(alias => alias.externalActorId === 'dsh:model'));
+  assert.ok(!a.snapshot().actors.some(alias => alias.externalActorId === 'conversation:model'));
   for (const streamId of ['unbound', 'group']) {
-    const denied = observe(a, { role: 'assistant', actorId: 'dsh:model', streamId, eventId: streamId });
+    const denied = observe(a, { role: 'assistant', actorId: 'conversation:model', streamId, eventId: streamId });
     submit(a, denied, { proposalId: streamId, type: 'self.note', payload: { text: 'denied note', kind: 'outer', quote: 'tea' } });
   }
   assert.ok(a.processPending().every(receipt => receipt.status === 'rejected'));

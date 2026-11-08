@@ -19,11 +19,11 @@ class ContractTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         for part in ['base/authority-data', 'base/ipc/authority', 'base/ipc/operator',
                      'base/ipc/model-control', 'base/ipc/qq-control', 'base/ipc/model',
-                     'base/operator', 'base/dsh-config', 'base/conversation-data',
+                     'base/operator', 'base/service-config', 'base/conversation-data',
                      'release', 'runtime', 'ops']:
             (self.root / part).mkdir(parents=True, exist_ok=True)
         (self.root / 'base/operator/authority.json').write_text('{}')
-        (self.root / 'base/dsh-config/model-gateway.token').write_text('synthetic\n')
+        (self.root / 'base/service-config/inference.token').write_text('synthetic\n')
         self.parameters = [str(self.root / p) for p in ['base', 'release', 'runtime', 'ops']]
 
     def command(self, role, arguments=()):
@@ -59,7 +59,7 @@ class ContractTests(unittest.TestCase):
     def test_authority_mounts_never_include_capability_or_admin(self):
         command = self.command('authority')
         sources = [m[1] for m in self.mounts(command)]
-        self.assertNotIn(str(self.root / 'base/dsh-config'), sources)
+        self.assertNotIn(str(self.root / 'base/service-config'), sources)
         self.assertNotIn(str(self.root / 'base/conversation-data'), sources)
         self.assertNotIn(str(self.root / 'base/operator'), sources)
         self.assertNotIn(str(self.root / 'ops'), sources)
@@ -94,11 +94,12 @@ class ContractTests(unittest.TestCase):
         self.assertFalse([name for name in units if 'dsh' in name])
         self.assertNotIn('3081', ''.join(units.values()))
         conversation = units['companion-conversation.service']
-        for line in ['Requires=companion-authority.service companion-model.service', 'NoNewPrivileges=true', 'ProtectSystem=strict',
-                     'ReadWritePaths=%h/.local/share/companion-world-v1/conversation-data %h/.local/share/companion-world-v1/ipc/conversation',
-                     'PrivateNetwork=true', 'RestrictAddressFamilies=AF_UNIX']:
+        for line in ['Requires=companion-authority.service companion-model.service', 'NoNewPrivileges=true',
+                     'RestrictAddressFamilies=AF_UNIX', 'SystemCallArchitectures=native']:
             self.assertIn(line, conversation)
-        self.assertNotIn('bwrap', conversation)
+        # Namespace/mount options are skipped by an unprivileged user manager; do not imply them.
+        for option in ['ProtectSystem=', 'ReadWritePaths=', 'InaccessiblePaths=', 'PrivateTmp=', 'PrivateNetwork=', 'PrivateUsers=', 'bwrap']:
+            self.assertNotIn(option, conversation)
         self.assertIn('Requires=companion-authority.service companion-conversation.service', units['companion-qq.service'])
         self.assertNotIn('ExecStartPre', units['companion-qq.service'])
 
