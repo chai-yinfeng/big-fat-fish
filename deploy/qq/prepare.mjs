@@ -7,10 +7,14 @@ import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 export const IMAGE = 'mlikiowa/napcat-docker:v4.18.42@sha256:696e9574a0f6fb2f86cbecba8a32048f2a5823117dc9b13c6c02637ad890fa8b';
+// The pinned digest is a multi-arch OCI index; compose selects the host's platform.
+export const PLATFORMS = { arm64: 'linux/arm64', x64: 'linux/amd64' };
 export const defaultRuntime = () => path.join(os.homedir(), '.local/share/companion-world-v1/qq-runtime');
 const tokenValid = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 
-export function renderFiles({ webuiToken, onebotToken, uid, gid }) {
+export function renderFiles({ webuiToken, onebotToken, uid, gid, arch = process.arch }) {
+  const platform = PLATFORMS[arch];
+  if (!platform) throw new Error('UNSUPPORTED_ARCH');
   if (!tokenValid(webuiToken) || !tokenValid(onebotToken) || webuiToken === onebotToken) throw new Error('INVALID_TOKENS');
   if (![uid, gid].every(value => Number.isSafeInteger(value) && value > 0)) throw new Error('NON_ROOT_OPERATOR_REQUIRED');
   // Official NapCat-Docker templates/templates/ws.json, with only token changed.
@@ -32,7 +36,7 @@ export function renderFiles({ webuiToken, onebotToken, uid, gid }) {
 services:
   napcat:
     image: ${IMAGE}
-    platform: linux/arm64
+    platform: ${platform}
     restart: unless-stopped
     env_file:
       - ./private/napcat.env
@@ -48,7 +52,7 @@ services:
     logging:
       driver: "none"
 `,
-    'prepared.json': JSON.stringify({ schema: 1, image: IMAGE, platform: 'linux/arm64' }, null, 2) + '\n',
+    'prepared.json': JSON.stringify({ schema: 1, image: IMAGE, platform }, null, 2) + '\n',
   };
 }
 
@@ -74,7 +78,7 @@ function privateFile(file) {
 }
 
 export function prepare(runtime = defaultRuntime()) {
-  if (process.platform !== 'linux' || process.arch !== 'arm64' || !process.getuid?.()) throw new Error('RUN_AS_NON_ROOT_ON_ARM64_LINUX_VM');
+  if (process.platform !== 'linux' || !PLATFORMS[process.arch] || !process.getuid?.()) throw new Error('RUN_AS_NON_ROOT_ON_ARM64_OR_X64_LINUX');
   runtime = path.resolve(runtime);
   ensureDirectory(runtime, true);
   const existing = fs.readdirSync(runtime);
@@ -99,5 +103,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process
   try {
     if (process.argv.length !== 2) throw new Error('USAGE_NODE_PREPARE_MJS');
     process.stdout.write(JSON.stringify(prepare()) + '\n');
-  } catch { process.stderr.write('QQ preparation refused; check VM architecture, non-root ownership, and whether qq-runtime is incomplete or already configured. No service was started.\n'); process.exitCode = 1; }
+  } catch { process.stderr.write('QQ preparation refused; check host architecture (arm64/x64), non-root ownership, and whether qq-runtime is incomplete or already configured. No service was started.\n'); process.exitCode = 1; }
 }

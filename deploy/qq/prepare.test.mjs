@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { IMAGE, renderFiles } from './prepare.mjs';
+import { IMAGE, PLATFORMS, renderFiles } from './prepare.mjs';
 
-const options = () => ({ webuiToken: 'a'.repeat(64), onebotToken: 'b'.repeat(64), uid: 1000, gid: 1000 });
+const options = () => ({ webuiToken: 'a'.repeat(64), onebotToken: 'b'.repeat(64), uid: 1000, gid: 1000, arch: 'arm64' });
 
-test('prepare content pins arm64 release, loopback ports, and exactly three dedicated mounts', () => {
+test('prepare content pins the release, loopback ports, and exactly three dedicated mounts', () => {
   const files = renderFiles(options());
   const compose = files['compose.yaml'];
   assert.ok(IMAGE.startsWith('mlikiowa/napcat-docker:v4.18.42@sha256:'));
@@ -16,6 +16,17 @@ test('prepare content pins arm64 release, loopback ports, and exactly three dedi
   assert.ok(!/privileged|docker\.sock|network_mode|modelKey|dsh-home|authority/.test(compose));
   assert.ok(!compose.includes(options().webuiToken));
   assert.ok(!compose.includes(options().onebotToken));
+});
+
+test('compose platform follows the host architecture with the same multi-arch digest', () => {
+  for (const [arch, platform] of [['arm64', 'linux/arm64'], ['x64', 'linux/amd64']]) {
+    const files = renderFiles({ ...options(), arch });
+    assert.ok(files['compose.yaml'].includes(`image: ${IMAGE}\n    platform: ${platform}\n`));
+    assert.equal((files['compose.yaml'].match(/platform:/g) || []).length, 1);
+    assert.deepEqual(JSON.parse(files['prepared.json']), { schema: 1, image: IMAGE, platform });
+  }
+  assert.equal(renderFiles({ ...options(), arch: undefined })['compose.yaml'].includes(`platform: ${PLATFORMS[process.arch]}`), Boolean(PLATFORMS[process.arch]));
+  assert.throws(() => renderFiles({ ...options(), arch: 'ia32' }), /UNSUPPORTED_ARCH/);
 });
 
 test('official ws template is authenticated before first login without an invented env', () => {
