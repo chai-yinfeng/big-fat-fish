@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { renderPersona } from '../../core/src/persona.js';
 
 const CUT = '…[截断]';
@@ -28,9 +29,13 @@ function allocate(demands, budget) {
 export function memoryContent(entry) {
   return [entry.key, entry.value, entry.summary, entry.text].filter(value => typeof value === 'string').join(' ');
 }
+/** Stable opaque label for a person. The model never sees raw person IDs (or "owner"). */
+export function opaquePerson(personId) {
+  return `p-${createHash('sha256').update(String(personId)).digest('hex').slice(0, 6)}`;
+}
 function memoryLine(entry) {
   const content = entry.attribution === 'reported'
-    ? `Reported by ${entry.personId} (unverified): ${entry.key}: ${entry.value}`
+    ? `Reported by ${opaquePerson(entry.personId)} (unverified): ${entry.key}: ${entry.value}`
     : entry.summary ?? entry.text;
   // Quoted structured data, never a free-standing instruction contribution.
   return JSON.stringify({ content, policy: entry.policy, evidence: entry.evidence });

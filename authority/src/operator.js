@@ -29,6 +29,8 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       channels: [
         { id: 'qq', name: 'QQ', status: qq === null ? 'error' : !qq ? 'not_configured' : !qq.loggedIn ? 'waiting_login' : !qq.configured ? 'not_configured' : qq.connected ? 'ready' : 'disconnected', enabled: Boolean(qq?.configured && qq.loggedIn && qq.connected), boundStreams: bindings.filter(row => row.sourceId === 'qq').length },
       ], bindings, model: modelControl ? await modelControl('/model', undefined, authorization) : { provider: 'deepseek', model: 'deepseek-flash', configured: false, status: 'unconfigured' },
+      // Today's spend (Beijing day) from the model gateway; null when unavailable.
+      spend: modelControl ? await modelControl('/spend', undefined, authorization).catch(() => null) : null,
     };
   }
   const server = http.createServer({ maxHeaderSize: 8192 }, async (req, res) => {
@@ -65,6 +67,15 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       }
       if (req.method === 'GET' && req.url === '/memory/cleanup/pending') { respond(200, { ok: true, value: authority.cleanupPending() }); return; }
       if (req.method === 'GET' && req.url === '/world') { respond(200, { ok: true, value: await overview(req.headers.authorization) }); return; }
+      if (req.method === 'GET' && req.url === '/people') {
+        const qq = qqControl ? await qqControl('/qq/people', undefined, req.headers.authorization).catch(() => null) : null;
+        respond(200, { ok: true, value: { ...authority.listPeople(), qq } }); return;
+      }
+      if (req.method === 'GET' && req.url === '/conversations') { respond(200, { ok: true, value: authority.listConversations() }); return; }
+      if (req.method === 'GET' && req.url === '/spend') {
+        if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
+        respond(200, { ok: true, value: await modelControl('/spend', undefined, req.headers.authorization) }); return;
+      }
       if (req.method === 'GET' && req.url === '/qq' && qqControl) { respond(200, { ok: true, value: await qqControl('/qq', undefined, req.headers.authorization) }); return; }
       if (req.method === 'GET' && req.url === '/runtime') {
         if (!contentOperator) throw Object.assign(new Error('Content runtime unavailable'), { statusCode: 503 });
@@ -103,6 +114,10 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         value = authority.setWorldPaused(body);
         if (!value.paused) onResume();
         else if (modelControl) await modelControl('/cancel', {}, req.headers.authorization);
+      } else if (req.url === '/spend/settings') {
+        object(body, ['dailyCapYuan', 'reducedPercent', 'restrictedPercent']);
+        if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
+        value = await modelControl('/spend/settings', body, req.headers.authorization);
       } else if (req.url === '/model' || req.url === '/model/test') {
         object(body, req.url === '/model' ? ['model', 'apiKey'] : []);
         if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });

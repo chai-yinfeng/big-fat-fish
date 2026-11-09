@@ -2,7 +2,7 @@ import http from 'node:http';
 import path from 'node:path';
 
 // This socket is mounted to the human control plane, never to model workers.
-export function createModelControlClient(socketPath, routes = ['/model', '/model/test', '/cancel']) {
+export function createModelControlClient(socketPath, routes = ['/model', '/model/test', '/cancel', '/spend', '/spend/settings']) {
   if (!path.isAbsolute(socketPath)) throw new Error('MODEL_CONTROL_CONFIG');
   return (route, body, authorization) => new Promise((resolve, reject) => {
     if (!routes.includes(route)) return reject(new Error('MODEL_CONTROL_ROUTE'));

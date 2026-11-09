@@ -3,12 +3,13 @@ import { Store, DEFAULT_ENTITY_ID } from './store.js';
 import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
 import { POLICIES, validatePayload, review } from './policies.js';
 import { normalizePersona, validatePersonaPatch } from '../../core/src/persona.js';
-import { renderContext, DEFAULT_CONTEXT_CHARS, personaShare, personaContextText } from './context.js';
+import { renderContext, DEFAULT_CONTEXT_CHARS, personaShare, personaContextText, opaquePerson } from './context.js';
 import { MemoryDomain } from './memory.js';
 export {
   DEFAULT_ENTITY_ID
 }
 from './store.js';
+export const MAX_ADMITTED_PEOPLE = 40;
 export class Authority extends MemoryDomain {
   constructor(options){
     super();
@@ -126,6 +127,54 @@ export class Authority extends MemoryDomain {
       };
     });
   }
+  /** QQ-only: admit a bot friend as `person:qq:<uid>` with its own private conversation.
+   * The QQ worker decides friendship (same trust boundary as actor IDs); the bot
+   * account comes from the owner's existing binding, never from the request. */
+  admitPerson(capabilityId,input){
+    closed(input,['uid']);
+    if(typeof input.uid!=='string'||!/^[1-9]\d{0,19}$/.test(input.uid))fail('VALIDATION_ERROR','Invalid QQ account');
+    const registered=capability(this.store,capabilityId);
+    if(capabilityId!=='qq'||registered.policy!=='conversation.v1')fail('FORBIDDEN','Admission is QQ-only',403);
+    return this.store.transaction(()=>{
+      const owner=this.store.db.prepare("SELECT a.actor_id AS actorId,s.entity_id AS entityId FROM actors a LEFT JOIN streams s ON s.capability_id=a.capability_id AND s.person_id=a.person_id AND s.audience='private' WHERE a.capability_id=? AND a.person_id='person:owner' ORDER BY a.rowid DESC").all(capabilityId)
+        .map(row=>({...row,match:/^qq:([1-9]\d{0,19}):user:[1-9]\d{0,19}$/.exec(row.actorId)})).find(row=>row.match);
+      if(!owner)fail('CONFLICT','Bind the owner before admitting people',409);
+      const self=owner.match[1],actorId=`qq:${self}:user:${input.uid}`,streamId=`qq:${self}:private:${input.uid}`,entityId=owner.entityId??DEFAULT_ENTITY_ID;
+      const actor=this.store.db.prepare('SELECT person_id FROM actors WHERE capability_id=? AND actor_id=?').get(capabilityId,actorId),
+      stream=this.store.db.prepare('SELECT person_id,audience FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId,streamId);
+      const personId=actor?.person_id??`person:qq:${input.uid}`;
+      if(stream&&(stream.person_id!==personId||stream.audience!=='private'))fail('CONFLICT','Conversation binding conflicts',409);
+      if(actor&&stream)return{personId,streamId,admitted:false};
+      if(!actor){
+        const count=this.store.db.prepare("SELECT COUNT(DISTINCT person_id) AS n FROM actors WHERE capability_id=? AND person_id LIKE 'person:qq:%'").get(capabilityId).n;
+        if(count>=MAX_ADMITTED_PEOPLE)fail('PEOPLE_LIMIT','Admitted people limit reached',409);
+        this.store.db.prepare('INSERT INTO actors VALUES(?,?,?)').run(capabilityId,actorId,personId);
+      }
+      if(!stream)this.store.db.prepare('INSERT INTO streams VALUES(?,?,?,?,?)').run(capabilityId,streamId,personId,'private',entityId);
+      this.adminAudit('person.admit',{capabilityId,personId,actorId,streamId,entityId});
+      return{personId,streamId,admitted:true};
+    });
+  }
+  /** Operator-only listing: people derived from actor bindings (no persons table). */
+  listPeople(){
+    this.store.check();
+    const people=new Map();
+    for(const row of this.store.db.prepare('SELECT capability_id AS capabilityId,actor_id AS externalActorId,person_id AS personId FROM actors ORDER BY rowid').all()){
+      if(!people.has(row.personId))people.set(row.personId,{personId:row.personId,label:opaquePerson(row.personId),owner:row.personId==='person:owner',actors:[],conversations:0});
+      people.get(row.personId).actors.push({capabilityId:row.capabilityId,externalActorId:row.externalActorId});
+    }
+    for(const row of this.store.db.prepare('SELECT person_id AS personId,COUNT(*) AS n FROM streams GROUP BY person_id').all())if(people.has(row.personId))people.get(row.personId).conversations=row.n;
+    return{people:[...people.values()],limit:MAX_ADMITTED_PEOPLE,admitted:[...people.keys()].filter(id=>id.startsWith('person:qq:')).length};
+  }
+  /** Operator-only listing of bound conversations with their activity and memory epoch. */
+  listConversations(){
+    this.store.check();
+    return this.store.db.prepare(`SELECT s.capability_id AS capabilityId,s.stream_id AS streamId,s.person_id AS personId,s.audience,s.entity_id AS entityId,
+      (SELECT COUNT(*) FROM observations o WHERE o.capability_id=s.capability_id AND o.stream_id=s.stream_id AND o.forgotten=0) AS messages,
+      (SELECT MAX(json_extract(o.body,'$.at')) FROM observations o WHERE o.capability_id=s.capability_id AND o.stream_id=s.stream_id) AS lastAt
+      FROM streams s ORDER BY s.capability_id,s.stream_id`).all().map(row=>({...row,label:opaquePerson(row.personId),owner:row.personId==='person:owner',memoryEpoch:this.streamEpoch(this.entity(row.entityId),row.capabilityId,row.streamId)}))
+      .sort((a,b)=>(b.lastAt??0)-(a.lastAt??0));
+  }
   adminAudit(type,input){
     this.store.audit({
       type,...input,revision:this.store.nextRevision(),at:this.now()
@@ -166,14 +215,14 @@ export class Authority extends MemoryDomain {
     closed(input, ['streamId', 'memoryEpoch', 'sourceEventId'], ['streamId', 'memoryEpoch']);
     identifier(input.streamId); integer(input.memoryEpoch);
     if (capability(this.store, capabilityId).policy !== 'conversation.v1') fail('FORBIDDEN', 'Content capability is not granted', 403);
-    const scope = contextScope(this.store, capabilityId, input.streamId), entity = this.entity(scope.entityId), world = this.worldStatus();
-    if (world.paused || entity.memory_epoch !== input.memoryEpoch) fail('CONFLICT', 'Content scope is paused or retired', 409);
+    const scope = contextScope(this.store, capabilityId, input.streamId), entity = this.entity(scope.entityId), world = this.worldStatus(), memoryEpoch = this.streamEpoch(entity, capabilityId, input.streamId);
+    if (world.paused || memoryEpoch !== input.memoryEpoch) fail('CONFLICT', 'Content scope is paused or retired', 409);
     if (input.sourceEventId !== undefined) {
       identifier(input.sourceEventId);
       const source = this.store.db.prepare('SELECT body,forgotten FROM observations WHERE capability_id=? AND stream_id=? AND event_id=?').get(capabilityId, input.streamId, input.sourceEventId);
       if (!source || source.forgotten || !resolveIdentity(this.store, capabilityId, JSON.parse(source.body)).confirmed) fail('FORBIDDEN', 'Content source is unavailable', 403);
     }
-    return { ...scope, capabilityId, memoryEpoch: entity.memory_epoch, worldRevision: world.revision };
+    return { ...scope, capabilityId, memoryEpoch, worldRevision: world.revision };
   }
   observe(capabilityId,input){
     capability(this.store,capabilityId);
@@ -319,7 +368,7 @@ export class Authority extends MemoryDomain {
     return{
       revision:this.store.get('revision'),
       entityId:e.id,
-      memoryEpoch:e.memory_epoch,
+      memoryEpoch:this.streamEpoch(e,capabilityId,input.streamId),
       personaRevision:e.persona_revision,
       text:renderContext(JSON.parse(e.persona),rows,budget),
       scope,
