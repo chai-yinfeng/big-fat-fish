@@ -61,6 +61,14 @@ export function createGatewayStream({ socketPath, tokenFile }) {
     if (!/^[A-Za-z0-9_-]{32,256}$/.test(value)) throw fail('GATEWAY_CREDENTIAL_UNAVAILABLE');
     return value;
   };
+  // Report the gateway's fixed refusal code (429 BUDGET_EXHAUSTED) to the run; body bytes are untouched.
+  const observed = report => async (input, init) => {
+    const response = await fetch(input, init);
+    if (response.status === 429) {
+      try { const code = (await response.clone().json())?.error?.code; if (typeof code === 'string' && /^[A-Z_]{1,64}$/.test(code)) report(code); } catch {}
+    }
+    return response;
+  };
   // No provider retries: a retried completion may be billed twice.
-  return { model, streamFn: (m, context, options) => models.streamSimple(m, context, { ...options, apiKey: token(), fetch, maxRetries: 0 }) };
+  return { model, streamFn: (m, context, { gatewayFailure, ...options } = {}) => models.streamSimple(m, context, { ...options, apiKey: token(), fetch: typeof gatewayFailure === 'function' ? observed(gatewayFailure) : fetch, maxRetries: 0 }) };
 }

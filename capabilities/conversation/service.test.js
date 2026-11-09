@@ -44,6 +44,9 @@ test('plain reply: Authority context in the system prompt, real-input query, pri
   assert.match(body.messages[0].content, /大肥鱼，说话简短/); assert.match(body.messages[0].content, /revision=3; personaRevision=2/);
   assert.match(body.messages[0].content, /2026-11-01T00:00:00.000Z/); assert.match(body.messages[0].content, /obs-1/);
   assert.match(body.messages[0].content, /对方想听你说话时，你的回复会用你自己的声音以语音发出/);
+  // Several private chats, each independent; the model never sees "owner" or raw person IDs.
+  assert.match(body.messages[0].content, /每段私聊都是独立的/);
+  assert.doesNotMatch(JSON.stringify(body), /owner|person:/i);
   assert.deepEqual(contexts(f.authority.state).map(r => r.body), [{ streamId: scope.streamId, query: '你好', budgetChars: 4000 }]);
   const file = path.join(f.sessionsDir, conversationSessionId(scope.streamId, 0) + '.jsonl');
   assert.equal(fs.statSync(file).mode & 0o777, 0o600); assert.equal(fs.statSync(f.sessionsDir).mode & 0o777, 0o700);
