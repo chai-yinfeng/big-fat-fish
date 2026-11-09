@@ -12,7 +12,7 @@ async function fixture(t, sendError = false) {
   t.after(() => { assert.ok(fs.realpathSync(dir).startsWith(fs.realpathSync(os.tmpdir()) + path.sep + 'qq-bridge-')); fs.rmSync(dir, { recursive: true }); });
   const world = { paused: true, revision: 1 }, observations = [], sends = []; let executions = 0;
   const authority = { health: async () => ({ world }), context: async () => ({ entityId: 'entity:big-fat-fish', memoryEpoch: 0, world }) };
-  const onebot = { call: async (action, args) => { if (action === 'get_login_info') return { user_id: 100 }; sends.push(args); if (sendError) throw new Error('NO_RECEIPT'); return { message_id: 99 }; } };
+  const onebot = { call: async (action, args) => { if (action === 'get_login_info') return { user_id: 100 }; if (action === 'get_friend_list') return []; sends.push(args); if (sendError) throw new Error('NO_RECEIPT'); return { message_id: 99 }; } };
   const bridge = new QQBridge({ authority, port: { observe: async value => { observations.push(value); return { observationId: 'observation-' + observations.length }; } }, onebot, settingsFile: path.join(dir, 'settings.json'), stateFile: path.join(dir, 'state.json'), executor: { execute: async () => { executions++; return '[CQ:file,file=/secret] just text'; } } });
   await bridge.connection(true); await bridge.configure({ expectedSelfId: '100', allowedCallerUID: '200' });
   world.paused = false; world.revision++;
