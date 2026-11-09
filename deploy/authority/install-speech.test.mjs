@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { cmakeFor, hfUrl, ggufUrl, proxyEnv, localArchive, speechInstallPlan, VAD, vadUrl, registerVad } from './install-speech.mjs';
+import { cmakeFor, hfUrl, ggufUrl, proxyEnv, localArchive, speechInstallPlan, installSpeech, vulkanBuildMissing, VAD, vadUrl, registerVad } from './install-speech.mjs';
 import { prepareSpeech } from './prepare-speech.mjs';
 
 function tempRoot(t) {
@@ -100,4 +100,22 @@ test('installing the VAD registers it in a pre-VAD config and manifest without a
   assert.equal(registerVad({ ...config, maxAudioSeconds: 20 }, manifest, file).config.maxAudioSeconds, 20);
   assert.throws(() => registerVad(registered.config, registered.manifest, path.join(root, 'other.onnx')), { code: 'SPEECH_INSTALL_MANIFEST' });
   assert.throws(() => registerVad(config, { ...manifest, models: [...manifest.models, { id: VAD.id, source: VAD.source, bytes: VAD.bytes, sha256: '0'.repeat(64) }] }, file), { code: 'SPEECH_INSTALL_MANIFEST' });
+});
+
+test('llama-tts builds with Vulkan by default; missing build packages are named, --cpu-only opts out', async t => {
+  const all = new Set(['/usr/bin/glslc', '/usr/include/vulkan/vulkan.h', '/usr/lib/x86_64-linux-gnu/libvulkan.so', '/usr/include/spirv/unified1/spirv.hpp', '/usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake']);
+  assert.deepEqual(vulkanBuildMissing({ exists: f => all.has(f), arch: 'x64' }), []);
+  assert.deepEqual(vulkanBuildMissing({ exists: f => all.has(f) && !f.includes('SPIRV-Headers'), arch: 'x64' }), ['spirv-headers']);
+  assert.deepEqual(vulkanBuildMissing({ exists: () => false, arch: 'arm64' }), ['glslc', 'libvulkan-dev', 'spirv-headers']);
+  const root = tempRoot(t), base = path.join(root, 'companion-world-v1');
+  fs.mkdirSync(path.join(base, 'operator'), { recursive: true }); fs.writeFileSync(path.join(base, 'operator/authority.json'), '{}');
+  const vulkan = speechInstallPlan({ base }), cpu = speechInstallPlan({ base, cpuOnly: true });
+  assert.deepEqual([vulkan.nativeTts.vulkan, vulkan.nativeTts.cpuOnly, vulkan.nativeTts.vulkanBuildMissing], [true, false, vulkanBuildMissing()]);
+  assert.match(vulkan.actionsRequireApply.at(-1), /Vulkan build/);
+  assert.deepEqual([cpu.nativeTts.vulkan, cpu.nativeTts.cpuOnly, cpu.nativeTts.vulkanBuildMissing], [false, true, []]);
+  assert.throws(() => speechInstallPlan({ base, models: 'vad', cpuOnly: true }), { code: 'SPEECH_INSTALL_ARGUMENTS' });
+  if (vulkanBuildMissing().length) {
+    await assert.rejects(installSpeech({ base, apply: true }), error => error.code === 'SPEECH_VULKAN_BUILD_DEPS' && error.missing.length > 0);
+    assert.deepEqual(fs.readdirSync(path.join(base, 'operator')), ['authority.json']);
+  }
 });
