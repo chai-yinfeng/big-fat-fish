@@ -30,7 +30,6 @@ const ICONS = {
   channels: ['M7.9 20A9 9 0 1 0 4 16.1L2 22Z'],
   memory: ['M12 7v14', 'M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z'],
   runtime: ['M20 7h-9', 'M14 17H5', circle(17, 17, 3), circle(7, 7, 3)],
-  fish: ['M2 12c2.5-4.5 6.5-6.5 11-5.5 2 .5 3.6 1.7 5 3.3L22 7v10l-4-2.8c-1.4 1.6-3 2.8-5 3.3-4.5 1-8.5-1-11-5.5z', 'M7 11.5v.01'],
   search: [circle(11, 11, 8), 'm21 21-4.3-4.3'],
   command: ['M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3'],
   menu: ['M4 6h16', 'M4 12h16', 'M4 18h16'],
@@ -240,7 +239,7 @@ export function WorldConsole({ t, standalone = false }) {
     return h(React.Fragment, null,
       h('section', { className: 'bff-card bff-world-card' },
         h('div', { className: 'bff-spread' },
-          h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile bff-logo' }, icon('fish')),
+          h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile bff-logo' }, h('img', { src: '/icon.svg', alt: '' })),
             h('div', { className: 'bff-row' }, h('h2', null, t('title')), worldBadge())),
           button(data.world.paused ? 'resume' : 'pause', () => run(async () => {
             await request('/world/pause', { paused: !data.world.paused }); await load(); setNotice(t('saved'));
@@ -622,7 +621,7 @@ export function WorldConsole({ t, standalone = false }) {
   if (!token) {
     return h('div', { className: 'bff-world bff-auth-wrap', 'aria-busy': busy },
       h('main', { className: 'bff-card bff-auth' },
-        h('div', { className: 'bff-spread' }, h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile bff-logo' }, icon('fish')), h('h1', null, t('title'))), themeButton),
+        h('div', { className: 'bff-spread' }, h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile bff-logo' }, h('img', { src: '/icon.svg', alt: '' })), h('h1', null, t('title'))), themeButton),
         text(standalone ? 'standaloneDescription' : 'description'), errorAlert,
         h('h2', null, t('authorization')), text('authHint'),
         h('form', { onSubmit: event => { event.preventDefault(); if (!input.trim() || busy) return; const credential = input.trim();
@@ -635,7 +634,7 @@ export function WorldConsole({ t, standalone = false }) {
   const current = NAV.find(item => item.id === tab) || NAV[0];
   return h('div', { className: `bff-world bff-app${drawer ? ' bff-drawer-open' : ''}`, 'aria-busy': busy },
     h('aside', { className: 'bff-side', 'aria-label': t('title') },
-      h('div', { className: 'bff-brand' }, h('span', { className: 'bff-tile bff-logo' }, icon('fish')),
+      h('div', { className: 'bff-brand' }, h('span', { className: 'bff-tile bff-logo' }, h('img', { src: '/icon.svg', alt: '' })),
         h('div', { className: 'bff-grow' }, h('div', { className: 'bff-brand-name' }, t('title')), h('div', { className: 'bff-brand-sub' }, t('shell.subtitle'))),
         h('button', { type: 'button', className: 'bff-icon-btn bff-mobile-only', 'aria-label': t('shell.closeMenu'), onClick: () => setDrawer(false) }, icon('x'))),
       data && h('button', { type: 'button', className: 'bff-search', onClick: () => setPalette({ query: '', index: 0 }) }, icon('search'), h('span', { className: 'bff-grow' }, t('shell.search')), kbd(MOD), kbd('K')),

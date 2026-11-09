@@ -115,7 +115,8 @@ body{margin:0;min-width:320px;background:var(--bff-page);color:var(--bff-text);f
 .bff-world-card::after{content:"";position:absolute;inset:-1px;border-radius:inherit;pointer-events:none;padding:1px;background:linear-gradient(120deg,var(--bff-glow-line),transparent 40%,transparent 70%,var(--bff-glow-line));
   -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}
 .bff-tile{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;background:var(--bff-secondary);border:1px solid var(--bff-border);flex:none;color:var(--bff-muted)}
-.bff-logo{background:linear-gradient(135deg,#ff9a5a,#e0563b);color:#fff;border:0;box-shadow:var(--bff-btn-shadow)}
+.bff-logo{background:#fff;border:0;box-shadow:var(--bff-btn-shadow);overflow:hidden}
+.bff-logo img{width:100%;height:100%;display:block}
 
 /* ---- badge ---- */
 .bff-badge{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px;border-radius:999px;font-size:11px;font-weight:500;border:1px solid var(--bff-border);color:var(--bff-muted);background:var(--bff-secondary);white-space:nowrap;vertical-align:middle}
