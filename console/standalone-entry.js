@@ -10,6 +10,8 @@ import './standalone.css';
 consumeOperatorFragment({ location: window.location, history: window.history, storage: {
   setItem: (key, value) => window.sessionStorage.setItem(key, value),
 } });
+// Apply a remembered light/dark override before the first render; system preference otherwise.
+try { const theme = window.localStorage.getItem('companion-world:theme'); if (theme === 'light' || theme === 'dark') document.documentElement.setAttribute('data-theme', theme); } catch {}
 const zh = flattenDictionary(dictionaries.zh), en = flattenDictionary(dictionaries.en);
 const t = key => zh[key] || en[key] || key;
 createRoot(document.getElementById('app')).render(React.createElement(WorldConsole, { t, standalone: true }));
