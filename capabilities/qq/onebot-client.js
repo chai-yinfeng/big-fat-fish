@@ -39,7 +39,7 @@ export class OneBotClient {
     });
   }
   call(action, params = {}) {
-    if (!['get_login_info', 'send_private_msg', 'get_record', 'get_image', 'get_msg'].includes(action)) return Promise.reject(new Error('ONEBOT_ACTION_DENIED'));
+    if (!['get_login_info', 'get_friend_list', 'send_private_msg', 'get_record', 'get_image', 'get_msg'].includes(action)) return Promise.reject(new Error('ONEBOT_ACTION_DENIED'));
     if (!this.connected) return Promise.reject(new Error('ONEBOT_DISCONNECTED'));
     const echo = randomUUID();
     return new Promise((resolve, reject) => {

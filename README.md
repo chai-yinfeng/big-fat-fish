@@ -22,6 +22,7 @@ plugin、preset、adapters、voice-runtime、旧 asr/tts/ui 等是保留的历�
 - 对话执行器只经私有 model-gateway 访问 DeepSeek；尚未在生产主机上实际部署和真实对话验收。
 - Qwen3-TTS 只用 speaker-file 条件，参考转写不参与合成（不是完整 ICL 克隆）。
 - 合成音色由 operator 上传参考录音登记（可多个、设默认）；使用范围（内部/可公开）目前只记录，未来公开发布渠道才会强制。
+- 多人私聊：机器人的 QQ 好友可各自私聊（最多准入 40 人），彼此记忆隔离；群聊、临时会话与主动消息尚未启用。
 - 图片生成、家庭群、Live2D 未启用。
 
 ## 开发

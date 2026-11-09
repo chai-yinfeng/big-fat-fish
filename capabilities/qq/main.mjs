@@ -6,7 +6,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { AuthorityClient } from '../../authority/src/client.js';
 import { ConversationPort } from '../conversation/index.js';
 import { createConversationClient } from '../conversation/client.js';
-import { QQBridge } from './bridge.js';
+import { QQBridge, FRIEND_REFRESH_MS } from './bridge.js';
 import { OneBotClient, onebotURL } from './onebot-client.js';
 import { ContentClient } from '../media/client.js';
 import { QQMedia } from './media.js';
@@ -30,6 +30,7 @@ async function main() {
       const match = /^Bearer ([A-Za-z0-9_-]{32,256})$/.exec(req.headers.authorization || '');
       if (!match || !timingSafeEqual(createHash('sha256').update(match[1]).digest(), expected)) { send(401, { ok: false }); return; }
       if (req.method === 'GET' && req.url === '/qq') { send(200, { ok: true, value: await bridge.status() }); return; }
+      if (req.method === 'GET' && req.url === '/qq/people') { send(200, { ok: true, value: bridge.peopleStatus() }); return; }
       if (req.method === 'GET' && req.url === '/qq/identity') { send(200, { ok: true, value: { expectedSelfId: bridge.loginIdentity() } }); return; }
       if (req.method !== 'POST' || req.url !== '/qq') { send(404, { ok: false }); return; }
       let raw = '';
@@ -50,9 +51,11 @@ async function main() {
   // NapCat may accept WebSocket connections before QQ has finished restoring login.
   const identityTimer = setInterval(() => { if (bridge.connected && !bridge.selfId) void bridge.refreshIdentity(); }, 5000);
   identityTimer.unref();
+  const friendTimer = setInterval(() => { void bridge.refreshFriends(); }, FRIEND_REFRESH_MS);
+  friendTimer.unref();
   let stopping = false;
-  const stop = () => { if (stopping) return; stopping = true; clearInterval(identityTimer); onebot.stop(); server.closeIdleConnections(); server.close(); };
+  const stop = () => { if (stopping) return; stopping = true; clearInterval(identityTimer); clearInterval(friendTimer); onebot.stop(); server.closeIdleConnections(); server.close(); };
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, stop);
-  process.stdout.write('QQ private transport ready; waiting for authenticated runtime and caller configuration.\n');
+  process.stdout.write('QQ private transport ready (owner and bot friends); waiting for authenticated runtime and caller configuration.\n');
 }
 main().catch(() => { process.stderr.write('QQ transport failed; inspect private configuration.\n'); process.exitCode = 1; });

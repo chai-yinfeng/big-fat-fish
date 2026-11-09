@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { createSpendMeter, chatEstimate, parseUsage, usageCost, usageTap } from './spend.mjs';
 
 export const MODELS = Object.freeze(['deepseek-flash', 'deepseek-v4-pro']);
 const ERRORS = {
@@ -126,12 +127,15 @@ function tokenUsage(value) {
 }
 
 /** Private control and inference transports; never returns or logs provider credentials. */
-export function createModelGateway({ settingsFile, inferenceSocket, controlSocket, inferenceTokenHash, operatorTokenHash, worldStatus, usageFile = path.join(path.dirname(settingsFile), 'capability-usage.json'), budgets = { web: 20, vision: 12 }, fetchImpl = fetch, upstream = 'https://api.deepseek.com/chat/completions' }) {
+export function createModelGateway({ settingsFile, inferenceSocket, controlSocket, inferenceTokenHash, operatorTokenHash, worldStatus, usageFile = path.join(path.dirname(settingsFile), 'capability-usage.json'), budgets = { web: 20, vision: 12 }, fetchImpl = fetch, upstream = 'https://api.deepseek.com/chat/completions', clock = Date.now }) {
   const paths = [settingsFile, inferenceSocket, controlSocket, usageFile];
   if (paths.some(value => typeof value !== 'string' || !path.isAbsolute(value)) || new Set(paths).size !== 4 || ![inferenceTokenHash, operatorTokenHash].every(value => /^[a-f0-9]{64}$/.test(value)) || inferenceTokenHash === operatorTokenHash || typeof worldStatus !== 'function' || typeof fetchImpl !== 'function' || new URL(upstream).protocol !== 'https:' || !object(budgets) || Object.keys(budgets).some(key => !['web', 'vision'].includes(key))) throw new Error('Invalid gateway configuration');
   const limits = { web: 20, vision: 12, ...budgets };
   if (Object.values(limits).some(value => !Number.isSafeInteger(value) || value < 0 || value > 1000)) throw new Error('Invalid capability budgets');
   const inferenceHash = Buffer.from(inferenceTokenHash, 'hex'), operatorHash = Buffer.from(operatorTokenHash, 'hex');
+  // Daily CNY spend (Beijing day), its settings and the price table live next to the settings file.
+  const directory = path.dirname(settingsFile);
+  const spend = createSpendMeter({ stateFile: path.join(directory, 'spend.json'), settingsFile: path.join(directory, 'spend-settings.json'), pricingFile: path.join(directory, 'model-pricing.json'), clock });
   let settings = { model: MODELS[0], apiKey: undefined, status: 'unconfigured' };
   let started = false, closing = false;
   const active = new Map();
@@ -187,7 +191,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     return value;
   }
   function cancel() { for (const controller of active.keys()) controller.abort(); }
-  async function call(body, kind, res) {
+  async function call(body, kind, res, category) {
     const snapshot = settings;
     if (!snapshot.apiKey) throw failure('UNCONFIGURED');
     const controller = new AbortController();
@@ -195,15 +199,21 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     const disconnected = () => { if (!res.writableEnded) controller.abort(); };
     res.on('close', disconnected);
     const timer = setTimeout(() => controller.abort(), kind === 'test' ? 20000 : 300000);
+    // Metered calls: reserve before, settle after. Not fetched or a provider error: released.
+    let reservation, usage = null, outcome = 'release';
     try {
       if (kind === 'inference' && (await world()).paused) throw failure('WORLD_PAUSED');
       if (controller.signal.aborted) throw failure('CANCELLED');
+      if (category) reservation = await spend.reserve(category, (pricing, at) => chatEstimate(pricing, snapshot.model, body, body.max_tokens, at));
+      const request = { ...body, model: snapshot.model, ...(category && body.stream ? { stream_options: { ...body.stream_options, include_usage: true } } : {}) };
+      outcome = 'charge';
       const response = await fetchImpl(upstream, {
         method: 'POST', redirect: 'error', signal: controller.signal,
         headers: { authorization: `Bearer ${snapshot.apiKey}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ ...body, model: snapshot.model }),
+        body: JSON.stringify(request),
       });
       if (!response.ok) {
+        outcome = 'release';
         await response.body?.cancel();
         throw failure(providerCode(response.status));
       }
@@ -228,7 +238,8 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       }
       if (!response.body) throw failure('UPSTREAM_ERROR');
       res.writeHead(200, { 'content-type': body.stream ? 'text/event-stream' : 'application/json', 'cache-control': 'no-store' });
-      await pipeline(Readable.fromWeb(response.body), res);
+      if (category) await pipeline(Readable.fromWeb(response.body), usageTap(Boolean(body.stream), value => { usage = parseUsage(value) ?? usage; }), res);
+      else await pipeline(Readable.fromWeb(response.body), res);
     } catch (error) {
       if (ERRORS[error.code]) throw error;
       throw failure(controller.signal.aborted ? 'CANCELLED' : 'UPSTREAM_ERROR');
@@ -236,13 +247,17 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       clearTimeout(timer);
       res.off('close', disconnected);
       active.delete(controller);
+      if (reservation) await spend.settle(reservation, usage ? usageCost(reservation.pricing, snapshot.model, usage, reservation.at) : null, { charge: outcome === 'charge' }).catch(() => {});
     }
   }
   async function control(req, res) {
     if (req.method === 'GET' && req.url === '/model') { send(res, 200, { ok: true, value: state() }); return; }
-    if (req.method !== 'POST' || !['/model', '/model/test', '/cancel'].includes(req.url)) throw failure('NOT_FOUND');
+    if (req.method === 'GET' && req.url === '/spend') { send(res, 200, { ok: true, value: spend.status() }); return; }
+    if (req.method !== 'POST' || !['/model', '/model/test', '/cancel', '/spend/settings'].includes(req.url)) throw failure('NOT_FOUND');
     const body = await bodyOf(req, 16384);
     if (req.url === '/cancel') { closed(body, []); cancel(); send(res, 200, { ok: true, value: { cancelled: true } }); return; }
+    // Cap and tier changes apply to the next reservation; no restart or pause needed.
+    if (req.url === '/spend/settings') { closed(body, ['dailyCapYuan', 'reducedPercent', 'restrictedPercent']); await spend.updateSettings(body); send(res, 200, { ok: true, value: spend.status() }); return; }
     const operation = async () => {
       if (closing) throw failure('UNAVAILABLE');
       if (req.url === '/model') {
@@ -277,13 +292,17 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     const disconnected = () => { if (!res.writableEnded) controller.abort(); };
     res.on('close', disconnected);
     const timer = setTimeout(() => controller.abort(), 90000);
+    // Per-call CNY price; refused from the restricted tier on. Provider errors are not charged.
+    let reservation, outcome = 'release';
     try {
+      reservation = await spend.reserve(kind, pricing => pricing.perCall[kind] * 1e6);
       // A failed or cancelled provider attempt still consumes its durable reservation.
       await reserve(kind);
       if (controller.signal.aborted) throw failure('CANCELLED');
       if ((await world()).paused) throw failure('WORLD_PAUSED');
+      outcome = 'charge';
       const response = await fetchImpl(endpoint, { method: 'POST', redirect: 'error', signal: controller.signal, headers: { authorization: `Bearer ${snapshot.apiKey}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      if (!response.ok) { await response.body?.cancel(); throw failure(providerCode(response.status)); }
+      if (!response.ok) { outcome = 'release'; await response.body?.cancel(); throw failure(providerCode(response.status)); }
       const value = await boundedJson(response, kind === 'vision' ? 65536 : 2 * 1024 * 1024), reported = tokenUsage(value.usage);
       await updateUsage(previous => ({ ...previous, inputTokens: previous.inputTokens + (reported?.prompt_tokens || 0), outputTokens: previous.outputTokens + (reported?.completion_tokens || 0), unreportedUsageResponses: previous.unreportedUsageResponses + (reported === null ? 1 : 0) }));
       if (controller.signal.aborted) throw failure('CANCELLED');
@@ -292,7 +311,10 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     } catch (error) {
       if (ERRORS[error.code]) throw error;
       throw failure(controller.signal.aborted ? 'CANCELLED' : 'UPSTREAM_ERROR');
-    } finally { clearTimeout(timer); res.off('close', disconnected); active.delete(controller); }
+    } finally {
+      clearTimeout(timer); res.off('close', disconnected); active.delete(controller);
+      if (reservation) await spend.settle(reservation, reservation.amount, { charge: outcome === 'charge' }).catch(() => {});
+    }
   }
   async function capability(req, res) {
     if (req.method !== 'POST') throw failure('NOT_FOUND');
@@ -348,9 +370,9 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     if (maintenance) {
       closed(body, ['model', 'messages', 'max_tokens', 'stream']);
       if (body.stream !== false || body.messages.length > 3 || body.messages.some(message => !object(message) || !['system', 'user'].includes(message.role) || typeof message.content !== 'string' || Object.keys(message).some(key => !['role', 'content'].includes(key))) || body.messages.reduce((sum, message) => sum + message.content.length, 0) > 8000) throw failure('INVALID_REQUEST');
-      await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 600, 768), thinking: { type: 'disabled' } }, 'inference', res);
+      await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 600, 768), thinking: { type: 'disabled' } }, 'inference', res, 'maintenance');
     } else {
-      await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 4096, 4096), thinking: { type: 'enabled' }, reasoning_effort: 'high' }, 'inference', res);
+      await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 4096, 4096), thinking: { type: 'enabled' }, reasoning_effort: 'high' }, 'inference', res, 'conversation');
     }
   }
   function serverFor(hash, handler) {
@@ -389,6 +411,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
           if (!MODELS.includes(stored.model) || !validKey(stored.apiKey)) throw new Error('Invalid stored model settings');
           settings = { model: stored.model, apiKey: stored.apiKey, status: 'configured' };
         } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        await spend.start();
         try {
           const storedUsage = await readPrivate(usageFile), fields = ['schema', 'day', 'webCalls', 'visionCalls', 'inputTokens', 'outputTokens', 'unreportedUsageResponses'];
           if (storedUsage.schema !== 1 || typeof storedUsage.day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(storedUsage.day) || Object.keys(storedUsage).some(key => !fields.includes(key)) || fields.slice(2).some(key => !Number.isSafeInteger(storedUsage[key]) || storedUsage[key] < 0)) throw new Error('Invalid capability usage file');
@@ -406,6 +429,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       await closeServers();
       await controlQueue;
       await usageQueue;
+      await spend.close();
     },
   };
 }

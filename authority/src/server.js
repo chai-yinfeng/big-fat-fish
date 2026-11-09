@@ -15,6 +15,7 @@ const SCHEMAS = {
   '/v1/memory/search': ['streamId', 'query', 'limit', 'budgetChars'],
   '/v1/memory/read': ['streamId', 'id'],
   '/v1/memory/recall': ['streamId', 'fromAt', 'toAt', 'limit', 'budgetChars'],
+  '/v1/people/admit': ['uid'],
   '/v1/maintenance/batch': ['afterRevision', 'limit', 'mode'],
   '/v1/maintenance/diary': ['taskId', 'kind', 'text', 'sourceIds'],
 };
@@ -30,6 +31,7 @@ const ERRORS = {
   NOT_FOUND: [404, 'No matching operation exists for this principal'],
   BODY_TOO_LARGE: [413, 'Request exceeds the protocol body limit'],
   UNAVAILABLE: [503, 'Authority review is unavailable'],
+  PEOPLE_LIMIT: [409, 'The admitted people limit is reached'],
 };
 function failure(code) { return Object.assign(new Error(ERRORS[code][1]), { code }); }
 function send(res, status, body) {
@@ -152,6 +154,7 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
         else if (route === '/v1/memory/search') value = authority.memorySearch(grant.capabilityId, body);
         else if (route === '/v1/memory/read') value = authority.memoryRead(grant.capabilityId, body);
         else if (route === '/v1/memory/recall') value = authority.memoryRecall(grant.capabilityId, body);
+        else if (route === '/v1/people/admit') value = authority.admitPerson(grant.capabilityId, body);
         else if (route === '/v1/admin/capabilities') value = authority.registerCapability(body);
         else if (route === '/v1/admin/actors') value = authority.bindActor(body);
         else if (route === '/v1/admin/streams') value = authority.bindStream(body);

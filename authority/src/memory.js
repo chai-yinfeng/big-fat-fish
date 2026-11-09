@@ -3,7 +3,7 @@ import { capability, canonical, closed, contextScope, enumeration, fail, identif
 import { DEFAULT_ENTITY_ID } from './store.js';
 import { normalizePersona, renderPersona } from '../../core/src/persona.js';
 import { tokenize } from '../../core/src/util.js';
-import { memoryContent } from './context.js';
+import { memoryContent, opaquePerson } from './context.js';
 import { SENSITIVE } from './policies.js';
 
 const DAY=86400000;
@@ -40,6 +40,15 @@ export class MemoryDomain {
       memoryEpoch:e.memory_epoch,
       retentionDays:e.retention_days
     };
+  }
+  /** Per-stream forget generations, kept in the existing metadata table (no schema change). */
+  streamBumps(){
+    const row=this.store.db.prepare("SELECT value FROM metadata WHERE key='streamEpochs'").get();
+    return row?JSON.parse(row.value):{};
+  }
+  /** A stream's memory epoch: the entity epoch plus that stream's own scoped-forget count. */
+  streamEpoch(entity,capabilityId,streamId){
+    return entity.memory_epoch+(this.streamBumps()[entity.id]?.[`${capabilityId}\u0000${streamId}`]??0);
   }
   listEntities(){
     return this.store.db.prepare('SELECT id,persona_revision AS personaRevision,memory_epoch AS memoryEpoch FROM entities ORDER BY id').all();
@@ -120,7 +129,7 @@ export class MemoryDomain {
     }
     return{
       entityId:e.id,
-      memoryEpoch:e.memory_epoch,
+      memoryEpoch:this.streamEpoch(e,capabilityId,scope.streamId),
       items,
       text:items.map(i=>JSON.stringify({
         id:i.id,text:i.excerpt
@@ -137,10 +146,12 @@ export class MemoryDomain {
     v=this.visibility(scope,policy),
     cutoff=this.worldStatus().worldNow-e.retention_days*DAY*4;
     const row=this.store.db.prepare(`SELECT m.* FROM memory_items m WHERE m.id=? AND m.entity_id=? AND ${v.sql} AND m.status='active' AND m.collection IN ('facts','notes','experiences')`).get(input.id,e.id,...v.args);
-    const item = row ? { ...this.store.memory(row), archived: !row.pinned && row.created_world_at < cutoff } : null;
+    const memory = row ? this.store.memory(row) : null;
+    // Model-facing read: the person is an opaque label, never a raw person ID.
+    const item = memory ? { ...memory, ...(memory.personId ? { personId: opaquePerson(memory.personId) } : {}), archived: !row.pinned && row.created_world_at < cutoff } : null;
     return{
       entityId:e.id,
-      memoryEpoch:e.memory_epoch,
+      memoryEpoch:this.streamEpoch(e,capabilityId,scope.streamId),
       item: item && row.visibility === 'public' ? publicEntry(item) : item
     };
   }
@@ -354,6 +365,20 @@ export class MemoryDomain {
       changed=n!==memoryIds.size+sources.size+diaryIds.size;
     }
     const sourceEvents=[...sources].map(id=>this.store.db.prepare('SELECT capability_id AS capabilityId,stream_id AS streamId,event_id AS eventId FROM observations WHERE id=?').get(id));
+    // Scope: a person-private memory could only have reached that person's own
+    // conversations (and its source streams). Public/unowned material, or a
+    // selection with no bound stream, retires every conversation (entity epoch).
+    const allStreams=this.store.db.prepare('SELECT capability_id AS capabilityId,stream_id AS streamId,person_id AS personId FROM streams WHERE entity_id=? ORDER BY capability_id,stream_id').all(e.id);
+    let entityWide=false;
+    const people=new Set();
+    for(const id of memoryIds){
+      const row=this.store.db.prepare('SELECT person_id,visibility FROM memory_items WHERE id=?').get(id);
+      if(!row.person_id||row.visibility==='public')entityWide=true;
+      else people.add(row.person_id);
+    }
+    const sourceStreams=new Set(sourceEvents.map(event=>`${event.capabilityId}\u0000${event.streamId}`));
+    const scoped=allStreams.filter(stream=>people.has(stream.personId)||sourceStreams.has(`${stream.capabilityId}\u0000${stream.streamId}`));
+    if(!scoped.length)entityWide=true;
     return{
       entityId:e.id,
       memoryEpoch:e.memory_epoch,
@@ -365,7 +390,8 @@ export class MemoryDomain {
       diaryIds:[...diaryIds],
       sourceObservationIds:[...sources],
       sourceEvents,
-      affectedStreams:this.store.db.prepare('SELECT capability_id AS capabilityId,stream_id AS streamId FROM streams WHERE entity_id=?').all(e.id),
+      affectedStreams:(entityWide?allStreams:scoped).map(({capabilityId,streamId})=>({capabilityId,streamId})),
+      epochScope:entityWide?'entity':'streams',
       externalCleanupRequired:true
     };
   }
@@ -410,14 +436,26 @@ export class MemoryDomain {
         }),input.entityId,person);
       }
       this.store.db.prepare('DELETE FROM maintenance_tasks WHERE entity_id=?').run(input.entityId);
-      const epoch=preview.memoryEpoch+1;
-      this.store.db.prepare('UPDATE entities SET memory_epoch=? WHERE id=?').run(epoch,input.entityId);
+      // Entity-wide: bump the entity epoch (every conversation restarts). Scoped:
+      // bump only the affected streams, so other people's sessions survive.
+      if(preview.epochScope==='entity')this.store.db.prepare('UPDATE entities SET memory_epoch=? WHERE id=?').run(preview.memoryEpoch+1,input.entityId);
+      else{
+        const bumps=this.streamBumps(),own=bumps[input.entityId]||={};
+        for(const stream of preview.affectedStreams){
+          const key=`${stream.capabilityId}\u0000${stream.streamId}`;
+          own[key]=(own[key]??0)+1;
+        }
+        this.store.db.prepare("INSERT INTO metadata(key,value) VALUES('streamEpochs',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(bumps));
+      }
+      const entity=this.entity(input.entityId),
+      affectedStreams=preview.affectedStreams.map(stream=>({...stream,memoryEpoch:this.streamEpoch(entity,stream.capabilityId,stream.streamId)})),
+      epoch=preview.epochScope==='entity'?entity.memory_epoch:Math.max(...affectedStreams.map(stream=>stream.memoryEpoch));
       const id=randomUUID(),job={
-        id,entityId:input.entityId,memoryEpoch:epoch,affectedStreams:preview.affectedStreams,sourceObservationIds:preview.sourceObservationIds,sourceEvents:preview.sourceEvents
+        id,entityId:input.entityId,memoryEpoch:epoch,epochScope:preview.epochScope,affectedStreams,sourceObservationIds:preview.sourceObservationIds,sourceEvents:preview.sourceEvents
       };
       this.store.db.prepare('INSERT INTO cleanup_jobs VALUES(?,?,?,?,?)').run(id,input.entityId,epoch,'pending',JSON.stringify(job));
       this.store.audit({
-        type:'memory.forgotten',entityId:input.entityId,ids:preview.expandedIds,memoryEpoch:epoch,revision:this.store.nextRevision(),at:this.now()
+        type:'memory.forgotten',entityId:input.entityId,ids:preview.expandedIds,memoryEpoch:epoch,epochScope:preview.epochScope,revision:this.store.nextRevision(),at:this.now()
       });
       return{
         ...job,coreErased:true,externalCleanup:{
@@ -471,7 +509,7 @@ export class MemoryDomain {
     }).filter(item => item.text);
     return {
       entityId: entity.id,
-      memoryEpoch: entity.memory_epoch,
+      memoryEpoch: this.streamEpoch(entity, capabilityId, scope.streamId),
       items,
       kind: 'recall',
       isNewEvidence: false

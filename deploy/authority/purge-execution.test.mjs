@@ -51,6 +51,16 @@ test('operator purge removes retired conversation sessions of affected streams o
   assert.equal(fs.readFileSync(path.join(f.base, 'authority-data/keep.json'), 'utf8'), '{"remember":"not selected"}');
 });
 
+test('a scoped forget plan retires only each affected stream’s own earlier epochs', async t => {
+  const f = fixture(t);
+  // The target stream moved to epoch 1 while the job epoch is 2 (another stream's): only epoch 0 retires.
+  f.plan.affectedStreams = [{ capabilityId: 'qq', streamId: target, memoryEpoch: 1 }];
+  const result = await purgeExecution({ base: f.base, plan: f.plan, checkStopped: () => {} });
+  assert.equal(result.executionSessionsRemoved, 1);
+  assert.equal(fs.existsSync(f.sessions.old), false); assert.equal(fs.existsSync(f.sessions.older), true); assert.equal(fs.existsSync(f.sessions.keep), true);
+  for (const memoryEpoch of [0, 3, 'x']) await assert.rejects(purgeExecution({ base: f.base, plan: { ...f.plan, affectedStreams: [{ capabilityId: 'qq', streamId: target, memoryEpoch }] }, checkStopped: () => {} }), /PLAN_INVALID/);
+});
+
 test('non-product root, live writers, old layouts and symlink targets are refused before erasure', async t => {
   const f = fixture(t), checkStopped = () => {};
   await assert.rejects(purgeExecution({ base: path.dirname(f.base), plan: f.plan, checkStopped }), /ROOT_REFUSED/);

@@ -52,11 +52,14 @@ export async function purgeExecution({ base, plan, checkStopped = stopped }) {
   const sessionsRoot = inside(base, path.join(base, layout.sessionsRoot));
   if (!fs.statSync(sessionsRoot).isDirectory()) throw fail('EXECUTION_STORAGE_UNVERIFIED');
   await checkStopped();
-  // Every earlier memory epoch of an affected stream is a retired session.
+  // Every earlier memory epoch of an affected stream is a retired session. A
+  // scoped forget carries each stream's own new epoch; older plans use the job's.
   const sessions = [];
   for (const entry of plan.affectedStreams) {
     if (typeof entry?.capabilityId !== 'string' || typeof entry.streamId !== 'string') throw fail('EXECUTION_PLAN_INVALID');
-    for (let epoch = 0; epoch < plan.memoryEpoch; epoch++) {
+    const current = entry.memoryEpoch ?? plan.memoryEpoch;
+    if (!Number.isSafeInteger(current) || current < 1 || current > plan.memoryEpoch) throw fail('EXECUTION_PLAN_INVALID');
+    for (let epoch = 0; epoch < current; epoch++) {
       const file = inside(sessionsRoot, path.join(sessionsRoot, conversationSessionId(entry.streamId, epoch) + '.jsonl'));
       if (!fs.existsSync(file)) continue;
       if (!fs.lstatSync(file).isFile()) throw fail('EXECUTION_UNKNOWN_ARTIFACT');

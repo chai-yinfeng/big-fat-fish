@@ -56,6 +56,11 @@ export class AuthorityClient {
     if (!text(value.streamId) || !Number.isSafeInteger(value.fromAt) || !Number.isSafeInteger(value.toAt) || value.fromAt < 0 || value.toAt < value.fromAt) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/memory/recall', value);
   }
+  async admitPerson(value) {
+    closed(value, ['uid'], ['uid']);
+    if (typeof value.uid !== 'string' || !/^[1-9]\d{0,19}$/.test(value.uid)) throw fail('INVALID_REQUEST');
+    return this.#request('POST', '/v1/people/admit', value);
+  }
   async maintenanceBatch(value = {}) {
     closed(value, ['afterRevision', 'limit', 'mode'], []);
     const batch = await this.#request('POST', '/v1/maintenance/batch', value);

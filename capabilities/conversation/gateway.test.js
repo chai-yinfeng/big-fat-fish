@@ -65,3 +65,24 @@ test('service entrypoint runs main() through a symlinked release directory', t =
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Conversation executor could not start/);
 });
+
+test('a gateway refusal at the daily cap surfaces as BUDGET_EXHAUSTED without any provider call', async t => {
+  const root = tempRoot(t);
+  const authority = await fakeAuthority(t, root);
+  const inference = tokenFile(root, 'inference.token'), operator = 'operator-token-for-test-only-0000000000';
+  let upstream = 0;
+  const now = Date.parse('2026-11-09T02:00:00Z');
+  fs.mkdirSync(path.join(root, 'model'), { mode: 0o700 });
+  fs.writeFileSync(path.join(root, 'model/settings.json'), JSON.stringify({ model: 'deepseek-flash', apiKey: 'synthetic-key-not-a-real-secret' }), { mode: 0o600 });
+  fs.writeFileSync(path.join(root, 'model/spend.json'), JSON.stringify({ schema: 1, day: '2026-11-09', spentMicros: 5000000, reservedMicros: 0, byTier: {}, calls: 1, unreported: 0 }), { mode: 0o600 });
+  const gateway = createModelGateway({
+    settingsFile: path.join(root, 'model/settings.json'), inferenceSocket: path.join(root, 'model/infer.sock'), controlSocket: path.join(root, 'model/control.sock'),
+    inferenceTokenHash: sha(inference.token), operatorTokenHash: sha(operator), worldStatus: async () => ({ paused: false }), clock: () => now,
+    fetchImpl: async () => { upstream++; return new Response('data: [DONE]\n\n'); },
+  });
+  await gateway.start(); t.after(() => gateway.close());
+  const { model, streamFn } = createGatewayStream({ socketPath: path.join(root, 'model/infer.sock'), tokenFile: inference.file });
+  const executor = createConversationExecutor({ authority: new AuthorityClient(authority.config), store: new SessionStore(path.join(root, 'sessions')), model, streamFn });
+  await assert.rejects(executor.execute({ scope: { streamId: 'qq:1:private:2', memoryEpoch: 0 }, requestId: 'r-1', input: { text: '你好' }, timeoutMs: 10000 }), { code: 'BUDGET_EXHAUSTED' });
+  assert.equal(upstream, 0);
+});

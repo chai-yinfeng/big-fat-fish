@@ -92,6 +92,35 @@ DeepSeek compat (`thinkingFormat: deepseek`, replayed `reasoning_content`,
 `max_tokens`), and reaches only `inference.sock` through a Unix-socket fetch; it
 has no TCP network access.
 
+## Daily spend cap
+
+The gateway meters money per Beijing day (Asia/Shanghai, independent of the host
+TZ) in three private files next to the settings file: `spend.json` (state),
+`spend-settings.json` (cap and tiers) and `model-pricing.json` (price table).
+
+- Prices: written on first start with DeepSeek's official table verified on
+  2026-11-08 (api-docs.deepseek.com/zh-cn/quick_start/pricing): flash 0.04/2/8 CNY
+  per 1M tokens (cache hit / miss / output) at peak, half off-peak; v4-pro
+  0.30/9/27 peak, half off-peak; web search/fetch 0.005 per call; vision is a
+  conservative 0.01 per call. Peak is Mon–Fri 09:00–12:00 and 14:00–18:00 Beijing
+  time; list statutory holidays (off-peak) in `peak.offPeakDates`. The file is
+  re-read before every reservation; an invalid file falls back to peak prices at
+  every hour (`pricing: 'fallback'`).
+- Chat requests are forced to `stream_options.include_usage`; usage (cache hit,
+  miss, output including reasoning) is read from the SSE stream as a side channel
+  while bytes pass through unchanged. Each call reserves an estimate (prompt
+  characters at the miss price plus max output) and settles to the reported usage;
+  no usage charges the reservation; a provider error releases it; a reservation
+  held across a restart is charged.
+- Tiers (defaults 60/80/100 of a ¥5 cap): ≥reduced stops proactive work (none yet),
+  ≥restricted refuses `/v1/memory/completions`, vision and web, ≥100% refuses every
+  call with 429 `BUDGET_EXHAUSTED` before contacting the provider. The cap includes
+  the owner's own chats.
+- Control socket: `GET /spend` → `{day,timezone,spentYuan,reservedYuan,capYuan,percent,tier,thresholds,byTier:{conversation,maintenance,vision,web},calls,unreportedUsage,window,pricing}`;
+  `POST /spend/settings {dailyCapYuan?,reducedPercent?,restrictedPercent?}` validates
+  0.01 ≤ cap ≤ 1000 and 0 < reduced < restricted < 100, persists atomically and
+  applies to the next reservation without restart or pause.
+
 Tests use injected fetch mocks, not real DeepSeek calls. They exercise token
 isolation, paused gates, atomic private settings, SSE/tool/reasoning bytes, model
 rewriting/token caps, safe upstream errors, explicit probes and cancellation.
