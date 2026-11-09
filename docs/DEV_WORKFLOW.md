@@ -159,8 +159,9 @@ staging 以 home-agent 上无 sudo 的 `agent` 账号（`ssh home-agent-dev`，�
 用该包的 bootstrap、prepare-memory、prepare-content、QQ prepare 初始化（无模型 Key、
 不登录 QQ）→ start → disable 全部单元（模拟旧版 companion-deploy 留下的未 enable 状态）→
 升级到 to 包（预检、切换、健康检查、enable）→ 删除 from 包 → 重启全部单元 →
-manager 重启代理（确认均已 enable，停掉全部单元但不 disable，daemon-reload 后
-`systemctl --user start default.target`，再做健康检查）→ operator API 冒烟（/world、/runtime、/qq、/memory、人格预览与保存、对话执行器鉴权）→
+manager 重启代理（确认均已 enable，停掉全部单元但不 disable，daemon-reload 后确认
+default.target 的依赖树覆盖全部单元，再 `systemctl --user start default.target sockets.target`
+并做健康检查；已激活的 sockets.target 不会因 start default.target 被重新拉起，故单独启动）→ operator API 冒烟（/world、/runtime、/qq、/memory、人格预览与保存、对话执行器鉴权）→
 确认生产端口没有 staging 监听。全部位于 `~/companion-staging`（作为服务的 HOME），单元
 改名为 `companion-staging-*`，operator 端口 13082；memory、qq 单元限制为 Unix socket，
 旧 release 里写死的 3082/3001 连不到生产。`--reset` 只删除这个目录、staging 单元及其 enable 链接。

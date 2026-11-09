@@ -333,7 +333,12 @@ def lifecycle(from_tarball, to_tarball):
 
     def manager_restart():
         """Proxy for `systemctl restart user@<uid>` / reboot: stop every unit without touching enablement,
-        reload unit files and .wants links from disk, then start only what default.target pulls in."""
+        reload unit files and .wants links from disk, require that default.target's dependency tree reaches
+        every unit, then start default.target and the [Install] targets and check health.
+
+        A fresh manager starts default.target with every target inactive, so it walks the whole tree. Here
+        basic.target/sockets.target are already active and systemd does not re-pull their Wants, so the
+        install targets (sockets.target for the socket) are started as their own anchors."""
         names = deployer.installed_units()
         startable = deployer.startable(names)
         states = enabled(startable)
@@ -345,11 +350,18 @@ def lifecycle(from_tarball, to_tarball):
         if any(state in ('active', 'activating') for state in active):
             raise RuntimeError('units still running after stop: %s' % dict(zip(names, active)))
         deployer.system.systemctl('daemon-reload')
-        deployer.system.systemctl('start', 'default.target')
+        tree = {line.strip() for line in deployer.system.systemctl('list-dependencies', '--plain', 'default.target').stdout.splitlines()}
+        missing = sorted(set(startable) - tree)
+        if missing:
+            raise RuntimeError('default.target does not reach: %s' % missing)
+        targets = sorted({t for n in startable for t in re.findall(r'^WantedBy=(.+)$', (deployer.config.units / n).read_text(), re.M)
+                          for t in t.split()} - {'default.target'})
+        deployer.system.systemctl('start', 'default.target', *targets)
         problems = deployer.health(names)
         if problems:
             raise RuntimeError('; '.join(problems))
-        return '%d enabled units stopped; default.target brought back %d units healthy' % (len(startable), len(names))
+        return '%d enabled units stopped; all reachable from default.target; start default.target %s -> %d units healthy' % (
+            len(startable), ' '.join(targets), len(names))
 
     def prune():
         state = deployer.load_state()

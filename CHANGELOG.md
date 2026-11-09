@@ -4,7 +4,7 @@
 
 ## Unreleased
 
-- companion-deploy：生产单元开机/user manager 重启后自动拉起。2026-11-09 主人执行 `systemctl restart user@<companion uid>` 后全部 companion 单元停掉且未恢复（单元已有 `WantedBy=default.target` 但从未 enable）。现在健康检查通过后 enable（deploy、start、rollback、恢复），凡是 companion-deploy 停的单元先 disable 再 stop；新增 `companion-deploy stop`（停服且重启后保持停止，直到 start）。旧版装的未 enable 单元在新版第一次 deploy/start 时 enable。staging 生命周期新增"旧版未 enable"模拟与 manager 重启代理检查（停全部单元、daemon-reload、`systemctl --user start default.target` 后健康检查）。companion-deploy 有改动，需按新 sha256 重装。已验证：companion-deploy/staging Python 测试、全量测试、home-agent-dev staging bd37be9→本分支。未验证：真实 `user@` 重启与整机重启。
+- companion-deploy：生产单元开机/user manager 重启后自动拉起。2026-11-09 主人执行 `systemctl restart user@<companion uid>` 后全部 companion 单元停掉且未恢复（单元已有 `WantedBy=default.target` 但从未 enable）。现在健康检查通过后 enable（deploy、start、rollback、恢复），凡是 companion-deploy 停的单元先 disable 再 stop；新增 `companion-deploy stop`（停服且重启后保持停止，直到 start）。旧版装的未 enable 单元在新版第一次 deploy/start 时 enable。staging 生命周期新增"旧版未 enable"模拟与 manager 重启代理检查（停全部单元但不 disable、daemon-reload、确认 default.target 依赖树覆盖全部单元、`systemctl --user start default.target sockets.target` 后健康检查）。companion-deploy 有改动，需按新 sha256 重装。已验证：companion-deploy/staging Python 测试、全量测试、home-agent-dev staging bd37be9→本分支。未验证：真实 `user@` 重启与整机重启。
 
 - 控制台 logo 与标签页图标换成社区「Q 版大肥鱼」头像裁切（128×128 PNG 以 data URI 内嵌在 icon.svg，dist 仍 4 个文件，CSP 不变）；署名与 CC BY-NC-SA 4.0 非商用条款见 console/ASSETS.md。已验证：test:console 与全量测试，本机按生产 CSP 起 dist 检查深浅主题侧栏与 /icon.svg。
 
