@@ -46,6 +46,13 @@ export function proxyEnv(proxy) {
   return { HTTPS_PROXY: value, HTTP_PROXY: value, https_proxy: value, http_proxy: value, NO_PROXY: noProxy, no_proxy: noProxy };
 }
 const LLAMA_COMMIT = '8642541b255bfb5dc39cd351a178be09013a55d6';
+// llama-tts is built with Vulkan (iGPU) unless --cpu-only. These Ubuntu packages are
+// build-time only (all files must exist); at runtime it needs libvulkan1 + Mesa.
+export function vulkanBuildMissing({ exists = fs.existsSync, arch = process.arch } = {}) {
+  const lib = `/usr/lib/${MACHINE[arch] ?? arch}-linux-gnu`;
+  const packages = { glslc: ['/usr/bin/glslc'], 'libvulkan-dev': ['/usr/include/vulkan/vulkan.h', `${lib}/libvulkan.so`], 'spirv-headers': ['/usr/include/spirv/unified1/spirv.hpp', '/usr/share/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake'] };
+  return Object.keys(packages).filter(name => !packages[name].every(file => exists(file)));
+}
 const SOURCES = {
   'qwen3-asr-0.6b-int8-2026-03-25': 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2',
   'qwen3-tts-1.7b-base-q4-k-m': 'https://huggingface.co/ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF',
@@ -146,8 +153,8 @@ function modelSelections(config, manifest, models) {
     return { kind, key, engine, entry };
   });
 }
-export function speechInstallPlan({ base = defaultBase(), models = 'all', hfEndpoint = HF_ENDPOINTS[0], modelSource = 'huggingface', proxy, archiveDir } = {}) {
-  if (!['asr', 'all', 'vad'].includes(models) || !HF_ENDPOINTS.includes(hfEndpoint) || !MODEL_SOURCES.includes(modelSource)) throw fail('SPEECH_INSTALL_ARGUMENTS');
+export function speechInstallPlan({ base = defaultBase(), models = 'all', hfEndpoint = HF_ENDPOINTS[0], modelSource = 'huggingface', proxy, archiveDir, cpuOnly = false } = {}) {
+  if (!['asr', 'all', 'vad'].includes(models) || !HF_ENDPOINTS.includes(hfEndpoint) || !MODEL_SOURCES.includes(modelSource) || typeof cpuOnly !== 'boolean' || cpuOnly && models !== 'all') throw fail('SPEECH_INSTALL_ARGUMENTS');
   if (proxy !== undefined) proxyEnv(proxy);
   archiveDir = archiveDirectory(archiveDir);
   base = basePath(base);
@@ -155,7 +162,7 @@ export function speechInstallPlan({ base = defaultBase(), models = 'all', hfEndp
   const selected = prepared ? modelSelections(readJson(path.join(base, 'operator/speech.json')), readJson(path.join(base, 'operator/speech-models.json')), models).map(x => x.entry.id) : Object.keys(SOURCES).filter(id => models === 'all' || models === 'asr' && !id.startsWith('qwen3-tts'));
   selected.push(VAD.id);
   if (models === 'vad') return { mode: 'plan', models, prepared, targetValidated: true, selected, modelSource, vadSource: vadUrl(modelSource), proxy: proxy === undefined ? null : new URL(proxy).origin, archiveDir: archiveDir ?? null, estimatedDiskMiB: 5, actionsRequireApply: ['public pinned VAD model download', 'register models.vad in operator/speech.json (raises maxAudioSeconds 30 -> 120)'], inferencePerformed: false, servicesChanged: false, writesPerformed: false, networkRequestsPerformed: false };
-  return { mode: 'plan', models, prepared, targetValidated: true, runtime: 'private speech-node prefix', dependencies: { 'sherpa-onnx-node': '2.0.1', sharp: '0.35.5' }, selected, hfEndpoint, modelSource, proxy: proxy === undefined ? null : new URL(proxy).origin, archiveDir: archiveDir ?? null, nativeTts: models === 'all' ? { llamaCpp: 'v0.8.0', commit: LLAMA_COMMIT, portableCmake: '4.4.5', cpuOnly: true, jobs: 2 } : null, estimatedDiskGiB: models === 'all' ? '8-12 including cache/source/build; estimate, not measured' : '3-4 including cache/runtime; estimate, not measured', actionsRequireApply: ['private npm install with scripts disabled', 'public pinned model downloads and safe extraction', ...(models === 'all' ? ['private portable CMake download', 'pinned llama.cpp clone and CPU-only build'] : [])], inferencePerformed: false, referenceGenerated: false, servicesChanged: false, writesPerformed: false, networkRequestsPerformed: false };
+  return { mode: 'plan', models, prepared, targetValidated: true, runtime: 'private speech-node prefix', dependencies: { 'sherpa-onnx-node': '2.0.1', sharp: '0.35.5' }, selected, hfEndpoint, modelSource, proxy: proxy === undefined ? null : new URL(proxy).origin, archiveDir: archiveDir ?? null, nativeTts: models === 'all' ? { llamaCpp: 'v0.8.0', commit: LLAMA_COMMIT, portableCmake: '4.4.5', cpuOnly, vulkan: !cpuOnly, vulkanBuildMissing: cpuOnly ? [] : vulkanBuildMissing(), jobs: 2 } : null, estimatedDiskGiB: models === 'all' ? '8-12 including cache/source/build; estimate, not measured' : '3-4 including cache/runtime; estimate, not measured', actionsRequireApply: ['private npm install with scripts disabled', 'public pinned model downloads and safe extraction', ...(models === 'all' ? ['private portable CMake download', cpuOnly ? 'pinned llama.cpp clone and CPU-only build' : 'pinned llama.cpp clone and Vulkan build'] : [])], inferencePerformed: false, referenceGenerated: false, servicesChanged: false, writesPerformed: false, networkRequestsPerformed: false };
 }
 
 async function sha256(file) {
@@ -214,9 +221,11 @@ with tarfile.open(archive,'r:*') as tar:
  tar.extractall(root,filter='data')
 `;
 
-export async function installSpeech({ base = defaultBase(), models = 'all', hfEndpoint = HF_ENDPOINTS[0], modelSource = 'huggingface', proxy, archiveDir, apply = false } = {}) {
-  const plan = speechInstallPlan({ base, models, hfEndpoint, modelSource, proxy, archiveDir });
+export async function installSpeech({ base = defaultBase(), models = 'all', hfEndpoint = HF_ENDPOINTS[0], modelSource = 'huggingface', proxy, archiveDir, cpuOnly = false, apply = false } = {}) {
+  const plan = speechInstallPlan({ base, models, hfEndpoint, modelSource, proxy, archiveDir, cpuOnly });
   if (!apply) return plan;
+  // Refuse before any download rather than silently building CPU-only.
+  if (plan.nativeTts?.vulkanBuildMissing.length) throw Object.assign(fail('SPEECH_VULKAN_BUILD_DEPS'), { missing: plan.nativeTts.vulkanBuildMissing });
   archiveDir = plan.archiveDir ?? undefined;
   // In-process fetch only uses the proxy when Node started with --use-env-proxy (the CLI re-execs).
   if (proxy !== undefined && !process.execArgv.includes('--use-env-proxy')) throw fail('SPEECH_INSTALL_PROXY');
@@ -351,10 +360,10 @@ export async function installSpeech({ base = defaultBase(), models = 'all', hfEn
     await command('/usr/bin/git', ['-C', source, 'diff', '--quiet'], env, 'SPEECH_GIT_MODIFIED');
     await command('/usr/bin/git', ['-C', source, 'diff', '--cached', '--quiet'], env, 'SPEECH_GIT_MODIFIED');
     const cmake = path.join(cmakeRoot, 'bin/cmake'), build = target(source, 'build');
-    await command(cmake, ['-S', source, '-B', build, '-G', 'Unix Makefiles', '-DCMAKE_BUILD_TYPE=Release', '-DGGML_CUDA=OFF', '-DGGML_VULKAN=OFF', '-DGGML_METAL=OFF', '-DGGML_CPU_KLEIDIAI=OFF', '-DGGML_BLAS=OFF', '-DLLAMA_OPENSSL=OFF', '-DLLAMA_BUILD_TESTS=OFF', '-DLLAMA_BUILD_EXAMPLES=OFF', '-DLLAMA_BUILD_SERVER=OFF', '-DLLAMA_BUILD_APP=OFF', '-DLLAMA_CONNECT=OFF'], env, 'SPEECH_CMAKE_FAILED');
+    await command(cmake, ['-S', source, '-B', build, '-G', 'Unix Makefiles', '-DCMAKE_BUILD_TYPE=Release', '-DGGML_CUDA=OFF', '-DGGML_VULKAN=' + (cpuOnly ? 'OFF' : 'ON'), '-DGGML_METAL=OFF', '-DGGML_CPU_KLEIDIAI=OFF', '-DGGML_BLAS=OFF', '-DLLAMA_OPENSSL=OFF', '-DLLAMA_BUILD_TESTS=OFF', '-DLLAMA_BUILD_EXAMPLES=OFF', '-DLLAMA_BUILD_SERVER=OFF', '-DLLAMA_BUILD_APP=OFF', '-DLLAMA_CONNECT=OFF'], env, 'SPEECH_CMAKE_FAILED');
     await command(cmake, ['--build', build, '--target', 'llama-tts', '-j2'], env, 'SPEECH_BUILD_FAILED');
     if (config.models.tts['llama-tts'].executable !== path.join(build, 'bin/llama-tts') || !fs.statSync(config.models.tts['llama-tts'].executable).isFile()) throw fail('SPEECH_INSTALL_MANIFEST');
-    metadata.components.llamaCpp = { version: 'v0.8.0', commit: LLAMA_COMMIT, cpuOnly: true, cmake: CMAKE.version, inferenceVerified: false }; persist();
+    metadata.components.llamaCpp = { version: 'v0.8.0', commit: LLAMA_COMMIT, cpuOnly, vulkan: !cpuOnly, cmake: CMAKE.version, inferenceVerified: false }; persist();
   }
   return { mode: 'apply', models, installed: [...selected.map(x => x.entry.id), VAD.id], npm: metadata.components.npm?.dependencies ?? null, nativeTtsBuilt: models === 'all', inferencePerformed: false, referenceGenerated: false, servicesChanged: false, worldReset: false };
 }
@@ -365,7 +374,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process
     let explicitMode;
     for (let i = 2; i < process.argv.length; i++) {
       const value = process.argv[i];
-      if (value === '--plan' || value === '--apply') { if (explicitMode) throw fail('SPEECH_INSTALL_ARGUMENTS'); explicitMode = value; options.apply = value === '--apply'; }
+      if (value === '--cpu-only') { if (options.cpuOnly) throw fail('SPEECH_INSTALL_ARGUMENTS'); options.cpuOnly = true; }
+      else if (value === '--plan' || value === '--apply') { if (explicitMode) throw fail('SPEECH_INSTALL_ARGUMENTS'); explicitMode = value; options.apply = value === '--apply'; }
       else if (['--base', '--models', '--hf-endpoint', '--model-source', '--proxy', '--archive-dir'].includes(value)) { const next = process.argv[++i]; if (!next || next.startsWith('--')) throw fail('SPEECH_INSTALL_ARGUMENTS'); options[names[value] || value.slice(2)] = next; }
       else throw fail('SPEECH_INSTALL_ARGUMENTS');
     }
@@ -374,5 +384,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process
       const child = spawnSync(process.execPath, ['--use-env-proxy', ...process.argv.slice(1)], { stdio: 'inherit', env: { ...process.env, ...proxyEnv(options.proxy) } });
       process.exitCode = child.status ?? 1;
     } else process.stdout.write(JSON.stringify(await installSpeech(options)) + '\n');
-  } catch (e) { process.stderr.write(/^SPEECH_[A-Z_]+$/.test(e.code || '') ? e.code + '\n' : 'SPEECH_INSTALL_FAILED\n'); process.exitCode = 1; }
+  } catch (e) {
+    if (e.code === 'SPEECH_VULKAN_BUILD_DEPS') process.stderr.write(`SPEECH_VULKAN_BUILD_DEPS: missing ${e.missing.join(', ')}; install them (sudo apt install glslc libvulkan-dev spirv-headers) or re-run with --cpu-only\n`);
+    else process.stderr.write(/^SPEECH_[A-Z_]+$/.test(e.code || '') ? e.code + '\n' : 'SPEECH_INSTALL_FAILED\n');
+    process.exitCode = 1;
+  }
 }

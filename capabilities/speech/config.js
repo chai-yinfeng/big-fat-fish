@@ -7,6 +7,9 @@ export const SCHEMA_VERSION = 2;
 export const ASR_TIERS = ['default'];
 export const VOICE_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 export const USAGE_SCOPES = ['private', 'public'];
+// models.tts['llama-tts'].device: auto (Vulkan, CPU fallback; also when absent), vulkan or cpu only.
+export const TTS_DEVICES = ['auto', 'vulkan', 'cpu'];
+export const ttsDevice = e => e.device ?? 'auto';
 // Qwen3-ASR's sherpa decoder (max_total_len 512, ~13 audio tokens/s) truncates past
 // ~30 s in one pass; longer audio needs the optional VAD (models.vad) to split it.
 export const SINGLE_PASS_SECONDS = 30;
@@ -39,7 +42,7 @@ export function loadSpeechConfig(file) {
   if (!Number.isInteger(c.maxTextChars) || c.maxTextChars < 1 || c.maxTextChars > 120 || !Number.isInteger(c.maxAudioSeconds) || c.maxAudioSeconds < 1 || c.maxAudioSeconds > MAX_AUDIO_SECONDS || !Number.isInteger(c.timeoutMs) || c.timeoutMs < 1000 || c.timeoutMs > 300000) throw failure('SPEECH_CONFIG');
   // models.vad is optional (configs prepared before long-audio support lack it).
   if (c.models.vad !== undefined && (!plain(c.models.vad) || c.models.vad.engine !== 'sherpa-silero-vad' || typeof c.models.vad.id !== 'string' || !absolute(c.models.vad.file))) throw failure('SPEECH_CONFIG');
-  if (Object.entries(c.models.tts).some(([key, e]) => !plain(e) || e.engine !== key || typeof e.id !== 'string')) throw failure('SPEECH_CONFIG');
+  if (Object.entries(c.models.tts).some(([key, e]) => !plain(e) || e.engine !== key || typeof e.id !== 'string' || e.device !== undefined && !TTS_DEVICES.includes(e.device))) throw failure('SPEECH_CONFIG');
   if (!plain(c.voiceProfiles) || Object.entries(c.voiceProfiles).some(([id, p]) => !validVoice(c, id, p))) throw failure('SPEECH_CONFIG');
   if (c.defaultVoice !== null && !Object.hasOwn(c.voiceProfiles, c.defaultVoice)) throw failure('SPEECH_CONFIG');
   if (c.pendingReferenceCleanup !== undefined && (!plain(c.pendingReferenceCleanup) || Object.keys(c.pendingReferenceCleanup).join() !== 'uploadId' || !/^[a-f0-9-]{36}$/.test(c.pendingReferenceCleanup.uploadId))) throw failure('SPEECH_CONFIG');
