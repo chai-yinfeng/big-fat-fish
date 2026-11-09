@@ -236,6 +236,14 @@ def smoke():
     done.append('GET /qq loggedIn=%s connected=%s' % (qq.get('loggedIn'), qq.get('connected')))
     operator('GET', '/memory')
     done.append('GET /memory')
+    people = operator('GET', '/people')
+    assert isinstance(people.get('people'), list) and people.get('limit') == 40, 'GET /people shape'
+    conversations = operator('GET', '/conversations')
+    assert isinstance(conversations, list), 'GET /conversations shape'
+    done.append('GET /people admitted=%s; GET /conversations n=%d' % (people.get('admitted'), len(conversations)))
+    spend = operator('GET', '/spend')
+    assert spend.get('tier') in ('normal', 'reduced', 'restricted', 'exhausted') and 'capYuan' in spend, 'GET /spend shape'
+    done.append('GET /spend day=%s spent=%s cap=%s tier=%s pricing=%s' % (spend.get('day'), spend.get('spentYuan'), spend.get('capYuan'), spend.get('tier'), spend.get('pricing')))
     name = world['persona']['value']['name']
     preview = operator('POST', '/persona/preview', {'patch': {'name': name}})
     done.append('POST /persona/preview' + (' chars=%s' % preview.get('chars') if isinstance(preview, dict) and 'chars' in preview else ''))

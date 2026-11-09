@@ -26,6 +26,31 @@ export function qqPayload(allowedCallerUID) {
   if (!/^[0-9]+$/.test(uid)) throw Object.assign(new Error('invalid_qq_uid'), { code: 'invalid_qq_uid' });
   return { allowedCallerUID: uid };
 }
+/** Daily cap (CNY) and tier percentages: 0 < reduced < restricted < 100 (exhausted is always 100%). */
+export function spendPayload(draft) {
+  const value = { dailyCapYuan: Number(draft?.dailyCapYuan), reducedPercent: Number(draft?.reducedPercent), restrictedPercent: Number(draft?.restrictedPercent) };
+  if (!(value.dailyCapYuan >= 0.01 && value.dailyCapYuan <= 1000) || !(value.reducedPercent > 0 && value.reducedPercent < value.restrictedPercent && value.restrictedPercent < 100)) {
+    throw Object.assign(new Error('invalid_spend_settings'), { code: 'invalid_spend_settings' });
+  }
+  return value;
+}
+export function validSpend(value) {
+  return value && typeof value.day === 'string' && ['spentYuan', 'reservedYuan', 'capYuan', 'percent'].every(key => Number.isFinite(value[key]))
+    && ['normal', 'reduced', 'restricted', 'exhausted'].includes(value.tier) && Number.isFinite(value.thresholds?.reducedPercent) && Number.isFinite(value.thresholds?.restrictedPercent)
+    && value.byTier && typeof value.byTier === 'object';
+}
+export function validPeople(value) {
+  return value && Array.isArray(value.people) && value.people.every(p => typeof p.personId === 'string' && typeof p.label === 'string' && typeof p.owner === 'boolean' && Array.isArray(p.actors))
+    && Number.isFinite(value.limit) && Number.isFinite(value.admitted);
+}
+export function validConversations(value) {
+  return Array.isArray(value) && value.every(c => typeof c.streamId === 'string' && typeof c.label === 'string' && typeof c.audience === 'string' && Number.isFinite(c.messages));
+}
+/** A QQ number shown only partially (first two and last two digits). */
+export function maskAccount(externalActorId) {
+  const uid = /:user:(\d+)$/.exec(externalActorId || '')?.[1];
+  return uid ? (uid.length <= 4 ? '****' : uid.slice(0, 2) + '*'.repeat(uid.length - 4) + uid.slice(-2)) : '—';
+}
 export function validQQ(value) {
   return value && ['loggedIn', 'connected', 'configured', 'callerConfigured', 'paused'].every(key => typeof value[key] === 'boolean')
     && (value.sessionId === undefined || typeof value.sessionId === 'string');
@@ -42,9 +67,9 @@ export function operatorOrigin(location, { sameOrigin = false } = {}) {
 const SERVER_ERRORS = { VALIDATION_ERROR: 'validation_error', INVALID_REQUEST: 'invalid_request', BODY_TOO_LARGE: 'body_too_large', OPERATION_FAILED: 'operation_failed', CONFLICT: 'revision_conflict' };
 export async function operatorRequest({ location, token, path, payload, fetchImpl = fetch, signal, sameOrigin = false }) {
   if (!token) throw Object.assign(new Error('authorization_required'), { code: 'authorization_required' });
-  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path)) throw new Error('unsupported_operator_path');
-  if (['/model', '/model/test', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
-  if (path === '/runtime' && payload !== undefined) throw new Error('operator_get_required');
+  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/conversations', '/spend', '/spend/settings'].includes(path)) throw new Error('unsupported_operator_path');
+  if (['/model', '/model/test', '/spend/settings', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
+  if (['/runtime', '/people', '/conversations', '/spend'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
   const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}`, {
     method: payload === undefined ? 'GET' : 'POST',
     mode: sameOrigin ? 'same-origin' : 'cors', credentials: 'omit', cache: 'no-store', redirect: 'error',

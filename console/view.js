@@ -1,7 +1,7 @@
 // Shared UI for the standalone browser entry. Styling lives in standalone.css.
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
-import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validWorld, validQQ, qqPayload, modelPayload } from './operator-client.js';
+import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount } from './operator-client.js';
 import { validRuntime, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
@@ -15,6 +15,7 @@ const NAV = [
   { id: 'overview', icon: 'overview', key: 'O' },
   { id: 'persona', icon: 'persona', key: 'P' },
   { id: 'channels', icon: 'channels', key: 'C' },
+  { id: 'people', icon: 'people', key: 'U' },
   { id: 'memory', icon: 'memory', key: 'M' },
   { id: 'runtime', icon: 'runtime', key: 'R' },
 ];
@@ -24,6 +25,8 @@ const rect = (x, y, w, hh, r) => `M${x + r} ${y}h${w - 2 * r}a${r} ${r} 0 0 1 ${
 const ICONS = {
   overview: [rect(3, 3, 7, 9, 1), rect(14, 3, 7, 5, 1), rect(14, 12, 7, 9, 1), rect(3, 16, 7, 5, 1)],
   persona: [circle(12, 8, 5), 'M20 21a8 8 0 0 0-16 0'],
+  people: ['M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2', circle(9, 7, 4), 'M22 21v-2a4 4 0 0 0-3-3.87', 'M16 3.13a4 4 0 0 1 0 7.75'],
+  wallet: ['M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1', 'M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4'],
   channels: ['M7.9 20A9 9 0 1 0 4 16.1L2 22Z'],
   memory: ['M12 7v14', 'M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z'],
   runtime: ['M20 7h-9', 'M14 17H5', circle(17, 17, 3), circle(7, 7, 3)],
@@ -108,6 +111,9 @@ export function WorldConsole({ t, standalone = false }) {
   const [palette, setPalette] = useState(null);
   const keyHandler = useRef(null);
   const gPressedAt = useRef(0);
+  // People/spend state (appended after the shell hooks for the same reason).
+  const [people, setPeople] = useState(null);
+  const [spendDraft, setSpendDraft] = useState(null);
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -128,7 +134,7 @@ export function WorldConsole({ t, standalone = false }) {
     if (qqCallerInput.current) qqCallerInput.current.value = '';
     clearAudio(); clearReferenceInputs();
     setToken(''); setInput(''); setData(null); setDraft(null); setQQ(null); setMemory(null); setForgetPreview(null); setRuntimeInfo(null); setSpeechDraft(null); setConfirmRemove(false); setNotice('');
-    setPalette(null); setDrawer(false);
+    setPalette(null); setDrawer(false); setPeople(null); setSpendDraft(null);
   }
   async function request(path, payload, credential = token) {
     const controller = new AbortController();
@@ -172,6 +178,13 @@ export function WorldConsole({ t, standalone = false }) {
     if (!mounted.current || generation.current !== current) return;
     setQQ({ loggedIn: value.loggedIn, connected: value.connected, configured: value.configured, callerConfigured: value.callerConfigured, paused: value.paused });
   }
+  async function loadPeople(credential = token) {
+    const current = generation.current;
+    const [list, conversations] = [await request('/people', undefined, credential), await request('/conversations', undefined, credential)];
+    if (!validPeople(list) || !validConversations(conversations)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
+    if (!mounted.current || generation.current !== current) return;
+    setPeople({ ...list, conversations });
+  }
   async function loadRuntime(credential = token) {
     const current = generation.current, value = await request('/runtime', undefined, credential);
     if (!validRuntime(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
@@ -180,6 +193,7 @@ export function WorldConsole({ t, standalone = false }) {
   }
   useEffect(() => { if (token) void run(async () => { await load(token); if (standalone && tab === 'runtime') await loadRuntime(token); }); }, [token]);
   useEffect(() => { if (token && tab === 'channels') void run(() => loadQQ(token)); }, [token, tab]);
+  useEffect(() => { if (token && tab === 'people') void run(() => loadPeople(token)); }, [token, tab]);
   useEffect(() => { if (standalone && token && tab === 'runtime') void run(() => loadRuntime(token)); }, [tab]);
   // Shell effects: theme attribute, toast lifetime, scroll reset, global shortcuts.
   useEffect(() => {
@@ -237,11 +251,53 @@ export function WorldConsole({ t, standalone = false }) {
         alert('info', t('pauseHint'))),
       h('div', { className: 'bff-grid' }, ...[['facts', 'note'], ['notes', 'pin'], ['experiences', 'sparkles'], ['pending', 'inbox']].map(([key, name]) => h('dl', { key, className: 'bff-card bff-stat' },
         h('dt', null, icon(name), t(key)), h('dd', null, data.counts[key])))),
+      spendCard(),
       data.channels.length > 0 && h('section', { className: 'bff-card' }, cardHead(h('h2', null, t('channels')), button('shell.manage', () => go('channels'), { className: 'bff-ghost bff-sm', icon: 'chevron' })),
         h('div', null, ...data.channels.map(channel => h('div', { className: 'bff-list-row', key: channel.id }, h('span', { className: 'bff-tile' }, icon('channels')),
           h('div', { className: 'bff-grow' }, h('div', { className: 'bff-row' }, h('strong', null, channel.name || channel.id), badge(t(channelStatus(channel)), channelTone(channel))),
             h('p', { className: 'bff-small bff-muted' }, `${t(channel.enabled ? 'enabled' : 'disabled')} · ${t('boundStreams')}: ${channel.boundStreams}`)))))),
       text('snapshot'));
+  }
+  function spendCard() {
+    const spend = validSpend(data.spend) ? data.spend : null;
+    const head = cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('wallet')), h('h2', null, t('spend.title'))),
+      spend && badge(t(`spend.tier.${spend.tier}`), { normal: 'ok', reduced: 'primary', restricted: 'warn', exhausted: 'danger' }[spend.tier], h('span', { className: 'bff-dot' })));
+    if (!spend) return h('section', { className: 'bff-card' }, head, text('spend.unavailable'));
+    const yuanText = value => `¥${value.toFixed(value < 1 ? 4 : 2)}`;
+    const current = { dailyCapYuan: String(spend.capYuan), reducedPercent: String(spend.thresholds.reducedPercent), restrictedPercent: String(spend.thresholds.restrictedPercent) };
+    const draftValue = spendDraft || current;
+    return h('section', { className: 'bff-card' }, head,
+      h('div', { className: 'bff-spread bff-small' }, h('span', { className: 'bff-muted' }, `${t('spend.today')} ${spend.day} · ${t(`spend.window.${spend.window}`)}`), h('span', { className: 'bff-mono' }, `${yuanText(spend.spentYuan)} / ¥${spend.capYuan}`)),
+      h('div', { className: `bff-progress ${spend.tier === 'exhausted' ? 'over' : ''}`, 'aria-hidden': true }, h('i', { style: { width: `${Math.min(100, Math.max(0, spend.percent))}%` } })),
+      h('dl', { className: 'bff-kv' }, ...[['spend.reserved', yuanText(spend.reservedYuan)], ...['conversation', 'maintenance', 'vision', 'web'].map(key => [`spend.byTier.${key}`, yuanText(spend.byTier[key] ?? 0)])].map(([key, value]) => h('div', { key },
+        h('dt', null, t(key)), h('dd', { className: 'bff-mono' }, value)))),
+      text('spend.hint'),
+      h('form', { onSubmit: event => { event.preventDefault(); void run(async () => {
+        await request('/spend/settings', spendPayload(draftValue)); setSpendDraft(null); await load(); setNotice(t('saved'));
+      }); } },
+      h('div', { className: 'bff-form-grid' }, ...[['dailyCapYuan', 0.01, 1000, 0.01], ['reducedPercent', 1, 98, 1], ['restrictedPercent', 2, 99, 1]].map(([key, min, max, step]) => h('label', { key },
+        h('span', null, t(`spend.${key}`)), h('input', { name: key, type: 'number', min, max, step, required: true, value: draftValue[key], disabled: busy, onChange: event => setSpendDraft({ ...draftValue, [key]: event.target.value }) })))),
+      text('spend.settingsHint'),
+      h('button', { type: 'submit', disabled: busy }, icon('save'), t('spend.save'))));
+  }
+  function peoplePage() {
+    if (!people) return h('section', { className: 'bff-card' }, text('peoplePanel.pending'));
+    const labels = Object.fromEntries(people.people.map(person => [person.personId, person]));
+    const who = personId => labels[personId]?.owner ? badge(t('peoplePanel.owner'), 'primary', icon('star')) : h('code', null, labels[personId]?.label ?? '—');
+    return h(React.Fragment, null,
+      h('section', { className: 'bff-card' }, cardHead(h('div', null, h('h2', null, t('peoplePanel.title')), text('peoplePanel.hint')),
+        button('refresh', () => run(loadPeople), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
+        h('p', { className: 'bff-small bff-muted' }, `${t('peoplePanel.admitted')}: ${people.admitted} / ${people.limit}`, people.qq && Number.isFinite(people.qq.friends) ? ` · ${t('peoplePanel.friends')}: ${people.qq.friends}` : ''),
+        people.people.length ? h('div', { className: 'bff-table' }, h('table', null,
+          h('thead', null, h('tr', null, ...['peoplePanel.person', 'peoplePanel.account', 'peoplePanel.conversations'].map(key => h('th', { key, scope: 'col' }, t(key))))),
+          h('tbody', null, ...people.people.map(person => h('tr', { key: person.label },
+            h('td', null, who(person.personId)), h('td', { className: 'bff-mono' }, person.actors.map(actor => maskAccount(actor.externalActorId)).join(', ')), h('td', { className: 'bff-mono' }, String(person.conversations))))))) : h('div', { className: 'bff-empty' }, icon('people'), h('p', null, t('peoplePanel.empty')))),
+      h('section', { className: 'bff-card' }, h('h2', null, t('peoplePanel.conversationsTitle')), text('peoplePanel.conversationsHint'),
+        people.conversations.length ? h('div', { className: 'bff-table' }, h('table', null,
+          h('thead', null, h('tr', null, ...['peoplePanel.person', 'source', 'audience', 'peoplePanel.messages', 'peoplePanel.lastActive', 'peoplePanel.epoch'].map(key => h('th', { key, scope: 'col' }, t(key))))),
+          h('tbody', null, ...people.conversations.map((conversation, index) => h('tr', { key: `${conversation.capabilityId}:${index}` },
+            h('td', null, who(conversation.personId)), h('td', null, conversation.capabilityId), h('td', null, conversation.audience),
+            h('td', { className: 'bff-mono' }, String(conversation.messages)), h('td', null, conversation.lastAt ? time(conversation.lastAt) : '—'), h('td', { className: 'bff-mono' }, String(conversation.memoryEpoch))))))) : text('noBindings')));
   }
   function persona() {
     const dirty = JSON.stringify(draft) !== JSON.stringify(personaDraft(data.persona.value));
@@ -575,7 +631,7 @@ export function WorldConsole({ t, standalone = false }) {
         h('button', { type: 'submit', disabled: busy || !input.trim() }, icon('lock'), t('login')))),
       busyLive, toasts);
   }
-  const tabLoading = busy && ((tab === 'channels' && !qq) || (standalone && tab === 'runtime' && !runtimeInfo));
+  const tabLoading = busy && ((tab === 'channels' && !qq) || (tab === 'people' && !people) || (standalone && tab === 'runtime' && !runtimeInfo));
   const current = NAV.find(item => item.id === tab) || NAV[0];
   return h('div', { className: `bff-world bff-app${drawer ? ' bff-drawer-open' : ''}`, 'aria-busy': busy },
     h('aside', { className: 'bff-side', 'aria-label': t('title') },
@@ -609,7 +665,7 @@ export function WorldConsole({ t, standalone = false }) {
           : tabLoading ? skeleton()
           : h('section', { className: 'bff-page', key: tab, 'aria-labelledby': 'bff-page-title' },
             h('div', { className: 'bff-page-head' }, h('div', null, h('h1', { id: 'bff-page-title' }, t(current.id)), tab === 'overview' && h('p', null, t(standalone ? 'standaloneDescription' : 'description')))),
-            tab === 'overview' ? overview() : tab === 'persona' ? persona() : tab === 'channels' ? channels() : tab === 'memory' ? memories() : runtime()))),
+            tab === 'overview' ? overview() : tab === 'persona' ? persona() : tab === 'channels' ? channels() : tab === 'people' ? peoplePage() : tab === 'memory' ? memories() : runtime()))),
     palette && commandPalette(), busyLive, toasts);
 }
 export function flattenDictionary(dictionary, prefix = '') {

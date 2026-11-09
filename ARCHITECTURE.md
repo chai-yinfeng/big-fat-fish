@@ -28,7 +28,7 @@ companion-conversation QQ delivery adapter → 实际回执
 - `authority/`：独立 canonical service、规则审核、实体/人/受众与来源约束。没有 Cordis、DSH Session、QQ SDK 或供应商 SDK 依赖。
 - `core/src/persona.js`、`core/src/util.js`：当前 Authority 复用的纯数据逻辑；其它旧 core 不是新服务的第二权威。
 - `capabilities/conversation/`：执行契约（executor.js，duck-typed）、渠道侧 UDS 客户端，以及执行器服务（agent/tools/sessions/window/model/server，main.mjs 入口）。两个受限模型工具 `companion_scope`、`companion_content` 的作用域由执行请求绑定，模型不能指定 entity/person/stream/path/epoch；evidence 只返回本回合 QQ 传入的 observation ref。
-- `capabilities/qq/bridge.js`：认证私聊的串行入口、去重、epoch、投递回执；把 scope 与 prepared 输入交给执行器。QQ main 是选择执行 backend（UDS 客户端）的应用装配点。
+- `capabilities/qq/bridge.js`：私聊入口（主人 + 机器人 QQ 好友，好友经 Authority `/v1/people/admit` 准入为 `person:qq:<uid>`）、每会话串行队列（全局并发 2）、去重、epoch、投递回执；把 scope 与 prepared 输入交给执行器。QQ main 是选择执行 backend（UDS 客户端）的应用装配点。
 - `capabilities/media/`：文件引用、ACL、来源派生、感知/合成/附件表达；不解析 OneBot 字段。平台原生表情描述是 opaque 数据，仅所属渠道解释。
 - `capabilities/speech/`：纯本地文件 ASR/TTS provider，单请求只跑选中引擎。无麦克风、音箱、虚拟声卡、声纹身份或实时直播假设。
 - `model-gateway/`：固定供应商出口、私有 Key、取消与有界预算；不拥有实体/人格/记忆。新增视觉与网页仍经 Authority 作用域授权后使用。
@@ -74,6 +74,7 @@ ASR/OCR/视觉描述不是真人逐字输入。只有附件时 Core 原观察保
 - 文件已下载、编译完成、CPU 基准通过、真人试听是不同状态。
 - content 用户服务限 2 核/4GiB，不修改全局 GPU/Node/PATH。
 - Flash 视觉默认512缩图/动图首帧；网页仅公网 search/fetch，无登录cookies或点击购买。默认全产品每UTC日 vision12/web20次，先预留，失败也占。
+- 每日金额上限（model-gateway，按北京时间日）：默认 ¥5，60%/80%/100% 三档（控制台可改）；chat 按流式 usage 计价，区分高峰/闲时；到 100% 网关直接拒绝，QQ 对任何人静默，只给主人每天发一次 QQ 提醒。
 - 两个模型工具的 schema 按 4chars/token 估计比旧 memory-only 多约252 tokens（估算，非 provider 实测）。
 
 当前限制：
