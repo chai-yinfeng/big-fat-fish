@@ -39,6 +39,7 @@ class FakeSystem(cd.System):
         self.chowned = []
         self.preflights = []  # release directories the preflight ran from
         self.preflight_result = (0, 'PREFLIGHT OK checked=9 failures=0 warnings=0\n')
+        self.enabled = set()  # units the user manager would start at its own start (default.target.wants)
 
     def owner(self):
         return os.getuid(), os.getgid()
@@ -56,6 +57,10 @@ class FakeSystem(cd.System):
     def systemctl(self, *args, check=True):
         self.calls.append(args)
         stdout = ''
+        if args[0] == 'enable':
+            self.enabled.update(args[1:])
+        elif args[0] == 'disable':
+            self.enabled.difference_update(args[1:])
         if args[0] == 'show':
             blocks = []
             for name in args[2:]:
@@ -306,8 +311,9 @@ class DeployTests(Fixture):
         self.assertNotIn(name, [i['release'] for i in state['installed']])
         record = [json.loads(line) for line in self.config.log.read_text().splitlines()][-1]
         self.assertEqual((record['action'], record['removed_failed'], record['stopped_units']), ('deploy-failed', name, False))
-        # Restored release is healthy: services keep running, nothing is stopped after the restore.
-        self.assertEqual(self.system.calls[-1][0], 'show')
+        # Restored release is healthy: services keep running and stay enabled, nothing is stopped after the restore.
+        self.assertEqual([c[0] for c in self.system.calls[-2:]], ['show', 'enable'])
+        self.assertEqual(self.system.enabled, set(self.deployer.startable(self.legacy_units)))
         self.system.broken.discard(name)
         self.assertEqual(self.deployer.deploy(tarball), name)
         self.assertEqual(self.current(), name)
@@ -370,6 +376,70 @@ class DeployTests(Fixture):
             self.deployer.deploy(tarball)
         self.assertEqual(self.units(), self.legacy_units)
         self.assertEqual(self.current(), 'authority-0.10.0')
+
+    def test_deploy_enables_units_installed_without_enablement_after_health(self):
+        # Hosts deployed by the old companion-deploy run their units but never enabled them.
+        self.assertEqual(self.system.enabled, set())
+        tarball, name = self.release(self.commits[1])
+        self.deployer.deploy(tarball)
+        startable = set(self.deployer.startable(self.deployer.installed_units()))
+        self.assertEqual(self.system.enabled, startable)
+        self.assertIn('companion-world-public.socket', startable)
+        self.assertNotIn('companion-world-public.service', startable)  # socket activated
+        kinds = [c[0] for c in self.system.calls]
+        self.assertLess(kinds.index('start'), kinds.index('enable'))
+        self.assertLess(len(kinds) - 1 - kinds[::-1].index('show'), len(kinds) - 1 - kinds[::-1].index('enable'))
+
+    def test_units_are_disabled_before_they_are_stopped_or_removed(self):
+        tarball, name = self.release(self.commits[1])
+        self.deployer.deploy(tarball)
+        self.system.calls.clear()
+        second, _ = self.release(self.commits[2], mutate=lambda t: (t / 'ops/isolation/units/companion-memory.service').unlink()
+                                 or self.drop_from_manifest(t, 'ops/isolation/units/companion-memory.service'))
+        self.deployer.deploy(second)
+        kinds = [c[0] for c in self.system.calls]
+        self.assertLess(kinds.index('disable'), kinds.index('stop'))
+        disabled = self.system.calls[kinds.index('disable')]
+        self.assertIn('companion-memory.service', disabled)  # still on disk when disabled
+        self.assertNotIn('companion-memory.service', self.system.enabled)
+        self.assertNotIn('companion-memory.service', self.units())
+
+    @staticmethod
+    def drop_from_manifest(tree, relative):
+        manifest = json.loads((tree / 'source-manifest.json').read_text())
+        del manifest['files'][relative]
+        (tree / 'source-manifest.json').write_text(json.dumps(manifest))
+
+    def test_failed_deploy_with_unhealthy_restore_leaves_nothing_enabled(self):
+        tarball, name = self.release(self.commits[1])
+        self.system.broken.update({name, 'authority-0.10.0'})
+        with self.assertRaises(cd.DeployError):
+            self.deployer.deploy(tarball)
+        self.assertEqual(self.system.enabled, set())
+
+    def test_stop_disables_and_start_enables_again(self):
+        tarball, name = self.release(self.commits[1])
+        self.deployer.deploy(tarball)
+        self.assertEqual(self.deployer.stop(), name)
+        self.assertEqual(self.system.enabled, set())
+        kinds = [c[0] for c in self.system.calls]
+        self.assertEqual(kinds[-3:], ['disable', 'stop', 'reset-failed'])
+        status = json.loads(self.config.status.read_text())
+        self.assertEqual((status['last']['action'], status['last']['ok']), ('stop', True))
+        self.assertEqual(self.deployer.start(), name)
+        self.assertEqual(self.system.enabled, set(self.deployer.startable(self.deployer.installed_units())))
+        log = [json.loads(line)['action'] for line in self.config.log.read_text().splitlines()]
+        self.assertEqual(log, ['deploy', 'stop', 'start'])
+
+    def test_declined_stop_changes_nothing(self):
+        tarball, name = self.release(self.commits[1])
+        self.deployer.deploy(tarball)
+        self.system.calls.clear()
+        self.system.answer = False
+        with self.assertRaisesRegex(cd.DeployError, 'declined'):
+            self.deployer.stop()
+        self.assertEqual(self.system.calls, [])
+        self.assertTrue(self.system.enabled)
 
     def mode(self, path):
         return path.stat().st_mode & 0o777
@@ -555,7 +625,7 @@ class FreshHostTests(Fixture):
             self.assertEqual(path.stat().st_mode & 0o777, 0o700)
         self.assertEqual(sorted(self.units()), sorted(p.name for p in UNITS.iterdir()))
         self.assertIn(('daemon-reload',), self.system.calls)
-        self.assertFalse([c for c in self.system.calls if c[0] == 'start'])
+        self.assertFalse([c for c in self.system.calls if c[0] in ('start', 'enable')])
         state = json.loads(self.config.state_file.read_text())
         self.assertEqual(state['current'], {'release': name})
         self.assertIsNone(state['previous'])
@@ -568,6 +638,7 @@ class FreshHostTests(Fixture):
         started = [c for c in self.system.calls if c[0] == 'start'][-1]
         self.assertIn('companion-conversation.service', started)
         self.assertIn('companion-world-public.socket', started)
+        self.assertEqual(self.system.enabled, set(self.deployer.startable(self.deployer.installed_units())))
         log = [json.loads(line)['action'] for line in self.config.log.read_text().splitlines()]
         self.assertEqual(log, ['deploy-first', 'start'])
 
@@ -583,6 +654,7 @@ class FreshHostTests(Fixture):
         with self.assertRaisesRegex(cd.DeployError, 'not healthy'):
             self.deployer.start()
         self.assertEqual(self.system.calls[-2][0], 'stop')
+        self.assertEqual(self.system.enabled, set())
         self.assertFalse(json.loads(self.config.status.read_text())['last']['ok'])
         self.assertEqual(self.current(), name)
 

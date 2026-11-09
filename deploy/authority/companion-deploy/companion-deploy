@@ -7,9 +7,16 @@ public origin. The tarball and everything in the agent inbox are untrusted.
 
   companion-deploy deploy <tarball>   verify, install, preflight, switch, restart, check
   companion-deploy start              (re)start the current release's services, check
+  companion-deploy stop               stop the services and keep them stopped across reboots
   companion-deploy rollback           switch back to the previous release
   companion-deploy status             current/previous release and unit state
   companion-deploy list               installed releases
+
+Units are enabled (WantedBy=default.target, with linger) only after a passed
+health check, and disabled whenever companion-deploy stops them, so a user
+manager restart or a reboot brings back exactly what companion-deploy last left
+running and healthy. Unit files keep their names and follow `current`, so the
+enablement never points at a pruned release.
 
 Data/config migrations are out of scope: a release whose authority database
 SCHEMA_VERSION differs from the running release is refused.
@@ -479,6 +486,10 @@ class Deployer:
         return [n for n in names if '[Install]' in (self.config.units / n).read_text()]
 
     def stop_all(self, names):
+        """Disable, then stop: whatever companion-deploy stops stays stopped across a manager restart or reboot."""
+        installed = [n for n in names if (self.config.units / n).is_file()]
+        if installed:
+            self.system.systemctl('disable', *installed, check=False)
         services = [n for n in names if n.endswith('.service')]
         sockets = [n for n in names if n.endswith('.socket')]
         if services or sockets:
@@ -491,6 +502,12 @@ class Deployer:
         sockets = [n for n in start if n.endswith('.socket')]
         services = [n for n in start if n.endswith('.service')]
         self.system.systemctl('start', *sockets, *services)
+
+    def enable_all(self, names):
+        """Only after a passed health check: the user manager then starts the same units at its own start (linger, boot)."""
+        start = self.startable(names)
+        if start:
+            self.system.systemctl('enable', *start)
 
     def unit_states(self, names):
         output = self.system.systemctl('show', '--property=Id,ActiveState,NRestarts', *names, check=False).stdout
@@ -530,9 +547,12 @@ class Deployer:
             self.system.systemctl('daemon-reload')
             self.switch(release)
             self.start_all(names)
+            problems = self.health(names)
+            if not problems:
+                self.enable_all(names)
         except (DeployError, OSError) as error:
             return [str(error)]
-        return self.health(names)
+        return problems
 
     def restore(self, release, snapshot, failed_units):
         """Returns (problems, stopped): an unhealthy restore is stopped instead of left in a restart loop."""
@@ -739,6 +759,8 @@ class Deployer:
         try:
             self.start_all(names)
             problems = self.health(names)
+            if not problems:
+                self.enable_all(names)
         except (DeployError, OSError) as error:
             problems = [str(error)]
         if problems:
@@ -748,6 +770,27 @@ class Deployer:
             raise DeployError('services of %s are not healthy; stopped them again' % active)
         self.log('start', release=active)
         self.system.say('Started %s' % active)
+        return active
+
+    def stop(self):
+        try:
+            release = self._stop()
+        except DeployError as error:
+            self.write_status('stop', False, str(error))
+            raise
+        self.write_status('stop', True, release)
+        return release
+
+    def _stop(self):
+        self.prepare_dirs()
+        active = self.active_release()
+        if active is None:
+            raise DeployError('no release is installed')
+        if not self.system.confirm('Stop companion services of %s (they stay stopped across reboots until start)? [y/N] ' % active):
+            raise DeployError('declined')
+        self.stop_all(self.installed_units())
+        self.log('stop', release=active)
+        self.system.say('Stopped %s; run companion-deploy start to bring it back' % active)
         return active
 
     def rollback(self):
@@ -816,6 +859,7 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('deploy').add_argument('tarball')
     sub.add_parser('start')
+    sub.add_parser('stop')
     sub.add_parser('rollback')
     sub.add_parser('status')
     sub.add_parser('list')
@@ -836,6 +880,8 @@ def main(argv=None):
                 deployer.deploy(options.tarball)
             elif options.command == 'start':
                 deployer.start()
+            elif options.command == 'stop':
+                deployer.stop()
             elif options.command == 'rollback':
                 deployer.rollback()
             elif options.command == 'status':

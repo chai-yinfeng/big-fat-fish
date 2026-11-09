@@ -157,11 +157,13 @@ NapCat WebUI 6099 / OneBot WS 3001（沿用旧记录，未在新布局下复核�
 staging 以 home-agent 上无 sudo 的 `agent` 账号（`ssh home-agent-dev`，已开 linger）运行，
 直接调用 companion-deploy 本身的 deploy/预检/单元/健康检查/保留代码：全新安装 from 包 →
 用该包的 bootstrap、prepare-memory、prepare-content、QQ prepare 初始化（无模型 Key、
-不登录 QQ）→ start → 升级到 to 包（预检、切换、健康检查）→ 删除 from 包 → 重启全部单元 →
-operator API 冒烟（/world、/runtime、/qq、/memory、人格预览与保存、对话执行器鉴权）→
+不登录 QQ）→ start → disable 全部单元（模拟旧版 companion-deploy 留下的未 enable 状态）→
+升级到 to 包（预检、切换、健康检查、enable）→ 删除 from 包 → 重启全部单元 →
+manager 重启代理（确认均已 enable，停掉全部单元但不 disable，daemon-reload 后
+`systemctl --user start default.target`，再做健康检查）→ operator API 冒烟（/world、/runtime、/qq、/memory、人格预览与保存、对话执行器鉴权）→
 确认生产端口没有 staging 监听。全部位于 `~/companion-staging`（作为服务的 HOME），单元
 改名为 `companion-staging-*`，operator 端口 13082；memory、qq 单元限制为 Unix socket，
-旧 release 里写死的 3082/3001 连不到生产。`--reset` 只删除这个目录和 staging 单元。
+旧 release 里写死的 3082/3001 连不到生产。`--reset` 只删除这个目录、staging 单元及其 enable 链接。
 staging 不校验提交是否在 origin main（生产 companion-deploy 仍校验），不跑真实模型对话。
 
 部署预检：companion-deploy 在停止任何单元、切换 current 之前，以 companion 身份运行新包的
@@ -210,6 +212,18 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    若恢复后的 release 也不健康，则停止全部 companion 服务和 socket，不留在重启循环里
    （rollback 失败同理），排除原因后用 `sudo companion-deploy start`。
    只重启 companion 服务和 socket，不碰 NapCat，不重启机器。
+   开机与 user manager 重启：companion-deploy 只在健康检查通过后对单元执行
+   `systemctl --user enable`（`WantedBy=default.target`，socket 为 sockets.target；
+   companion 已开 linger），凡是它停掉的单元都先 disable 再 stop（deploy/rollback 切换前、
+   健康检查失败、恢复后仍不健康、`start` 失败、`stop`）。因此
+   `systemctl restart user@<uid>` 或重启机器后，user manager 会按单元里的
+   Requires/After 顺序自动拉起上次 companion-deploy 留下的、健康的那组单元；
+   单元文件名固定且只引用 current，不会指向已删除的 release。自动拉起不做
+   companion-deploy 的健康检查（start 本身也只是 systemctl start 加检查，没有别的
+   启动前步骤），失败的单元按 Restart=on-failure 重试，事后用第 3 步核查。
+   有意停服用 `sudo companion-deploy stop`：disable 后 stop，重启机器也保持停止，
+   直到 `sudo companion-deploy start`。旧版 companion-deploy 装的单元从未 enable，
+   换上新版后第一次 deploy 或 start 健康通过即会 enable。
    保留最近 3 个部署管理的 release 及 current/previous；旧 VM 上的 authority-0.10.0、
    authority-0.9.0 从不删除。日志在 /var/log/companion-deploy.log，摘要在
    /var/log/companion-deploy.status.json（均 root:adm 0640，Agent 可直接 cat）。
@@ -237,6 +251,7 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
 
    ```sh
    ssh -t home-agent 'sudo companion-deploy rollback'   # 用户执行：切回 previous 及其 unit 快照
+   ssh -t home-agent 'sudo companion-deploy stop'       # 用户执行：停服并 disable，重启机器也不自动拉起
    ssh home-agent 'cat /var/log/companion-deploy.status.json'   # 无需 sudo
    ssh -t home-agent 'sudo companion-deploy status'     # 用户执行：另含各单元状态
    ssh -t home-agent 'sudo companion-deploy list'       # 用户执行：列出所有 release 目录

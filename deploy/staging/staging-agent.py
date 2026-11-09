@@ -304,7 +304,7 @@ def lifecycle(from_tarball, to_tarball):
 
     def clean():
         extra = sorted(p.name for p in ROOT.iterdir() if p.name not in ('tools', 'inbox'))
-        if extra or [p for p in UNITS_DIR.glob(PREFIX + '*')]:
+        if extra or [p for p in UNITS_DIR.glob(PREFIX + '*')] or [p for p in UNITS_DIR.glob('*.wants/' + PREFIX + '*')]:
             raise RuntimeError('staging is not clean (%s); run with --reset' % (', '.join(extra[:5]) or 'leftover units'))
         return 'fresh %s' % ROOT
 
@@ -315,7 +315,41 @@ def lifecycle(from_tarball, to_tarball):
         problems = deployer.health(names)
         if problems:
             raise RuntimeError('; '.join(problems))
+        deployer.enable_all(names)
         return '%d units healthy after restart' % len(names)
+
+    def enabled(names):
+        result = deployer.system.systemctl('is-enabled', *names, check=False)
+        return dict(zip(names, result.stdout.split()))
+
+    def legacy():
+        """Production as the old companion-deploy left it: units running but not enabled."""
+        names = deployer.startable(deployer.installed_units())
+        deployer.system.systemctl('disable', *names)
+        states = enabled(names)
+        if any(state == 'enabled' for state in states.values()) or len(states) != len(names):
+            raise RuntimeError('could not disable: %s' % states)
+        return '%d running units disabled' % len(names)
+
+    def manager_restart():
+        """Proxy for `systemctl restart user@<uid>` / reboot: stop every unit without touching enablement,
+        reload unit files and .wants links from disk, then start only what default.target pulls in."""
+        names = deployer.installed_units()
+        startable = deployer.startable(names)
+        states = enabled(startable)
+        if sorted(n for n, s in states.items() if s == 'enabled') != sorted(startable):
+            raise RuntimeError('not enabled after deploy: %s' % states)
+        deployer.system.systemctl('stop', *names)
+        deployer.system.systemctl('reset-failed', *names, check=False)
+        active = deployer.system.systemctl('is-active', *names, check=False).stdout.split()
+        if any(state in ('active', 'activating') for state in active):
+            raise RuntimeError('units still running after stop: %s' % dict(zip(names, active)))
+        deployer.system.systemctl('daemon-reload')
+        deployer.system.systemctl('start', 'default.target')
+        problems = deployer.health(names)
+        if problems:
+            raise RuntimeError('; '.join(problems))
+        return '%d enabled units stopped; default.target brought back %d units healthy' % (len(startable), len(names))
 
     def prune():
         state = deployer.load_state()
@@ -331,9 +365,11 @@ def lifecycle(from_tarball, to_tarball):
     step('install-from', lambda: deployer.deploy(from_tarball) and 'first install of %s, nothing started' % from_name)
     step('init-world', lambda: initialize(from_name))
     step('start-from', lambda: deployer.start() and 'healthy; GET /world ok paused=%s' % operator('GET', '/world')['world'].get('paused'))
+    step('legacy-not-enabled', legacy)
     step('upgrade (preflight, switch, health)', lambda: deployer.deploy(to_tarball) and 'current %s' % deployer.active_release())
     step('prune-from', prune)
     step('restart-all', restart)
+    step('manager-restart (default.target)', manager_restart)
     step('smoke', smoke)
     step('prod-untouched', prod_untouched, always=True)
 
@@ -353,16 +389,22 @@ def reset():
     names = sorted(p.name for p in UNITS_DIR.glob(PREFIX + '*') if re.match(r'^' + PREFIX + r'[A-Za-z0-9-]+\.(service|socket)$', p.name))
     env = {**os.environ, 'XDG_RUNTIME_DIR': os.environ.get('XDG_RUNTIME_DIR', '/run/user/%d' % os.getuid())}
     if names:
+        subprocess.run(['systemctl', '--user', 'disable', *names], capture_output=True, timeout=180, env=env)
         subprocess.run(['systemctl', '--user', 'stop', *names], capture_output=True, timeout=180, env=env)
         subprocess.run(['systemctl', '--user', 'reset-failed', *names], capture_output=True, timeout=60, env=env)
         for name in names:
             (UNITS_DIR / name).unlink()
+    # Enablement links left behind (e.g. a unit file removed before it was disabled) must not survive a reset.
+    links = [p for p in UNITS_DIR.glob('*.wants/' + PREFIX + '*') if p.is_symlink()]
+    for link in links:
+        link.unlink()
+    if names or links:
         subprocess.run(['systemctl', '--user', 'daemon-reload'], capture_output=True, timeout=60, env=env)
     if root.exists():
         for current, dirs, _files in os.walk(root):
             os.chmod(current, 0o700)  # releases are sealed 0555
         shutil.rmtree(root)
-    print('reset: removed %d staging units and %s' % (len(names), root))
+    print('reset: removed %d staging units, %d enablement links and %s' % (len(names), len(links), root))
     return 0
 
 

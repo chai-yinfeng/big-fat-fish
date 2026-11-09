@@ -41,6 +41,16 @@ class UnitTransformTests(unittest.TestCase):
             self.assertIn('RestrictAddressFamilies=AF_UNIX', units['companion-staging-%s.service' % role])
         self.assertNotIn('RestrictAddressFamilies', units['companion-staging-authority.service'])
 
+    def test_units_install_into_the_managers_default_target(self):
+        # The manager-restart check relies on enablement pulling every unit in from default.target.
+        for name, text in self.units().items():
+            if name == 'companion-staging-world-public.service':
+                self.assertNotIn('[Install]', text)  # socket activated
+            elif name.endswith('.socket'):
+                self.assertIn('[Install]\nWantedBy=sockets.target', text, name)
+            else:
+                self.assertIn('[Install]\nWantedBy=default.target', text, name)
+
     def test_unknown_or_unconvertible_units_are_refused(self):
         with self.assertRaises(ValueError):
             sa.staging_unit('companion-staging-x.service', '[Service]\n', ROOT)
