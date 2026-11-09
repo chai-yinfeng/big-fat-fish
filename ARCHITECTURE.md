@@ -69,7 +69,7 @@ ASR/OCR/视觉描述不是真人逐字输入。只有附件时 Core 原观察保
 ## CPU 与预算
 
 - ASR：仅 Qwen3-ASR 0.6B sherpa int8，单次解码 ≤30 秒；装了 Silero VAD 时更长的音频按静音切成 ≤25 秒的段逐段转写再拼接（上限 maxAudioSeconds，默认 120、最大 600），没装 VAD 时超过 30 秒报 SPEECH_AUDIO_LIMIT，不回退其它引擎；SenseVoice 已移除，以后可再加。
-- TTS：Qwen3-TTS 1.7B Base Q4 + Q8 mmproj，经 CPU-only llama.cpp，只按参考音频条件生成；engine 字段留给以后的其它适配器（如 CosyVoice 3 / VoxCPM2，未实现）。
+- TTS：Qwen3-TTS 1.7B Base Q4 + Q8 mmproj，经 llama.cpp，默认 Vulkan（iGPU）全卸载，不可用或失败时自动回落 CPU（`models.tts['llama-tts'].device`，缺省 auto），只按参考音频条件生成；engine 字段留给以后的其它适配器（如 CosyVoice 3 / VoxCPM2，未实现）。
 - 单本地任务串行子进程，用完退出；合成 ≤120字；线程数 1–16（生产主机 8 最快）。不同时常驻多个模型。
 - 文件已下载、编译完成、CPU 基准通过、真人试听是不同状态。
 - content 用户服务限 2 核/4GiB，不修改全局 GPU/Node/PATH。

@@ -62,6 +62,11 @@ GitHub release 失败（SSL_ERROR_SYSCALL），sherpa Qwen3-ASR 压缩包须先�
 安装器按 manifest 固定的 sha256 校验。已有安装补装长语音用的 Silero VAD（>30 秒的 ASR 需要它）：
 `ops/install-speech.mjs --apply --models vad --model-source modelscope --proxy http://127.0.0.1:7890`
 （只下载约 2.3MB 的固定 sha256 文件，并在 speech.json 补 `models.vad`、把旧默认 maxAudioSeconds 30 提到 120）。
+`--models all` 默认以 Vulkan 编译 llama-tts（iGPU，需主机已装 glslc、libvulkan-dev、spirv-headers，缺少时报
+`SPEECH_VULKAN_BUILD_DEPS` 且不下载任何东西；`--cpu-only` 编译旧的纯 CPU 版），重跑会在原 build 目录重新配置编译（-j2 约 3.5 分钟）。
+运行时 `auto` 需要 content 服务进程在 render 组里（能读写 /dev/dri/renderD*）；companion 加入 render 组后须重启它的
+user manager（`systemctl restart user@$(id -u companion).service`）才会生效，否则 TTS 回落 CPU，日志
+`SPEECH_TTS_FALLBACK_CPU SPEECH_VULKAN_NO_DEVICE`。
 安装后在控制台“音色”中登记参考录音。发布与安装工具按
 `process.arch` / `uname -m` 在 arm64 与 x64 之间选择私有 Node、CMake、sherpa 原生包和
 NapCat 平台。

@@ -39,7 +39,9 @@ export function createContentOperator({ speechConfigFile, worldStatus, speechFac
       let hasReference = false; try { trustedReference(config, p); hasReference = true; } catch {}
       return { id: p.id, label: p.label, engine: p.engine, referenceLanguage: p.referenceLanguage, usageScope: p.usageScope, useReferenceText: p.useReferenceText, auditioned: p.auditioned === true, hasReference };
     });
-    return { speech: { status: 'ready', configurationRevision: revision, numThreads: config.numThreads, maxTextChars: config.maxTextChars, models }, voices: { defaultVoice: config.defaultVoice, profiles, cleanupPending: config.pendingReferenceCleanup !== undefined, referenceConditioning: 'speaker-file-only', transcriptUsedForSynthesis: false }, imageGeneration: { configured: false, status: 'not_configured' } };
+    // TTS backend: 'vulkan' or 'cpu' (+ the stable fallback code when auto runs on CPU).
+    const tts = s.tts && ['auto', 'vulkan', 'cpu'].includes(s.tts.device) && ['vulkan', 'cpu'].includes(s.tts.backend) ? { device: s.tts.device, backend: s.tts.backend, fallback: /^SPEECH_[A-Z_]{1,40}$/.test(s.tts.fallback) ? s.tts.fallback : null, observed: s.tts.observed === true } : null;
+    return { speech: { status: 'ready', configurationRevision: revision, numThreads: config.numThreads, maxTextChars: config.maxTextChars, models, tts }, voices: { defaultVoice: config.defaultVoice, profiles, cleanupPending: config.pendingReferenceCleanup !== undefined, referenceConditioning: 'speaker-file-only', transcriptUsedForSynthesis: false }, imageGeneration: { configured: false, status: 'not_configured' } };
   }
   /** Status degrades instead of failing: a missing, schema-1 or invalid config is reported by a stable reason code. */
   function unavailable() {

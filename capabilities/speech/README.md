@@ -44,6 +44,17 @@ Audio ≤30 s is decoded in one pass exactly as before. Longer audio (when `mode
 
 Measured with the product worker on home-agent (8 threads, Silero VAD + Qwen3-ASR int8, TTS-built clips, wall time including child start and model load): 35 s → 165/165 chars, 7.9 s; 40.8 s → 191/191 chars, 9.1 s; 69.3 s → 330/330 chars, 13.5 s; CER 0 against the source sentences.
 
+## TTS backend (Vulkan iGPU with CPU fallback)
+
+`models.tts['llama-tts'].device` is optional: `auto` (also when absent, so existing schema-2 configs need no change), `vulkan` or `cpu`.
+
+- Vulkan runs `--device Vulkan0 -ngl 99` (all layers and the mmproj vocoder on the GPU); CPU runs the previous `--device none -ngl 0 --no-mmproj-offload`. Measured on home-agent's Radeon 780M (RADV): Q4_K_M wall RTF 0.90 vs 3.55 on CPU under the content unit's `CPUQuota=200%`, peak RSS 1.6 vs 4.6 GB.
+- `auto` first checks cheaply: no `libggml-vulkan.so` next to `llama-tts` (a CPU-only build) → `SPEECH_VULKAN_UNSUPPORTED`; no readable/writable `/dev/dri/renderD*` (e.g. the service is not in the `render` group) → `SPEECH_VULKAN_NO_DEVICE`. Otherwise it tries Vulkan with half of `timeoutMs`; a non-zero exit, crash or timeout reruns the same request on CPU (`SPEECH_VULKAN_FAILED`). An incomplete synthesis (frame limit) is not retried.
+- Each request is a fresh worker, so the runner remembers the first fallback code for the life of the product process; later `auto` requests go straight to CPU until the content service restarts. The runner logs one line `SPEECH_TTS_FALLBACK_CPU <code>` to stderr (journal) the first time.
+- `vulkan`/`cpu` never fall back; a Vulkan failure under `vulkan` is `SPEECH_WORKER_FAILED`.
+- `status().tts` is `{device, backend, fallback, observed}`: the backend of the last synthesis (`observed:true`) or the one the next would use; the content operator status projects it as `speech.tts`.
+- Mesa's shader cache is `workRoot/shader-cache` (`MESA_SHADER_CACHE_DIR`), so only the first Vulkan process compiles shaders (~2 s).
+
 ## Voices
 
 `voiceProfiles` maps a voice id (`[a-z0-9][a-z0-9-]{0,39}`) to `{id,label,engine,referencePath,referenceTranscript,referenceLanguage,useReferenceText,usageScope,auditioned}`; `defaultVoice` is one of those ids or `null`. Voices are registered by the operator through the content operator port / console (see `capabilities/media/OPERATOR.md`), never by the model.
@@ -80,7 +91,7 @@ The pinned `llama-tts` v0.8.0 exits 0 even at its frame limit, so the wrapper pa
 - `--archive-dir <absolute dir>`: a sha256-pinned download whose exact filename is present there (regular file) is copied from it instead of fetched; size and sha256 must still match, otherwise `SPEECH_DOWNLOAD_DIGEST`. Fetch the ASR archive on a machine with GitHub access and copy it over.
 - ASR archive pin (observed on a direct GitHub download, 2026-11-08; upstream publishes no digest): `sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2`, 878,702,423 bytes, SHA256 `393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96`
 - Downloads are cached privately; the model card and license are unpinned and recorded as observed. Tar extraction uses Python `tarfile` with `filter='data'` plus path/type/link preflight. Existing model directories are never overwritten; failed staging directories are left for diagnosis.
-- `all` uses [official CMake 4.4.5](https://github.com/Kitware/CMake/releases/tag/v4.4.5) for the host architecture (sha256 checked against the publisher list), clones only the pinned llama.cpp `v0.8.0` (commit `8642541b255bfb5dc39cd351a178be09013a55d6`), verifies a clean tree, and builds only `llama-tts` CPU-only (`-j2`). Runtime fixes `--device none`, `-ngl 0`, `--no-mmproj-offload`.
+- `all` uses [official CMake 4.4.5](https://github.com/Kitware/CMake/releases/tag/v4.4.5) for the host architecture (sha256 checked against the publisher list), clones only the pinned llama.cpp `v0.8.0` (commit `8642541b255bfb5dc39cd351a178be09013a55d6`), verifies a clean tree, and builds only `llama-tts` (`-j2`) with `-DGGML_VULKAN=ON`. The Vulkan build needs the Ubuntu packages `glslc`, `libvulkan-dev` and `spirv-headers` (build time only); if any is missing `--apply` stops before downloading with `SPEECH_VULKAN_BUILD_DEPS: missing …`. `--cpu-only` builds the old CPU-only binary instead. Re-running `--apply --models all` reconfigures the existing build directory (no deletion). See *TTS backend* for runtime selection.
 - VAD pin (observed 2026-11-08; upstream publishes no digest): Silero VAD v5.1.2 `silero_vad.onnx`, 2,327,524 bytes, SHA256 `2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f`, MIT. Source `raw.githubusercontent.com/snakers4/silero-vad/6478567951ae5c9979ad7b234185b5515f4be7a1/src/silero_vad/data/silero_vad.onnx`; byte-identical ModelScope copy `pengzhendong/silero-vad@370539c71ec0ac703627938064cf31c1852186d7` `v5/silero_vad.onnx` (reachable from home-agent directly). Installed to `speech-models/silero-vad-v5.1.2/` with a `SOURCE.json`; `--archive-dir` with a file named `silero_vad.onnx` also works.
 - GGUF snapshot `ggml-org/Qwen3-TTS-12Hz-1.7B-Base-GGUF@ca27d74bc954b73dadab5b71ca265d87fc861a7c`:
   - `Qwen3-TTS-12Hz-1.7B-Base-Q4_K_M.gguf`: 1,035,965,280 bytes; SHA256 `8d18c94acb2addd042f97da63c98be144eafa76d0d9495177eab65130cf85129`
@@ -91,6 +102,7 @@ After installation, register a voice in the console, audition it, and optionally
 
 ## Test coverage / current limits
 
+- `llama-tts.test.js` covers the backend args, the `auto` fallback with a fake native run (Vulkan fails → CPU, then straight to CPU), the Vulkan probe, a config without `device` meaning `auto`, and the real worker against a fake CPU-only `llama-tts`.
 - `runner.test.js` uses a fake child: path boundaries/symlink escape, serialized jobs, the ASR length cap with/without the VAD, voice resolution, schema refusal, reference manifest checks, sanitized failure/recovery. The installer is checked via pure helpers (`cmakeFor`, `hfUrl`, `ggufUrl`, `proxyEnv`, `localArchive`) and a prepared-manifest plan fixture.
 - `chunks.test.js` covers chunk planning (grouping, hard split with overlap) and joining.
 - Not covered by tests: real model loading, intelligibility, latency, `--apply`, and the ModelScope/proxy download path on the host.

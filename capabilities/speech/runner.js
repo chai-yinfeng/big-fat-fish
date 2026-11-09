@@ -2,15 +2,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { loadSpeechConfig, inputPath, outputPath, engineFor, componentsPresent, wavInfo, failure, resolveVoice, trustedReference, ASR_TIERS, asrLimitSeconds, vadPresent, SINGLE_PASS_SECONDS } from './config.js';
+import { loadSpeechConfig, inputPath, outputPath, engineFor, componentsPresent, wavInfo, failure, resolveVoice, trustedReference, ASR_TIERS, asrLimitSeconds, vadPresent, ttsDevice, SINGLE_PASS_SECONDS } from './config.js';
+import { vulkanProbe, TTS_BACKENDS, FALLBACK_CODES } from './llama-tts.js';
 
 const workerDefault = fileURLToPath(new URL('./worker.mjs', import.meta.url));
 const publicErrors = new Set(['SPEECH_CANCELLED', 'SPEECH_NOT_CONFIGURED', 'SPEECH_CONFIG_SCHEMA', 'SPEECH_MODEL_DISABLED', 'SPEECH_REQUEST', 'SPEECH_PATH', 'SPEECH_AUDIO_FORMAT', 'SPEECH_AUDIO_LIMIT', 'SPEECH_INCOMPLETE', 'SPEECH_REFERENCE_REQUIRED', 'SPEECH_VOICE_UNKNOWN', 'SPEECH_TIMEOUT']);
 
 /** Trusted host interface only. The model-facing layer uses artifact IDs, never these paths. */
-export function createLocalSpeechRunner({ configFile, workerFile = workerDefault }) {
+export function createLocalSpeechRunner({ configFile, workerFile = workerDefault, log = line => process.stderr.write(line + '\n') }) {
   if (!path.isAbsolute(configFile) || !path.isAbsolute(workerFile)) throw failure('SPEECH_CONFIG');
   let tail = Promise.resolve();
+  // Each request is a fresh worker, so the runner (one per product process) remembers
+  // why Vulkan is unusable; `auto` then goes straight to CPU until the process restarts.
+  let vulkanUnavailable = null, lastTts = null;
   const enqueue = (job, signal) => {
     if (signal?.aborted) return Promise.reject(failure('SPEECH_CANCELLED'));
     const pending = tail.then(() => run(job, signal));
@@ -38,7 +42,10 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
       job.outputFile = outputPath(c, job.outputFile);
       fs.closeSync(fs.openSync(job.outputFile, 'wx', 0o600));
       reservedOutput = job.outputFile;
-      if (e.engine === 'llama-tts') { jobDir = fs.mkdtempSync(path.join(fs.realpathSync(c.workRoot), 'speech-job-')); job.jobDir = jobDir; }
+      if (e.engine === 'llama-tts') {
+        jobDir = fs.mkdtempSync(path.join(fs.realpathSync(c.workRoot), 'speech-job-')); job.jobDir = jobDir;
+        if (vulkanUnavailable) job.vulkanUnavailable = vulkanUnavailable;
+      }
     }
     try {
       const result = await new Promise((resolve, reject) => {
@@ -78,6 +85,11 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
       }
       const info = wavInfo(job.outputFile);
       if (info.durationMs !== result.durationMs || info.sampleRate !== result.sampleRate) throw failure('SPEECH_WORKER_FAILED');
+      if (e.engine === 'llama-tts') {
+        if (!TTS_BACKENDS.includes(result.backend) || result.fallback !== null && !FALLBACK_CODES.includes(result.fallback)) throw failure('SPEECH_WORKER_FAILED');
+        if (result.fallback && !vulkanUnavailable) { vulkanUnavailable = result.fallback; log('SPEECH_TTS_FALLBACK_CPU ' + result.fallback); }
+        lastTts = { backend: result.backend, fallback: result.fallback };
+      }
       return { model: result.model, durationMs: info.durationMs, sampleRate: info.sampleRate, mime: 'audio/wav' };
     } catch (error) {
       // This exact path was canonicalized inside workRoot and exclusively reserved above.
@@ -87,6 +99,13 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
       // Parent owns cleanup even when timeout SIGKILL prevents child finally handlers.
       if (jobDir && path.dirname(jobDir) === fs.realpathSync(c.workRoot) && path.basename(jobDir).startsWith('speech-job-') && fs.existsSync(jobDir)) fs.rmSync(jobDir, { recursive: true });
     }
+  }
+  /** The backend of the last synthesis, or the one the next would try (observed:false). */
+  function ttsStatus(e) {
+    const device = ttsDevice(e);
+    if (lastTts) return { device, ...lastTts, observed: true };
+    const fallback = device === 'auto' ? vulkanUnavailable ?? vulkanProbe(e.executable) : null;
+    return { device, backend: device === 'cpu' || fallback ? 'cpu' : 'vulkan', fallback, observed: false };
   }
   return {
     transcribe({ inputFile, language = 'auto', signal }) {
@@ -102,7 +121,8 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
         const models = Object.fromEntries([...ASR_TIERS.filter(tier => Object.hasOwn(c.models.asr, tier)).map(tier => ['asr:' + tier, entry('asr', tier)]), ...Object.keys(c.models.tts).map(key => ['tts:' + key, entry('tts', key)])]);
         // timeoutMs bounds the whole request, i.e. every chunk of a long recording.
         const longAudio = { vadPresent: vadPresent(c), singlePassSeconds: SINGLE_PASS_SECONDS, maxAudioSeconds: asrLimitSeconds(c), timeoutMs: c.timeoutMs, ...(vadPresent(c) ? {} : { hint: 'SPEECH_VAD_NOT_INSTALLED: audio over 30 s fails with SPEECH_AUDIO_LIMIT; run ops/install-speech.mjs --apply --models vad' }) };
-        return { configured: true, cpuOnly: true, models, longAudio, defaultVoice: c.defaultVoice, voices: Object.values(c.voiceProfiles).map(p => ({ id: p.id, engine: p.engine, usageScope: p.usageScope, auditioned: p.auditioned === true })) };
+        const tts = Object.hasOwn(c.models.tts, 'llama-tts') ? ttsStatus(c.models.tts['llama-tts']) : null;
+        return { configured: true, cpuOnly: tts?.backend !== 'vulkan', models, longAudio, tts, defaultVoice: c.defaultVoice, voices: Object.values(c.voiceProfiles).map(p => ({ id: p.id, engine: p.engine, usageScope: p.usageScope, auditioned: p.auditioned === true })) };
       } catch (error) { return { configured: false, code: error.code === 'SPEECH_CONFIG_SCHEMA' ? error.code : 'SPEECH_NOT_CONFIGURED' }; }
     },
   };
