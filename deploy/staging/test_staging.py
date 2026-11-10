@@ -58,6 +58,34 @@ class UnitTransformTests(unittest.TestCase):
             sa.staging_unit('companion-x.service', '[Service]\nExecStart=/bin/true 127.0.0.1:6099\n', ROOT)
 
 
+class ScenarioUnitTests(unittest.TestCase):
+    def units(self):
+        return dict(sa.staging_unit(u.name, u.read_text(), ROOT) for u in sorted(UNITS.iterdir()))
+
+    def test_model_unit_runs_the_release_gateway_through_the_scripted_launcher(self):
+        units = self.units()
+        model = sa.scenario_unit('companion-staging-model.service', units['companion-staging-model.service'], ROOT)
+        self.assertIn('ExecStart=%s/.local/opt/companion/bin/node %s/tools/fake-model.mjs --release %s/src/companion/current '
+                      '--config %s/.local/share/companion-world-v1/operator/model-gateway.json '
+                      '--script %s/scenario/model-script.json --log %s/scenario/model-requests.jsonl\n' % ((ROOT,) * 6), model)
+        self.assertNotIn('model-gateway/main.mjs', model)
+        self.assertEqual(model.count('ExecStart='), 1)
+        self.assertEqual(sa.scenario_unit('companion-staging-model.service', model, ROOT), model)
+        with self.assertRaises(ValueError):
+            sa.scenario_unit('companion-staging-model.service', '[Service]\nExecStart=/bin/true\n', ROOT)
+
+    def test_only_the_qq_unit_may_dial_loopback_and_no_unit_names_a_production_port(self):
+        units = self.units()
+        for name, text in units.items():
+            scenario = sa.scenario_unit(name, text, ROOT)
+            self.assertNotRegex(scenario, r'\b(3001|3082|6099)\b', name)
+            if name == 'companion-staging-qq.service':
+                self.assertNotIn('RestrictAddressFamilies', scenario)
+            elif name != 'companion-staging-model.service':
+                self.assertEqual(scenario, text, name)
+        self.assertEqual(sa.ONEBOT_PORT, 13001)
+
+
 class ResetGuardTests(unittest.TestCase):
     def test_only_exactly_home_companion_staging(self):
         with tempfile.TemporaryDirectory(prefix='staging-home-') as temp:

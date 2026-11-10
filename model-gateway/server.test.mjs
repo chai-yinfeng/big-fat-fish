@@ -200,3 +200,41 @@ test('capability credentials and public-only inputs are checked before budget re
   assert.equal((await f.capability('/v1/vision/describe', { imageBase64: tooLarge.toString('base64'), mime: 'image/jpeg' })).status, 400);
   assert.equal(calls, 0); await assert.rejects(fs.access(f.usageFile), { code: 'ENOENT' });
 });
+
+test('a spend-tier refusal of vision/web is SPEND_RESTRICTED; the daily call count stays BUDGET_EXHAUSTED', async t => {
+  let calls = 0;
+  const f = await fixture(t, async () => { calls++; return new Response(JSON.stringify({ results: [] })); }, { budgets: { web: 1, vision: 1 }, clock: () => Date.parse('2026-11-09T02:00:00Z') });
+  await f.control('/model', { model: 'deepseek-flash', apiKey: 'synthetic-key' }); f.pause(false);
+  assert.equal((await f.capability('/v1/web/search', { query: 'x' })).status, 200);
+  const counted = await f.capability('/v1/web/search', { query: 'x' });
+  assert.deepEqual([counted.status, counted.json().error.code], [429, 'BUDGET_EXHAUSTED']);
+  // One web call cost 0.005 of a 0.01 cap: 50%, restricted once that tier starts at 40%.
+  assert.equal((await f.control('/spend/settings', { dailyCapYuan: 0.01, reducedPercent: 30, restrictedPercent: 40 })).json().value.tier, 'restricted');
+  for (const [route, body] of [['/v1/vision/describe', { imageBase64: png, mime: 'image/png' }], ['/v1/web/search', { query: 'x' }], ['/v1/web/fetch', { url: 'https://example.com' }]]) {
+    const refused = await f.capability(route, body);
+    assert.deepEqual([refused.status, refused.json().error.code], [429, 'SPEND_RESTRICTED'], route);
+  }
+  assert.equal(calls, 1);
+  const saved = JSON.parse(await fs.readFile(f.usageFile, 'utf8')); assert.equal(saved.visionCalls, 0, 'a spend refusal does not consume the daily count');
+});
+
+test('daily vision/web counts roll over at Beijing midnight; a usage file with a UTC day from an older release still loads', async t => {
+  let now = Date.parse('2026-11-09T15:30:00Z'), calls = 0; // 23:30 Monday in Beijing, still the 9th in UTC too
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'fish-model-')), usageFile = path.join(directory, 'capability-usage.json');
+  t.after(async () => { assert.equal(path.dirname(directory), os.tmpdir()); await fs.rm(directory, { recursive: true }); });
+  // Written by the previous release at 23:30 Beijing time: day is the UTC date, both counters at their limit.
+  await fs.writeFile(usageFile, JSON.stringify({ schema: 1, day: '2026-11-09', webCalls: 1, visionCalls: 1, inputTokens: 5, outputTokens: 7, unreportedUsageResponses: 0 }), { mode: 0o600 });
+  await fs.writeFile(path.join(directory, 'settings.json'), JSON.stringify({ model: 'deepseek-flash', apiKey: 'synthetic-key' }), { mode: 0o600 });
+  const gateway = createModelGateway({ settingsFile: path.join(directory, 'settings.json'), usageFile, inferenceSocket: path.join(directory, 'infer.sock'), controlSocket: path.join(directory, 'control.sock'), inferenceTokenHash: hash(infer), operatorTokenHash: hash(operator), budgets: { web: 1, vision: 1 }, clock: () => now, worldStatus: async () => ({ paused: false }), fetchImpl: async () => { calls++; return new Response(JSON.stringify({ results: [] })); } });
+  await gateway.start(); t.after(() => gateway.close());
+  const search = () => request(path.join(directory, 'infer.sock'), '/v1/web/search', { query: 'x' }, infer);
+  assert.equal((await search()).status, 429, 'same day in both calendars: the stored count still applies');
+  now = Date.parse('2026-11-09T16:00:00Z'); // 00:00 Tuesday in Beijing, 16:00 Monday UTC
+  assert.equal((await search()).status, 200, 'the Beijing day changed');
+  assert.equal((await search()).status, 429);
+  let saved = JSON.parse(await fs.readFile(usageFile, 'utf8'));
+  assert.deepEqual([saved.day, saved.webCalls, saved.visionCalls, saved.inputTokens], ['2026-11-10', 1, 0, 0]);
+  now = Date.parse('2026-11-10T00:30:00Z'); // UTC midnight passed: still Tuesday in Beijing, no reset
+  assert.equal((await search()).status, 429);
+  assert.equal(calls, 1);
+});

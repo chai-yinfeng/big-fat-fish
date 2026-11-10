@@ -10,7 +10,8 @@ import { createContentControlClient } from '../../authority/src/content-control.
 import { ArtifactStore } from './artifacts.js';
 import { MediaService } from './service.js';
 import { createContentServer } from './server.mjs';
-import { ContentClient } from './client.js';
+import http from 'node:http';
+import { ContentClient, capabilityGateway } from './client.js';
 
 test('real capability and private-control sockets preserve media provenance; pause prevents work', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-content-flow-'));
@@ -38,4 +39,35 @@ test('real capability and private-control sockets preserve media provenance; pau
   assert.equal(JSON.parse(core.store.db.prepare('SELECT body FROM observations WHERE event_id=?').get('source').body).text, '[audio attachment]');
   core.setWorldPaused({ paused: true, expectedRevision: core.worldStatus().revision });
   await assert.rejects(client.call({ ...scope, action: 'transcribe', ref: artifact.id })); assert.equal(speechCalls, 1);
+});
+
+test('a spend-tier refusal keeps its code from the gateway through the content service and Authority to the channel', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-content-flow-'));
+  const core = new Authority({ file: path.join(root, 'core.sqlite') });
+  const capabilityToken = 'synthetic-capability-credential-for-media', controlToken = 'synthetic-content-control-credential', gatewayToken = 'synthetic-gateway-credential-for-media';
+  const tokenFile = path.join(root, 'cap.token'), controlFile = path.join(root, 'control.token'), gatewayFile = path.join(root, 'gateway.token');
+  fs.writeFileSync(tokenFile, capabilityToken, { mode: 0o600 }); fs.writeFileSync(controlFile, controlToken, { mode: 0o600 }); fs.writeFileSync(gatewayFile, gatewayToken, { mode: 0o600 });
+  core.registerCapability({ id: 'qq', policy: 'conversation.v1' });
+  core.bindActor({ capabilityId: 'qq', externalActorId: 'owner', personId: 'person:owner' });
+  core.bindStream({ capabilityId: 'qq', streamId: 'private', personId: 'person:owner', audience: 'private' });
+  core.observe('qq', { streamId: 'private', eventId: 'source', actorId: 'owner', role: 'user', text: '[image attachment]', at: 1 });
+  // A stand-in gateway answering the way the real one refuses (429 + fixed code).
+  let refusal = 'SPEND_RESTRICTED';
+  const gatewaySocket = path.join(root, 'gateway.sock');
+  const gatewayServer = http.createServer((req, res) => { req.resume(); res.writeHead(429, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: { code: refusal, message: 'x' } })); });
+  await new Promise(resolve => gatewayServer.listen(gatewaySocket, resolve));
+  const gateway = capabilityGateway({ socketPath: gatewaySocket, tokenFile: gatewayFile });
+  const service = new MediaService({ store: new ArtifactStore({ root: path.join(root, 'media') }), workRoot: path.join(root, 'work'), speech: {}, normalizeImage: async data => ({ data, mime: 'image/gif' }), vision: gateway.vision, search: gateway.search, fetchPage: gateway.fetchPage });
+  const controlSocket = path.join(root, 'content.sock'), socketPath = path.join(root, 'core.sock');
+  const content = createContentServer({ socketPath: controlSocket, tokenFile: controlFile, service, worldStatus: async () => core.worldStatus() });
+  const authority = createAuthorityServer({ authority: core, socketPath, credentials: [{ role: 'capability', capabilityId: 'qq', hash: createHash('sha256').update(capabilityToken).digest('hex') }], contentControl: createContentControlClient({ socketPath: controlSocket, tokenFile: controlFile }) });
+  t.after(async () => { await content.close(); await authority.close(); await new Promise(resolve => gatewayServer.close(resolve)); core.close(); assert.equal(path.dirname(root), os.tmpdir()); assert.match(path.basename(root), /^fish-content-flow-/); fs.rmSync(root, { recursive: true }); });
+  await content.start(); await authority.start(); const client = new ContentClient({ socketPath, tokenFile });
+  const scope = { streamId: 'private', memoryEpoch: 0 };
+  const artifact = await client.call({ ...scope, action: 'ingest', kind: 'image', sourceEventId: 'source', data: 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' });
+  await assert.rejects(client.call({ ...scope, action: 'describe', ref: artifact.id }), { code: 'CONTENT_SPEND_RESTRICTED' });
+  await assert.rejects(client.call({ ...scope, action: 'search', query: 'x' }), { code: 'CONTENT_SPEND_RESTRICTED' });
+  // The daily call count (and anything else) still reaches the channel as a plain failure.
+  refusal = 'BUDGET_EXHAUSTED';
+  await assert.rejects(client.call({ ...scope, action: 'describe', ref: artifact.id }), { code: 'CONTENT_OPERATION_UNAVAILABLE' });
 });

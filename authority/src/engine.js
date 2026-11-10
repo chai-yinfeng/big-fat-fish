@@ -3,7 +3,7 @@ import { Store, DEFAULT_ENTITY_ID } from './store.js';
 import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
 import { POLICIES, validatePayload, review } from './policies.js';
 import { normalizePersona, validatePersonaPatch } from '../../core/src/persona.js';
-import { renderContext, DEFAULT_CONTEXT_CHARS, personaShare, personaContextText, opaquePerson } from './context.js';
+import { renderContextParts, DEFAULT_CONTEXT_CHARS, personaShare, personaContextText, opaquePerson } from './context.js';
 import { MemoryDomain } from './memory.js';
 export {
   DEFAULT_ENTITY_ID
@@ -370,7 +370,8 @@ export class Authority extends MemoryDomain {
       entityId:e.id,
       memoryEpoch:this.streamEpoch(e,capabilityId,input.streamId),
       personaRevision:e.persona_revision,
-      text:renderContext(JSON.parse(e.persona),rows,budget),
+      // `text` is the whole context; personaText/memoryText are the same content apart (stable / per-query).
+      ...renderContextParts(JSON.parse(e.persona),rows,budget),
       scope,
       world:this.worldStatus()
     };

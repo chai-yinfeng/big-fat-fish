@@ -162,10 +162,36 @@ staging 以 home-agent 上无 sudo 的 `agent` 账号（`ssh home-agent-dev`，�
 manager 重启代理（确认均已 enable，停掉全部单元但不 disable，daemon-reload 后确认
 default.target 的依赖树覆盖全部单元，再 `systemctl --user start default.target sockets.target`
 并做健康检查；已激活的 sockets.target 不会因 start default.target 被重新拉起，故单独启动）→ operator API 冒烟（/world、/runtime、/qq、/memory、人格预览与保存、对话执行器鉴权）→
-确认生产端口没有 staging 监听。全部位于 `~/companion-staging`（作为服务的 HOME），单元
+场景回放（见下）→ 确认生产端口没有 staging 监听。全部位于 `~/companion-staging`（作为服务的 HOME），单元
 改名为 `companion-staging-*`，operator 端口 13082；memory、qq 单元限制为 Unix socket，
 旧 release 里写死的 3082/3001 连不到生产。`--reset` 只删除这个目录、staging 单元及其 enable 链接。
 staging 不校验提交是否在 origin main（生产 companion-deploy 仍校验），不跑真实模型对话。
+
+场景回放（冒烟之后的 `scenarios` 步骤，只对 to 包运行）验证「谁发了什么 → 谁收到了什么回复」，
+不登录 QQ、不用模型 Key：`fake-onebot.mjs` 在 13001 上冒充 NapCat（校验 access_token，记录
+send_private_msg），`fake-model.mjs` 启动 release 里真实的 model-gateway（计费、三档、暂停检查不变），
+只把上游换成按脚本应答的假 DeepSeek；这一步把 staging 的 model 单元改为经它启动，并放开 qq 单元到
+回环地址的连接（先确认 qq-bridge.json 的 onebotPort 是 13001）。两者只是上传到
+`~/companion-staging/tools/` 的 staging 工具，不进 release，生产网关没有可配置的上游。运行器
+（`scenarios.mjs`）暂停世界、经 operator `/qq` 绑定主人、写入假 Key、恢复世界，然后按
+`deploy/staging/scenarios.json` 注入私聊并断言：假 OneBot 收到的发送记录、operator 的
+`/memory`、`/people`、`/conversations`、`/spend`，以及假模型收到的整个请求体（`expectPrompt`：
+system、记忆中枢附注、用户原文、历史与工具结果全部在内；加 `"in": "context"` 时只看记忆中枢附注，
+即 Authority 为这一回合检索到的内容）。结束后世界保持暂停。现有场景：S1 两个好友的记忆互不可见，S2 非好友静默且不准入，
+S3 每日上限到顶后所有人静默、主人只收到一次提醒。摘要里有一行 `SCENARIOS n/n passed: ...`，
+任一场景失败则是 `STAGING FAILED`。
+
+- 新功能开工前先加场景：在 `scenarios.json` 的 `scenarios` 里加一项
+  `{ id, title, model, steps, finally }`。`model` 是假模型的规则（最新一条用户消息包含 `match`
+  时回 `reply`；带 `propose` 则先发起一次 companion_scope propose；`usage` 决定计费）；`steps`
+  每步一个键：`say`、`expectReply`、`expectSilence`、`expectSentCount`、`expectMemory`、
+  `expectPrompt`、`expectNoModelCall`、`expectAdmitted`、`spendSettings`、`expectSpend`
+  （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。所有人名必须是 `MOCK-xx`，QQ 号必须是
+  9999 开头的 12 位假号，否则运行器拒绝。
+- 本机先跑：`node --test deploy/staging/scenarios.test.mjs` 用本 checkout 的真实 Authority、
+  网关、执行器和 QQ 桥进程回放同一份场景（静默等待缩短）。
+- 在 staging 上单独重跑（沿用上一次生命周期留下的 release，会重置当日开销与主人提醒状态）：
+  `node deploy/staging/run.mjs --scenarios`，或 `--scenarios --only S1,S3`。
 
 部署预检：companion-deploy 在停止任何单元、切换 current 之前，以 companion 身份运行新包的
 `ops/preflight.mjs`，用新包自己的校验逻辑检查现有数据根中的全部配置（speech 用

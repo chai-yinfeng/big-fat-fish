@@ -20,7 +20,7 @@ export function unixJson({ socketPath, route, tokenFile, token, body, timeoutMs 
         if (finished) return;
         try {
           const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          if (res.statusCode !== 200 || value.ok !== true || !Object.hasOwn(value, 'value')) { rejectOnce(res.statusCode === 429 ? 'CONTENT_BUDGET_EXHAUSTED' : res.statusCode === 403 ? 'CONTENT_FORBIDDEN' : 'CONTENT_OPERATION_UNAVAILABLE'); return; }
+          if (res.statusCode !== 200 || value.ok !== true || !Object.hasOwn(value, 'value')) { rejectOnce(res.statusCode === 429 ? (['SPEND_RESTRICTED', 'CONTENT_SPEND_RESTRICTED'].includes(value?.error?.code) ? 'CONTENT_SPEND_RESTRICTED' : 'CONTENT_BUDGET_EXHAUSTED') : res.statusCode === 403 ? 'CONTENT_FORBIDDEN' : 'CONTENT_OPERATION_UNAVAILABLE'); return; }
           finished = true; resolve(value.value);
         } catch { rejectOnce('CONTENT_RESPONSE_INVALID'); }
       });

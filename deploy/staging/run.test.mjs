@@ -15,3 +15,9 @@ test('staging never targets the production host alias', () => {
   assert.equal(checkHost('home-agent-dev'), 'home-agent-dev');
   for (const host of ['home-agent', 'bad host', 'x;rm']) assert.throws(() => checkHost(host), /Refusing/);
 });
+
+test('--scenarios replays alone, optionally a subset', () => {
+  assert.deepEqual(parseArgs(['--scenarios']), { reset: false, from: null, to: null, scenarios: true, lifecycle: false });
+  assert.deepEqual(parseArgs(['--scenarios', '--only', 'S1,S3']), { reset: false, from: null, to: null, scenarios: true, only: 'S1,S3', lifecycle: false });
+  for (const bad of [['--scenarios', '--reset'], ['--scenarios', '--to', 'authority-0.10.1-0123456789ab.tar.gz'], ['--only', 'S1'], ['--scenarios', '--only'], ['--scenarios', '--only', 's1;rm']]) assert.throws(() => parseArgs(bad), /Usage/);
+});

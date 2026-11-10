@@ -5,6 +5,8 @@
 // .build/releases); --to defaults to .build/releases/<release of HEAD>.tar.gz, built with
 // `node deploy/authority/stage-release.mjs --no-upload [--allow-unpublished]`.
 // --reset alone only wipes ~/companion-staging and its units on the host.
+// --scenarios [--only S1,S3] replays only the scenarios (scenarios.json) against the release
+// the last lifecycle left on the host.
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -15,16 +17,21 @@ const project = fileURLToPath(new URL('../../', import.meta.url));
 export const HOST = process.env.COMPANION_STAGING_HOST || 'home-agent-dev';
 export const USER = process.env.COMPANION_STAGING_USER || 'agent';
 const REMOTE = 'companion-staging';  // relative to the agent's home
-const TOOLS = { 'deploy/staging/staging-agent.py': 'staging-agent.py', 'deploy/authority/companion-deploy/companion-deploy': 'companion-deploy', 'deploy/vm/install-runtime.sh': 'install-runtime.sh' };
+const TOOLS = { 'deploy/staging/staging-agent.py': 'staging-agent.py', 'deploy/authority/companion-deploy/companion-deploy': 'companion-deploy', 'deploy/vm/install-runtime.sh': 'install-runtime.sh',
+  // Scenario replay (staging only; none of these is part of a release).
+  'deploy/staging/fake-onebot.mjs': 'fake-onebot.mjs', 'deploy/staging/fake-model.mjs': 'fake-model.mjs', 'deploy/staging/scenarios.mjs': 'scenarios.mjs', 'deploy/staging/scenarios.json': 'scenarios.json' };
 
 export function parseArgs(argv) {
   const options = { reset: false, from: null, to: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--reset') options.reset = true;
     else if (['--from', '--to'].includes(argv[i]) && argv[i + 1] && !argv[i + 1].startsWith('--')) options[argv[i].slice(2)] = argv[++i];
-    else throw new Error('Usage: run.mjs [--reset] [--from <tarball>] [--to <tarball>]');
+    else if (argv[i] === '--scenarios') options.scenarios = true;
+    else if (argv[i] === '--only' && /^[A-Z][A-Z0-9-]*(,[A-Z][A-Z0-9-]*)*$/.test(argv[i + 1] ?? '')) options.only = argv[++i];
+    else throw new Error('Usage: run.mjs [--reset] [--from <tarball>] [--to <tarball>] | --scenarios [--only <id,...>]');
   }
-  options.lifecycle = !options.reset || Boolean(options.from || options.to);
+  if (options.scenarios ? options.reset || options.from || options.to : options.only) throw new Error('Usage: --scenarios [--only <id,...>] runs alone');
+  options.lifecycle = !options.scenarios && (!options.reset || Boolean(options.from || options.to));
   for (const key of ['from', 'to']) if (options[key] && !/^authority-[0-9A-Za-z.-]+-[0-9a-f]{12}\.tar\.gz$/.test(path.basename(options[key]))) throw new Error(`--${key} must be a release tarball authority-<version>-<sha12>.tar.gz`);
   return options;
 }
@@ -81,6 +88,10 @@ function main(argv) {
   checkHost();
   const who = ssh('id', '-un').trim();
   if (who !== USER) throw new Error(`Staging host account is ${who}, expected ${USER}`);
+  if (options.scenarios) {
+    tools();
+    return agent('scenarios', ...(options.only ? ['--only', options.only] : []));
+  }
   if (options.lifecycle) defaults(options);
   if (options.reset) {
     tools();

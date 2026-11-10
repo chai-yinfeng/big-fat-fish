@@ -21,6 +21,10 @@ function contentRequest({ socketPath, tokenFile }, route, payload, { signal } = 
             if (route === '/operator' && [400, 409, 413, 503].includes(res.statusCode)) {
               reject(Object.assign(new Error('Content operator operation failed'), { code: 'CONTENT_OPERATOR_FAILED', statusCode: res.statusCode })); return;
             }
+            // The gateway's spend tier stopped vision/web: the channel may stay silent instead of apologizing.
+            if (route === '/content' && res.statusCode === 429 && envelope?.error?.code === 'CONTENT_SPEND_RESTRICTED') {
+              reject(Object.assign(new Error('Content capability stopped by the spend cap'), { code: 'SPEND_RESTRICTED', statusCode: 429 })); return;
+            }
             unavailable(); return;
           }
           resolve(envelope.value);

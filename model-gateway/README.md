@@ -103,7 +103,10 @@ TZ) in three private files next to the settings file: `spend.json` (state),
   per 1M tokens (cache hit / miss / output) at peak, half off-peak; v4-pro
   0.30/9/27 peak, half off-peak; web search/fetch 0.005 per call; vision is a
   conservative 0.01 per call. Peak is Mon–Fri 09:00–12:00 and 14:00–18:00 Beijing
-  time; list statutory holidays (off-peak) in `peak.offPeakDates`. The file is
+  time. Chinese statutory holidays are off-peak all day: the 2026 and 2027 dates from
+  the State Council notices are built in (`CN_HOLIDAYS` in `spend.mjs`) and are added
+  to whatever `peak.offPeakDates` lists, also for a file written before they existed;
+  a year without data gets no holiday discount. The file is
   re-read before every reservation; an invalid file falls back to peak prices at
   every hour (`pricing: 'fallback'`).
 - Chat requests are forced to `stream_options.include_usage`; usage (cache hit,
@@ -114,7 +117,9 @@ TZ) in three private files next to the settings file: `spend.json` (state),
   held across a restart is charged.
 - Tiers (defaults 60/80/100 of a ¥5 cap): ≥reduced stops proactive work (none yet),
   ≥restricted refuses `/v1/memory/completions`, vision and web, ≥100% refuses every
-  call with 429 `BUDGET_EXHAUSTED` before contacting the provider. The cap includes
+  call with 429 `BUDGET_EXHAUSTED` before contacting the provider. A vision/web call
+  refused by the spend tier answers 429 `SPEND_RESTRICTED` (the daily call count stays
+  `BUDGET_EXHAUSTED`); QQ then stays silent instead of sending the attachment notice. The cap includes
   the owner's own chats.
 - Control socket: `GET /spend` → `{day,timezone,spentYuan,reservedYuan,capYuan,percent,tier,thresholds,byTier:{conversation,maintenance,vision,web},calls,unreportedUsage,window,pricing}`;
   `POST /spend/settings {dailyCapYuan?,reducedPercent?,restrictedPercent?}` validates

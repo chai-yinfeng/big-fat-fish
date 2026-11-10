@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { createSpendMeter, chatEstimate, parseUsage, usageCost, usageTap } from './spend.mjs';
+import { beijingDay, createSpendMeter, chatEstimate, parseUsage, usageCost, usageTap } from './spend.mjs';
 
 export const MODELS = Object.freeze(['deepseek-flash', 'deepseek-v4-pro']);
 const ERRORS = {
@@ -23,6 +23,7 @@ const ERRORS = {
   UPSTREAM_ERROR: [502, 'Model provider request failed'],
   CANCELLED: [503, 'Model request cancelled'],
   BUDGET_EXHAUSTED: [429, 'The daily capability budget is exhausted'],
+  SPEND_RESTRICTED: [429, 'The daily spend cap has stopped this capability'],
 };
 const failure = code => Object.assign(new Error(ERRORS[code][1]), { code });
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -140,7 +141,8 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
   let started = false, closing = false;
   const active = new Map();
   let controlQueue = Promise.resolve(), usageQueue = Promise.resolve();
-  let usage = { schema: 1, day: new Date().toISOString().slice(0, 10), webCalls: 0, visionCalls: 0, inputTokens: 0, outputTokens: 0, unreportedUsageResponses: 0 };
+  // Daily vision/web call counts use the Beijing day, like the spend meter (independent of the host TZ).
+  let usage = { schema: 1, day: beijingDay(clock()), webCalls: 0, visionCalls: 0, inputTokens: 0, outputTokens: 0, unreportedUsageResponses: 0 };
   async function updateUsage(change) {
     const operation = usageQueue.then(async () => {
       const next = await change(usage), temporary = `${usageFile}.${randomUUID()}.tmp`;
@@ -158,7 +160,8 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
   async function reserve(kind) {
     await updateUsage(async previous => {
       if ((await world()).paused) throw failure('WORLD_PAUSED');
-      const day = new Date().toISOString().slice(0, 10), current = day === previous.day ? previous : { schema: 1, day, webCalls: 0, visionCalls: 0, inputTokens: 0, outputTokens: 0, unreportedUsageResponses: 0 };
+      // A file written by an older release carries a UTC day: at most one extra reset when the two days differ.
+      const day = beijingDay(clock()), current = day === previous.day ? previous : { schema: 1, day, webCalls: 0, visionCalls: 0, inputTokens: 0, outputTokens: 0, unreportedUsageResponses: 0 };
       const counter = kind === 'vision' ? 'visionCalls' : 'webCalls';
       if (current[counter] >= limits[kind]) throw failure('BUDGET_EXHAUSTED');
       return { ...current, [counter]: current[counter] + 1 };
@@ -295,7 +298,8 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     // Per-call CNY price; refused from the restricted tier on. Provider errors are not charged.
     let reservation, outcome = 'release';
     try {
-      reservation = await spend.reserve(kind, pricing => pricing.perCall[kind] * 1e6);
+      // The spend tier (not the daily call count below) refused: a distinct code, so channels can stay silent.
+      reservation = await spend.reserve(kind, pricing => pricing.perCall[kind] * 1e6).catch(error => { throw error.code === 'BUDGET_EXHAUSTED' ? failure('SPEND_RESTRICTED') : error; });
       // A failed or cancelled provider attempt still consumes its durable reservation.
       await reserve(kind);
       if (controller.signal.aborted) throw failure('CANCELLED');

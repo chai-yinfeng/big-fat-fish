@@ -70,7 +70,7 @@ export function createContentServer({ socketPath, tokenFile, service, worldStatu
       send(200, { ok: true, value: result });
     } catch (error) {
       const code = /^(?:MEDIA|SPEECH|CONTENT)_[A-Z_]{1,50}$/.test(error?.code || '') ? error.code : 'CONTENT_UNAVAILABLE';
-      const status = isOperator ? (error instanceof SyntaxError || code === 'CONTENT_REQUEST_INVALID' ? 400 : code === 'CONTENT_REQUEST_LIMIT' ? 413 : [400, 409, 413, 503].includes(error.statusCode) ? error.statusCode : 503) : code === 'CONTENT_REQUEST_INVALID' ? 400 : 503;
+      const status = isOperator ? (error instanceof SyntaxError || code === 'CONTENT_REQUEST_INVALID' ? 400 : code === 'CONTENT_REQUEST_LIMIT' ? 413 : [400, 409, 413, 503].includes(error.statusCode) ? error.statusCode : 503) : code === 'CONTENT_REQUEST_INVALID' ? 400 : code === 'CONTENT_SPEND_RESTRICTED' ? 429 : 503;
       send(status, { ok: false, error: { code: isOperator && error instanceof SyntaxError ? 'CONTENT_REQUEST_INVALID' : code } });
     } finally { clearInterval(timer); if (controller) active.delete(controller); req.resume(); }
   });
