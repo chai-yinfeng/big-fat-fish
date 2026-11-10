@@ -481,6 +481,8 @@ def lifecycle(from_tarball, to_tarball):
     if failed:
         for line in diagnostics(deployer):
             print(line)
+    replayed = next(((ok, detail) for name, ok, detail in results if name == 'scenarios'), (None, 'skipped'))
+    print('SCENARIOS %s' % (replayed[1] if replayed[0] is True else 'FAILED: ' + replayed[1] if replayed[0] is False else 'not run'))
     print('STAGING %s' % ('FAILED' if failed else 'PASSED'))
     return 1 if failed else 0
 
@@ -499,7 +501,7 @@ def replay(only=None):
         ok, detail = False, '%s: %s' % (error.__class__.__name__, str(error)[:600])
         for line in diagnostics(deployer):
             print(line)
-    print('SCENARIOS %s %s' % ('PASSED' if ok else 'FAILED', detail))
+    print('SCENARIOS %s' % (detail if ok else 'FAILED: ' + detail))
     return 0 if ok else 1
 
 
