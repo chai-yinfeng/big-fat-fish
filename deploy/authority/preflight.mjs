@@ -2,13 +2,16 @@
 // Read-only deploy preflight. companion-deploy runs it from the NEW release (ops/preflight.mjs),
 // as the service user, against the existing data root, before it stops any unit or switches
 // `current`. It validates every operator/service config the new release will read and the
-// absolute paths they reference. Output is stable codes, file labels and key names only:
+// absolute paths they reference, and reads the Authority database's schema state: the migrations
+// the new release would apply on its first start, and whether it could back the database up first.
+// Output is stable codes, file labels and key names only:
 // never values, paths or tokens. Exit 1 refuses the deploy.
 //   node ops/preflight.mjs [--base <data root>] [--release <release dir>]
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Release: ops/ sits next to capabilities/; checkout: deploy/authority/.
@@ -121,7 +124,67 @@ export function checkPaths(label, config, { release, ignored = [] }, report) {
   })(config, []);
 }
 
-export async function preflight({ base = path.join(os.homedir(), '.local/share/companion-world-v1'), release = RELEASE_NAME.test(path.basename(tree)) ? tree : null } = {}) {
+// isolation/launch.py binds <base>/authority-data at this sandbox path.
+const SANDBOX_STATE = '/authority/state/';
+const BACKUP_MARGIN_BYTES = 16 * 1024 * 1024;
+const freeBytesOf = directory => { const stat = fs.statfsSync(directory); return stat.bavail * stat.bsize; };
+
+/** ROLLBACK_LEVEL of an installed release, read as text (its code is not run); 0 before migrations.js existed. */
+function rollbackLevel(release) {
+  let text = '';
+  try { text = fs.readFileSync(path.join(release, 'authority/src/migrations.js'), 'utf8'); } catch { return 0; }
+  const found = /^export const ROLLBACK_LEVEL = (\d+);$/m.exec(text);
+  if (!found) throw fail('MIGRATION_ROLLBACK_UNSAFE');
+  return Number(found[1]);
+}
+
+/** Read-only: what the new release's Authority would do to the existing database when it opens it. */
+async function checkDatabase(base, release, config, { migrations, freeBytes = freeBytesOf }, report) {
+  const label = 'authority-db', root = path.join(base, 'authority-data');
+  const file = config.databasePath.startsWith(SANDBOX_STATE) ? path.join(root, config.databasePath.slice(SANDBOX_STATE.length)) : null;
+  if (!file || path.dirname(file) !== root) { report.warn(label, 'DATABASE_NOT_CHECKED'); return false; }
+  if (!fs.existsSync(file)) return false;  // initialized but never started
+  const { inspect } = await load('authority/src/store.js'), registry = await load('authority/src/migrations.js');
+  // The running Authority keeps the writer lock for as long as it lives; immutable=1 reads the file
+  // without taking a lock and cannot write. A read that races a commit is retried.
+  const url = pathToFileURL(file); url.searchParams.set('immutable', '1');
+  let plan = null, code = 'DATABASE_UNREADABLE';
+  for (let attempt = 0; attempt < 3 && !plan; attempt++) {
+    let db = null;
+    try {
+      db = new DatabaseSync(url, { readOnly: true });
+      if (!inspect(db)) return false;  // empty file: the new release creates the schema
+      plan = registry.plan(db, migrations ?? registry.MIGRATIONS);
+    } catch (error) {
+      if (typeof error?.code === 'string' && /^(SCHEMA_ERROR|MIGRATION_INVALID)$/.test(error.code)) { code = error.code; break; }
+      await new Promise(resolve => setTimeout(resolve, 200));
+    } finally { try { db?.close(); } catch { /* nothing was written */ } }
+  }
+  if (!plan) { report.fail(label, code); return true; }
+  // Migrations this release does not know: the database was migrated by a newer release. `rollback` is the way back to an older one.
+  for (const row of plan.unknown.slice(0, 5)) report.fail(label, 'MIGRATION_UNKNOWN', `m${row.id}-${row.name}`.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 64));
+  if (!plan.pending.length) return true;
+  for (const migration of plan.pending.slice(0, 10)) report.warn(label, 'MIGRATION_PENDING', `m${migration.id}-${migration.name}`);
+  const backups = registry.backupDirectory(file), parent = fs.existsSync(backups) ? backups : root;
+  try {
+    if (!fs.statSync(parent).isDirectory()) throw fail('MIGRATION_BACKUP_UNWRITABLE');
+    fs.accessSync(parent, fs.constants.W_OK | fs.constants.X_OK);
+    // The backup is at most as large as the database, and the migration's rollback journal needs room as well.
+    if (freeBytes(parent) < 2 * fs.statSync(file).size + BACKUP_MARGIN_BYTES) report.fail(label, 'MIGRATION_DISK_SPACE');
+  } catch { report.fail(label, 'MIGRATION_BACKUP_UNWRITABLE'); }
+  // A column added to an existing table is only safe to roll back from when the release now running names its INSERT columns.
+  const widening = plan.pending.find(migration => (migration.rollbackLevel ?? 0) > 0);
+  if (widening && !release) report.warn(label, 'MIGRATION_ROLLBACK_NOT_CHECKED');
+  else if (widening) {
+    let level = -1;
+    try { level = rollbackLevel(path.join(path.dirname(release), 'current')); } catch { /* unreadable: refuse */ }
+    if (plan.pending.some(migration => (migration.rollbackLevel ?? 0) > level)) report.fail(label, 'MIGRATION_ROLLBACK_UNSAFE', `m${widening.id}-${widening.name}`);
+  }
+  return true;
+}
+
+/** `migrations` and `freeBytes` are for tests; the release's own list and statfs are used otherwise. */
+export async function preflight({ base = path.join(os.homedir(), '.local/share/companion-world-v1'), release = RELEASE_NAME.test(path.basename(tree)) ? tree : null, migrations, freeBytes } = {}) {
   const result = { failures: [], warnings: [], checked: [] };
   const report = {
     fail: (label, code, field) => result.failures.push({ label, code, ...(field ? { field } : {}) }),
@@ -129,6 +192,7 @@ export async function preflight({ base = path.join(os.homedir(), '.local/share/c
   };
   if (!fs.existsSync(base)) { report.warn('world', 'NO_WORLD'); return result; }
   if (release) release = path.resolve(release);
+  let authority = null;
   for (const spec of CHECKS) {
     const file = path.join(base, 'operator', spec.label);
     if (!fs.existsSync(file)) { if (spec.required) report.fail(spec.label, 'MISSING_CONFIG'); continue; }
@@ -139,7 +203,9 @@ export async function preflight({ base = path.join(os.homedir(), '.local/share/c
     }
     if (spec.hostPaths !== false) checkPaths(spec.label, config, { release, ignored: spec.ignored }, report);
     result.checked.push(spec.label);
+    if (spec.label === 'authority.json') authority = config;
   }
+  if (authority && await checkDatabase(base, release, authority, { migrations, freeBytes }, report)) result.checked.push('authority-db');
   return result;
 }
 

@@ -119,3 +119,85 @@ test('CLI prints only codes, labels and key names, and exits 1 on any failure', 
   assert.ok(!out.stdout.includes(token) && !out.stdout.includes(w.home) && out.stderr === '');
   assert.equal(spawnSync(process.execPath, [path.join(here, 'preflight.mjs'), '--base', 'relative'], { encoding: 'utf8' }).stdout, 'PREFLIGHT ERROR PREFLIGHT_ARGUMENTS\n');
 });
+
+// ---- Authority database and schema migrations (authority/src/migrations.js)
+
+const drill = (id, extra = {}) => ({ id, name: `drill-${id}`, up: db => db.exec(`CREATE TABLE drill_${id}(id TEXT PRIMARY KEY)`), ...extra });
+/** The world's database as a running Authority leaves it; returns its path. */
+async function database(w, migrations) {
+  const { Authority } = await import('../../authority/src/engine.js');
+  const file = path.join(w.base, 'authority-data/authority.sqlite');
+  const authority = new Authority({ file, ...(migrations ? { migrations } : {}) });
+  authority.registerCapability({ id: 'chat', policy: 'conversation.v1' });
+  return { file, authority };
+}
+
+test('the database is read without a lock while the Authority runs; nothing pending is a plain pass', async t => {
+  const w = world(t), { file, authority } = await database(w);
+  t.after(() => authority.close());
+  const before = fs.readFileSync(file), entries = fs.readdirSync(path.dirname(file));
+  const result = await preflight({ base: w.base, release: w.release });
+  assert.deepEqual([codes(result.failures), codes(result.warnings)], [[], []]);
+  assert.ok(result.checked.includes('authority-db'));
+  const out = spawnSync(process.execPath, [path.join(here, 'preflight.mjs'), '--base', w.base, '--release', w.release], { encoding: 'utf8' });
+  assert.deepEqual([out.status, out.stdout, out.stderr], [0, 'PREFLIGHT OK checked=10 failures=0 warnings=0\n', '']);
+  assert.ok(before.equals(fs.readFileSync(file)));
+  assert.deepEqual(fs.readdirSync(path.dirname(file)), entries);
+  authority.registerCapability({ id: 'read', policy: 'learning.v1' });  // the writer was not disturbed
+});
+
+test('pending migrations are reported, and refused when the backup cannot be written or the disk is too full', async t => {
+  const w = world(t), { file, authority } = await database(w);
+  t.after(() => authority.close());
+  const before = fs.readFileSync(file), migrations = [drill(1), drill(2)];
+  let result = await preflight({ base: w.base, release: w.release, migrations });
+  assert.deepEqual(codes(result.failures), []);
+  assert.deepEqual(codes(result.warnings), ['authority-db MIGRATION_PENDING m1-drill-1', 'authority-db MIGRATION_PENDING m2-drill-2']);
+  result = await preflight({ base: w.base, release: w.release, migrations, freeBytes: () => 1024 });
+  assert.deepEqual(codes(result.failures), ['authority-db MIGRATION_DISK_SPACE']);
+  fs.writeFileSync(path.join(path.dirname(file), 'migration-backups'), 'in the way');
+  result = await preflight({ base: w.base, release: w.release, migrations });
+  assert.deepEqual(codes(result.failures), ['authority-db MIGRATION_BACKUP_UNWRITABLE']);
+  // Read-only: no ledger, no backup, not a byte of the database changed.
+  assert.ok(before.equals(fs.readFileSync(file)));
+  assert.equal(fs.readFileSync(path.join(path.dirname(file), 'migration-backups'), 'utf8'), 'in the way');
+});
+
+test('a database migrated further than the release knows, or differently, refuses the deploy', async t => {
+  const w = world(t), { authority } = await database(w, [drill(1), drill(2)]);
+  authority.close();
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [drill(1), drill(2)] })).failures), []);
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [drill(1)] })).failures), ['authority-db MIGRATION_UNKNOWN m2-drill-2']);
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['authority-db MIGRATION_UNKNOWN m1-drill-1', 'authority-db MIGRATION_UNKNOWN m2-drill-2']);
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [{ ...drill(1), name: 'renamed' }, drill(2)] })).failures), ['authority-db SCHEMA_ERROR']);
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [drill(2)] })).failures), ['authority-db MIGRATION_INVALID']);
+});
+
+test('a database this release cannot open refuses the deploy', async t => {
+  const w = world(t), { file, authority } = await database(w);
+  authority.close();
+  const { DatabaseSync } = await import('node:sqlite');
+  let db = new DatabaseSync(file); db.exec('PRAGMA user_version=3'); db.close();
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['authority-db SCHEMA_ERROR']);
+  fs.writeFileSync(file, 'not a database, but long enough to have a header to misread'.repeat(40));
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['authority-db DATABASE_UNREADABLE']);
+  w.edit('authority.json', c => { c.databasePath = '/elsewhere/authority.sqlite'; });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).warnings), ['authority-db DATABASE_NOT_CHECKED']);
+});
+
+test('a migration that widens an existing table needs a running release that names its insert columns', async t => {
+  const w = world(t), { authority } = await database(w);
+  authority.close();
+  const migrations = [drill(1), { id: 2, name: 'widen-streams', rollbackLevel: 1, up: db => db.exec('ALTER TABLE streams ADD COLUMN note TEXT') }];
+  // `current` is OLD, which has no authority/src/migrations.js: rollback level 0, like production release 7987e8b.
+  let result = await preflight({ base: w.base, release: w.release, migrations });
+  assert.deepEqual(codes(result.failures), ['authority-db MIGRATION_ROLLBACK_UNSAFE m2-widen-streams']);
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [drill(1)] })).failures), []);
+  fs.mkdirSync(path.join(w.releases, OLD, 'authority/src'), { recursive: true });
+  fs.copyFileSync(path.join(here, '../../authority/src/migrations.js'), path.join(w.releases, OLD, 'authority/src/migrations.js'));
+  result = await preflight({ base: w.base, release: w.release, migrations });
+  assert.deepEqual(codes(result.failures), []);
+  assert.equal(result.warnings.length, 2);
+  fs.writeFileSync(path.join(w.releases, OLD, 'authority/src/migrations.js'), '// level removed\n');
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations })).failures), ['authority-db MIGRATION_ROLLBACK_UNSAFE m2-widen-streams']);
+});
