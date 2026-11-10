@@ -1,0 +1,90 @@
+#!/usr/bin/env node
+// Staging-only model gateway launcher: the release's real createModelGateway (spend meter,
+// tiers, pause checks, sockets) with a scripted, deterministic stand-in for DeepSeek injected
+// as fetchImpl. No provider is ever called. Never part of a release or a production unit;
+// the production gateway has no configurable upstream.
+//   node fake-model.mjs --release <release dir> --config <model-gateway.json> --script <rules.json> --log <requests.jsonl>
+// Script file: [{ match, reply?, propose?: { type, payload }, usage?: { prompt_tokens, completion_tokens } }]
+// The first rule whose `match` occurs in the newest user message applies. `propose` makes the
+// first answer a companion_scope propose tool call (evidence ref taken from the system prompt);
+// the answer after the tool result is `reply`.
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+export const DEFAULT_REPLY = 'MOCK-REPLY';
+export const DEFAULT_USAGE = Object.freeze({ prompt_tokens: 100, completion_tokens: 20 });
+const textOf = content => typeof content === 'string' ? content : Array.isArray(content) ? content.filter(part => part?.type === 'text').map(part => part.text).join('') : '';
+
+/** The observation ref the executor offers as evidence for this run (last line of its system prompt). */
+export function evidenceRef(system) {
+  const match = /本轮可引用的聊天证据：(\[.*\])\s*$/s.exec(system);
+  try { return JSON.parse(match[1]).find(item => item.role === 'user')?.ref ?? null; } catch { return null; }
+}
+
+/** Pure decision: what the scripted model answers to one upstream chat-completions body. */
+export function planReply(body, rules = []) {
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  const last = messages.findLastIndex(message => message?.role === 'user');
+  const userText = last < 0 ? '' : textOf(messages[last].content), system = messages[0]?.role === 'system' ? textOf(messages[0].content) : '';
+  const toolResult = last < 0 ? undefined : messages.slice(last + 1).findLast(message => message?.role === 'tool');
+  const afterTool = toolResult !== undefined;
+  const rule = rules.find(item => typeof item?.match === 'string' && item.match && userText.includes(item.match)) ?? {};
+  const usage = { ...DEFAULT_USAGE, ...rule.usage };
+  usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
+  const base = { userText, system, afterTool, ...(afterTool ? { toolResult: textOf(toolResult.content) } : {}), usage, stream: body?.stream === true };
+  const ref = evidenceRef(system);
+  if (base.stream && rule.propose && !afterTool && ref && body.tools?.some(tool => tool?.function?.name === 'companion_scope')) {
+    const id = 'mock-' + createHash('sha256').update(ref).digest('hex').slice(0, 16);
+    return { ...base, kind: 'tool', call: { name: 'companion_scope', arguments: { action: 'propose', id, ref, type: rule.propose.type, payload: rule.propose.payload } } };
+  }
+  return { ...base, kind: 'text', text: typeof rule.reply === 'string' ? rule.reply : base.stream ? DEFAULT_REPLY : 'OK' };
+}
+
+const chunk = (delta, finish = null, extra = {}) => ({ id: 'chatcmpl-mock', object: 'chat.completion.chunk', created: 0, model: 'mock-deepseek', choices: [{ index: 0, delta, finish_reason: finish }], ...extra });
+/** A DeepSeek-shaped response body (SSE when streaming) for a plan. */
+export function renderReply(plan) {
+  if (!plan.stream) return JSON.stringify({ id: 'chatcmpl-mock', object: 'chat.completion', created: 0, model: 'mock-deepseek', choices: [{ index: 0, message: { role: 'assistant', content: plan.text }, finish_reason: 'stop' }], usage: plan.usage });
+  const chunks = plan.kind === 'tool'
+    ? [chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_mock_1', type: 'function', function: { name: plan.call.name, arguments: JSON.stringify(plan.call.arguments) } }] }), chunk({}, 'tool_calls', { usage: plan.usage })]
+    : [chunk({ role: 'assistant', content: plan.text }), chunk({}, 'stop', { usage: plan.usage })];
+  return chunks.map(value => `data: ${JSON.stringify(value)}\n\n`).join('') + 'data: [DONE]\n\n';
+}
+
+/** fetch stand-in. Every request is appended to `logFile`; anything but chat completions is refused. */
+export function createFakeUpstream({ scriptFile, logFile }) {
+  return async (url, options = {}) => {
+    if (String(url) !== 'https://api.deepseek.com/chat/completions') return new Response('{}', { status: 503 });
+    const body = JSON.parse(options.body);
+    let rules = []; try { rules = JSON.parse(fs.readFileSync(scriptFile, 'utf8')); } catch {}
+    const plan = planReply(body, Array.isArray(rules) ? rules : []);
+    const entry = { at: Date.now(), stream: plan.stream, userText: plan.userText, system: plan.system, afterTool: plan.afterTool, ...(plan.afterTool ? { toolResult: plan.toolResult } : {}), answer: plan.kind === 'tool' ? { tool: plan.call } : { text: plan.text }, usage: plan.usage };
+    fs.appendFileSync(logFile, JSON.stringify(entry) + '\n', { mode: 0o600 });
+    return new Response(renderReply(plan), { status: 200, headers: { 'content-type': plan.stream ? 'text/event-stream' : 'application/json' } });
+  };
+}
+
+async function main(argv) {
+  const args = Object.fromEntries(argv.reduce((pairs, value, index, all) => index % 2 ? pairs : [...pairs, [value.replace(/^--/, ''), all[index + 1]]], []));
+  for (const key of ['release', 'config', 'script', 'log']) if (typeof args[key] !== 'string' || !path.isAbsolute(args[key])) throw new Error('Expected --release --config --script --log (absolute paths)');
+  // Only ever a staging data root: this launcher must not be pointed at production state.
+  if (![args.config, args.script, args.log].every(file => file.split(path.sep).includes('companion-staging'))) throw new Error('Refusing a path outside companion-staging');
+  process.umask(0o077);
+  const stat = fs.lstatSync(args.config);
+  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077)) throw new Error('Unsafe gateway launch configuration');
+  const config = JSON.parse(fs.readFileSync(args.config, 'utf8'));
+  const release = fs.realpathSync(args.release);
+  const { createModelGateway } = await import(pathToFileURL(path.join(release, 'model-gateway/server.mjs')).href);
+  const { AuthorityClient } = await import(pathToFileURL(path.join(release, 'authority/src/client.js')).href);
+  const authority = new AuthorityClient(config.authority);
+  const gateway = createModelGateway({ ...config, worldStatus: async () => (await authority.health()).world, fetchImpl: createFakeUpstream({ scriptFile: args.script, logFile: args.log }) });
+  await gateway.start();
+  let stopping = false;
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { if (stopping) return; stopping = true; void gateway.close().catch(() => { process.exitCode = 1; }); });
+  process.stdout.write('Model gateway ready with the scripted staging upstream (no provider).\n');
+}
+
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main(process.argv.slice(2)).catch(error => { process.stderr.write('Staging model gateway failed: ' + error.message + '\n'); process.exitCode = 1; });
+}
