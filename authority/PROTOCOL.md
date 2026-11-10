@@ -11,7 +11,7 @@ Authority is the independent canonical service. It has no DSH Session, browser, 
 
 ## Storage and migration
 
-Node 24 `node:sqlite`, DELETE journal, `locking_mode=EXCLUSIVE`, FULL synchronous, foreign keys and `secure_delete=ON`. The writer retains its SQLite lease until close; the kernel releases it on process death. No new dependency, backup database, WAL conversion or secondary memory writer.
+Node 24 `node:sqlite`, DELETE journal, `locking_mode=EXCLUSIVE`, FULL synchronous, foreign keys and `secure_delete=ON`. The writer retains its SQLite lease until close; the kernel releases it on process death. No new dependency, WAL conversion or secondary memory writer. Schema changes after v2 are additive migrations (`src/migrations.js`): applied at open in one transaction, recorded in `schema_migrations`, preceded by a `VACUUM INTO` backup of an existing database in `migration-backups/` beside it. `user_version` stays 2; none is registered yet.
 
 Opening a valid v1 database performs an atomic transaction to v2: legacy memory arrays become individual `memory_items` with incremental local Chinese/Latin `memory_tokens`, provenance links and entity IDs; persona/relationships move into entity-scoped rows. Observations, proposal inbox, receipts, audit and identity bindings are preserved. Existing persona revision and the entire world pause/clock record are preserved, never bootstrapped/reset. Failure rolls back DDL, rows and `user_version` together. Application ID remains unchanged. Config `schemaVersion:1` is separate from SQLite `user_version:2`.
 
