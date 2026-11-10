@@ -263,6 +263,8 @@ export function WorldConsole({ t, standalone = false }) {
       spend && badge(t(`spend.tier.${spend.tier}`), { normal: 'ok', reduced: 'primary', restricted: 'warn', exhausted: 'danger' }[spend.tier], h('span', { className: 'bff-dot' })));
     if (!spend) return h('section', { className: 'bff-card' }, head, text('spend.unavailable'));
     const yuanText = value => `¥${value.toFixed(value < 1 ? 4 : 2)}`;
+    // Today's token totals; absent from a gateway that does not report them.
+    const tokens = ['requests', 'cacheHit', 'cacheMiss', 'output', 'reasoning'].every(key => Number.isFinite(spend.tokens?.[key])) ? spend.tokens : null;
     const current = { dailyCapYuan: String(spend.capYuan), reducedPercent: String(spend.thresholds.reducedPercent), restrictedPercent: String(spend.thresholds.restrictedPercent) };
     const draftValue = spendDraft || current;
     return h('section', { className: 'bff-card' }, head,
@@ -270,6 +272,9 @@ export function WorldConsole({ t, standalone = false }) {
       h('div', { className: `bff-progress ${spend.tier === 'exhausted' ? 'over' : ''}`, 'aria-hidden': true }, h('i', { style: { width: `${Math.min(100, Math.max(0, spend.percent))}%` } })),
       h('dl', { className: 'bff-kv' }, ...[['spend.reserved', yuanText(spend.reservedYuan)], ...['conversation', 'maintenance', 'vision', 'web'].map(key => [`spend.byTier.${key}`, yuanText(spend.byTier[key] ?? 0)])].map(([key, value]) => h('div', { key },
         h('dt', null, t(key)), h('dd', { className: 'bff-mono' }, value)))),
+      tokens && h('dl', { className: 'bff-kv' }, ...[['hitRate', tokens.cacheHit + tokens.cacheMiss ? `${Math.round(tokens.cacheHit / (tokens.cacheHit + tokens.cacheMiss) * 1000) / 10}%` : '—'], ...['cacheHit', 'cacheMiss', 'output', 'reasoning', 'requests'].map(key => [key, tokens[key].toLocaleString('en-US')])].map(([key, value]) => h('div', { key },
+        h('dt', null, t(`spend.tokens.${key}`)), h('dd', { className: 'bff-mono' }, value)))),
+      tokens && text('spend.tokens.hint'),
       text('spend.hint'),
       h('form', { onSubmit: event => { event.preventDefault(); void run(async () => {
         await request('/spend/settings', spendPayload(draftValue)); setSpendDraft(null); await load(); setNotice(t('saved'));

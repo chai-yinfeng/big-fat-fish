@@ -250,7 +250,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       clearTimeout(timer);
       res.off('close', disconnected);
       active.delete(controller);
-      if (reservation) await spend.settle(reservation, usage ? usageCost(reservation.pricing, snapshot.model, usage, reservation.at) : null, { charge: outcome === 'charge' }).catch(() => {});
+      if (reservation) await spend.settle(reservation, usage ? usageCost(reservation.pricing, snapshot.model, usage, reservation.at) : null, { charge: outcome === 'charge', usage }).catch(() => {});
     }
   }
   async function control(req, res) {

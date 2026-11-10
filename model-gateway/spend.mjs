@@ -145,10 +145,13 @@ const budgetError = () => Object.assign(new Error('The daily capability budget i
  * Daily spend meter (Beijing day). Reserve an estimate before a provider call, settle
  * after it (unreported usage charges the reservation). Tiers: ≥reduced% stops proactive
  * work, ≥restricted% stops maintenance/vision/web, ≥100% refuses everything.
+ * It also adds up the day's reported chat token usage (measurement only: never used for the cap).
  */
 export function createSpendMeter({ stateFile, settingsFile, pricingFile, clock = Date.now }) {
   let settings = { ...DEFAULT_SPEND_SETTINGS }, pricing = DEFAULT_PRICING, pricingSource = 'default', queue = Promise.resolve();
-  const fresh = day => ({ schema: 1, day, spentMicros: 0, reservedMicros: 0, byTier: Object.fromEntries(CATEGORIES.map(c => [c, 0])), calls: 0, unreported: 0 });
+  const TOKENS = ['requests', 'cacheHit', 'cacheMiss', 'output', 'reasoning'];
+  const noTokens = () => Object.fromEntries(TOKENS.map(key => [key, 0]));
+  const fresh = day => ({ schema: 1, day, spentMicros: 0, reservedMicros: 0, byTier: Object.fromEntries(CATEGORIES.map(c => [c, 0])), calls: 0, unreported: 0, tokens: noTokens() });
   let state = fresh(beijingDay(clock()));
   const reservations = new Map();
   const serial = operation => { const next = queue.then(operation); queue = next.catch(() => {}); return next; };
@@ -183,7 +186,9 @@ export function createSpendMeter({ stateFile, settingsFile, pricingFile, clock =
         const stored = await readPrivate(stateFile);
         if (stored?.schema === 1 && typeof stored.day === 'string' && ['spentMicros', 'reservedMicros', 'calls', 'unreported'].every(k => Number.isSafeInteger(stored[k]) && stored[k] >= 0) && object(stored.byTier)) {
           // A reservation held across a restart is charged: its call may have been billed.
-          state = { ...fresh(stored.day), ...stored, spentMicros: stored.spentMicros + stored.reservedMicros, reservedMicros: 0, byTier: { ...fresh(stored.day).byTier, ...stored.byTier } };
+          // A state file from a release without token totals starts them at zero.
+          const tokens = object(stored.tokens) && TOKENS.every(k => Number.isSafeInteger(stored.tokens[k]) && stored.tokens[k] >= 0) ? Object.fromEntries(TOKENS.map(k => [k, stored.tokens[k]])) : noTokens();
+          state = { ...fresh(stored.day), ...stored, spentMicros: stored.spentMicros + stored.reservedMicros, reservedMicros: 0, byTier: { ...fresh(stored.day).byTier, ...stored.byTier }, tokens };
         }
       } catch (error) { if (error.code !== 'ENOENT') throw error; }
       roll();
@@ -196,6 +201,9 @@ export function createSpendMeter({ stateFile, settingsFile, pricingFile, clock =
         percent: Math.round(percent() * 10) / 10, tier: tier(), thresholds: { reducedPercent: settings.reducedPercent, restrictedPercent: settings.restrictedPercent, exhaustedPercent: 100 },
         byTier: Object.fromEntries(CATEGORIES.map(c => [c, yuan(state.byTier[c] ?? 0)])), calls: state.calls, unreportedUsage: state.unreported,
         window: isPeak(pricing, clock()) ? 'peak' : 'offPeak', pricing: pricingSource,
+        // Today's chat-completion token totals as the provider reported them (`requests` = responses that
+        // reported usage; `reasoning` is part of `output`). Cache hit rate = cacheHit / (cacheHit + cacheMiss).
+        tokens: { ...state.tokens },
       };
     },
     settings: () => ({ ...settings }),
@@ -221,8 +229,9 @@ export function createSpendMeter({ stateFile, settingsFile, pricingFile, clock =
         return handle;
       });
     },
-    /** cost: micro-yuan (priced with handle.pricing at handle.at), or null when usage is unknown (charges the reservation). `charge:false` releases. */
-    settle(handle, cost, { charge = true } = {}) {
+    /** cost: micro-yuan (priced with handle.pricing at handle.at), or null when usage is unknown (charges the reservation). `charge:false` releases.
+     * `usage` (parseUsage's shape) is added to the day's token totals when the call is charged. */
+    settle(handle, cost, { charge = true, usage = null } = {}) {
       return serial(async () => {
         if (!reservations.delete(handle.id)) return;
         roll();
@@ -231,6 +240,7 @@ export function createSpendMeter({ stateFile, settingsFile, pricingFile, clock =
           ...state, reservedMicros: Math.max(0, state.reservedMicros - handle.amount), spentMicros: state.spentMicros + amount,
           byTier: { ...state.byTier, [handle.category]: (state.byTier[handle.category] ?? 0) + amount },
           calls: state.calls + (charge ? 1 : 0), unreported: state.unreported + (charge && cost === null ? 1 : 0),
+          ...(charge && usage ? { tokens: { requests: state.tokens.requests + 1, cacheHit: state.tokens.cacheHit + usage.cacheHit, cacheMiss: state.tokens.cacheMiss + usage.cacheMiss, output: state.tokens.output + usage.output, reasoning: state.tokens.reasoning + usage.reasoning } } : {}),
         };
         await writePrivate(stateFile, state);
       });

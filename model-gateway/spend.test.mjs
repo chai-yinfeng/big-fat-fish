@@ -80,6 +80,33 @@ test('meter rolls over at Beijing midnight and charges reservations that never r
   assert.deepEqual([restarted.status().spentYuan, restarted.status().reservedYuan], [0.05, 0]);
 });
 
+test('token totals: per Beijing day, only charged calls with reported usage, kept across a restart', async t => {
+  const dir = await directory(t);
+  let now = Date.parse('2026-11-08T15:50:00Z'); // 23:50 Sunday in Beijing
+  const files = { stateFile: path.join(dir, 'spend.json'), settingsFile: path.join(dir, 'spend-settings.json'), pricingFile: path.join(dir, 'model-pricing.json') };
+  const meter = createSpendMeter({ ...files, clock: () => now });
+  await meter.start();
+  const zero = { requests: 0, cacheHit: 0, cacheMiss: 0, output: 0, reasoning: 0 };
+  assert.deepEqual(meter.status().tokens, zero);
+  const usage = parseUsage({ prompt_tokens: 3000, prompt_cache_hit_tokens: 1000, prompt_cache_miss_tokens: 2000, completion_tokens: 600, completion_tokens_details: { reasoning_tokens: 450 } });
+  const call = async (options, cost = 100) => meter.settle(await meter.reserve('conversation', () => 1000), cost, options);
+  await call({ usage }); await call({ usage });
+  await call({}, null);                      // usage never reported: charged, no tokens
+  await call({ charge: false, usage });      // provider error: released, no tokens
+  assert.deepEqual(meter.status().tokens, { requests: 2, cacheHit: 2000, cacheMiss: 4000, output: 1200, reasoning: 900 });
+  assert.equal(meter.status().spentYuan, 0.0012, 'the totals do not change what is charged');
+  const restarted = createSpendMeter({ ...files, clock: () => now });
+  await restarted.start();
+  assert.deepEqual(restarted.status().tokens, { requests: 2, cacheHit: 2000, cacheMiss: 4000, output: 1200, reasoning: 900 });
+  now = Date.parse('2026-11-08T16:00:00Z'); // Beijing midnight
+  assert.deepEqual([restarted.status().day, restarted.status().tokens], ['2026-11-09', zero]);
+  // A state file written by a release without token totals (or with a damaged field) still loads.
+  await fs.writeFile(files.stateFile, JSON.stringify({ schema: 1, day: '2026-11-09', spentMicros: 5, reservedMicros: 0, byTier: {}, calls: 1, unreported: 0, tokens: { requests: -1 } }), { mode: 0o600 });
+  const older = createSpendMeter({ ...files, clock: () => now });
+  await older.start();
+  assert.deepEqual([older.status().calls, older.status().tokens], [1, zero]);
+});
+
 test('tiers: reduced stops proactive, restricted stops maintenance/vision/web, exhausted stops everything', async t => {
   const dir = await directory(t);
   const meter = createSpendMeter({ stateFile: path.join(dir, 's.json'), settingsFile: path.join(dir, 'ss.json'), pricingFile: path.join(dir, 'p.json'), clock: () => BJ('20:00') });
@@ -147,6 +174,7 @@ test('gateway forces include_usage, meters chat by reported usage, exposes /spen
   let spend = await settled(1);
   // Peak flash: 1000×0.04 + 200×2 + 500×8 = 4440 micro-yuan.
   assert.deepEqual([spend.spentYuan, spend.reservedYuan, spend.byTier.conversation, spend.window, spend.tier, spend.capYuan, spend.day, spend.pricing], [0.00444, 0, 0.00444, 'peak', 'normal', 5, '2026-11-09', 'file']);
+  assert.deepEqual(spend.tokens, { requests: 1, cacheHit: 1000, cacheMiss: 200, output: 500, reasoning: 400 }, 'the day totals the reported usage');
   mode = 'nousage';
   await chat(prompt);
   spend = await settled(2);
@@ -154,6 +182,7 @@ test('gateway forces include_usage, meters chat by reported usage, exposes /spen
   mode = 'error';
   assert.equal((await chat(prompt)).status, 502);
   assert.equal((await settled(2)).calls, 2, 'provider errors are released');
+  assert.deepEqual((await settled(2)).tokens, { requests: 1, cacheHit: 1000, cacheMiss: 200, output: 500, reasoning: 400 }, 'unreported usage and provider errors add no tokens');
   // Settings: validated, then applied to the next call without a restart.
   assert.equal((await control('/spend/settings', { dailyCapYuan: 0 })).status, 400);
   assert.equal((await control('/spend/settings', { reducedPercent: 90, restrictedPercent: 80 })).status, 400);
