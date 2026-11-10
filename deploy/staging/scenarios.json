@@ -1,0 +1,82 @@
+{
+  "comment": "Scenario replay for staging (deploy/staging/scenarios.mjs). Everyone here is fake: names start with MOCK- and QQ numbers are 12 digits starting with 9999 (no real account has one). Steps are documented in docs/DEV_WORKFLOW.md.",
+  "bot": { "name": "MOCK-BOT", "qq": "999900000001" },
+  "people": {
+    "MOCK-OWNER": { "qq": "999900000002", "owner": true, "friend": true },
+    "MOCK-A": { "qq": "999900000011", "friend": true },
+    "MOCK-B": { "qq": "999900000012", "friend": true },
+    "MOCK-STRANGER": { "qq": "999900000099", "friend": false }
+  },
+  "scenarios": [
+    {
+      "id": "S1",
+      "title": "memory isolation between two friends' private chats",
+      "model": [
+        { "match": "请记住我的代号", "propose": { "type": "fact.report", "payload": { "key": "代号", "value": "蓝鲸队长", "quote": "我的代号是蓝鲸队长" } }, "reply": "MOCK-REPLY-S1 记住了" },
+        { "match": "这个代号是谁的", "reply": "MOCK-REPLY-S1 回答" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-A", "text": "MOCK-S1 请记住我的代号：我的代号是蓝鲸队长" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-S1 记住了" } },
+        { "expectMemory": { "person": "MOCK-A", "contains": "蓝鲸队长" } },
+        { "say": { "from": "MOCK-B", "text": "MOCK-S1 蓝鲸队长 这个代号是谁的？（MOCK-B 问）" } },
+        { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-S1 回答" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-S1 蓝鲸队长 这个代号是谁的？（MOCK-A 问）" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-S1 回答" } },
+        { "expectPrompt": { "userText": "（MOCK-B 问）", "absent": "蓝鲸队长" } },
+        { "expectPrompt": { "userText": "（MOCK-A 问）", "contains": "蓝鲸队长" } },
+        { "expectMemory": { "person": "MOCK-B", "absent": "蓝鲸队长" } },
+        { "expectAdmitted": { "person": "MOCK-A", "admitted": true } },
+        { "expectAdmitted": { "person": "MOCK-B", "admitted": true } },
+        { "expectSilence": { "to": ["MOCK-OWNER", "MOCK-STRANGER"], "afterMs": 0 } }
+      ]
+    },
+    {
+      "id": "S2",
+      "title": "a non-friend gets silence and is not admitted",
+      "model": [
+        { "match": "MOCK-S2 好友还在线吗", "reply": "MOCK-REPLY-S2 在" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-STRANGER", "text": "MOCK-S2 你好，我不是好友" } },
+        { "say": { "from": "MOCK-STRANGER", "text": "MOCK-S2 群临时会话", "subType": "group" } },
+        { "expectSilence": { "to": "*", "afterMs": 5000 } },
+        { "expectAdmitted": { "person": "MOCK-STRANGER", "admitted": false } },
+        { "expectNoModelCall": { "userText": "MOCK-S2" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-S2 好友还在线吗" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-S2 在" } },
+        { "expectSilence": { "to": "*", "afterMs": 0 } }
+      ]
+    },
+    {
+      "id": "S3",
+      "title": "daily cap reached: silence for everyone, one owner notice",
+      "model": [
+        { "match": "MOCK-S3 第一条", "reply": "MOCK-REPLY-S3 到顶前的最后一条", "usage": { "prompt_tokens": 30000, "completion_tokens": 10000 } }
+      ],
+      "steps": [
+        { "spendSettings": { "dailyCapYuan": 0.01 } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-S3 第一条：把今天的额度用完" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-S3 到顶前的最后一条" } },
+        { "expectSpend": { "tier": "exhausted" } },
+        { "say": { "from": "MOCK-B", "text": "MOCK-S3 第二条：到顶后还有回复吗" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "每日上限" } },
+        { "expectSilence": { "to": "*", "observedFrom": ["MOCK-B"], "afterMs": 3000 } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-S3 第三条" } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-S3 第四条（主人自己）" } },
+        { "say": { "from": "MOCK-B", "text": "MOCK-S3 第五条" } },
+        { "expectSilence": { "to": "*", "observedFrom": ["MOCK-A", "MOCK-OWNER", "MOCK-B"], "afterMs": 4000 } },
+        { "expectSentCount": { "to": "MOCK-OWNER", "count": 1 } },
+        { "expectSentCount": { "to": "MOCK-B", "count": 0 } },
+        { "expectSentCount": { "to": "MOCK-A", "count": 1 } },
+        { "expectNoModelCall": { "userText": "MOCK-S3 第二条" } },
+        { "expectNoModelCall": { "userText": "MOCK-S3 第三条" } },
+        { "expectNoModelCall": { "userText": "MOCK-S3 第四条" } },
+        { "expectNoModelCall": { "userText": "MOCK-S3 第五条" } }
+      ],
+      "finally": [
+        { "spendSettings": { "dailyCapYuan": 5 } }
+      ]
+    }
+  ]
+}

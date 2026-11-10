@@ -10,7 +10,12 @@ memory and QQ units are limited to Unix sockets, so no release (old ones have
 3082/3001 hard-coded) can reach production ports. No sudo, no QQ login, no
 model key, no provider call.
 
+The last lifecycle step replays the scenarios in tools/scenarios.json against the
+upgraded release: a fake OneBot (tools/fake-onebot.mjs) stands in for NapCat, and the
+release's own model gateway runs with a scripted upstream (tools/fake-model.mjs).
+
   staging-agent.py lifecycle --from <tarball> --to <tarball>
+  staging-agent.py scenarios [--only S1,S3]
   staging-agent.py reset
 """
 import argparse
@@ -40,6 +45,8 @@ PROXY = 'http://127.0.0.1:7890'
 BASE = ROOT / '.local/share/companion-world-v1'
 NODE = ROOT / '.local/opt/companion/bin/node'
 JOURNAL_LINES = 15
+SCENARIO = ROOT / 'scenario'  # fake OneBot control socket, model script and request log
+FAKE_ONEBOT = 'companion-staging/tools/fake-onebot.mjs'
 
 
 def load_companion_deploy(path=TOOLS / 'companion-deploy'):
@@ -259,6 +266,87 @@ def smoke():
     return '; '.join(done)
 
 
+def scenario_unit(name, text, root=ROOT):
+    """Staging unit -> scenario unit. The model unit starts the release's gateway through
+    tools/fake-model.mjs (scripted upstream, no provider); the QQ unit may dial the fake OneBot
+    on 127.0.0.1. Other units are unchanged. Idempotent."""
+    if name == PREFIX + 'model.service' and '/tools/fake-model.mjs ' not in text:
+        launcher = r'ExecStart=\1 %s/tools/fake-model.mjs --release %s/src/companion/current --config \2 --script %s/scenario/model-script.json --log %s/scenario/model-requests.jsonl' % ((root,) * 4)
+        text, count = re.subn(r'^ExecStart=(\S+) \S+/model-gateway/main\.mjs --config (\S+)$', launcher, text, flags=re.M)
+        if count != 1:
+            raise ValueError('unexpected model gateway ExecStart')
+    if name == PREFIX + 'qq.service':
+        text = text.replace('RestrictAddressFamilies=AF_UNIX\n', '')
+    return text
+
+
+def stop_fake_onebot():
+    subprocess.run(['pkill', '-U', str(os.getuid()), '-f', FAKE_ONEBOT], capture_output=True, timeout=20)
+
+
+def scenarios(deployer, only=None):
+    """Replay tools/scenarios.json against the current release; returns the summary line."""
+    data = json.loads((TOOLS / 'scenarios.json').read_text())
+    release = ROOT / 'src/companion/current'
+    qq_config = json.loads((BASE / 'operator/qq-bridge.json').read_text())
+    # The QQ unit loses its Unix-socket-only restriction below: it must dial the staging port, never NapCat's.
+    if qq_config.get('onebotPort') != ONEBOT_PORT or 'onebotPort' not in (release / 'capabilities/qq/main.mjs').read_text():
+        raise RuntimeError('this release cannot be pointed at the fake OneBot port %d' % ONEBOT_PORT)
+    names = deployer.installed_units()
+    stop_fake_onebot()
+    deployer.stop_all(names)
+    for name in (PREFIX + 'model.service', PREFIX + 'qq.service'):
+        path = deployer.config.units / name
+        path.write_text(scenario_unit(name, path.read_text()))
+    deployer.system.systemctl('daemon-reload')
+    # Deterministic reruns: today's spend, the cap and the owner's once-a-day notice start fresh.
+    model_data = Path(json.loads((BASE / 'operator/model-gateway.json').read_text())['settingsFile']).parent
+    for label in ('spend.json', 'spend-settings.json'):
+        (model_data / label).unlink(missing_ok=True)
+    dispatch = Path(qq_config['stateFile'])
+    if dispatch.exists():
+        state = json.loads(dispatch.read_text())
+        if state.pop('budgetNotice', None) is not None:
+            dispatch.write_text(json.dumps(state) + '\n')
+    SCENARIO.mkdir(mode=0o700, exist_ok=True)
+    (SCENARIO / 'model-script.json').write_text('[]\n')
+    (SCENARIO / 'model-requests.jsonl').write_text('')
+    control = SCENARIO / 'onebot.sock'
+    env = {'PATH': '/usr/bin:/bin', 'HOME': str(ROOT), 'LANG': 'C.UTF-8'}
+    fake = subprocess.Popen([str(NODE), str(TOOLS / 'fake-onebot.mjs'), '--port', str(ONEBOT_PORT), '--token-file', str(BASE / 'qq-runtime/private/onebot.token'),
+                             '--control', str(control), '--self', data['bot']['qq']], cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    try:
+        deadline = time.time() + 15
+        while not control.is_socket():
+            if fake.poll() is not None or time.time() > deadline:
+                raise RuntimeError('fake OneBot did not start: %s' % (fake.stderr.read().strip()[-200:] if fake.poll() is not None else 'timeout'))
+            time.sleep(0.2)
+        deployer.start_all(names)
+        problems = deployer.health(names)
+        if problems:
+            raise RuntimeError('; '.join(problems))
+        deployer.enable_all(names)
+        command = [str(NODE), str(TOOLS / 'scenarios.mjs'), '--operator-port', str(OPERATOR_PORT), '--operator-token-file', str(BASE / 'operator/console.token'),
+                   '--onebot-control', str(control), '--model-script', str(SCENARIO / 'model-script.json'), '--model-log', str(SCENARIO / 'model-requests.jsonl'),
+                   '--scenarios', str(TOOLS / 'scenarios.json')] + (['--only', only] if only else [])
+        result = subprocess.run(command, cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+    finally:
+        fake.terminate()
+        try:
+            fake.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            fake.kill()
+    lines = (result.stdout + result.stderr).strip().splitlines()
+    for line in lines:
+        print('  | ' + line[:600], flush=True)
+    summary = next((json.loads(line[len('SCENARIOS '):]) for line in lines if line.startswith('SCENARIOS {')), None)
+    if summary is None:
+        raise RuntimeError('scenario runner exited %d without a summary' % result.returncode)
+    if result.returncode or summary['failed']:
+        raise RuntimeError(summary['line'])
+    return summary['line']
+
+
 def prod_untouched():
     """Production listeners must still be there, and no staging process may own them."""
     out = subprocess.run(['ss', '-Hltnp'], capture_output=True, text=True, timeout=10).stdout
@@ -383,6 +471,7 @@ def lifecycle(from_tarball, to_tarball):
     step('restart-all', restart)
     step('manager-restart (default.target)', manager_restart)
     step('smoke', smoke)
+    step('scenarios', lambda: scenarios(deployer))
     step('prod-untouched', prod_untouched, always=True)
 
     failed = any(ok is False for _n, ok, _d in results)
@@ -396,8 +485,27 @@ def lifecycle(from_tarball, to_tarball):
     return 1 if failed else 0
 
 
+def replay(only=None):
+    """Scenarios alone, against whatever release the last lifecycle left in ~/companion-staging."""
+    if not (ROOT / 'src/companion/current').exists():
+        raise SystemExit('no staged release: run the lifecycle first')
+    deployer = build(load_companion_deploy())
+    ok, detail = True, ''
+    print('== scenarios', flush=True)
+    try:
+        detail = scenarios(deployer, only)
+        prod_untouched()
+    except Exception as error:
+        ok, detail = False, '%s: %s' % (error.__class__.__name__, str(error)[:600])
+        for line in diagnostics(deployer):
+            print(line)
+    print('SCENARIOS %s %s' % ('PASSED' if ok else 'FAILED', detail))
+    return 0 if ok else 1
+
+
 def reset():
     root = safe_root()
+    stop_fake_onebot()
     names = sorted(p.name for p in UNITS_DIR.glob(PREFIX + '*') if re.match(r'^' + PREFIX + r'[A-Za-z0-9-]+\.(service|socket)$', p.name))
     env = {**os.environ, 'XDG_RUNTIME_DIR': os.environ.get('XDG_RUNTIME_DIR', '/run/user/%d' % os.getuid())}
     if names:
@@ -427,6 +535,7 @@ def main(argv=None):
     life.add_argument('--from', dest='source', required=True)
     life.add_argument('--to', dest='target', required=True)
     sub.add_parser('reset')
+    sub.add_parser('scenarios').add_argument('--only')
     options = parser.parse_args(argv)
     if os.geteuid() == 0:
         raise SystemExit('staging must not run as root')
@@ -434,6 +543,8 @@ def main(argv=None):
     if options.command == 'reset':
         return reset()
     safe_root()
+    if options.command == 'scenarios':
+        return replay(options.only)
     return lifecycle(Path(options.source).resolve(), Path(options.target).resolve())
 
 
