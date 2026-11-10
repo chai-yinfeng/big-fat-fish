@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- staging 场景回放：生命周期在冒烟之后新增 `scenarios` 步骤，不登录 QQ、不用模型 Key 验证「谁发了什么 → 谁收到了什么回复」。`deploy/staging/fake-onebot.mjs` 冒充 NapCat（13001，校验 token，记录 send_private_msg，Unix 控制口注入私聊/设置好友）；`fake-model.mjs` 启动 release 里真实的 model-gateway，只把上游换成按脚本应答的假 DeepSeek（流式、带 usage、可发起一次 companion_scope propose）；`scenarios.mjs` 按 `scenarios.json` 回放并断言发送记录、operator 的 /memory、/people、/conversations、/spend 和模型收到的 Authority 上下文。场景里的人一律 `MOCK-xx`、QQ 号为 9999 开头的 12 位假号。首批场景即阶段 1 验收：S1 两个好友记忆互不可见，S2 非好友静默且不准入，S3 上限到顶后所有人静默、主人只收到一次提醒。`run.mjs --scenarios [--only S1,S3]` 可单独重跑；任一场景失败即 `STAGING FAILED`。生产代码、release 内容与 companion-deploy 均未改动，生产网关仍没有可配置的上游。已验证：test:deploy（含用本 checkout 的真实 Authority/网关/执行器/QQ 桥进程在本机回放同一份场景）、test:qq、test:model、全量测试；home-agent-dev 上 7987e8b→本分支 `STAGING PASSED`、场景 3/3，并单独重跑两次通过。未验证：真实 QQ/NapCat 与真实 DeepSeek 的行为差异（usage 字段、工具调用格式以假上游为准）、语音与图片场景。
+
 - companion-deploy：生产单元开机/user manager 重启后自动拉起。2026-11-09 主人执行 `systemctl restart user@<companion uid>` 后全部 companion 单元停掉且未恢复（单元已有 `WantedBy=default.target` 但从未 enable）。现在健康检查通过后 enable（deploy、start、rollback、恢复），凡是 companion-deploy 停的单元先 disable 再 stop；新增 `companion-deploy stop`（停服且重启后保持停止，直到 start）。旧版装的未 enable 单元在新版第一次 deploy/start 时 enable。staging 生命周期新增"旧版未 enable"模拟与 manager 重启代理检查（停全部单元但不 disable、daemon-reload、确认 default.target 依赖树覆盖全部单元、`systemctl --user start default.target sockets.target` 后健康检查）。companion-deploy 有改动，需按新 sha256 重装。已验证：companion-deploy/staging Python 测试、全量测试、home-agent-dev staging bd37be9→本分支。未验证：真实 `user@` 重启与整机重启。
 
 - 控制台 logo 与标签页图标换成社区「Q 版大肥鱼」头像裁切（128×128 PNG 以 data URI 内嵌在 icon.svg，dist 仍 4 个文件，CSP 不变）；署名与 CC BY-NC-SA 4.0 非商用条款见 console/ASSETS.md。已验证：test:console 与全量测试，本机按生产 CSP 起 dist 检查深浅主题侧栏与 /icon.svg。
