@@ -200,8 +200,11 @@ test('context budgets persona fairly, preserves whole claims, and ranks content 
   assert.match(context, /short.*tea/); assert.doesNotMatch(context, /LLLL/); assert.match(context, /已省略/);
   for (const query of ['conversation.v1', id, 'p1', 'private']) assert.doesNotMatch(a.context('chat', { streamId: 'one', query, budgetChars: 800 }).text, /Reported by/);
   for (const budgetChars of [0, 1, 5, 20, 100, 800, 16000, ...Array.from({ length: 120 }, (_, i) => i * 7)]) {
-    const text = a.context('chat', { streamId: 'one', budgetChars }).text;
+    const { text, personaText, memoryText } = a.context('chat', { streamId: 'one', budgetChars });
     assert.ok(text.length <= budgetChars);
+    // The split fields are the same content apart; the total budget still covers both.
+    assert.equal(text, personaText + (memoryText && '\n\n' + memoryText));
+    assert.ok(!personaText.includes('[记忆数据') && !memoryText.includes('[人格]'));
     for (const line of text.split('\n').filter(line => line.startsWith('{'))) {
       const row = JSON.parse(line); assert.equal(row.policy, 'conversation.v1');
       assert.equal(row.evidence.observationId, id);
@@ -216,6 +219,12 @@ test('default persona renders untruncated next to memories at the default budget
   const context = a.context('chat', { streamId: 'one' }).text;
   assert.ok(context.length <= 4000); assert.match(context, /\[记忆数据/); assert.doesNotMatch(context, /\[截断\]/);
   assert.ok(context.startsWith(`[人格]\n${renderPersona(DEFAULT_PERSONA)}`));
+  // The persona part does not depend on the query or on a later memory write: executors keep it in a stable system prompt.
+  const before = a.context('chat', { streamId: 'one', query: 'tea' });
+  submit(a, observe(a, { text: 'I also like coffee', eventId: 'coffee' }), { proposalId: 'coffee', payload: { key: 'drink', value: 'coffee', quote: 'I also like coffee' } }); a.processPending();
+  const after = a.context('chat', { streamId: 'one', query: 'coffee' });
+  assert.equal(before.personaText, `[人格]\n${renderPersona(DEFAULT_PERSONA)}`);
+  assert.equal(after.personaText, before.personaText); assert.notEqual(after.memoryText, before.memoryText); assert.ok(after.revision > before.revision);
 });
 
 test('foreign SQLite remains untouched and unsupported authority schema is refused', t => {

@@ -175,8 +175,9 @@ send_private_msg），`fake-model.mjs` 启动 release 里真实的 model-gateway
 `~/companion-staging/tools/` 的 staging 工具，不进 release，生产网关没有可配置的上游。运行器
 （`scenarios.mjs`）暂停世界、经 operator `/qq` 绑定主人、写入假 Key、恢复世界，然后按
 `deploy/staging/scenarios.json` 注入私聊并断言：假 OneBot 收到的发送记录、operator 的
-`/memory`、`/people`、`/conversations`、`/spend`，以及假模型收到的 system prompt（即 Authority
-给这个会话的上下文）。结束后世界保持暂停。现有场景：S1 两个好友的记忆互不可见，S2 非好友静默且不准入，
+`/memory`、`/people`、`/conversations`、`/spend`，以及假模型收到的整个请求体（`expectPrompt`：
+system、记忆中枢附注、用户原文、历史与工具结果全部在内；加 `"in": "context"` 时只看记忆中枢附注，
+即 Authority 为这一回合检索到的内容）。结束后世界保持暂停。现有场景：S1 两个好友的记忆互不可见，S2 非好友静默且不准入，
 S3 每日上限到顶后所有人静默、主人只收到一次提醒。摘要里有一行 `SCENARIOS n/n passed: ...`，
 任一场景失败则是 `STAGING FAILED`。
 

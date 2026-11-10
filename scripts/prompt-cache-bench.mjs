@@ -21,7 +21,7 @@ import { DEFAULT_PRICING, beijingDay, isPeak, parseUsage, usageCost } from '../m
 import { createGatewayStream } from '../capabilities/conversation/model.js';
 import { createConversationExecutor } from '../capabilities/conversation/agent.js';
 import { SessionStore } from '../capabilities/conversation/sessions.js';
-import { renderContext } from '../authority/src/context.js';
+import { renderContextParts } from '../authority/src/context.js';
 import { DEFAULT_PERSONA } from '../core/src/persona.js';
 import { tokenize } from '../core/src/util.js';
 
@@ -63,7 +63,7 @@ export function mockPersona(salt) {
   };
 }
 
-/** Realistic MOCK memories in the shape Authority hands to renderContext. */
+/** Realistic MOCK memories in the shape Authority hands to its context renderer. */
 export function mockMemories() {
   const base = Date.parse('2026-10-20T12:00:00Z');
   const evidence = (n, quote) => ({ observationId: `obs-mock-${String(n).padStart(4, '0')}-7f3a9c2e51d84b6a`, quote, role: 'user', actorId: ACTOR, streamId: STREAM, at: base + n * 3600000 * 7 });
@@ -102,7 +102,7 @@ export function createAuthorityStub({ salt, clock = Date.now }) {
   return {
     async context({ query = '', budgetChars = 4000 }) {
       revision += 1;
-      return { revision, entityId: 'entity:mock-bench', memoryEpoch: 0, personaRevision: 2, text: renderContext(persona, ranked(query), budgetChars), scope: { audience: 'private' }, world: { paused: false, revision: 1, worldNow: clock() } };
+      return { revision, entityId: 'entity:mock-bench', memoryEpoch: 0, personaRevision: 2, ...renderContextParts(persona, ranked(query), budgetChars), scope: { audience: 'private' }, world: { paused: false, revision: 1, worldNow: clock() } };
     },
     async memorySearch({ query, limit = 4 }) { const items = ranked(query).slice(0, limit).map(entry => ({ id: entry.id, type: entry.type, excerpt: excerpt(entry) })); return { items, text: items.map(item => JSON.stringify({ id: item.id, text: item.excerpt })).join('\n') }; },
     async memoryRead({ id }) { const entry = memories.find(item => item.id === id); if (!entry) throw Object.assign(new Error('NOT_FOUND'), { status: 404 }); return { id, type: entry.type, text: excerpt(entry) }; },

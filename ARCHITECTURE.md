@@ -17,7 +17,7 @@ companion-conversation QQ delivery adapter → 实际回执
 (pi-agent-core)  → model-gateway（UDS）→ DeepSeek
 ```
 
-默认 Executor 是 companion-conversation：pi-agent-core 的 Agent/tool loop，经 pi-ai `openai-completions`（DeepSeek compat，回传 `reasoning_content`）和 Unix socket fetch 只访问私有 model-gateway。会话 ID 由执行器按 streamId+memoryEpoch 派生，每个会话一个私有 JSONL；每次模型请求前取 Authority context（查询为本回合真实输入）；超时或调用方断开即 abort，同一会话串行。
+默认 Executor 是 companion-conversation：pi-agent-core 的 Agent/tool loop，经 pi-ai `openai-completions`（DeepSeek compat，回传 `reasoning_content`）和 Unix socket fetch 只访问私有 model-gateway。会话 ID 由执行器按 streamId+memoryEpoch 派生，每个会话一个私有 JSONL，只存纯对话；每个回合取一次 Authority context（查询为本回合真实输入），同一回合的工具往返复用它，每次模型请求前只复查暂停与 epoch；超时或调用方断开即 abort，同一会话串行。请求按供应商前缀缓存排布：system 消息只有固定说明 + 人格（人格不变则逐字节不变）；中间是已落盘的对话历史；每回合变化的内容（revision、世界时间、按本回合输入检索的记忆、证据引用）合成一段「记忆中枢附注」，只在发请求时作为最新一条 user 消息的第一个文本块附上，不落盘。system 说明只认这个位置的附注，聊天正文里出现的同样标记一律当聊天内容，且用户原文与记忆文本里的定界标记会被中和。
 
 当前限制：
 - 尚未在生产主机部署与真实对话验收。

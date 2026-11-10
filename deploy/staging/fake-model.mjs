@@ -6,8 +6,8 @@
 //   node fake-model.mjs --release <release dir> --config <model-gateway.json> --script <rules.json> --log <requests.jsonl>
 // Script file: [{ match, reply?, propose?: { type, payload }, usage?: { prompt_tokens, completion_tokens } }]
 // The first rule whose `match` occurs in the newest user message applies. `propose` makes the
-// first answer a companion_scope propose tool call (evidence ref taken from the system prompt);
-// the answer after the tool result is `reply`.
+// first answer a companion_scope propose tool call (evidence ref taken from the memory-hub note
+// that leads the newest user message); the answer after the tool result is `reply`.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -17,24 +17,36 @@ export const DEFAULT_REPLY = 'MOCK-REPLY';
 export const DEFAULT_USAGE = Object.freeze({ prompt_tokens: 100, completion_tokens: 20 });
 const textOf = content => typeof content === 'string' ? content : Array.isArray(content) ? content.filter(part => part?.type === 'text').map(part => part.text).join('') : '';
 
-/** The observation ref the executor offers as evidence for this run (last line of its system prompt). */
-export function evidenceRef(system) {
-  const match = /本轮可引用的聊天证据：(\[.*\])\s*$/s.exec(system);
+// The executor's note delimiter (capabilities/conversation/agent.js NOTE_OPEN). This staging tool is
+// uploaded on its own, so it cannot import the release's constant.
+const NOTE_OPEN = '<<<记忆中枢附注开始>>>';
+
+/** The observation ref the executor offers as evidence for this run (the evidence line of its note). */
+export function evidenceRef(note) {
+  const match = /^本轮可引用的聊天证据：(\[.*\])\s*$/m.exec(note);
   try { return JSON.parse(match[1]).find(item => item.role === 'user')?.ref ?? null; } catch { return null; }
+}
+
+/** The newest user message apart: the executor's memory-hub note (its first text block) and what the person typed. */
+function splitUser(content) {
+  const parts = Array.isArray(content) ? content.filter(part => part?.type === 'text').map(part => part.text) : [textOf(content)];
+  return parts.length > 1 && parts[0].startsWith(NOTE_OPEN) ? { context: parts[0], userText: parts.slice(1).join('') } : { context: '', userText: parts.join('') };
 }
 
 /** Pure decision: what the scripted model answers to one upstream chat-completions body. */
 export function planReply(body, rules = []) {
   const messages = Array.isArray(body?.messages) ? body.messages : [];
   const last = messages.findLastIndex(message => message?.role === 'user');
-  const userText = last < 0 ? '' : textOf(messages[last].content), system = messages[0]?.role === 'system' ? textOf(messages[0].content) : '';
+  const { context, userText } = last < 0 ? { context: '', userText: '' } : splitUser(messages[last].content), system = messages[0]?.role === 'system' ? textOf(messages[0].content) : '';
+  // Everything else the model was sent: earlier dialogue, and this run's tool calls and results.
+  const rest = JSON.stringify(messages.filter((message, index) => index !== last && !(index === 0 && message?.role === 'system')));
   const toolResult = last < 0 ? undefined : messages.slice(last + 1).findLast(message => message?.role === 'tool');
   const afterTool = toolResult !== undefined;
   const rule = rules.find(item => typeof item?.match === 'string' && item.match && userText.includes(item.match)) ?? {};
   const usage = { ...DEFAULT_USAGE, ...rule.usage };
   usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
-  const base = { userText, system, afterTool, ...(afterTool ? { toolResult: textOf(toolResult.content) } : {}), usage, stream: body?.stream === true };
-  const ref = evidenceRef(system);
+  const base = { userText, system, context, rest, afterTool, ...(afterTool ? { toolResult: textOf(toolResult.content) } : {}), usage, stream: body?.stream === true };
+  const ref = evidenceRef(context);
   if (base.stream && rule.propose && !afterTool && ref && body.tools?.some(tool => tool?.function?.name === 'companion_scope')) {
     const id = 'mock-' + createHash('sha256').update(ref).digest('hex').slice(0, 16);
     return { ...base, kind: 'tool', call: { name: 'companion_scope', arguments: { action: 'propose', id, ref, type: rule.propose.type, payload: rule.propose.payload } } };
@@ -59,7 +71,7 @@ export function createFakeUpstream({ scriptFile, logFile }) {
     const body = JSON.parse(options.body);
     let rules = []; try { rules = JSON.parse(fs.readFileSync(scriptFile, 'utf8')); } catch {}
     const plan = planReply(body, Array.isArray(rules) ? rules : []);
-    const entry = { at: Date.now(), stream: plan.stream, userText: plan.userText, system: plan.system, afterTool: plan.afterTool, ...(plan.afterTool ? { toolResult: plan.toolResult } : {}), answer: plan.kind === 'tool' ? { tool: plan.call } : { text: plan.text }, usage: plan.usage };
+    const entry = { at: Date.now(), stream: plan.stream, userText: plan.userText, system: plan.system, context: plan.context, rest: plan.rest, afterTool: plan.afterTool, ...(plan.afterTool ? { toolResult: plan.toolResult } : {}), answer: plan.kind === 'tool' ? { tool: plan.call } : { text: plan.text }, usage: plan.usage };
     fs.appendFileSync(logFile, JSON.stringify(entry) + '\n', { mode: 0o600 });
     return new Response(renderReply(plan), { status: 200, headers: { 'content-type': plan.stream ? 'text/event-stream' : 'application/json' } });
   };

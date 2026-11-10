@@ -11,7 +11,8 @@ import { prepareModel } from '../authority/prepare-model.mjs';
 import { prepareQQ } from '../authority/prepare-qq.mjs';
 import { prepareConversation } from '../authority/prepare-conversation.mjs';
 import { createFakeOneBot } from './fake-onebot.mjs';
-import { Runner, validateScenarios, summaryLine } from './scenarios.mjs';
+import { Runner, STEPS, validateScenarios, summaryLine } from './scenarios.mjs';
+import { planReply } from './fake-model.mjs';
 
 const project = fileURLToPath(new URL('../../', import.meta.url));
 const shipped = () => JSON.parse(fs.readFileSync(new URL('./scenarios.json', import.meta.url), 'utf8'));
@@ -30,6 +31,31 @@ test('the shipped scenarios are valid and every simulated person is visibly fake
     d => { d.scenarios[0].steps.push({ say: { from: 'MOCK-NOBODY', text: 'x' } }); },
     d => { d.scenarios[1].id = 'S1'; },
   ]) { const data = shipped(); change(data); assert.throws(() => validateScenarios(data)); }
+});
+
+test('expectPrompt reads the whole request, so a leak outside the system prompt fails the isolation check', async t => {
+  const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-log-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const log = path.join(dir, 'requests.jsonl'), run = new Runner({ data: shipped(), modelLog: log });
+  const system = 'MOCK system prompt', hub = text => `<<<记忆中枢附注开始>>>\n${text}\n<<<记忆中枢附注结束>>>\n`;
+  const user = (text, memory = '"无关记忆"') => ({ role: 'user', content: [{ type: 'text', text: hub(memory) }, { type: 'text', text }] });
+  const entry = messages => { const plan = planReply({ stream: true, messages }); return { stream: plan.stream, userText: plan.userText, system: plan.system, context: plan.context, rest: plan.rest }; };
+  const check = async (messages, args) => { fs.writeFileSync(log, JSON.stringify(entry(messages)) + '\n'); return STEPS.expectPrompt(run, { logOffset: 0 }, { userText: '（MOCK-B 问）', ...args }); };
+  const clean = [{ role: 'system', content: system }, user('蓝鲸 队长 是谁（MOCK-B 问）')];
+  await check(clean, { absent: '蓝鲸队长' });
+  // The same check fails wherever the other person's memory shows up: memory-hub note, earlier dialogue, tool result, system prompt.
+  const leaks = {
+    note: [{ role: 'system', content: system }, user('蓝鲸 队长 是谁（MOCK-B 问）', '"Reported by p-aaaaaa (unverified): 代号: 蓝鲸队长"')],
+    history: [{ role: 'system', content: system }, { role: 'user', content: '我的代号是蓝鲸队长' }, { role: 'assistant', content: 'ok' }, user('蓝鲸 队长 是谁（MOCK-B 问）')],
+    tool: [...clean, { role: 'assistant', content: null, tool_calls: [] }, { role: 'tool', content: '{"items":[{"excerpt":"代号 蓝鲸队长"}]}' }],
+    system: [{ role: 'system', content: system + ' 蓝鲸队长' }, user('蓝鲸 队长 是谁（MOCK-B 问）')],
+  };
+  for (const [where, messages] of Object.entries(leaks)) await assert.rejects(check(messages, { absent: '蓝鲸队长' }), /the model request for "（MOCK-B 问）" contains "蓝鲸队长"/, where);
+  // `in: "context"` is only the note: earlier dialogue does not satisfy a retrieval check.
+  await assert.rejects(check(leaks.history, { contains: '蓝鲸队长', in: 'context' }), /the model context .* lacks/);
+  await check(leaks.note, { contains: '蓝鲸队长', in: 'context' });
+  // A log written without the new fields (an older fake model) is refused instead of passing vacuously.
+  fs.writeFileSync(log, JSON.stringify({ stream: true, userText: '（MOCK-B 问）', system }) + '\n');
+  await assert.rejects(STEPS.expectPrompt(run, { logOffset: 0 }, { userText: '（MOCK-B 问）', absent: '蓝鲸队长' }), /lacks system\/context\/rest/);
 });
 
 // The real services of this checkout, as processes, on a throwaway data root: Authority, the model
@@ -101,11 +127,25 @@ test('scenario replay against the real Authority, gateway (scripted upstream), e
     broken.scenarios = [{ id: 'X1', title: 'isolation must hold', model: [], steps: [
       { say: { from: 'MOCK-B', text: 'MOCK-X1 蓝鲸队长 是谁（MOCK-B 再问）' } },
       { expectReply: { to: 'MOCK-B', contains: 'MOCK-REPLY' } },
-      { expectPrompt: { userText: '（MOCK-B 再问）', contains: '蓝鲸队长' } },
+      { expectPrompt: { userText: '（MOCK-B 再问）', contains: '蓝鲸队长', in: 'context' } },
     ] }];
     const result = await runner(broken).run();
     assert.equal(result.failed, 1);
-    assert.match(result.results[0].error, /^step 3 .*system prompt .* lacks "蓝鲸队长"/);
+    assert.match(result.results[0].error, /^step 3 .*the model context .* lacks "蓝鲸队长"/);
+    // Counter-example for the isolation check: the text reaches the model outside the system prompt
+    // (here: typed by MOCK-B, then replayed as earlier dialogue), and `absent` must catch it both times.
+    const leaked = shipped();
+    leaked.scenarios = [{ id: 'X3', title: 'absent covers the whole request', model: [], steps: [
+      { say: { from: 'MOCK-B', text: 'MOCK-X3 泄漏词甲' } },
+      { expectReply: { to: 'MOCK-B', contains: 'MOCK-REPLY' } },
+      { expectPrompt: { userText: 'MOCK-X3', absent: '泄漏词乙' } },
+      { say: { from: 'MOCK-B', text: 'MOCK-X3-NEXT 之后的一句' } },
+      { expectReply: { to: 'MOCK-B', contains: 'MOCK-REPLY' } },
+      { expectPrompt: { userText: 'MOCK-X3-NEXT', absent: '泄漏词甲' } },
+    ] }];
+    assert.match((await runner(leaked).run()).results[0].error, /^step 6 .*the model request for "MOCK-X3-NEXT" contains "泄漏词甲"/);
+    leaked.scenarios[0].steps[2] = { expectPrompt: { userText: 'MOCK-X3', absent: '泄漏词甲' } };
+    assert.match((await runner(leaked).run()).results[0].error, /^step 3 .*the model request for "MOCK-X3" contains "泄漏词甲"/);
     const silent = shipped();
     silent.scenarios = [{ id: 'X2', title: 'a reply is not silence', model: [], steps: [{ say: { from: 'MOCK-A', text: 'MOCK-X2 在吗' } }, { expectSilence: { to: '*', observedFrom: ['MOCK-A'], afterMs: 1500 } }] }];
     assert.match((await runner(silent).run()).results[0].error, /expected silence, but MOCK-A received "MOCK-REPLY"/);

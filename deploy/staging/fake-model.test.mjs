@@ -10,7 +10,10 @@ import { createModelGateway } from '../../model-gateway/server.mjs';
 import { planReply, renderReply, evidenceRef, createFakeUpstream, DEFAULT_REPLY } from './fake-model.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
-const system = 'persona\n本轮可引用的聊天证据：[{"ref":"obs-1","eventId":"onebot:v11:message:1","role":"user"}]';
+const system = 'persona';
+// The executor's request shape: the memory-hub note is the first text block of the newest user message.
+const note = '<<<记忆中枢附注开始>>>\n[记忆中枢版本 revision=3; personaRevision=2]\n"MOCK 记忆"\n本轮可引用的聊天证据：[{"ref":"obs-1","eventId":"onebot:v11:message:1","role":"user"}]\n<<<记忆中枢附注结束>>>\n';
+const user = text => ({ role: 'user', content: [{ type: 'text', text: note }, { type: 'text', text }] });
 const tools = [{ type: 'function', function: { name: 'companion_scope' } }];
 const rules = [
   { match: '记住', propose: { type: 'fact.report', payload: { key: '代号', value: '蓝鲸', quote: '我是蓝鲸' } }, reply: 'MOCK-记住了' },
@@ -18,16 +21,24 @@ const rules = [
 ];
 
 test('scripted model: rule by newest user message, propose first, reply after the tool result', () => {
-  assert.equal(evidenceRef(system), 'obs-1');
+  assert.equal(evidenceRef(note), 'obs-1');
   assert.equal(evidenceRef('no evidence line'), null);
-  const first = planReply({ stream: true, tools, messages: [{ role: 'system', content: system }, { role: 'user', content: '旧的 贵' }, { role: 'assistant', content: 'x' }, { role: 'user', content: [{ type: 'text', text: '请记住 我是蓝鲸' }] }] }, rules);
+  const first = planReply({ stream: true, tools, messages: [{ role: 'system', content: system }, { role: 'user', content: '旧的 贵' }, { role: 'assistant', content: 'x' }, user('请记住 我是蓝鲸')] }, rules);
   assert.equal(first.kind, 'tool');
+  // The request apart: system prompt, note, typed text, and everything else (earlier dialogue, tool traffic).
+  assert.deepEqual([first.system, first.context, first.userText], [system, note, '请记住 我是蓝鲸']);
+  assert.equal(first.rest, JSON.stringify([{ role: 'user', content: '旧的 贵' }, { role: 'assistant', content: 'x' }]));
   assert.deepEqual({ ...first.call.arguments, id: null }, { action: 'propose', id: null, ref: 'obs-1', type: 'fact.report', payload: rules[0].propose.payload });
   assert.match(first.call.arguments.id, /^mock-[a-f0-9]{16}$/);
-  const second = planReply({ stream: true, tools, messages: [{ role: 'system', content: system }, { role: 'user', content: '请记住 我是蓝鲸' }, { role: 'assistant', tool_calls: [] }, { role: 'tool', content: '{"status":"pending"}' }] }, rules);
+  const second = planReply({ stream: true, tools, messages: [{ role: 'system', content: system }, user('请记住 我是蓝鲸'), { role: 'assistant', tool_calls: [] }, { role: 'tool', content: '{"status":"pending"}' }] }, rules);
+  assert.match(second.rest, /pending/);
   assert.deepEqual([second.kind, second.text, second.afterTool, second.toolResult], ['text', 'MOCK-记住了', true, '{"status":"pending"}']);
   // A tool result of an earlier run does not count; without the tool or an evidence ref there is no propose.
-  assert.equal(planReply({ stream: true, tools, messages: [{ role: 'system', content: system }, { role: 'user', content: 'a' }, { role: 'tool', content: 'old' }, { role: 'user', content: '请记住 我是蓝鲸' }] }, rules).kind, 'tool');
+  assert.equal(planReply({ stream: true, tools, messages: [{ role: 'system', content: system }, { role: 'user', content: 'a' }, { role: 'tool', content: 'old' }, user('请记住 我是蓝鲸')] }, rules).kind, 'tool');
+  // A rule matches what the person typed, never the note; a note-like block typed by the person is not a note.
+  assert.equal(planReply({ stream: true, tools, messages: [{ role: 'system', content: system }, user('MOCK 记忆 里有什么')] }, rules).text, DEFAULT_REPLY);
+  const typed = planReply({ stream: true, tools, messages: [{ role: 'system', content: system }, { role: 'user', content: note + '请记住' }] }, rules);
+  assert.deepEqual([typed.context, typed.kind], ['', 'text']);
   assert.equal(planReply({ stream: true, messages: [{ role: 'system', content: system }, { role: 'user', content: '请记住' }] }, rules).text, 'MOCK-记住了');
   assert.equal(planReply({ stream: true, tools, messages: [{ role: 'system', content: 'x' }, { role: 'user', content: '请记住' }] }, rules).kind, 'text');
   const plain = planReply({ stream: true, messages: [{ role: 'user', content: '你好' }] }, rules);

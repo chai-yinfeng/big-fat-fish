@@ -72,11 +72,17 @@ export const STEPS = {
     if (contains !== undefined) await run.poll(async () => (await items()).some(text => text.includes(contains)), timeoutMs, `Authority has no memory of ${person} containing ${JSON.stringify(contains)}`);
     if (absent !== undefined && (await items()).some(text => text.includes(absent))) fail(`Authority memory of ${person} contains ${JSON.stringify(absent)}`);
   },
-  /** The Authority context (system prompt) the model received for the run whose user message contains `userText`. */
-  async expectPrompt(run, ctx, { userText, contains, absent }) {
+  /** The whole request body the model was sent for the run whose typed user text contains `userText`:
+   * system prompt, memory-hub note, the typed text, earlier dialogue and tool results.
+   * `in: "context"` narrows it to the memory-hub note, i.e. what Authority retrieved for this run. */
+  async expectPrompt(run, ctx, { userText, contains, absent, in: part = 'request' }) {
+    if (!['request', 'context'].includes(part)) fail(`expectPrompt: unknown part ${JSON.stringify(part)}`);
     const requests = run.modelLog(ctx).filter(entry => entry.stream && entry.userText.includes(userText));
     if (!requests.length) fail(`the model never received ${JSON.stringify(userText)}`);
-    if (!requests.every(entry => includes(entry.system, { contains, absent }))) fail(`system prompt for ${JSON.stringify(userText)} ${contains !== undefined ? 'lacks ' + JSON.stringify(contains) : 'contains ' + JSON.stringify(absent)}`);
+    // A log entry without these fields would turn `absent` into an empty check: refuse it.
+    if (!requests.every(entry => [entry.system, entry.context, entry.rest].every(value => typeof value === 'string'))) fail('the model request log lacks system/context/rest');
+    const sent = entry => part === 'context' ? entry.context : [entry.system, entry.context, entry.userText, entry.rest].join('\n');
+    if (!requests.every(entry => includes(sent(entry), { contains, absent }))) fail(`the model ${part} for ${JSON.stringify(userText)} ${contains !== undefined ? 'lacks ' + JSON.stringify(contains) : 'contains ' + JSON.stringify(absent)}`);
   },
   async expectNoModelCall(run, ctx, { userText }) {
     if (run.modelLog(ctx).some(entry => entry.userText.includes(userText))) fail(`the model received ${JSON.stringify(userText)}`);
