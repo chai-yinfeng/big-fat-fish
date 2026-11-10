@@ -53,7 +53,8 @@ function validRequest({ scope, requestId, input, timeoutMs }) {
  * standing profile of the person in this conversation), then the persisted dialogue. Each run's note leads its user message and is stored with
  * it (`hub.memoryIds` lists the memory it carries), so the next request is the
  * previous one plus new messages; a memory already in the window is not
- * retrieved again.
+ * retrieved again. `hub.personaRevision` records the persona the run was made
+ * under: after a persona change the window keeps only two earlier runs.
  */
 export function createConversationExecutor({ authority, content, store, model, streamFn, limit = ACTIVE_CONTEXT_CHARS }) {
   const tails = new Map();
@@ -94,13 +95,14 @@ export function createConversationExecutor({ authority, content, store, model, s
         // The same bytes on every run of this conversation until the persona or the person's profile changes.
         system: [BASE_PROMPT, context.personaText, neutralizeNoteMarkers(context.profileText)].filter(Boolean).join('\n\n'),
         note: renderNote({ revision: context.revision, personaRevision: context.personaRevision, worldNow: context.world?.worldNow, memoryText: context.memoryText, evidence }),
-        memoryIds: context.memoryIds,
+        memoryIds: context.memoryIds, personaRevision: context.personaRevision,
       };
     }
     const persisted = store.load(sessionId);
     const typed = { type: 'text', text: neutralizeNoteMarkers(input.text) };
-    // The window is measured here without the new note; if the note then pushes an old run out, a
-    // memory only that run carried is retrieved again on a later run, never twice in one window.
+    // The window is measured here without the new note and before the persona revision is known; if
+    // the request then drops more old runs, a memory only they carried is retrieved again on a later
+    // run, never twice in one window.
     const prompt = await runPrompt(injectedIds(activeDialogue([...persisted.messages, { role: 'user', content: [typed] }], limit)).slice(-MAX_EXCLUDED));
     signal.throwIfAborted();
     const agent = new Agent({
@@ -126,7 +128,7 @@ export function createConversationExecutor({ authority, content, store, model, s
     const abort = () => agent.abort();
     signal.addEventListener('abort', abort, { once: true });
     // `hub` is the executor's own record of this note; the provider is only ever sent `content`.
-    try { await agent.prompt({ role: 'user', content: [{ type: 'text', text: prompt.note }, typed], timestamp: Date.now(), hub: { memoryIds: prompt.memoryIds } }); }
+    try { await agent.prompt({ role: 'user', content: [{ type: 'text', text: prompt.note }, typed], timestamp: Date.now(), hub: { personaRevision: prompt.personaRevision, memoryIds: prompt.memoryIds } }); }
     finally { signal.removeEventListener('abort', abort); }
     const added = agent.state.messages.slice(before);
     const last = added.at(-1);

@@ -19,9 +19,15 @@ function cut(messages, limit, low) {
   }
   const sizes = runs.map(run => run.reduce((total, message) => total + JSON.stringify(message).length, 0));
   // Replay: `start` is the first kept run after each run was added; `total` is the size of the kept runs.
-  let start = 0, total = 0;
+  let start = 0, total = 0, persona;
   for (let last = 0; last < runs.length; last++) {
     total += sizes[last];
+    // A run made under another persona revision than the last one known: only the two runs before it stay.
+    const revision = runs[last][0].hub?.personaRevision;
+    if (Number.isSafeInteger(revision)) {
+      if (persona !== undefined && revision !== persona) while (start < last - 2) total -= sizes[start++];
+      persona = revision;
+    }
     if (total + (start ? WINDOW_MARKER.length : 0) <= limit) continue;
     const protectedFrom = Math.max(0, last - 2);
     // The low-water mark is measured without the newest run, so the cut is the same whether that run
@@ -43,6 +49,9 @@ function cut(messages, limit, low) {
  * `limit`, old runs are dropped in one cut until the runs before the newest one
  * are down to `low`, and that cut stays where it is on the following runs until
  * the window exceeds `limit` again.
+ * A persona change also cuts: the first run made under a new persona revision
+ * (`hub.personaRevision` on its user message) keeps only the two runs before it,
+ * so the old tone is not replayed. Runs without that record never cut.
  * The cut is not stored: it is replayed from the whole transcript, run by run,
  * so the same transcript always yields the same cut.
  */

@@ -82,3 +82,26 @@ test('default marks: above 16000 characters one cut brings the earlier runs down
   // A custom limit keeps the same proportion.
   assert.deepEqual(fitActiveWindow(transcript, 6000), fitActiveWindow(transcript, 6000, 3000));
 });
+
+test('persona change: the first run under a new revision keeps two earlier runs; runs without a record never cut', () => {
+  const at = (n, personaRevision) => { const [user, ...rest] = run(n, 100); return [{ ...user, ...(personaRevision === undefined ? {} : { hub: { personaRevision, memoryIds: [] } }) }, ...rest]; };
+  const first = messages => messages.find(m => m.role === 'user').content[0].text.slice(0, 2);
+  const old = [system, ...at(1, 7), ...at(2, 7), ...at(3, 7), ...at(4, 7)];
+  assert.equal(fitActiveWindow(old, 32000), old);
+  // Request time (only the user message of the new run) and after it was stored: the same cut.
+  const [user5, ...answer5] = at(5, 8);
+  for (const messages of [[...old, user5], [...old, user5, ...answer5], [...old, user5, ...answer5, ...at(6, 8), ...at(7, 8)]]) {
+    const fitted = fitActiveWindow(messages, 32000);
+    assert.equal(first(fitted), 'u3');
+    assert.ok(fitted[0].content.endsWith(WINDOW_MARKER));
+  }
+  // A second change cuts again, relative to the run that saw it.
+  assert.equal(first(fitActiveWindow([...old, ...at(5, 8), ...at(6, 8), ...at(7, 8), ...at(8, 9)], 32000)), 'u6');
+  // Lines of the previous release carry no revision: they neither cut nor hide a later change.
+  const legacy = [system, ...at(1), ...at(2), ...at(3), ...at(4, 7), ...at(5)];
+  assert.equal(fitActiveWindow(legacy, 32000), legacy);
+  assert.equal(first(fitActiveWindow([...legacy, ...at(6, 8)], 32000)), 'u4');
+  // With one or two earlier runs there is nothing to cut.
+  const short = [system, ...at(1, 7), ...at(2, 7), ...at(3, 8)];
+  assert.equal(fitActiveWindow(short, 32000), short);
+});

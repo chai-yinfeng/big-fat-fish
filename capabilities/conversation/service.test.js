@@ -63,7 +63,7 @@ test('plain reply: persona in the system prompt, the memory-hub note leads the u
   assert.deepEqual(run.messages.map(m => m.role), ['user', 'assistant']);
   // The session record is what the model was sent: the note is stored as the first block of the user message.
   assert.deepEqual(run.messages[0].content, [{ type: 'text', text: hub }, { type: 'text', text: '你好'.repeat(400) }]);
-  assert.deepEqual(run.messages[0].hub, { memoryIds: [] });
+  assert.deepEqual(run.messages[0].hub, { personaRevision: 2, memoryIds: [] });
   // The executor's own record of the note never reaches the provider.
   assert.deepEqual(Object.keys(lastUser(body)).sort(), ['content', 'role']);
   // Without queryText, retrieval uses this input truncated to 512 characters.
@@ -241,6 +241,26 @@ test('standing profile: it follows the persona in the system message, the same b
     await assert.rejects(f.executor.execute(request('第四句')), { code: 'CONTEXT_UNAVAILABLE' });
   }
   assert.equal(f.gateway.state.bodies.length, 4);
+});
+
+test('persona change: the next run replays only the two runs before it; later runs keep that cut', async t => {
+  const f = await setup(t);
+  f.authority.state.text = '[人格]\n旧口吻';
+  const turn = async input => { f.gateway.state.script.push(reply('答' + input)); await f.executor.execute(request(input)); return f.gateway.state.bodies.at(-1).messages; };
+  const users = messages => messages.filter(m => m.role === 'user').map(said);
+  for (const input of ['一', '二', '三', '四']) await turn(input);
+  // Same persona: everything is replayed.
+  assert.deepEqual(users(await turn('五')), ['一', '二', '三', '四', '五']);
+  f.authority.state.text = '[人格]\n新口吻'; f.authority.state.personaRevision = 3;
+  const changed = await f.restart().execute((f.gateway.state.script.push(reply('答六')), request('六'))).then(() => f.gateway.state.bodies.at(-1).messages);
+  assert.deepEqual(users(changed), ['四', '五', '六']);
+  assert.ok(changed[0].content.includes('新口吻') && changed[0].content.endsWith(WINDOW_MARKER) && !changed[0].content.includes('旧口吻'));
+  // The cut is replayed from the stored runs: it stays there, and the request prefix is stable again.
+  const next = await turn('七');
+  assert.deepEqual(users(next), ['四', '五', '六', '七']);
+  assert.equal(JSON.stringify(next.slice(0, changed.length)), JSON.stringify(changed));
+  // The stored session is not rewritten: all seven runs are still on disk.
+  assert.equal(fs.readFileSync(path.join(f.sessionsDir, conversationSessionId(scope.streamId, 0) + '.jsonl'), 'utf8').trim().split('\n').length, 7);
 });
 
 test('a memory already in the window is not retrieved again; one that left the window can be', async t => {
