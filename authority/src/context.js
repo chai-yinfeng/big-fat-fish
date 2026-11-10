@@ -37,8 +37,11 @@ function memoryLine(entry) {
   const content = entry.attribution === 'reported'
     ? `Reported by ${opaquePerson(entry.personId)} (unverified): ${entry.key}: ${entry.value}`
     : entry.summary ?? entry.text;
+  // Only what the model can use: the attributed content and the day it was recorded (UTC, like the
+  // world time it is shown). The quote repeats the content and the IDs mean nothing to the model.
+  const at = entry.evidence?.at ?? entry.recordedAt;
   // Quoted structured data, never a free-standing instruction contribution.
-  return JSON.stringify({ content, policy: entry.policy, evidence: entry.evidence });
+  return JSON.stringify({ content, ...(Number.isSafeInteger(at) && at >= 0 && at <= 8.64e15 ? { date: new Date(at).toISOString().slice(0, 10) } : {}) });
 }
 function renderMemory(lines, budget) {
   const result = []; let used = 0; let omitted = lines.length;

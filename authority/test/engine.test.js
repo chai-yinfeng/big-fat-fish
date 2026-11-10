@@ -206,10 +206,13 @@ test('context budgets persona fairly, preserves whole claims, and ranks content 
     assert.equal(text, personaText + (memoryText && '\n\n' + memoryText));
     assert.ok(!personaText.includes('[记忆数据') && !memoryText.includes('[人格]'));
     for (const line of text.split('\n').filter(line => line.startsWith('{'))) {
-      const row = JSON.parse(line); assert.equal(row.policy, 'conversation.v1');
-      assert.equal(row.evidence.observationId, id);
+      // A memory line is the attributed content and its day; quote, IDs, role and policy stay out of the prompt.
+      const row = JSON.parse(line); assert.deepEqual(Object.keys(row), ['content', 'date']);
+      assert.equal(row.date, '1970-01-01');
+      assert.match(row.content, /^Reported by p-[0-9a-f]{6} \(unverified\): /);
       assert.ok(row.content.includes('tea') || row.content.includes('L'.repeat(900)));
     }
+    assert.ok(!text.includes(id)); assert.doesNotMatch(text, /observationId|actorId|streamId|alice|conversation\.v1|"quote"|"role"/);
   }
 });
 
