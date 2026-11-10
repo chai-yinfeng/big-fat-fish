@@ -7,7 +7,7 @@ import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { Authority, TRACE_LIMIT, MAX_CONTEXT_EXCLUDE } from '../src/engine.js';
 import { createOperatorServer } from '../src/operator.js';
-import { opaquePerson, renderContextParts, renderProfile, PROFILE_CHARS } from '../src/context.js';
+import { opaquePerson, renderContextParts, renderProfile, PROFILE_CHARS, RETRIEVED_ITEMS, RETRIEVED_CHARS } from '../src/context.js';
 import { MIGRATIONS } from '../src/migrations.js';
 
 // Visibly fake accounts: 12 digits starting with 9999.
@@ -144,6 +144,45 @@ test('standing profile: bounded to 600 characters with pinned items first; a sha
   a.registerCapability({ id: 'reader', policy: 'learning.v1' });
   a.bindStream({ capabilityId: 'reader', streamId: 'reading', personId: `person:qq:${A}`, audience: 'private' });
   assert.equal(a.context('reader', { streamId: 'reading', profile: true }).profileText, '');
+});
+
+test('retrieved memory is capped: the 6 best-ranked entries and 900 characters, and the trace says exactly what was rendered', t => {
+  const { a, tell, stream } = fixture(t);
+  assert.deepEqual([RETRIEVED_ITEMS, RETRIEVED_CHARS], [6, 900]);
+  const short = Array.from({ length: 10 }, (_, i) => tell(A, 'experience.remember', { summary: `MOCK-灯塔 第${i}次` }, `MOCK-灯塔 第${i}次`));
+  const ask = (extra = {}) => a.context('qq', { streamId: stream(A), query: 'MOCK-灯塔', ...extra });
+  // Same match and importance: the ranking is newest first, and the cap keeps its head.
+  const first = ask();
+  assert.deepEqual(first.memoryIds, short.slice(-6).reverse());
+  assert.equal((first.memoryText.match(/^\{"content":/gm) || []).length, 6);
+  const trace = a.contextTrace().traces[0];
+  assert.deepEqual([trace.sections.flatMap(section => section.ids), trace.chars.memory, trace.candidates], [first.memoryIds, first.memoryText.length, 10]);
+  // A larger budget does not lift the cap; the persona and the profile are not counted in it.
+  const wide = a.context('qq', { streamId: stream(A), query: 'MOCK-灯塔', budgetChars: 16000, profile: true });
+  assert.deepEqual([wide.memoryIds, wide.personaText], [first.memoryIds, first.personaText]);
+  // Long entries: the character cap cuts before the item cap, whole lines, best-ranked first.
+  const long = Array.from({ length: 8 }, (_, i) => tell(A, 'experience.remember', { summary: `MOCK-海边 第${i}次 ` + '很长的内容'.repeat(50) }, `MOCK-海边 第${i}次`));
+  const capped = a.context('qq', { streamId: stream(A), query: 'MOCK-海边', budgetChars: 16000 });
+  assert.ok(capped.memoryText.length <= RETRIEVED_CHARS && capped.memoryIds.length >= 2 && capped.memoryIds.length < 6);
+  assert.deepEqual(capped.memoryIds, long.slice(-capped.memoryIds.length).reverse());
+  assert.deepEqual(a.contextTrace().traces[0].sections.flatMap(section => section.ids), capped.memoryIds);
+  assert.equal(a.contextTrace().traces[0].chars.memory, capped.memoryText.length);
+});
+
+test('cap and exclusion together: every call adds at most 6 new entries and 900 characters until nothing is left', t => {
+  const { a, tell, stream } = fixture(t);
+  const all = Array.from({ length: 15 }, (_, i) => tell(A, 'experience.remember', { summary: `MOCK-灯塔 第${i}次 ` + '内容'.repeat(i % 3 ? 5 : 90) }, `MOCK-灯塔 第${i}次`));
+  const seen = [], rounds = [];
+  for (let round = 0; round < 20; round++) {
+    const context = a.context('qq', { streamId: stream(A), query: 'MOCK-灯塔 还记得吗', exclude: seen });
+    if (!context.memoryIds.length) { assert.equal(context.memoryText, ''); break; }
+    assert.ok(context.memoryIds.length <= RETRIEVED_ITEMS && context.memoryText.length <= RETRIEVED_CHARS);
+    assert.ok(context.memoryIds.every(id => !seen.includes(id)), 'nothing is injected twice');
+    seen.push(...context.memoryIds); rounds.push(context.memoryIds.length);
+  }
+  // What a cap held back was not counted as injected: all of it arrives over the following calls.
+  assert.deepEqual([...seen].sort(), [...all].sort());
+  assert.ok(rounds.length >= 3 && rounds.length < 20, rounds.join(','));
 });
 
 test('date recall returns experiences at their default importance, the asking person\'s only, within the budget', t => {

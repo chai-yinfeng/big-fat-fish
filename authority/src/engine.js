@@ -3,7 +3,7 @@ import { Store, DEFAULT_ENTITY_ID } from './store.js';
 import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
 import { POLICIES, validatePayload, review } from './policies.js';
 import { normalizePersona, validatePersonaPatch } from '../../core/src/persona.js';
-import { renderContextParts, renderProfile, DEFAULT_CONTEXT_CHARS, personaShare, personaContextText, opaquePerson, opaqueStream } from './context.js';
+import { renderContextParts, renderProfile, RETRIEVED_ITEMS, DEFAULT_CONTEXT_CHARS, personaShare, personaContextText, opaquePerson, opaqueStream } from './context.js';
 import { MemoryDomain } from './memory.js';
 export {
   DEFAULT_ENTITY_ID
@@ -380,7 +380,8 @@ export class Authority extends MemoryDomain {
     const profile=renderProfile(input.profile?this.profileEntries(scope,registered.policy):[]);
     const budget=integer(input.budgetChars===undefined?DEFAULT_CONTEXT_CHARS:input.budgetChars,0,16000),
     rows=this.candidates(scope,registered.policy,query,64,{exclude:[...exclude,...profile.ids]}),
-    {sections,...rendered}=renderContextParts(JSON.parse(e.persona),rows,budget),
+    // The best-ranked few only; what is left out was not injected and can come in on a later call.
+    {sections,...rendered}=renderContextParts(JSON.parse(e.persona),rows.slice(0,RETRIEVED_ITEMS),budget),
     result={
       revision:this.store.get('revision'),
       entityId:e.id,
