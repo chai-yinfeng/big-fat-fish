@@ -90,8 +90,9 @@ export class MemoryDomain {
       args:[scope.personId]
     };
   }
-  /** `exclude`: memory IDs that are never candidates (already in front of the model). */
-  candidates(scope,policy,query,limit,{ includeArchived = false, exclude = [] } = {}){
+  /** `exclude`: memory IDs that are never candidates (already in front of the model).
+   * `relevantOnly`: with a query, keep only entries matching at least 2 of its tokens or 15% of them. */
+  candidates(scope,policy,query,limit,{ includeArchived = false, exclude = [], relevantOnly = false } = {}){
     const e=this.entity(scope.entityId),
     v=this.visibility(scope,policy),
     tokens=[...new Set(tokenize(query))].slice(0,64),
@@ -106,6 +107,7 @@ export class MemoryDomain {
     let rows;
     if(tokens.length)rows=this.store.db.prepare(`SELECT m.*,COUNT(t.token) AS hits FROM memory_items m JOIN memory_tokens t ON t.memory_id=m.id AND t.entity_id=m.entity_id WHERE ${filter} AND t.token IN (${placeholders(tokens)}) GROUP BY m.id ORDER BY hits DESC,m.pinned DESC,m.revision DESC LIMIT ?`).all(...args,...tokens,Math.min(128,limit*4));
     else rows=this.store.db.prepare(`SELECT m.*,0 AS hits FROM memory_items m WHERE ${filter} ORDER BY m.pinned DESC,m.revision DESC LIMIT ?`).all(...args,Math.min(128,limit*4));
+    if(relevantOnly&&tokens.length)rows=rows.filter(row=>row.hits>=2||row.hits/tokens.length>=0.15);
     const ranked=rows.map(row=>({
       row,score:(tokens.length?row.hits/tokens.length:1)+(row.pinned?2:0)+row.importance*Math.pow(0.5,Math.max(0,now-row.created_world_at)/(e.retention_days*DAY))
     })).sort((a,b)=>b.score-a.score||b.row.revision-a.row.revision).slice(0,limit);
@@ -524,6 +526,7 @@ export class MemoryDomain {
       };
     });
   }
+  /** Date recall: pinned items, important facts (>=0.8) and experiences from their default importance (0.65) up. */
   memoryRecall(capabilityId, input) {
     closed(input, ['streamId', 'fromAt', 'toAt', 'limit', 'budgetChars'], ['streamId', 'fromAt', 'toAt']);
     const policy = capability(this.store, capabilityId).policy;
@@ -536,7 +539,7 @@ export class MemoryDomain {
     budget = integer(input.budgetChars ?? 2400, 0, 16000);
     const rows = this.store.db.prepare(`SELECT m.* FROM memory_items m
       WHERE m.entity_id=? AND ${visible.sql} AND m.status='active'
-      AND m.collection IN ('facts','experiences') AND (m.pinned=1 OR m.importance>=0.8)
+      AND m.collection IN ('facts','experiences') AND (m.pinned=1 OR m.importance>=0.8 OR (m.collection='experiences' AND m.importance>=0.65))
       AND COALESCE(json_extract(m.body,'$.eventAt'),json_extract(m.body,'$.evidence.at'),m.created_world_at) BETWEEN ? AND ?
       ORDER BY m.pinned DESC,m.importance DESC,m.revision DESC LIMIT ?`) .all(entity.id, ...visible.args, input.fromAt, input.toAt, limit);
     let remaining = budget;

@@ -146,6 +146,44 @@ test('standing profile: bounded to 600 characters with pinned items first; a sha
   assert.equal(a.context('reader', { streamId: 'reading', profile: true }).profileText, '');
 });
 
+test('context() retrieves only entries that match the question enough: 2 tokens, or 15% of its tokens', t => {
+  const { a, tell, stream } = fixture(t);
+  const picnic = tell(A, 'experience.remember', { summary: 'MOCK-A 在灯塔下野餐' }, '在灯塔下野餐');
+  const ids = query => a.context('qq', { streamId: stream(A), query }).memoryIds;
+  // One shared token (灯塔) out of two, then out of four (25%): retrieved.
+  assert.deepEqual(ids('灯塔 天气'), [picnic]);
+  assert.deepEqual(ids('灯塔 天气 周末 电影'), [picnic]);
+  // One out of eight (12.5%): not retrieved; two tokens (灯塔, 野餐) out of nine: retrieved.
+  assert.deepEqual(ids('灯塔 天气 周末 电影 晚饭 地铁 作业 钢琴'), []);
+  assert.deepEqual(ids('灯塔 天气 周末 电影 晚饭 地铁 作业 钢琴 野餐'), [picnic]);
+  // Without a question nothing is gated, and the model's own search tool is not gated either.
+  assert.deepEqual(ids(''), [picnic]);
+  assert.equal(a.memorySearch('qq', { streamId: stream(A), query: '灯塔 天气 周末 电影 晚饭 地铁 作业 钢琴' }).items.length, 1);
+});
+
+test('date recall returns experiences at their default importance, the asking person\'s only, within the budget', t => {
+  const { a, tell, stream } = fixture(t);
+  const now = 1_800_000_000_000;
+  const picnic = tell(A, 'experience.remember', { summary: 'MOCK-A 在 MOCK-灯塔 下野餐' }, 'MOCK-灯塔 下野餐');
+  const fact = tell(A, 'fact.report', { key: 'MOCK-饮料', value: 'MOCK-红茶' }, 'MOCK-红茶');
+  tell(A, 'self.note', { text: 'MOCK-自省 不是经历', kind: 'outer' }, 'MOCK-自省');
+  const other = tell(B, 'experience.remember', { summary: 'MOCK-B 去看了 MOCK-演唱会' }, 'MOCK-演唱会');
+  assert.equal(a.store.db.prepare('SELECT importance FROM memory_items WHERE id=?').get(picnic).importance, 0.65);
+  const recall = (uid, extra = {}) => a.memoryRecall('qq', { streamId: stream(uid), fromAt: now - 1000, toAt: now + 1000, ...extra }).items;
+  assert.deepEqual(recall(A).map(item => item.id), [fact, picnic]);
+  assert.deepEqual(recall(B).map(item => item.id), [other]);
+  assert.doesNotMatch(JSON.stringify(recall(B)), /野餐|红茶/);
+  assert.deepEqual(a.memoryRecall('qq', { streamId: stream(A), fromAt: now + 1, toAt: now + 1000 }).items, []);
+  // The existing character budget and limit still bound the answer.
+  assert.ok(recall(A, { budgetChars: 20 }).reduce((sum, item) => sum + item.text.length, 0) <= 20);
+  assert.equal(recall(A, { limit: 1 }).length, 1);
+  // An experience the operator marked less important than the default is not recalled; pinning brings it back.
+  a.setMemoryRetention({ entityId: 'entity:big-fat-fish', id: picnic, importance: 0.3 });
+  assert.deepEqual(recall(A).map(item => item.id), [fact]);
+  a.setMemoryRetention({ entityId: 'entity:big-fat-fish', id: picnic, pinned: true });
+  assert.deepEqual(recall(A).map(item => item.id), [picnic, fact]);
+});
+
 test('the trace follows the budget: entries that did not fit are not listed; an empty probe is not recorded', t => {
   const { a, tell, stream } = fixture(t);
   const ids = Array.from({ length: 12 }, (_, i) => tell(A, 'experience.remember', { summary: `MOCK-经历 第${i}条 ` + '很长的内容'.repeat(60) }, `MOCK-经历 第${i}条`));

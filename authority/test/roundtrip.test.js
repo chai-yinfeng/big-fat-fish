@@ -54,7 +54,10 @@ test('conversation tools -> restricted UDS -> serial authority -> same-person ch
   // Quote checks against the immutable observation are Authority's, not the executor's.
   const invented = await call(scopeTool('a'), { action: 'propose', id: 'coffee', ref: observed.observationId, type: 'fact.report', payload: { key: '饮料', value: '咖啡', quote: '我喜欢咖啡' } });
   assert.equal((await settled(clients.native, invented.proposalId)).status, 'rejected');
-  assert.match((await clients.native.context({ streamId: 'b', query: '记得我喜欢红茶吗' })).text, /红茶/);
+  assert.match((await clients.native.context({ streamId: 'b', query: '喜欢红茶吗' })).text, /红茶/);
+  // One matching token out of seven is below the relevance gate of context(); the search tool has no gate.
+  assert.doesNotMatch((await clients.native.context({ streamId: 'b', query: '记得我喜欢红茶吗' })).text, /红茶/);
+  assert.equal((await call(scopeTool('b'), { action: 'search', query: '记得我喜欢红茶吗' })).items.length, 1);
   assert.equal((await call(scopeTool('a'), { action: 'receipt', id: 'tea' })).status, 'accepted');
   assert.equal(await call(scopeTool('b'), { action: 'receipt', id: 'tea' }), null, 'another stream derives a different proposal ID');
   assert.match((await clients['qq-fixture'].context({ streamId: 'qq:123:private:456', query: '红茶' })).text, /红茶/);
