@@ -379,7 +379,7 @@ export class Authority extends MemoryDomain {
     // `profile`: also return this person's standing profile (outside `budgetChars`); what it shows is not retrieved.
     const profile=renderProfile(input.profile?this.profileEntries(scope,registered.policy):[]);
     const budget=integer(input.budgetChars===undefined?DEFAULT_CONTEXT_CHARS:input.budgetChars,0,16000),
-    rows=this.candidates(scope,registered.policy,query,64,{exclude:[...exclude,...profile.ids],relevantOnly:true}),
+    rows=this.candidates(scope,registered.policy,query,64,{exclude:[...exclude,...profile.ids]}),
     {sections,...rendered}=renderContextParts(JSON.parse(e.persona),rows,budget),
     result={
       revision:this.store.get('revision'),

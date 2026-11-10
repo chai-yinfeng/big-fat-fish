@@ -146,21 +146,6 @@ test('standing profile: bounded to 600 characters with pinned items first; a sha
   assert.equal(a.context('reader', { streamId: 'reading', profile: true }).profileText, '');
 });
 
-test('context() retrieves only entries that match the question enough: 2 tokens, or 15% of its tokens', t => {
-  const { a, tell, stream } = fixture(t);
-  const picnic = tell(A, 'experience.remember', { summary: 'MOCK-A 在灯塔下野餐' }, '在灯塔下野餐');
-  const ids = query => a.context('qq', { streamId: stream(A), query }).memoryIds;
-  // One shared token (灯塔) out of two, then out of four (25%): retrieved.
-  assert.deepEqual(ids('灯塔 天气'), [picnic]);
-  assert.deepEqual(ids('灯塔 天气 周末 电影'), [picnic]);
-  // One out of eight (12.5%): not retrieved; two tokens (灯塔, 野餐) out of nine: retrieved.
-  assert.deepEqual(ids('灯塔 天气 周末 电影 晚饭 地铁 作业 钢琴'), []);
-  assert.deepEqual(ids('灯塔 天气 周末 电影 晚饭 地铁 作业 钢琴 野餐'), [picnic]);
-  // Without a question nothing is gated, and the model's own search tool is not gated either.
-  assert.deepEqual(ids(''), [picnic]);
-  assert.equal(a.memorySearch('qq', { streamId: stream(A), query: '灯塔 天气 周末 电影 晚饭 地铁 作业 钢琴' }).items.length, 1);
-});
-
 test('date recall returns experiences at their default importance, the asking person\'s only, within the budget', t => {
   const { a, tell, stream } = fixture(t);
   const now = 1_800_000_000_000;

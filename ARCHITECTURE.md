@@ -25,7 +25,7 @@ companion-conversation QQ delivery adapter → 实际回执
 
 ## 实际源码边界
 
-- `authority/`：独立 canonical service、规则审核、实体/人/受众与来源约束。没有 Cordis、DSH Session、QQ SDK 或供应商 SDK 依赖。`context()` 带查询时只取与问题足够相关的条目（命中 2 个词，或命中查询词的 15%；模型自己的 search 工具不设门槛）；每次有内容返回时在内存里记一条注入追踪（附注各记忆块与常驻档案各有哪些条目 id、各段字符数、人和会话的不透明标签；最近 400 次，不落库，不含正文和账号），只经 operator `GET /memory/trace` 读取。按日期的 recall 返回置顶条目、重要度 ≥0.8 的事实和默认重要度（0.65）及以上的经历。
+- `authority/`：独立 canonical service、规则审核、实体/人/受众与来源约束。没有 Cordis、DSH Session、QQ SDK 或供应商 SDK 依赖。`context()` 每次有内容返回时在内存里记一条注入追踪（附注各记忆块与常驻档案各有哪些条目 id、各段字符数、人和会话的不透明标签；最近 400 次，不落库，不含正文和账号），只经 operator `GET /memory/trace` 读取。按日期的 recall 返回置顶条目、重要度 ≥0.8 的事实和默认重要度（0.65）及以上的经历。
 - `core/src/persona.js`、`core/src/util.js`：当前 Authority 复用的纯数据逻辑；其它旧 core 不是新服务的第二权威。
 - `capabilities/conversation/`：执行契约（executor.js，duck-typed）、渠道侧 UDS 客户端，以及执行器服务（agent/tools/sessions/window/model/server，main.mjs 入口）。两个受限模型工具 `companion_scope`、`companion_content` 的作用域由执行请求绑定，模型不能指定 entity/person/stream/path/epoch；evidence 只返回本回合 QQ 传入的 observation ref。
 - `capabilities/qq/bridge.js`：私聊入口（主人 + 机器人 QQ 好友，好友经 Authority `/v1/people/admit` 准入为 `person:qq:<uid>`）、每会话串行队列（全局并发 2）、去重、epoch、投递回执；把 scope 与 prepared 输入交给执行器。QQ main 是选择执行 backend（UDS 客户端）的应用装配点。
