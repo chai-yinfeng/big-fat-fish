@@ -73,7 +73,7 @@ ASR/OCR/视觉描述不是真人逐字输入。只有附件时 Core 原观察保
 - 单本地任务串行子进程，用完退出；合成 ≤120字；线程数 1–16（生产主机 8 最快）。不同时常驻多个模型。
 - 文件已下载、编译完成、CPU 基准通过、真人试听是不同状态。
 - content 用户服务限 2 核/4GiB，不修改全局 GPU/Node/PATH。
-- Flash 视觉默认512缩图/动图首帧；网页仅公网 search/fetch，无登录cookies或点击购买。默认全产品每UTC日 vision12/web20次，先预留，失败也占。
+- Flash 视觉默认512缩图/动图首帧；网页仅公网 search/fetch，无登录cookies或点击购买。默认全产品每北京时间日 vision12/web20次，先预留，失败也占。
 - 每日金额上限（model-gateway，按北京时间日）：默认 ¥5，60%/80%/100% 三档（控制台可改）；chat 按流式 usage 计价，区分高峰/闲时；到 100% 网关直接拒绝，QQ 对任何人静默，只给主人每天发一次 QQ 提醒。
 - 两个模型工具的 schema 按 4chars/token 估计比旧 memory-only 多约252 tokens（估算，非 provider 实测）。
 
