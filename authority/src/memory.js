@@ -231,10 +231,10 @@ export class MemoryDomain {
     }
     const id=randomUUID(),
     revision=this.store.nextRevision();
-    this.store.db.prepare('INSERT INTO diaries VALUES(?,?,?,?,?,?,?)').run(id,entityId,kind,kind==='public'?'draft':'private',revision,this.worldStatus().worldNow,JSON.stringify({
+    this.store.db.prepare('INSERT INTO diaries(id,entity_id,kind,status,revision,world_at,body) VALUES(?,?,?,?,?,?,?)').run(id,entityId,kind,kind==='public'?'draft':'private',revision,this.worldStatus().worldNow,JSON.stringify({
       text:body
     }));
-    for(const sourceId of sourceIds)this.store.db.prepare('INSERT INTO diary_sources VALUES(?,?)').run(id,sourceId);
+    for(const sourceId of sourceIds)this.store.db.prepare('INSERT INTO diary_sources(diary_id,memory_id) VALUES(?,?)').run(id,sourceId);
     this.store.audit({
       type:'diary.saved',entityId,id,kind,revision,sourceIds,at:this.now()
     });
@@ -295,7 +295,7 @@ export class MemoryDomain {
     const taskId=createHash('sha256').update(canonical({
       entityId:e.id,after,cursor,epoch:e.memory_epoch,mode,ids:items.map(i=>i.id),worldRevision:world.revision
     })).digest('hex');
-    this.store.db.prepare('INSERT OR IGNORE INTO maintenance_tasks VALUES(?,?,?,?,?,?,?)').run(taskId,e.id,e.memory_epoch,cursor,world.revision,mode,JSON.stringify(items.map(i=>i.id)));
+    this.store.db.prepare('INSERT OR IGNORE INTO maintenance_tasks(id,entity_id,epoch,cursor,world_revision,mode,source_ids) VALUES(?,?,?,?,?,?,?)').run(taskId,e.id,e.memory_epoch,cursor,world.revision,mode,JSON.stringify(items.map(i=>i.id)));
     // Core may have committed before the Host persisted its cursor. Re-admitting
     // that same batch must not ask the model to regenerate an already saved diary.
     const committedReceipt = this.store.db.prepare(`SELECT d.id,d.status,d.revision
@@ -337,7 +337,7 @@ export class MemoryDomain {
         };
       }
       const receipt=this.saveDiary(e.id,input.kind,input.text,ids);
-      this.store.db.prepare('INSERT INTO diary_receipts VALUES(?,?,?,?)').run(task.id,input.kind,receipt.id,encoding);
+      this.store.db.prepare('INSERT INTO diary_receipts(task_id,kind,diary_id,canonical) VALUES(?,?,?,?)').run(task.id,input.kind,receipt.id,encoding);
       return{
         entityId:e.id,memoryEpoch:e.memory_epoch,cursor:task.cursor,receipt,sourceIds:ids
       };
@@ -417,7 +417,7 @@ export class MemoryDomain {
       for(const id of preview.sourceObservationIds){
         const row=this.store.db.prepare('SELECT * FROM observations WHERE id=? AND entity_id=?').get(id,input.entityId);
         if(!row)continue;
-        this.store.db.prepare('INSERT OR IGNORE INTO source_tombstones VALUES(?,?,?,?,?)').run(input.entityId,row.capability_id,row.stream_id,row.event_id,id);
+        this.store.db.prepare('INSERT OR IGNORE INTO source_tombstones(entity_id,capability_id,stream_id,event_id,observation_id) VALUES(?,?,?,?,?)').run(input.entityId,row.capability_id,row.stream_id,row.event_id,id);
         const metadata=JSON.parse(row.body);
         metadata.text='';
         this.store.db.prepare("UPDATE observations SET canonical='',body=?,forgotten=1 WHERE id=?").run(JSON.stringify(metadata),id);
@@ -453,7 +453,7 @@ export class MemoryDomain {
       const id=randomUUID(),job={
         id,entityId:input.entityId,memoryEpoch:epoch,epochScope:preview.epochScope,affectedStreams,sourceObservationIds:preview.sourceObservationIds,sourceEvents:preview.sourceEvents
       };
-      this.store.db.prepare('INSERT INTO cleanup_jobs VALUES(?,?,?,?,?)').run(id,input.entityId,epoch,'pending',JSON.stringify(job));
+      this.store.db.prepare('INSERT INTO cleanup_jobs(id,entity_id,epoch,status,body) VALUES(?,?,?,?,?)').run(id,input.entityId,epoch,'pending',JSON.stringify(job));
       this.store.audit({
         type:'memory.forgotten',entityId:input.entityId,ids:preview.expandedIds,memoryEpoch:epoch,epochScope:preview.epochScope,revision:this.store.nextRevision(),at:this.now()
       });

@@ -75,7 +75,7 @@ export class Authority extends MemoryDomain {
           ...input
         };
       }
-      this.store.db.prepare('INSERT INTO capabilities VALUES(?,?)').run(input.id,input.policy);
+      this.store.db.prepare('INSERT INTO capabilities(id,policy) VALUES(?,?)').run(input.id,input.policy);
       this.adminAudit('capability.register',input);
       return{
         ...input
@@ -95,7 +95,7 @@ export class Authority extends MemoryDomain {
           ...input
         };
       }
-      this.store.db.prepare('INSERT INTO actors VALUES(?,?,?)').run(input.capabilityId,input.externalActorId,input.personId);
+      this.store.db.prepare('INSERT INTO actors(capability_id,actor_id,person_id) VALUES(?,?,?)').run(input.capabilityId,input.externalActorId,input.personId);
       this.adminAudit('actor.bind',input);
       return{
         ...input
@@ -118,7 +118,7 @@ export class Authority extends MemoryDomain {
           ...input,entityId
         };
       }
-      this.store.db.prepare('INSERT INTO streams VALUES(?,?,?,?,?)').run(input.capabilityId,input.streamId,input.personId,input.audience,entityId);
+      this.store.db.prepare('INSERT INTO streams(capability_id,stream_id,person_id,audience,entity_id) VALUES(?,?,?,?,?)').run(input.capabilityId,input.streamId,input.personId,input.audience,entityId);
       this.adminAudit('stream.bind',{
         ...input,entityId
       });
@@ -148,9 +148,9 @@ export class Authority extends MemoryDomain {
       if(!actor){
         const count=this.store.db.prepare("SELECT COUNT(DISTINCT person_id) AS n FROM actors WHERE capability_id=? AND person_id LIKE 'person:qq:%'").get(capabilityId).n;
         if(count>=MAX_ADMITTED_PEOPLE)fail('PEOPLE_LIMIT','Admitted people limit reached',409);
-        this.store.db.prepare('INSERT INTO actors VALUES(?,?,?)').run(capabilityId,actorId,personId);
+        this.store.db.prepare('INSERT INTO actors(capability_id,actor_id,person_id) VALUES(?,?,?)').run(capabilityId,actorId,personId);
       }
-      if(!stream)this.store.db.prepare('INSERT INTO streams VALUES(?,?,?,?,?)').run(capabilityId,streamId,personId,'private',entityId);
+      if(!stream)this.store.db.prepare('INSERT INTO streams(capability_id,stream_id,person_id,audience,entity_id) VALUES(?,?,?,?,?)').run(capabilityId,streamId,personId,'private',entityId);
       this.adminAudit('person.admit',{capabilityId,personId,actorId,streamId,entityId});
       return{personId,streamId,admitted:true};
     });
@@ -328,7 +328,7 @@ export class Authority extends MemoryDomain {
             const p=this.store.db.prepare('SELECT body FROM relationships WHERE entity_id=? AND person_id=?').get(row.entity_id,entry.personId),previous=p?JSON.parse(p.body):{
               score:0
             };
-            this.store.db.prepare('INSERT OR REPLACE INTO relationships VALUES(?,?,?)').run(row.entity_id,entry.personId,JSON.stringify({
+            this.store.db.prepare('INSERT OR REPLACE INTO relationships(entity_id,person_id,body) VALUES(?,?,?)').run(row.entity_id,entry.personId,JSON.stringify({
               score:Math.min(100,previous.score+entry.delta),revision,policy:row.policy,evidence:entry.evidence
             }));
           }
