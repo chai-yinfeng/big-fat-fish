@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { AuthorityError, fail } from './identity.js';
 import { tokenize } from '../../core/src/util.js';
+import { MIGRATIONS, migrate } from './migrations.js';
 export const APPLICATION_ID = 0x42464641;
 export const SCHEMA_VERSION = 2;
 export const DEFAULT_ENTITY_ID = 'entity:big-fat-fish';
@@ -34,7 +35,9 @@ const V1 = {
   audit:['seq',
   'body']
 };
-function inspect(db) {
+/** user_version stays 2: later schema changes are additive entries in migrations.js, which the
+ * release being replaced must still be able to open. v2 tolerates unknown tables and columns. */
+export function inspect(db) {
   const app=db.prepare('PRAGMA application_id').get().application_id,
   version=db.prepare('PRAGMA user_version').get().user_version;
   const tables=db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(r=>r.name);
@@ -56,7 +59,7 @@ function inspect(db) {
 }
 /** SQLite retains the EXCLUSIVE writer lease, including through schema migration. */
 export class Store {
-  constructor(file,initialState){
+  constructor(file,initialState,options={}){
     this.closed=false;
     try{
       this.db=new DatabaseSync(file);
@@ -74,8 +77,8 @@ export class Store {
           CREATE TABLE observations(id TEXT PRIMARY KEY,capability_id TEXT NOT NULL REFERENCES capabilities(id),stream_id TEXT NOT NULL,event_id TEXT NOT NULL,canonical TEXT NOT NULL,body TEXT NOT NULL,UNIQUE(capability_id,stream_id,event_id));
           CREATE TABLE inbox(seq INTEGER PRIMARY KEY AUTOINCREMENT,capability_id TEXT NOT NULL REFERENCES capabilities(id),proposal_id TEXT NOT NULL,observation_id TEXT NOT NULL REFERENCES observations(id),canonical TEXT NOT NULL,body TEXT NOT NULL,policy TEXT NOT NULL,status TEXT NOT NULL,receipt TEXT NOT NULL,UNIQUE(capability_id,proposal_id));
           CREATE INDEX inbox_pending ON inbox(status,seq); CREATE TABLE audit(seq INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT NOT NULL);`);
-          this.db.prepare('INSERT INTO metadata VALUES(?,?)').run('state',JSON.stringify(initialState));
-          this.db.prepare('INSERT INTO metadata VALUES(?,?)').run('revision','0');
+          this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run('state',JSON.stringify(initialState));
+          this.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?)').run('revision','0');
         }
         if(version<2)this.migrateV1();
         this.db.exec(`PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=2; COMMIT`);
@@ -84,6 +87,9 @@ export class Store {
         this.db.exec('ROLLBACK');
         throw error;
       }
+      this.migrated=migrate(this.db,file,options.migrations??MIGRATIONS,{
+        fresh:!version,...(options.now?{now:options.now}:{})
+      });
     }
     catch(error){
       try{
@@ -117,21 +123,21 @@ export class Store {
     ALTER TABLE inbox ADD COLUMN entity_id TEXT NOT NULL DEFAULT '${DEFAULT_ENTITY_ID}'; ALTER TABLE inbox ADD COLUMN forgotten INTEGER NOT NULL DEFAULT 0;`);
     this.db.prepare('INSERT INTO entities(id,persona,persona_revision) VALUES(?,?,?)').run(DEFAULT_ENTITY_ID,JSON.stringify(state.persona),state.personaRevision);
     for(const collection of ['facts','experiences','notes','appraisals'])for(const entry of state[collection])this.insertMemory(DEFAULT_ENTITY_ID,collection,entry,state.world?.anchorWorldAt??0);
-    for(const [personId,relationship]of Object.entries(state.relationships))this.db.prepare('INSERT INTO relationships VALUES(?,?,?)').run(DEFAULT_ENTITY_ID,personId,JSON.stringify(relationship));
+    for(const [personId,relationship]of Object.entries(state.relationships))this.db.prepare('INSERT INTO relationships(entity_id,person_id,body) VALUES(?,?,?)').run(DEFAULT_ENTITY_ID,personId,JSON.stringify(relationship));
     this.set('state',{
       world:state.world
     });
   }
   insertMemory(entityId,collection,entry,worldAt,options={}){
     const importance=options.importance??(collection==='facts'?0.8:collection==='experiences'?0.65:0.45);
-    this.db.prepare('INSERT INTO memory_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(entry.id,entityId,collection,entry.personId??null,entry.visibility??'private',entry.kind??null,options.status??'active',importance,options.pinned?1:0,worldAt,entry.revision,null,JSON.stringify(entry));
+    this.db.prepare('INSERT INTO memory_items(id,entity_id,collection,person_id,visibility,kind,status,importance,pinned,created_world_at,revision,superseded_by,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(entry.id,entityId,collection,entry.personId??null,entry.visibility??'private',entry.kind??null,options.status??'active',importance,options.pinned?1:0,worldAt,entry.revision,null,JSON.stringify(entry));
     const content=[entry.key,
     entry.value,
     entry.summary,
     entry.text].filter(v=>typeof v==='string').join(' '),
-    insert=this.db.prepare('INSERT OR IGNORE INTO memory_tokens VALUES(?,?,?)');
+    insert=this.db.prepare('INSERT OR IGNORE INTO memory_tokens(entity_id,token,memory_id) VALUES(?,?,?)');
     for(const token of new Set(tokenize(content)))insert.run(entityId,token,entry.id);
-    if(entry.evidence?.observationId&&this.db.prepare('SELECT id FROM observations WHERE id=?').get(entry.evidence.observationId))this.db.prepare('INSERT INTO memory_sources VALUES(?,?)').run(entry.id,entry.evidence.observationId);
+    if(entry.evidence?.observationId&&this.db.prepare('SELECT id FROM observations WHERE id=?').get(entry.evidence.observationId))this.db.prepare('INSERT INTO memory_sources(memory_id,observation_id) VALUES(?,?)').run(entry.id,entry.evidence.observationId);
   }
   memory(row){
     const entry = JSON.parse(row.body);

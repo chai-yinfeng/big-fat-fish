@@ -19,7 +19,9 @@ export const USER = process.env.COMPANION_STAGING_USER || 'agent';
 const REMOTE = 'companion-staging';  // relative to the agent's home
 const TOOLS = { 'deploy/staging/staging-agent.py': 'staging-agent.py', 'deploy/authority/companion-deploy/companion-deploy': 'companion-deploy', 'deploy/vm/install-runtime.sh': 'install-runtime.sh',
   // Scenario replay (staging only; none of these is part of a release).
-  'deploy/staging/fake-onebot.mjs': 'fake-onebot.mjs', 'deploy/staging/fake-model.mjs': 'fake-model.mjs', 'deploy/staging/scenarios.mjs': 'scenarios.mjs', 'deploy/staging/scenarios.json': 'scenarios.json' };
+  'deploy/staging/fake-onebot.mjs': 'fake-onebot.mjs', 'deploy/staging/fake-model.mjs': 'fake-model.mjs', 'deploy/staging/scenarios.mjs': 'scenarios.mjs', 'deploy/staging/scenarios.json': 'scenarios.json',
+  // Migration drill on a copy of the staging database (staging only).
+  'deploy/staging/migration-drill.mjs': 'migration-drill.mjs' };
 
 export function parseArgs(argv) {
   const options = { reset: false, from: null, to: null };

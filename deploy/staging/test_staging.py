@@ -116,5 +116,19 @@ class ReuseTests(unittest.TestCase):
         self.assertTrue(re.match(r'^staging: origin main not checked', deployer.system.git('log', '-1').stdout))
 
 
+class LifecycleOrderTests(unittest.TestCase):
+    def test_rollback_round_trip_happens_after_the_upgrade_was_used_and_before_the_from_release_is_pruned(self):
+        steps = re.findall(r"^    step\('([^']+)'", (HERE / 'staging-agent.py').read_text(), re.M)
+        order = ['upgrade (preflight, switch, health)', 'smoke-upgraded', 'scenarios-upgraded', 'migration-drill (copy)', 'rollback (to from)',
+                 'smoke-from', 'roll-forward (rollback again)', 'prune-from', 'restart-all', 'manager-restart (default.target)', 'smoke', 'scenarios', 'prod-untouched']
+        self.assertEqual(steps[steps.index(order[0]):], order)
+
+    def test_the_drill_tool_is_uploaded_and_only_ever_given_a_copy(self):
+        self.assertIn("'deploy/staging/migration-drill.mjs': 'migration-drill.mjs'", (HERE / 'run.mjs').read_text())
+        source = (HERE / 'staging-agent.py').read_text()
+        self.assertIn("'--database', str(work / live.name)]", source)
+        self.assertEqual(source.count('migration-drill.mjs'), 3)  # docstrings and the one command
+
+
 if __name__ == '__main__':
     unittest.main()

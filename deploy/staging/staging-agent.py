@@ -10,9 +10,15 @@ memory and QQ units are limited to Unix sockets, so no release (old ones have
 3082/3001 hard-coded) can reach production ports. No sudo, no QQ login, no
 model key, no provider call.
 
-The last lifecycle step replays the scenarios in tools/scenarios.json against the
-upgraded release: a fake OneBot (tools/fake-onebot.mjs) stands in for NapCat, and the
-release's own model gateway runs with a scripted upstream (tools/fake-model.mjs).
+The scenarios in tools/scenarios.json are replayed against the upgraded release: a fake
+OneBot (tools/fake-onebot.mjs) stands in for NapCat, and the release's own model gateway
+runs with a scripted upstream (tools/fake-model.mjs).
+
+Both directions are tested. After the upgrade has been smoked and has replayed the
+scenarios, tools/migration-drill.mjs drills a schema migration on a copy of the
+database (new release migrates behind a backup, old release still opens and writes it),
+`companion-deploy rollback` returns to the from-release on the data root the new one
+used, and a second rollback rolls forward again before the from-release is pruned.
 
   staging-agent.py lifecycle --from <tarball> --to <tarball>
   staging-agent.py scenarios [--only S1,S3]
@@ -347,6 +353,39 @@ def scenarios(deployer, only=None):
     return summary['line']
 
 
+def migration_drill(deployer, from_name, to_name):
+    """tools/migration-drill.mjs on a COPY of the staging database, taken while the units are stopped."""
+    live = BASE / 'authority-data/authority.sqlite'
+    work = ROOT / 'drill'
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(mode=0o700)
+    names = deployer.installed_units()
+    deployer.stop_all(names)  # the Authority holds the writer lock while it runs; a file copy needs it gone
+    try:
+        shutil.copyfile(live, work / live.name)
+        # With locking_mode=EXCLUSIVE the rollback journal stays on disk (header zeroed after a commit). It is
+        # copied along: should it be hot, opening the copy rolls it back exactly as the next start would.
+        journal = live.with_name(live.name + '-journal')
+        if journal.exists():
+            shutil.copyfile(journal, work / journal.name)
+    finally:
+        deployer.start_all(names)
+    problems = deployer.health(names)
+    if problems:
+        raise RuntimeError('; '.join(problems))
+    deployer.enable_all(names)
+    releases = ROOT / 'src/companion'
+    command = [str(NODE), str(TOOLS / 'migration-drill.mjs'), '--to', str(releases / to_name), '--from', str(releases / from_name), '--database', str(work / live.name)]
+    result = subprocess.run(command, cwd=str(ROOT), env={'PATH': '/usr/bin:/bin', 'HOME': str(ROOT), 'LANG': 'C.UTF-8'},
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
+    line = next((line for line in result.stdout.splitlines() if line.startswith('DRILL ')), '')
+    if result.returncode or not line.startswith('DRILL {'):
+        raise RuntimeError(line or 'drill exited %d: %s' % (result.returncode, result.stderr.strip()[-300:]))
+    if (BASE / 'authority-data/migration-backups').exists() and not json.loads(line[len('DRILL '):])['registered']:
+        raise RuntimeError('the live database was backed up although the release registers no migration')
+    return json.loads(line[len('DRILL '):])['line']
+
+
 def prod_untouched():
     """Production listeners must still be there, and no staging process may own them."""
     out = subprocess.run(['ss', '-Hltnp'], capture_output=True, text=True, timeout=10).stdout
@@ -456,9 +495,16 @@ def lifecycle(from_tarball, to_tarball):
         if not deployer.remove_failed_release(from_name) or (ROOT / 'src/companion' / from_name).exists():
             raise RuntimeError('could not prune ' + from_name)
         state['installed'] = [i for i in state['installed'] if i['release'] != from_name]
-        state['previous'] = None  # its directory is gone; staging never rolls back
+        state['previous'] = None  # its directory is gone; the rollback round trip is already done
         deployer.save_state(state)
         return 'removed %s (current %s)' % (from_name, deployer.active_release())
+
+    def switch_back(expected):
+        """`companion-deploy rollback`: previous release with its unit snapshot, health-checked."""
+        release = deployer.rollback()
+        if release != expected or deployer.active_release() != expected:
+            raise RuntimeError('rollback landed on %s, expected %s' % (release, expected))
+        return 'current %s (previous %s)' % (release, (deployer.load_state().get('previous') or {}).get('release'))
 
     step('clean', clean)
     step('runtime', install_runtime)
@@ -467,6 +513,14 @@ def lifecycle(from_tarball, to_tarball):
     step('start-from', lambda: deployer.start() and 'healthy; GET /world ok paused=%s' % operator('GET', '/world')['world'].get('paused'))
     step('legacy-not-enabled', legacy)
     step('upgrade (preflight, switch, health)', lambda: deployer.deploy(to_tarball) and 'current %s' % deployer.active_release())
+    # Both directions, while the from-release is still installed: the new release uses the data root
+    # (smoke, scenarios), then the old one must run on it again, then the new one after that.
+    step('smoke-upgraded', smoke)
+    step('scenarios-upgraded', lambda: scenarios(deployer))
+    step('migration-drill (copy)', lambda: migration_drill(deployer, from_name, to_name))
+    step('rollback (to from)', lambda: switch_back(from_name))
+    step('smoke-from', smoke)
+    step('roll-forward (rollback again)', lambda: switch_back(to_name))
     step('prune-from', prune)
     step('restart-all', restart)
     step('manager-restart (default.target)', manager_restart)
@@ -481,7 +535,8 @@ def lifecycle(from_tarball, to_tarball):
     if failed:
         for line in diagnostics(deployer):
             print(line)
-    replayed = next(((ok, detail) for name, ok, detail in results if name == 'scenarios'), (None, 'skipped'))
+    # The final replay (after the rollback round trip); the earlier one if the lifecycle stopped before it.
+    replayed = next(((ok, detail) for name, ok, detail in reversed(results) if name.startswith('scenarios') and ok is not None), (None, 'skipped'))
     print('SCENARIOS %s' % (replayed[1] if replayed[0] is True else 'FAILED: ' + replayed[1] if replayed[0] is False else 'not run'))
     print('STAGING %s' % ('FAILED' if failed else 'PASSED'))
     return 1 if failed else 0

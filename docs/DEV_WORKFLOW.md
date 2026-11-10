@@ -158,7 +158,9 @@ staging 以 home-agent 上无 sudo 的 `agent` 账号（`ssh home-agent-dev`，�
 直接调用 companion-deploy 本身的 deploy/预检/单元/健康检查/保留代码：全新安装 from 包 →
 用该包的 bootstrap、prepare-memory、prepare-content、QQ prepare 初始化（无模型 Key、
 不登录 QQ）→ start → disable 全部单元（模拟旧版 companion-deploy 留下的未 enable 状态）→
-升级到 to 包（预检、切换、健康检查、enable）→ 删除 from 包 → 重启全部单元 →
+升级到 to 包（预检、切换、健康检查、enable）→ 冒烟与场景回放（让新版本先用过这个数据根）→
+迁移演练（见「数据库迁移」）→ `companion-deploy rollback` 回到 from 包并冒烟（旧版本在新版本用过的
+数据根上健康启动、能读能写）→ 再 rollback 一次回到 to 包 → 删除 from 包 → 重启全部单元 →
 manager 重启代理（确认均已 enable，停掉全部单元但不 disable，daemon-reload 后确认
 default.target 的依赖树覆盖全部单元，再 `systemctl --user start default.target sockets.target`
 并做健康检查；已激活的 sockets.target 不会因 start default.target 被重新拉起，故单独启动）→ operator API 冒烟（/world、/runtime、/qq、/memory、人格预览与保存、对话执行器鉴权）→
@@ -167,7 +169,7 @@ default.target 的依赖树覆盖全部单元，再 `systemctl --user start defa
 旧 release 里写死的 3082/3001 连不到生产。`--reset` 只删除这个目录、staging 单元及其 enable 链接。
 staging 不校验提交是否在 origin main（生产 companion-deploy 仍校验），不跑真实模型对话。
 
-场景回放（冒烟之后的 `scenarios` 步骤，只对 to 包运行）验证「谁发了什么 → 谁收到了什么回复」，
+场景回放（`scenarios-upgraded` 与最后的 `scenarios` 两次，只对 to 包运行；摘要里的 `SCENARIOS` 行取最后一次）验证「谁发了什么 → 谁收到了什么回复」，
 不登录 QQ、不用模型 Key：`fake-onebot.mjs` 在 13001 上冒充 NapCat（校验 access_token，记录
 send_private_msg），`fake-model.mjs` 启动 release 里真实的 model-gateway（计费、三档、暂停检查不变），
 只把上游换成按脚本应答的假 DeepSeek；这一步把 staging 的 model 单元改为经它启动，并放开 qq 单元到
@@ -290,9 +292,67 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    旧 VM 上第一次部署前的旧 unit（写死 authority-0.10.0）也会被快照，rollback 可完整
    恢复它们。再次 rollback 会切回刚才的版本。
 
-数据库/配置迁移不在部署范围内：新 release 的 authority SCHEMA_VERSION 与当前
-release 不同则部署被拒绝，迁移须另行人工完成。回退只切换代码与 unit，不覆盖
-数据库、人设、记忆或登录态。
+数据库迁移只有一种：`authority/src/migrations.js` 里登记的加法式迁移，由新版本的 Authority
+启动时自动备份后应用（见下节「数据库迁移」）。authority SCHEMA_VERSION（SQLite user_version）
+保持 2 不变；新 release 的 SCHEMA_VERSION 与当前 release 不同则部署仍被拒绝。配置迁移不在部署
+范围内。回退只切换代码与 unit，不覆盖数据库、人设、记忆或登录态，也不撤销已应用的迁移。
+
+## 数据库迁移
+
+Authority 是唯一写库方。表结构变更一律登记在 `authority/src/migrations.js` 的 `MIGRATIONS`
+（当前为空：部署不改动生产库）。Store 打开数据库时应用尚未应用的条目：全部待应用条目在一个事务里
+执行，记入台账表 `schema_migrations`（第一条迁移时才创建）；任何一条失败则整批回滚、Authority 拒绝
+启动（日志带 `MIGRATION_*` 码），companion-deploy 健康检查失败后自动恢复上一版。
+
+规则（代码里的 additive 检查会拒绝违反前四条的迁移）：
+
+- 只追加：id 从 1 连续递增，已发布的条目不改不删。
+- 只做加法：新表、新索引、给旧表加可空或带默认值的列。不删、不改名、不重定义已有的表/列/索引，
+  不改 user_version 与 application_id，不改写已有行。这样被替换的旧版本仍能打开迁移后的库
+  （`inspect()` 在 user_version 2 下只要求必需的表存在，容忍多出的表和列），`rollback` 无需恢复数据。
+- 给旧表加列必须声明 `rollbackLevel: 1`。旧版本的 INSERT 具名列之后（`ROLLBACK_LEVEL` 1，即带有
+  `authority/src/migrations.js` 的版本）才不受加列影响；生产的 7987e8b 及更早版本按位置插入，表一加列写入就全部失败。
+  预检在 `current` 的回退级别不够时以 `MIGRATION_ROLLBACK_UNSAFE` 拒绝部署。所以：**在生产跑过
+  一个含具名列的版本之前，只能建新表/新索引，不能给旧表加列。**
+- 迁移只做结构变更，不放耗时的数据回填。
+- 加一条迁移：在 `MIGRATIONS` 末尾加 `{ id, name, up(db) { db.exec(...) } }`（name 为小写短横线），
+  在 `authority/test/` 补它的测试（测试用 `new Authority({ file, migrations })` 注入列表），
+  CHANGELOG 写明。迁移属于数据迁移，按 AGENTS.md **须先经主人批准才能登记和发布**；交付部署命令时
+  写明这次会应用哪些迁移（staging 预检输出的 `MIGRATION_PENDING` 行）。
+
+迁移前备份：只要有待应用的迁移且数据库不是本次新建的，先用 `VACUUM INTO`（由持有写锁的同一连接
+执行，一致）备份到数据库旁的 `migration-backups/`，生产为
+`~companion/.local/share/companion-world-v1/authority-data/migration-backups/authority-m<迁移前>-m<迁移后>-<UTC时间>.sqlite`，
+目录 0700、文件 0600，校验（quick_check）通过后才迁移；备份失败则不迁移并拒绝启动
+（`MIGRATION_BACKUP_FAILED`）。只保留最近 3 份。没有登记迁移或没有待应用迁移时不读不写、不备份。
+
+预检（`ops/preflight.mjs`，只读；Authority 运行时持有写锁，预检用 `immutable=1` 无锁读取）：
+新包打不开现有库 → `SCHEMA_ERROR` / `DATABASE_UNREADABLE`；库里有新包不认识的已应用迁移（库比包新，
+回旧版本应当用 `rollback` 而不是 deploy 旧包）→ `MIGRATION_UNKNOWN`；有待应用迁移时逐条给出
+`PREFLIGHT WARN authority-db MIGRATION_PENDING m<id>-<name>`，并检查备份目录可写
+（`MIGRATION_BACKUP_UNWRITABLE`）、剩余空间不少于两倍库大小加 16 MiB（`MIGRATION_DISK_SPACE`）
+和上面的回退级别。注意 companion-deploy 是先询问 y 再跑预检，待应用迁移要在交付时事先告知。
+
+staging 验证（`migration-drill (copy)` 步骤，工具 `deploy/staging/migration-drill.mjs`，不进 release）：
+停掉 staging 单元复制一份数据库再启动，然后只对这份副本操作：用 to 包的 Store 注入一条建
+`staging_drill_*` 表的测试迁移，断言先有备份（0600、文件名带版本、不含新表）、迁移已应用并记入台账、
+重开不重复应用；再用 from 包的代码打开迁移后的副本并完成一次 observe → submit → 审核写入。
+from 包的回退级别 ≥ 1 时再演练一轮「给旧表加列」，否则跳过并在摘要里注明。随后的
+`rollback (to from)` / `smoke-from` 在真实 staging 数据根上验证旧版本可用。本机：
+`node --test authority/test/migrations.test.js deploy/staging/migration-drill.test.mjs`。
+
+用备份手工恢复（**需主人批准并由主人执行**；会丢失备份之后的全部写入，只在迁移确实损坏了数据时用——
+单纯回退版本不需要恢复）：
+
+```sh
+# 1. 停服
+ssh -t home-agent 'sudo companion-deploy stop'
+# 2. 以 companion 身份换回备份；现库（以及若存在的 -journal）改名保留，不删除
+sudo -u companion -H bash -c 'cd ~/.local/share/companion-world-v1/authority-data && ls -l migration-backups && T=$(date +%Y%m%dT%H%M%S) && mv authority.sqlite authority.sqlite.before-restore-$T && { [ ! -e authority.sqlite-journal ] || mv authority.sqlite-journal authority.sqlite-journal.before-restore-$T; } && cp -p migration-backups/<备份文件名> authority.sqlite && chmod 600 authority.sqlite'
+# 3. 回到迁移前的版本（留在新版本上启动会再迁移一次）：
+ssh -t home-agent 'sudo companion-deploy rollback'   # current 仍是新版本时；它会启动旧版本
+ssh -t home-agent 'sudo companion-deploy start'      # 健康检查失败已自动恢复到旧版本时
+```
 
 一次性维护命令须以 companion 身份运行（需要人类 sudo，并按 AGENTS.md 先获批准）。
 全新主机上用户在自己的账号下执行：
