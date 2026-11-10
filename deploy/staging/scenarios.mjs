@@ -5,7 +5,9 @@
 //   node scenarios.mjs --operator-port 13082 --operator-token-file <file> --onebot-control <socket>
 //        --model-script <file> --model-log <file> --scenarios <scenarios.json> [--only S1,S3]
 // A scenario is { id, title, model: [rules for fake-model.mjs], steps: [...], finally: [...] };
-// each step is an object with exactly one key naming an entry of STEPS below.
+// each step is an object with exactly one key naming an entry of STEPS below. `{run}` anywhere in a
+// scenario becomes a token that is new on every replay, so a replay never mistakes the memory an
+// earlier replay left behind for its own.
 import fs from 'node:fs';
 import http from 'node:http';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +36,18 @@ export function validateScenarios(data) {
     }
   }
   return data;
+}
+
+/** Is `earlier` (message hashes of one request) a prefix of `later`? */
+const extends_ = (later, earlier) => earlier.length <= later.length && earlier.every((hash, index) => later[index] === hash);
+/** Did the history only lose its oldest messages between two requests (system message apart)? */
+const trimmed = (later, earlier) => { for (let k = 1; k < earlier.length - 1; k++) if (extends_(later.slice(1), earlier.slice(1 + k))) return true; return false; };
+/** The logged model requests of this scenario whose typed text contains `userText`, with the fields the prefix steps need. */
+function requestsOf(run, ctx, userText) {
+  const requests = run.modelLog(ctx).filter(entry => entry.stream && entry.userText.includes(userText));
+  if (!requests.length) fail(`the model never received ${JSON.stringify(userText)}`);
+  if (!requests.every(entry => Array.isArray(entry.hashes) && entry.hashes.length > 1 && Array.isArray(entry.notes) && Number.isInteger(entry.turns) && typeof entry.system === 'string')) fail('the model request log lacks hashes/notes/turns/system');
+  return requests;
 }
 
 const includes = (text, { contains, absent }) => (contains === undefined || text.includes(contains)) && (absent === undefined || !text.includes(absent));
@@ -74,23 +88,25 @@ export const STEPS = {
   },
   /** The whole request body the model was sent for the run whose typed user text contains `userText`:
    * system prompt, memory-hub note, the typed text, earlier dialogue and tool results.
-   * `in: "context"` narrows it to the memory-hub note, i.e. what Authority retrieved for this run. */
+   * `in: "context"` narrows it to the memory-hub note, i.e. what Authority retrieved for this run;
+   * `in: "system"` to the system message (base prompt, persona and the person's standing profile). */
   async expectPrompt(run, ctx, { userText, contains, absent, in: part = 'request' }) {
-    if (!['request', 'context'].includes(part)) fail(`expectPrompt: unknown part ${JSON.stringify(part)}`);
+    if (!['request', 'context', 'system'].includes(part)) fail(`expectPrompt: unknown part ${JSON.stringify(part)}`);
     const requests = run.modelLog(ctx).filter(entry => entry.stream && entry.userText.includes(userText));
     if (!requests.length) fail(`the model never received ${JSON.stringify(userText)}`);
     // A log entry without these fields would turn `absent` into an empty check: refuse it.
     if (!requests.every(entry => [entry.system, entry.context, entry.rest].every(value => typeof value === 'string'))) fail('the model request log lacks system/context/rest');
-    const sent = entry => part === 'context' ? entry.context : [entry.system, entry.context, entry.userText, entry.rest].join('\n');
+    const sent = entry => part === 'context' ? entry.context : part === 'system' ? entry.system : [entry.system, entry.context, entry.userText, entry.rest].join('\n');
     if (!requests.every(entry => includes(sent(entry), { contains, absent }))) fail(`the model ${part} for ${JSON.stringify(userText)} ${contains !== undefined ? 'lacks ' + JSON.stringify(contains) : 'contains ' + JSON.stringify(absent)}`);
   },
   async expectNoModelCall(run, ctx, { userText }) {
     if (run.modelLog(ctx).some(entry => entry.userText.includes(userText))) fail(`the model received ${JSON.stringify(userText)}`);
   },
-  /** `times` turns with one person, one at a time: `text` is said (`{n}` = the turn number) and the reply awaited. */
-  async converse(run, ctx, { from, text, times, reply }) {
+  /** `times` turns with one person, one at a time: `text` is said (`{n}` = the turn number) and the reply
+   * awaited. `pad`: that many filler characters are appended, to make runs of a known size. */
+  async converse(run, ctx, { from, text, times, reply, pad = 0 }) {
     for (let n = 1; n <= times; n++) {
-      await STEPS.say(run, ctx, { from, text: text.replaceAll('{n}', String(n)) });
+      await STEPS.say(run, ctx, { from, text: text.replaceAll('{n}', String(n)) + '。'.repeat(pad) });
       await STEPS.expectReply(run, ctx, { to: from, contains: reply });
     }
   },
@@ -107,15 +123,22 @@ export const STEPS = {
     if (leaked) fail(`the trace contains the account number ${leaked.qq}`);
     const trace = response.traces.find(item => item.at <= entry.at);
     if (!trace) fail(`no injection trace of ${person} before the model request for ${JSON.stringify(userText)}`);
-    const ids = trace.sections.flatMap(section => section.ids), lines = (entry.context.match(/^\{"content":.*$/gm) ?? []).length;
+    const count = text => (text.match(/^\{"content":.*$/gm) ?? []).length;
+    const ids = trace.sections.flatMap(section => section.ids), lines = count(entry.context);
     if (ids.length !== lines) fail(`the trace lists ${ids.length} injected item(s), the model context carries ${lines} memory line(s)`);
+    // The standing profile is traced apart: its items are in the system message, not in the note.
+    const profile = trace.profile ?? [];
+    if (trace.profile !== undefined) {
+      if (typeof entry.system !== 'string') fail('the model request log lacks system');
+      if (profile.length !== count(entry.system)) fail(`the trace lists ${profile.length} profile item(s), the system message carries ${count(entry.system)} line(s)`);
+    }
     const known = new Map((await run.memoryPages('')).flatMap(page => page.items).map(item => [item.id, item]));
-    const texts = ids.map(id => {
+    const texts = [...ids.map(id => [id, entry.context, 'context']), ...profile.map(id => [id, entry.system, 'system message'])].map(([id, sent, where]) => {
       const item = known.get(id);
       if (!item) fail(`traced item ${id} is not in Authority's memory listing`);
       const content = item.attribution === 'reported' ? `${item.key}: ${item.value}` : item.summary ?? item.text;
       // Memory lines are JSON: compare the content as it is written inside one.
-      if (!entry.context.includes(JSON.stringify(content).slice(1, -1))) fail(`the model context lacks the traced item ${JSON.stringify(content.slice(0, 80))}`);
+      if (!sent.includes(JSON.stringify(content).slice(1, -1))) fail(`the model ${where} lacks the traced item ${JSON.stringify(content.slice(0, 80))}`);
       return content;
     });
     if (contains !== undefined && !texts.some(text => text.includes(contains))) fail(`no traced item of ${person} contains ${JSON.stringify(contains)}`);
@@ -136,6 +159,74 @@ export const STEPS = {
     const everything = (await run.memoryPages('')).flatMap(page => page.items), own = everything.filter(item => item.personId === run.personId(person));
     if (own.length === everything.length) fail('nobody else has memory: the filter was not exercised');
     if (own.length !== items.length || own.some(item => !ids.has(item.id))) fail(`the filtered pages hold ${items.length} item(s), the unfiltered listing has ${own.length} of ${person}`);
+  },
+  /** Stable prefix, over the requests whose typed text contains `userText` (at least `minRequests`, in order):
+   * the system message carries no revision counter and no clock time; a tool continuation is its run's
+   * first request plus new messages; and the first request of the next run is the previous request plus
+   * new messages. A batch trim legitimately breaks that once in a while: at most `trims` of the run-to-run
+   * steps may instead have only lost the oldest messages. */
+  async expectStablePrefix(run, ctx, { userText, minRequests = 4, trims = 1 }) {
+    const requests = requestsOf(run, ctx, userText);
+    if (requests.length < minRequests) fail(`only ${requests.length} model request(s) for ${JSON.stringify(userText)}, expected at least ${minRequests}`);
+    const volatile = requests.find(entry => /revision=|\d{4}-\d\d-\d\dT\d\d:\d\d/.test(entry.system));
+    if (volatile) fail(`the system message for ${JSON.stringify(volatile.userText.slice(0, 40))} carries a revision or a clock time`);
+    let continuations = 0, cuts = 0;
+    for (let i = 1; i < requests.length; i++) {
+      const earlier = requests[i - 1], later = requests[i], what = `request ${i + 1} (${JSON.stringify(later.userText.slice(0, 40))})`;
+      if (extends_(later.hashes, earlier.hashes) && later.hashes.length > earlier.hashes.length) { if (later.afterTool) continuations++; continue; }
+      if (later.afterTool) fail(`${what} is a tool continuation but does not start with the request before it`);
+      if (!trimmed(later.hashes, earlier.hashes)) fail(`${what} does not start with the request before it`);
+      if (++cuts > trims) fail(`${what}: the history start moved ${cuts} times in ${requests.length} requests`);
+    }
+    if (!continuations) fail('no tool continuation was replayed: the prefix inside a run was not exercised');
+  },
+  /** Batch trim, over the first request of each run whose typed text contains `userText`: the start of the
+   * replayed history moves only `minMoves`..`maxMoves` times, every move drops at least two runs at once
+   * and is at least `minGap` runs after the previous one; between moves every request starts with the one before. */
+  async expectBatchTrim(run, ctx, { userText, minMoves, maxMoves, minGap = 3 }) {
+    const requests = requestsOf(run, ctx, userText).filter(entry => !entry.afterTool), moves = [];
+    for (let i = 1; i < requests.length; i++) {
+      const earlier = requests[i - 1], later = requests[i];
+      if (later.hashes[1] === earlier.hashes[1]) {
+        if (!extends_(later.hashes, earlier.hashes)) fail(`run ${i + 1} kept its history start but does not start with the request before it`);
+        continue;
+      }
+      if (!trimmed(later.hashes, earlier.hashes)) fail(`run ${i + 1}: the history changed otherwise than by losing its oldest runs`);
+      if (later.turns > earlier.turns - 1) fail(`run ${i + 1} dropped ${earlier.turns + 1 - later.turns} run(s): not a batch`);
+      if (moves.length && i - moves.at(-1) < minGap) fail(`the history start moved at runs ${moves.at(-1) + 1} and ${i + 1}: less than ${minGap} runs apart`);
+      moves.push(i);
+    }
+    if (moves.length < minMoves || moves.length > maxMoves) fail(`the history start moved ${moves.length} time(s) in ${requests.length} runs, expected ${minMoves}..${maxMoves}`);
+  },
+  /** Earlier turns replayed with the run whose typed text contains `userText` (user messages before it). */
+  async expectHistory(run, ctx, { userText, minEarlier = 0, maxEarlier = Infinity }) {
+    for (const entry of requestsOf(run, ctx, userText)) if (entry.turns - 1 < minEarlier || entry.turns - 1 > maxEarlier) fail(`${entry.turns - 1} earlier turn(s) were replayed with ${JSON.stringify(userText)}, expected ${minEarlier}..${maxEarlier}`);
+  },
+  /** In every request for the run whose typed text contains `userText`, exactly one memory-hub note of the
+   * whole replayed window (the newest one included) carries `contains`. */
+  async expectInjectedOnce(run, ctx, { userText, contains }) {
+    for (const entry of requestsOf(run, ctx, userText)) {
+      const carrying = entry.notes.filter(note => note.includes(contains)).length;
+      if (carrying !== 1) fail(`${carrying} memory-hub note(s) in the request for ${JSON.stringify(userText)} carry ${JSON.stringify(contains)}, expected exactly 1`);
+    }
+  },
+  /** Pin the active memory item of `person` that mentions `contains` (operator POST /memory/retention). */
+  async pinMemory(run, _ctx, { person, contains, timeoutMs = 20000 }) {
+    const mentions = item => item.personId === run.personId(person) && item.status === 'active' && [item.key, item.value, item.summary, item.text].filter(Boolean).join(' ').includes(contains);
+    const item = await run.poll(async () => (await run.operator('GET', '/memory?limit=100')).items.find(mentions), timeoutMs, `Authority has no memory of ${person} containing ${JSON.stringify(contains)}`);
+    await run.operator('POST', '/memory/retention', { entityId: item.entityId, id: item.id, pinned: true });
+  },
+  /** Edit the persona through the operator route the console uses; `restorePersona` puts the old values back. */
+  async setPersona(run, ctx, { patch }) {
+    const { persona } = await run.operator('GET', '/world');
+    ctx.persona ??= Object.fromEntries(Object.keys(patch).map(key => [key, persona.value[key]]));
+    await run.operator('POST', '/persona', { patch, expectedRevision: persona.revision });
+  },
+  async restorePersona(run, ctx) {
+    if (!ctx.persona) return;
+    const { persona } = await run.operator('GET', '/world');
+    await run.operator('POST', '/persona', { patch: ctx.persona, expectedRevision: persona.revision });
+    ctx.persona = undefined;
   },
   /** Admission = an actor binding and a private conversation in Authority (operator /people, /conversations). */
   async expectAdmitted(run, _ctx, { person, admitted }) {
@@ -206,7 +297,9 @@ export class Runner {
     await this.poll(async () => { const status = await this.operator('GET', '/qq'); return status.configured && status.callerConfigured && !status.paused; }, 15000, 'the QQ bridge is not configured');
     await this.poll(async () => (await this.operator('GET', '/people')).qq?.friends === Object.values(this.data.people).filter(person => person.friend).length, 15000, 'the QQ bridge did not load the friend list');
   }
-  async scenario(scenario) {
+  async scenario(written) {
+    // `{run}`: new on every replay (letters and digits only, so it is one retrieval token).
+    const scenario = JSON.parse(JSON.stringify(written).replaceAll('{run}', 'R' + Date.now().toString(36).toUpperCase()));
     const ctx = { matched: new Set(), observed: new Map(), logOffset: this.logLines().length };
     let done = 0, error = null;
     const each = async steps => { for (const step of steps) { const [name] = Object.keys(step); await STEPS[name](this, ctx, step[name]); done++; } };

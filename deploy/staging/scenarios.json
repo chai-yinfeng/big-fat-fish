@@ -24,7 +24,7 @@
         { "say": { "from": "MOCK-A", "text": "MOCK-S1 蓝鲸队长 这个代号是谁的？（MOCK-A 问）" } },
         { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-S1 回答" } },
         { "expectPrompt": { "userText": "（MOCK-B 问）", "absent": "蓝鲸队长" } },
-        { "expectPrompt": { "userText": "（MOCK-A 问）", "contains": "蓝鲸队长", "in": "context" } },
+        { "expectPrompt": { "userText": "（MOCK-A 问）", "contains": "蓝鲸队长", "in": "system" } },
         { "expectMemory": { "person": "MOCK-B", "absent": "蓝鲸队长" } },
         { "expectAdmitted": { "person": "MOCK-A", "admitted": true } },
         { "expectAdmitted": { "person": "MOCK-B", "admitted": true } },
@@ -93,7 +93,7 @@
         { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-M1 回答" } },
         { "say": { "from": "MOCK-B", "text": "MOCK-M1 MOCK-海星 吉祥物 是什么？（MOCK-B 追问）" } },
         { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-M1 回答" } },
-        { "expectPrompt": { "userText": "（MOCK-A 追问）", "contains": "MOCK-海星", "in": "context" } },
+        { "expectPrompt": { "userText": "（MOCK-A 追问）", "contains": "MOCK-海星", "in": "system" } },
         { "expectTrace": { "person": "MOCK-A", "userText": "（MOCK-A 追问）", "contains": "MOCK-海星" } },
         { "expectTrace": { "person": "MOCK-B", "userText": "（MOCK-B 追问）", "absent": "MOCK-海星" } }
       ]
@@ -112,6 +112,107 @@
         { "converse": { "from": "MOCK-A", "text": "MOCK-M2 记一下，第{n}次：编号是MOCK-翻页", "times": 52, "reply": "MOCK-REPLY-M2 好" } },
         { "expectMemoryPages": { "person": "MOCK-A", "atLeast": 52, "pageSize": 50 } },
         { "expectMemory": { "person": "MOCK-B", "absent": "MOCK-翻页" } }
+      ]
+    },
+    {
+      "id": "M3",
+      "title": "stable-prefix: each request is the one before it plus new messages; nothing volatile in the system message",
+      "model": [
+        { "match": "MOCK-M3 第二轮", "propose": { "type": "experience.remember", "payload": { "summary": "MOCK-M3-{run} 看海", "quote": "MOCK-M3-{run} 去看了海" } }, "reply": "MOCK-REPLY-M3 好" },
+        { "match": "MOCK-M3", "reply": "MOCK-REPLY-M3 好" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-M3 第一轮：在吗" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-M3 好" } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-M3 第二轮，请记一件事：MOCK-M3-{run} 去看了海" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-M3 好" } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-M3 第三轮：接着聊" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-M3 好" } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-M3 第四轮：再聊一句" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-M3 好" } },
+        { "expectStablePrefix": { "userText": "MOCK-M3", "minRequests": 5, "trims": 1 } }
+      ]
+    },
+    {
+      "id": "M4",
+      "title": "batch-trim: over 30 runs the history start moves a few times, several runs at once",
+      "model": [
+        { "match": "MOCK-M4", "reply": "MOCK-REPLY-M4 好" }
+      ],
+      "steps": [
+        { "converse": { "from": "MOCK-A", "text": "MOCK-M4 第{n}轮", "times": 30, "reply": "MOCK-REPLY-M4 好", "pad": 600 } },
+        { "expectBatchTrim": { "userText": "MOCK-M4", "minMoves": 3, "maxMoves": 10, "minGap": 3 } }
+      ]
+    },
+    {
+      "id": "M5",
+      "title": "profile-always-on: a pinned fact is in its owner's system message for an unrelated question, and nowhere for anyone else",
+      "model": [
+        { "match": "请记住我的口头禅", "propose": { "type": "fact.report", "payload": { "key": "口头禅", "value": "MOCK-M5-风铃", "quote": "我的口头禅是MOCK-M5-风铃" } }, "reply": "MOCK-REPLY-M5 记住了" },
+        { "match": "MOCK-Q5", "reply": "MOCK-REPLY-M5 闲聊" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-A", "text": "MOCK-M5 请记住我的口头禅：我的口头禅是MOCK-M5-风铃" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-M5 记住了" } },
+        { "pinMemory": { "person": "MOCK-A", "contains": "MOCK-M5-风铃" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-Q5 今天天气怎么样（MOCK-A 闲聊）" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-M5 闲聊" } },
+        { "say": { "from": "MOCK-B", "text": "MOCK-Q5 今天天气怎么样（MOCK-B 闲聊）" } },
+        { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-M5 闲聊" } },
+        { "expectPrompt": { "userText": "（MOCK-A 闲聊）", "contains": "MOCK-M5-风铃", "in": "system" } },
+        { "expectPrompt": { "userText": "（MOCK-A 闲聊）", "absent": "MOCK-M5-风铃", "in": "context" } },
+        { "expectTrace": { "person": "MOCK-A", "userText": "（MOCK-A 闲聊）", "contains": "MOCK-M5-风铃" } },
+        { "expectPrompt": { "userText": "（MOCK-B 闲聊）", "absent": "MOCK-M5-风铃" } },
+        { "expectTrace": { "person": "MOCK-B", "userText": "（MOCK-B 闲聊）", "absent": "MOCK-M5-风铃" } }
+      ]
+    },
+    {
+      "id": "M6",
+      "title": "persona-change-trim: after a persona edit the next run replays at most two earlier runs; facts stay",
+      "model": [
+        { "match": "请记住我的座右铭", "propose": { "type": "fact.report", "payload": { "key": "座右铭", "value": "MOCK-M6-长风", "quote": "我的座右铭是MOCK-M6-长风" } }, "reply": "MOCK-REPLY-M6 记住了" },
+        { "match": "MOCK-M6", "reply": "MOCK-REPLY-M6 好" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-A", "text": "MOCK-M6 请记住我的座右铭：我的座右铭是MOCK-M6-长风" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-M6 记住了" } },
+        { "expectMemory": { "person": "MOCK-A", "contains": "MOCK-M6-长风" } },
+        { "converse": { "from": "MOCK-A", "text": "MOCK-M6 改人格前第{n}轮", "times": 4, "reply": "MOCK-REPLY-M6 好" } },
+        { "expectHistory": { "userText": "改人格前第4轮", "minEarlier": 3 } },
+        { "setPersona": { "patch": { "speechStyle": "MOCK-M6-{run} 新口吻：短句" } } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-M6 改人格后的第一句" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-M6 好" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-M6 改人格后的第二句" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-M6 好" } },
+        { "expectHistory": { "userText": "改人格后的第一句", "maxEarlier": 2 } },
+        { "expectHistory": { "userText": "改人格后的第二句", "minEarlier": 3, "maxEarlier": 3 } },
+        { "expectPrompt": { "userText": "改人格后的第一句", "contains": "MOCK-M6-{run} 新口吻", "in": "system" } },
+        { "expectPrompt": { "userText": "改人格后的第一句", "contains": "MOCK-M6-长风", "in": "system" } }
+      ],
+      "finally": [
+        { "restorePersona": {} }
+      ]
+    },
+    {
+      "id": "M7",
+      "title": "no-duplicate-injection: a memory is retrieved into one note of the window, not into the next ones",
+      "model": [
+        { "match": "MOCK-M7 请记住这件事", "propose": { "type": "experience.remember", "payload": { "summary": "MOCK-M7-{run} 灯塔野餐的约定", "quote": "MOCK-M7-{run} 约好去灯塔野餐" } }, "reply": "MOCK-REPLY-M7 记住了" },
+        { "match": "MOCK-M7", "reply": "MOCK-REPLY-M7 好" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-B", "text": "MOCK-M7 请记住这件事：MOCK-M7-{run} 约好去灯塔野餐" } },
+        { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-M7 记住了" } },
+        { "expectMemory": { "person": "MOCK-B", "contains": "MOCK-M7-{run}" } },
+        { "say": { "from": "MOCK-B", "text": "MOCK-M7 MOCK-M7-{run} 灯塔野餐 还记得吗（第二问）" } },
+        { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-M7 好" } },
+        { "say": { "from": "MOCK-B", "text": "MOCK-M7 MOCK-M7-{run} 灯塔野餐 再说一遍（第三问）" } },
+        { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-M7 好" } },
+        { "expectPrompt": { "userText": "（第二问）", "contains": "MOCK-M7-{run} 灯塔野餐的约定", "in": "context" } },
+        { "expectTrace": { "person": "MOCK-B", "userText": "（第二问）", "contains": "MOCK-M7-{run}" } },
+        { "expectPrompt": { "userText": "（第三问）", "absent": "MOCK-M7-{run} 灯塔野餐的约定", "in": "context" } },
+        { "expectInjectedOnce": { "userText": "（第三问）", "contains": "MOCK-M7-{run} 灯塔野餐的约定" } },
+        { "expectMemory": { "person": "MOCK-A", "absent": "MOCK-M7-{run}" } }
       ]
     }
   ]
