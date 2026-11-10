@@ -3,13 +3,15 @@ import { Store, DEFAULT_ENTITY_ID } from './store.js';
 import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
 import { POLICIES, validatePayload, review } from './policies.js';
 import { normalizePersona, validatePersonaPatch } from '../../core/src/persona.js';
-import { renderContextParts, DEFAULT_CONTEXT_CHARS, personaShare, personaContextText, opaquePerson } from './context.js';
+import { renderContextParts, DEFAULT_CONTEXT_CHARS, personaShare, personaContextText, opaquePerson, opaqueStream } from './context.js';
 import { MemoryDomain } from './memory.js';
 export {
   DEFAULT_ENTITY_ID
 }
 from './store.js';
 export const MAX_ADMITTED_PEOPLE = 40;
+/** Size of the in-memory injection trace (newest context() calls; gone on restart). */
+export const TRACE_LIMIT = 400;
 export class Authority extends MemoryDomain {
   constructor(options){
     super();
@@ -29,6 +31,8 @@ export class Authority extends MemoryDomain {
       migrations:options.migrations
     }:{});
     this.processing=false;
+    this.traces=[];
+    this.traceSeq=0;
   }
   now(){
     return integer(this.clock());
@@ -366,16 +370,43 @@ export class Authority extends MemoryDomain {
     query=input.query===undefined?'':input.query;
     text(query,2000,true);
     const budget=integer(input.budgetChars===undefined?DEFAULT_CONTEXT_CHARS:input.budgetChars,0,16000),
-    rows=this.candidates(scope,registered.policy,query,64);
-    return{
+    rows=this.candidates(scope,registered.policy,query,64),
+    {sections,...rendered}=renderContextParts(JSON.parse(e.persona),rows,budget),
+    result={
       revision:this.store.get('revision'),
       entityId:e.id,
       memoryEpoch:this.streamEpoch(e,capabilityId,input.streamId),
       personaRevision:e.persona_revision,
       // `text` is the whole context; personaText/memoryText are the same content apart (stable / per-query).
-      ...renderContextParts(JSON.parse(e.persona),rows,budget),
+      ...rendered,
       scope,
       world:this.worldStatus()
+    };
+    // Injection trace: which entries this response carried, by ID and size only. No memory text, no
+    // query text, no raw stream or person ID (they hold account numbers). A call that rendered nothing
+    // (the executor's pause/epoch probe asks for a 1-character budget) is not an injection.
+    if(rendered.text){
+      this.traces.push({
+        seq:++this.traceSeq,at:this.now(),capabilityId,stream:opaqueStream(capabilityId,input.streamId),person:opaquePerson(scope.personId),owner:scope.personId==='person:owner',audience:scope.audience,
+        entityId:e.id,memoryEpoch:result.memoryEpoch,revision:result.revision,personaRevision:result.personaRevision,
+        queryChars:query.length,budgetChars:budget,candidates:rows.length,
+        chars:{total:rendered.text.length,persona:rendered.personaText.length,memory:rendered.memoryText.length},
+        sections
+      });
+      if(this.traces.length>TRACE_LIMIT)this.traces.shift();
+    }
+    return result;
+  }
+  /** Operator-only, read-only: the newest injection traces first, optionally for one person's opaque label. */
+  contextTrace(input={}){
+    closed(input,['person','limit'],[]);
+    this.store.check();
+    if(input.person!==undefined&&(typeof input.person!=='string'||!/^p-[0-9a-f]{6}$/.test(input.person)))fail('VALIDATION_ERROR','person must be an opaque person label');
+    const limit=integer(input.limit===undefined?50:input.limit,1,TRACE_LIMIT);
+    return{
+      capacity:TRACE_LIMIT,
+      recorded:this.traceSeq,
+      traces:this.traces.filter(trace=>input.person===undefined||trace.person===input.person).slice(-limit).reverse()
     };
   }
   health(){

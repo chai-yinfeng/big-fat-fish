@@ -64,6 +64,20 @@ test('overview shows today’s spend and saves validated cap/tier settings', asy
   assert.ok(JSON.stringify(render()).includes('spend.unavailable'));
 });
 
+test('overview shows today’s token totals and cache hit rate, and omits them for a gateway without totals', async () => {
+  const withTokens = { ...world, spend: { ...spend, tokens: { requests: 12, cacheHit: 30000, cacheMiss: 10000, output: 4321, reasoning: 3000 } } };
+  const states = ['operator-test', '', withTokens, {}, 'overview'];
+  const { render, nodes } = await harness(states, () => null);
+  const cells = tree => Object.fromEntries(nodes(tree).filter(n => n.type === 'div' && n.children[0]?.type === 'dt').map(n => [n.children[0].children[0], n.children[1].children[0]]));
+  const shown = cells(render());
+  assert.deepEqual(['hitRate', 'cacheHit', 'cacheMiss', 'output', 'reasoning', 'requests'].map(key => shown[`spend.tokens.${key}`]), ['75%', '30,000', '10,000', '4,321', '3,000', '12']);
+  assert.ok(JSON.stringify(render()).includes('spend.tokens.hint'));
+  states[2] = { ...world, spend: { ...spend, tokens: { requests: 0, cacheHit: 0, cacheMiss: 0, output: 0, reasoning: 0 } } };
+  assert.equal(cells(render())['spend.tokens.hitRate'], '—', 'no input yet: no rate');
+  states[2] = world;
+  assert.ok(!JSON.stringify(render()).includes('spend.tokens.'), 'an older gateway reports no totals');
+});
+
 test('people page lists admitted people and conversations with opaque labels and masked numbers', async () => {
   const states = ['operator-test', '', world, {}, 'people'];
   states[21] = { ...people, conversations };

@@ -63,7 +63,15 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         if (url.searchParams.has('entityId')) input.entityId = url.searchParams.get('entityId');
         if (url.searchParams.has('limit')) input.limit = Number(url.searchParams.get('limit'));
         if (url.searchParams.has('beforeRevision')) input.beforeRevision = Number(url.searchParams.get('beforeRevision'));
+        if (url.searchParams.has('person')) input.person = url.searchParams.get('person');
         respond(200, { ok: true, value: authority.listMemory(input) }); return;
+      }
+      // Read-only: what context() injected lately (IDs and sizes; kept in memory, cleared by a restart).
+      if (req.method === 'GET' && url.pathname === '/memory/trace') {
+        const input = {};
+        if (url.searchParams.has('person')) input.person = url.searchParams.get('person');
+        if (url.searchParams.has('limit')) input.limit = Number(url.searchParams.get('limit'));
+        respond(200, { ok: true, value: authority.contextTrace(input) }); return;
       }
       if (req.method === 'GET' && req.url === '/memory/cleanup/pending') { respond(200, { ok: true, value: authority.cleanupPending() }); return; }
       if (req.method === 'GET' && req.url === '/world') { respond(200, { ok: true, value: await overview(req.headers.authorization) }); return; }

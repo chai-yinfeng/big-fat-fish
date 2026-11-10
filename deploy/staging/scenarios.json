@@ -77,6 +77,42 @@
       "finally": [
         { "spendSettings": { "dailyCapYuan": 5 } }
       ]
+    },
+    {
+      "id": "M1",
+      "title": "trace-matches-prompt: the injection trace lists exactly what the model was sent",
+      "model": [
+        { "match": "请记住我的吉祥物", "propose": { "type": "fact.report", "payload": { "key": "吉祥物", "value": "MOCK-海星", "quote": "我的吉祥物是MOCK-海星" } }, "reply": "MOCK-REPLY-M1 记住了" },
+        { "match": "吉祥物 是什么", "reply": "MOCK-REPLY-M1 回答" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-A", "text": "MOCK-M1 请记住我的吉祥物：我的吉祥物是MOCK-海星" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-M1 记住了" } },
+        { "expectMemory": { "person": "MOCK-A", "contains": "MOCK-海星" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-M1 MOCK-海星 吉祥物 是什么？（MOCK-A 追问）" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-M1 回答" } },
+        { "say": { "from": "MOCK-B", "text": "MOCK-M1 MOCK-海星 吉祥物 是什么？（MOCK-B 追问）" } },
+        { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-M1 回答" } },
+        { "expectPrompt": { "userText": "（MOCK-A 追问）", "contains": "MOCK-海星", "in": "context" } },
+        { "expectTrace": { "person": "MOCK-A", "userText": "（MOCK-A 追问）", "contains": "MOCK-海星" } },
+        { "expectTrace": { "person": "MOCK-B", "userText": "（MOCK-B 追问）", "absent": "MOCK-海星" } }
+      ]
+    },
+    {
+      "id": "M2",
+      "title": "console-filter: the memory listing filters by owner and pages past 50",
+      "model": [
+        { "match": "MOCK-M2 我也记一下", "propose": { "type": "fact.report", "payload": { "key": "MOCK-M2 编号", "value": "MOCK-B的页", "quote": "编号是MOCK-B的页" } }, "reply": "MOCK-REPLY-M2 好" },
+        { "match": "MOCK-M2 记一下", "propose": { "type": "fact.report", "payload": { "key": "MOCK-M2 编号", "value": "MOCK-翻页", "quote": "编号是MOCK-翻页" } }, "reply": "MOCK-REPLY-M2 好" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-B", "text": "MOCK-M2 我也记一下：编号是MOCK-B的页" } },
+        { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-M2 好" } },
+        { "expectMemory": { "person": "MOCK-B", "contains": "MOCK-B的页" } },
+        { "converse": { "from": "MOCK-A", "text": "MOCK-M2 记一下，第{n}次：编号是MOCK-翻页", "times": 52, "reply": "MOCK-REPLY-M2 好" } },
+        { "expectMemoryPages": { "person": "MOCK-A", "atLeast": 52, "pageSize": 50 } },
+        { "expectMemory": { "person": "MOCK-B", "absent": "MOCK-翻页" } }
+      ]
     }
   ]
 }
