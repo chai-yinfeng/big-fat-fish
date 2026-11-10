@@ -34,6 +34,8 @@ function cut(messages, limit, low) {
     // is still only its user message (request time) or complete (stored); then make that run fit.
     while (total - sizes[last] + WINDOW_MARKER.length > low && start < protectedFrom) total -= sizes[start++];
     while (total + WINDOW_MARKER.length > limit && start < protectedFrom) total -= sizes[start++];
+    // Still too large: give up the newest completed runs as well rather than leave the message unanswered.
+    while (total + WINDOW_MARKER.length > limit && start < last) total -= sizes[start++];
   }
   if (total + (start ? WINDOW_MARKER.length : 0) > limit) throw fail('ACTIVE_CONTEXT_LIMIT');
   return { lead, runs, start };
@@ -42,8 +44,9 @@ function cut(messages, limit, low) {
 /**
  * Bound the replayed history to `limit` serialized characters. Units are whole
  * runs (one user input plus its assistant/tool chain), so tool pairs are never
- * split. The newest two completed runs and the current run are always kept; if
- * they alone do not fit, execution fails instead of slicing them.
+ * split. A batch cut keeps the newest two completed runs and the current run;
+ * if those do not fit, the completed ones go too, oldest first, and execution
+ * fails only when the current run alone is over `limit`.
  *
  * Trimming is batched for the provider's prefix cache: when the window exceeds
  * `limit`, old runs are dropped in one cut until the runs before the newest one

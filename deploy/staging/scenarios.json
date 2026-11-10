@@ -214,6 +214,17 @@
         { "expectInjectedOnce": { "userText": "（第三问）", "contains": "MOCK-M7-{run} 灯塔野餐的约定" } },
         { "expectMemory": { "person": "MOCK-A", "absent": "MOCK-M7-{run}" } }
       ]
+    },
+    {
+      "id": "M8",
+      "title": "oversized-history-still-replies: when the two runs before do not fit with the new message, it is answered without them",
+      "model": [
+        { "match": "MOCK-M8", "reply": "MOCK-REPLY-M8 好" }
+      ],
+      "steps": [
+        { "converse": { "from": "MOCK-B", "text": "MOCK-M8 第{n}轮", "times": 3, "reply": "MOCK-REPLY-M8 好", "pad": 6000 } },
+        { "expectHistory": { "userText": "MOCK-M8 第3轮", "minEarlier": 1, "maxEarlier": 1 } }
+      ]
     }
   ]
 }

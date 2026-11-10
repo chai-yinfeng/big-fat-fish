@@ -25,8 +25,28 @@ test('old runs are dropped whole, so no tool call loses its result', () => {
   assert.deepEqual(calls, results);
 });
 
-test('the newest two completed runs and the current run are never sliced', () => {
-  assert.throws(() => fitActiveWindow([system, ...run(1, 2000), ...run(2, 2000), ...run(3, 2000)], 4000), { code: 'ACTIVE_CONTEXT_LIMIT' });
+test('when the newest two completed runs and the current run do not fit, completed runs go, oldest first; only an oversized current run fails', () => {
+  const kept = fitted => fitted.filter(m => m.role === 'user').map(m => m.content[0].text.slice(0, 2));
+  const pairs = fitted => assert.deepEqual(fitted.flatMap(m => m.role === 'assistant' ? m.content.filter(b => b.type === 'toolCall').map(b => b.id) : []), fitted.filter(m => m.role === 'toolResult').map(m => m.toolCallId));
+  const big = [system, ...run(1, 2000), ...run(2, 2000), ...run(3, 2000)];
+  // Three runs of about 2300 characters: 4000 holds one, 5000 holds two.
+  for (const [limit, expected] of [[4000, ['u3']], [5000, ['u2', 'u3']], [32000, ['u1', 'u2', 'u3']]]) {
+    const fitted = fitActiveWindow(big, limit);
+    assert.deepEqual(kept(fitted), expected); pairs(fitted);
+    assert.equal(fitted[0].content, expected.length < 3 ? 'prompt\n\n' + WINDOW_MARKER : 'prompt');
+    assert.deepEqual(activeDialogue(big, limit), fitted.slice(1));
+  }
+  // Request time (the current run is only its user message) and after it was stored: whole runs either way.
+  const [user4, ...answer4] = run(4, 100);
+  assert.deepEqual(kept(fitActiveWindow([...big, user4], 4000)), ['u3', 'u4']);
+  assert.deepEqual(kept(fitActiveWindow([...big, user4, ...answer4], 4000)), ['u3', 'u4']);
+  // A stored run that is itself over the limit is dropped on the next run instead of failing every later message.
+  assert.deepEqual(kept(fitActiveWindow([system, ...run(1, 100), ...run(2, 6000), ...run(3, 100), user4], 4000)), ['u3', 'u4']);
+  assert.deepEqual(kept(fitActiveWindow([system, ...run(1, 100), ...run(2, 100), ...run(3, 6000), user4], 4000)), ['u4']);
+  // The current run alone over the limit is the one remaining failure.
+  assert.throws(() => fitActiveWindow([system, ...run(1, 100), ...run(2, 100), ...run(3, 6000)], 4000), { code: 'ACTIVE_CONTEXT_LIMIT' });
+  assert.throws(() => fitActiveWindow([system, ...run(1, 6000)], 4000), { code: 'ACTIVE_CONTEXT_LIMIT' });
+  assert.throws(() => activeDialogue([...run(1, 6000)], 4000), { code: 'ACTIVE_CONTEXT_LIMIT' });
 });
 
 test('trimming is batched: one cut down to the low-water mark, then the cut stays until the window overflows again', () => {

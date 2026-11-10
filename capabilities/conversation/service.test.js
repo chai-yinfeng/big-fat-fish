@@ -183,9 +183,36 @@ test('active window drops whole old runs, keeps the newest two and marks the cut
   const last = f.gateway.state.bodies[3].messages;
   assert.deepEqual(last.filter(m => m.role === 'user').map(m => said(m).slice(0, 2)), ['问1', '问2', '问3']);
   assert.ok(last[0].content.endsWith(WINDOW_MARKER));
-  // When the protected runs alone exceed the budget, execution fails explicitly.
+  // An input that does not fit with the newest two runs still gets its reply: those runs are dropped, oldest first.
+  f.gateway.state.script.push(reply('收到'));
+  assert.equal(await f.executor.execute(request('长'.repeat(1500))), '收到');
+  assert.deepEqual(f.gateway.state.bodies[4].messages.filter(m => m.role === 'user').map(m => said(m).slice(0, 2)), ['问3', '长长']);
+  // Only an input that is over the budget by itself fails, before any provider request.
   f.gateway.state.script.push(reply('x'));
-  await assert.rejects(f.executor.execute(request('长'.repeat(3000))), { code: 'ACTIVE_CONTEXT_LIMIT' });
+  await assert.rejects(f.executor.execute(request('超'.repeat(3400))), { code: 'ACTIVE_CONTEXT_LIMIT' });
+  assert.equal(f.gateway.state.bodies.length, 5);
+});
+
+test('two earlier runs with large tool results do not block the next message', async t => {
+  const f = await setup(t);
+  f.authority.state.search = () => ({ items: [{ id: 'm1', excerpt: '茶'.repeat(5000) }], text: '' });
+  const withTools = async input => {
+    f.gateway.state.script.push(toolCall('companion_scope', { action: 'search', query: '茶' }, 'r', 'a'), toolCall('companion_scope', { action: 'search', query: '茶' }, 'r', 'b'), reply('查到了'));
+    assert.equal(await f.executor.execute(request(input)), '查到了');
+  };
+  await withTools('第一问'); await withTools('第二问');
+  // The two stored runs are over 16000 characters together; the next message is answered without them or with one.
+  f.gateway.state.script.push(reply('在'));
+  assert.equal(await f.executor.execute(request('第三问')), '在');
+  const sent = f.gateway.state.bodies.at(-1).messages;
+  assert.ok(sent[0].content.endsWith(WINDOW_MARKER));
+  assert.deepEqual(sent.filter(m => m.role === 'user').map(said), ['第二问', '第三问']);
+  // No tool result without its call.
+  assert.deepEqual(sent.filter(m => m.role === 'tool').map(m => m.tool_call_id), sent.flatMap(m => m.tool_calls ?? []).map(call => call.id));
+  // And the conversation goes on from the shortened window.
+  f.gateway.state.script.push(reply('还在'));
+  assert.equal(await f.executor.execute(request('第四问')), '还在');
+  assert.deepEqual(f.gateway.state.bodies.at(-1).messages.filter(m => m.role === 'user').map(said), ['第二问', '第三问', '第四问']);
 });
 
 test('stable prefix: the system message and the earlier dialogue are byte-identical across runs and tool continuations', async t => {

@@ -187,7 +187,8 @@ M3 `stable-prefix`：同一人连续四轮（其中一轮带工具往返），�
 revision 和时间；M4 `batch-trim`：连说 30 轮，历史起点只移动几次、每次裁掉多个回合；M5 `profile-always-on`：
 置顶事实在与它无关的提问里也在本人的 system 里，另一个人的整个请求里没有；M6 `persona-change-trim`：
 经 operator 改人格后的下一轮最多重放 2 个旧回合，事实仍在；M7 `no-duplicate-injection`：同一条记忆只进窗口里的
-一段附注。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
+一段附注；M8 `oversized-history-still-replies`：连发三条约 6000 字符的消息，第三条放不下前两轮时只带最近一轮、
+照常得到回复。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
 M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里有一行 `SCENARIOS n/n passed: ...`，
 任一场景失败则是 `STAGING FAILED`。
 
