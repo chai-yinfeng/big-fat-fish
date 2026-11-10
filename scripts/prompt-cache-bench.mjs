@@ -128,13 +128,23 @@ export function withThinking(body, level) {
 }
 
 const sharedPrefix = (a, b) => { let i = 0; const n = Math.min(a.length, b.length); while (i < n && a[i] === b[i]) i++; return i; };
-function usageOf(text) {
-  let usage = null;
-  for (const line of text.split('\n')) {
-    if (!line.startsWith('data:') || !line.includes('"usage"')) continue;
-    try { const value = JSON.parse(line.slice(5)); if (value?.usage && typeof value.usage === 'object') usage = { usage: value.usage, model: value.model }; } catch {}
-  }
-  return usage;
+/** Reads a streamed (or JSON) body for its last usage object; whatever arrived before an abort still counts. */
+async function usageOf(response) {
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let buffer = '', found = null;
+  const scan = line => {
+    if (!line.includes('"usage"')) return;
+    try { const value = JSON.parse(line.startsWith('data:') ? line.slice(5) : line); if (value?.usage && typeof value.usage === 'object') found = { usage: value.usage, model: value.model }; } catch {}
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let index; while ((index = buffer.indexOf('\n')) >= 0) { scan(buffer.slice(0, index).trim()); buffer = buffer.slice(index + 1); }
+    }
+  } catch {}
+  scan(buffer.trim());
+  return found;
 }
 
 /** fetch wrapper for the gateway: applies the thinking level and reports one record per upstream request. */
@@ -148,11 +158,12 @@ export function measuringFetch({ level, onRequest, fetchImpl = fetch, clock = Da
     const record = { at, status: response.status, model: body.model, thinking: body.thinking?.type === 'disabled' ? 'disabled' : body.reasoning_effort, messages: body.messages?.length ?? 0, promptChars: prompt.length, sharedPrefixChars: shared };
     onRequest(record);
     if (!response.ok) { record.ms = clock() - at; return response; }
-    // The gateway streams the original body on; the clone is only read for its usage line. `ms` marks the record complete.
-    void response.clone().text().then(text => {
-      const reported = usageOf(text), parsed = reported && parseUsage(reported.usage);
+    // The gateway streams the original body on (and aborts it once its caller hangs up); the clone is only
+    // read for its usage line. `ms` marks the record complete.
+    void usageOf(response.clone()).then(reported => {
+      const parsed = reported && parseUsage(reported.usage);
       if (parsed) Object.assign(record, { promptTokens: parsed.cacheHit + parsed.cacheMiss, cacheHitTokens: parsed.cacheHit, cacheMissTokens: parsed.cacheMiss, completionTokens: parsed.output, reasoningTokens: parsed.reasoning, costYuan: usageCost(DEFAULT_PRICING, body.model, parsed, at) / 1e6, upstreamModel: reported.model });
-    }).catch(() => {}).finally(() => { record.ms = clock() - at; });
+    }).finally(() => { record.ms = clock() - at; });
     return response;
   };
 }
