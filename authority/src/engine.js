@@ -3,7 +3,7 @@ import { Store, DEFAULT_ENTITY_ID } from './store.js';
 import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
 import { POLICIES, validatePayload, review } from './policies.js';
 import { normalizePersona, validatePersonaPatch } from '../../core/src/persona.js';
-import { renderContextParts, DEFAULT_CONTEXT_CHARS, personaShare, personaContextText, opaquePerson, opaqueStream } from './context.js';
+import { renderContextParts, renderProfile, DEFAULT_CONTEXT_CHARS, personaShare, personaContextText, opaquePerson, opaqueStream } from './context.js';
 import { MemoryDomain } from './memory.js';
 export {
   DEFAULT_ENTITY_ID
@@ -365,7 +365,8 @@ export class Authority extends MemoryDomain {
     }
   }
   context(capabilityId,input){
-    closed(input,['streamId','query','budgetChars','exclude'],['streamId']);
+    closed(input,['streamId','query','budgetChars','exclude','profile'],['streamId']);
+    if(input.profile!==undefined&&typeof input.profile!=='boolean')fail('VALIDATION_ERROR','profile must be boolean');
     const registered=capability(this.store,capabilityId),
     scope=contextScope(this.store,capabilityId,input.streamId),
     e=this.entity(scope.entityId),
@@ -375,8 +376,10 @@ export class Authority extends MemoryDomain {
     const exclude=input.exclude??[];
     if(!Array.isArray(exclude)||exclude.length>MAX_CONTEXT_EXCLUDE)fail('VALIDATION_ERROR','exclude must be a bounded list of memory IDs');
     exclude.forEach(identifier);
+    // `profile`: also return this person's standing profile (outside `budgetChars`); what it shows is not retrieved.
+    const profile=renderProfile(input.profile?this.profileEntries(scope,registered.policy):[]);
     const budget=integer(input.budgetChars===undefined?DEFAULT_CONTEXT_CHARS:input.budgetChars,0,16000),
-    rows=this.candidates(scope,registered.policy,query,64,{exclude}),
+    rows=this.candidates(scope,registered.policy,query,64,{exclude:[...exclude,...profile.ids]}),
     {sections,...rendered}=renderContextParts(JSON.parse(e.persona),rows,budget),
     result={
       revision:this.store.get('revision'),
@@ -387,6 +390,8 @@ export class Authority extends MemoryDomain {
       ...rendered,
       // The entries rendered into memoryText, so the caller can pass them back as `exclude`.
       memoryIds:sections.flatMap(section=>section.ids),
+      // Stable for a person until their pinned items or facts change; '' unless `profile` was asked for.
+      profileText:profile.text,
       scope,
       world:this.worldStatus()
     };
@@ -398,8 +403,8 @@ export class Authority extends MemoryDomain {
         seq:++this.traceSeq,at:this.now(),capabilityId,stream:opaqueStream(capabilityId,input.streamId),person:opaquePerson(scope.personId),owner:scope.personId==='person:owner',audience:scope.audience,
         entityId:e.id,memoryEpoch:result.memoryEpoch,revision:result.revision,personaRevision:result.personaRevision,
         queryChars:query.length,budgetChars:budget,candidates:rows.length,
-        chars:{total:rendered.text.length,persona:rendered.personaText.length,memory:rendered.memoryText.length},
-        sections
+        chars:{total:rendered.text.length,persona:rendered.personaText.length,memory:rendered.memoryText.length,profile:profile.text.length},
+        sections,profile:profile.ids
       });
       if(this.traces.length>TRACE_LIMIT)this.traces.shift();
     }

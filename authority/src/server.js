@@ -7,7 +7,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 const SCHEMAS = {
   '/v1/observations': ['eventId', 'streamId', 'actorId', 'role', 'text', 'at', 'origin'],
   '/v1/proposals': ['proposalId', 'observationId', 'type', 'payload'],
-  '/v1/context': ['streamId', 'query', 'budgetChars', 'exclude'],
+  '/v1/context': ['streamId', 'query', 'budgetChars', 'exclude', 'profile'],
   '/v1/admin/capabilities': ['id', 'policy'],
   '/v1/admin/actors': ['capabilityId', 'externalActorId', 'personId'],
   '/v1/admin/streams': ['capabilityId', 'streamId', 'personId', 'audience', 'entityId'],

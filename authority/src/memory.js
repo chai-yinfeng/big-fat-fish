@@ -116,6 +116,20 @@ export class MemoryDomain {
       return row.visibility==='public'?publicEntry(entry):entry;
     });
   }
+  /** The facts of the person this private conversation is with, for their standing profile: pinned
+   * first, then by importance, newest first. The order never depends on a query or on the time. */
+  profileEntries(scope,policy){
+    if(scope.audience!=='private'||policy!=='conversation.v1')return[];
+    const e=this.entity(scope.entityId),
+    v=this.visibility(scope,policy),
+    cutoff=this.worldStatus().worldNow-e.retention_days*DAY*4;
+    return this.store.db.prepare(`SELECT m.* FROM memory_items m WHERE m.entity_id=? AND ${v.sql} AND m.status='active'
+      AND m.collection='facts' AND m.person_id=? AND (m.pinned=1 OR m.created_world_at>=?)
+      ORDER BY m.pinned DESC,m.importance DESC,m.revision DESC,m.id LIMIT 64`).all(scope.entityId,...v.args,scope.personId,cutoff).map(row=>{
+      const entry=this.store.memory(row);
+      return row.visibility==='public'?publicEntry(entry):entry;
+    });
+  }
   memorySearch(capabilityId,input){
     closed(input,['streamId','query','limit','budgetChars'],['streamId','query']);
     const policy=capability(this.store,capabilityId).policy,

@@ -37,8 +37,9 @@ export class AuthorityClient {
     return this.#request('GET', `/v1/receipts/${encodeURIComponent(id)}`);
   }
   async context(value) {
-    closed(value, ['streamId', 'query', 'budgetChars', 'exclude'], ['streamId']);
+    closed(value, ['streamId', 'query', 'budgetChars', 'exclude', 'profile'], ['streamId']);
     if (!text(value.streamId) || (value.query !== undefined && (typeof value.query !== 'string' || value.query.length > 512)) || (value.budgetChars !== undefined && (!Number.isInteger(value.budgetChars) || value.budgetChars < 1 || value.budgetChars > 4000))) throw fail('INVALID_REQUEST');
+    if (value.profile !== undefined && typeof value.profile !== 'boolean') throw fail('INVALID_REQUEST');
     if (value.exclude !== undefined && (!Array.isArray(value.exclude) || value.exclude.length > 256 || !value.exclude.every(id => text(id)))) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/context', value);
   }
