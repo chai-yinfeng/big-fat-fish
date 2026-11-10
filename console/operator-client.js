@@ -65,12 +65,19 @@ export function operatorOrigin(location, { sameOrigin = false } = {}) {
 }
 // Authority operator codes (never its message) mapped to localized console codes.
 const SERVER_ERRORS = { VALIDATION_ERROR: 'validation_error', INVALID_REQUEST: 'invalid_request', BODY_TOO_LARGE: 'body_too_large', OPERATION_FAILED: 'operation_failed', CONFLICT: 'revision_conflict' };
-export async function operatorRequest({ location, token, path, payload, fetchImpl = fetch, signal, sameOrigin = false }) {
+/** Read-only query of GET /memory: one owner (opaque label or "none") and the page cursor. Never a raw person ID. */
+export function memoryQuery({ person, beforeRevision } = {}) {
+  if (person !== undefined && !/^(p-[0-9a-f]{6}|none)$/.test(person) || beforeRevision !== undefined && !(Number.isSafeInteger(beforeRevision) && beforeRevision >= 0)) throw new Error('invalid_memory_query');
+  const query = new URLSearchParams({ ...(person === undefined ? {} : { person }), ...(beforeRevision === undefined ? {} : { beforeRevision: String(beforeRevision) }) }).toString();
+  return query ? `?${query}` : '';
+}
+export async function operatorRequest({ location, token, path, payload, query, fetchImpl = fetch, signal, sameOrigin = false }) {
   if (!token) throw Object.assign(new Error('authorization_required'), { code: 'authorization_required' });
   if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/conversations', '/spend', '/spend/settings'].includes(path)) throw new Error('unsupported_operator_path');
   if (['/model', '/model/test', '/spend/settings', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
   if (['/runtime', '/people', '/conversations', '/spend'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
-  const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}`, {
+  if (query !== undefined && (path !== '/memory' || payload !== undefined)) throw new Error('operator_query_unsupported');
+  const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}${query === undefined ? '' : memoryQuery(query)}`, {
     method: payload === undefined ? 'GET' : 'POST',
     mode: sameOrigin ? 'same-origin' : 'cors', credentials: 'omit', cache: 'no-store', redirect: 'error',
     headers: { Authorization: `Bearer ${token}`, ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }) },

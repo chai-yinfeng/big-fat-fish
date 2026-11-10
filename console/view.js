@@ -113,6 +113,8 @@ export function WorldConsole({ t, standalone = false }) {
   // People/spend state (appended after the shell hooks for the same reason).
   const [people, setPeople] = useState(null);
   const [spendDraft, setSpendDraft] = useState(null);
+  // Memory page filter: '' (everyone), an opaque person label, or 'none' (appended, same reason).
+  const [memoryFilter, setMemoryFilter] = useState('');
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -133,13 +135,13 @@ export function WorldConsole({ t, standalone = false }) {
     if (qqCallerInput.current) qqCallerInput.current.value = '';
     clearAudio(); clearReferenceInputs();
     setToken(''); setInput(''); setData(null); setDraft(null); setQQ(null); setMemory(null); setForgetPreview(null); setRuntimeInfo(null); setSpeechDraft(null); setConfirmRemove(false); setNotice('');
-    setPalette(null); setDrawer(false); setPeople(null); setSpendDraft(null);
+    setPalette(null); setDrawer(false); setPeople(null); setSpendDraft(null); setMemoryFilter('');
   }
-  async function request(path, payload, credential = token) {
+  async function request(path, payload, credential = token, query) {
     const controller = new AbortController();
     requests.current.add(controller);
     const timeout = setTimeout(() => controller.abort(), path === '/voice/test' ? 240000 : path === '/model/test' ? 60000 : 12000);
-    try { return await operatorRequest({ location: window.location, token: credential, path, payload, signal: controller.signal, sameOrigin: standalone }); }
+    try { return await operatorRequest({ location: window.location, token: credential, path, payload, query, signal: controller.signal, sameOrigin: standalone }); }
     finally { clearTimeout(timeout); requests.current.delete(controller); }
   }
   function describeError(caught) {
@@ -219,7 +221,7 @@ export function WorldConsole({ t, standalone = false }) {
   const effectiveTheme = theme === 'system' ? (systemDark() ? 'dark' : 'light') : theme;
   const toggleTheme = () => setTheme(effectiveTheme === 'dark' ? 'light' : 'dark');
   function go(key) {
-    if (key !== 'memory') { setMemory(null); setForgetPreview(null); }
+    if (key !== 'memory') { setMemory(null); setForgetPreview(null); setMemoryFilter(''); }
     setTab(key); setDrawer(false);
   }
   const refreshAll = () => run(async () => { await load(); if (standalone && tab === 'runtime') await loadRuntime(); });
@@ -436,10 +438,18 @@ export function WorldConsole({ t, standalone = false }) {
         await load(); setNotice(t(result.ok ? 'modelTestPassed' : 'modelTestFailed'));
       }), { disabled: busy || !model.configured, icon: 'sparkles' })));
   }
-  async function loadMemory() {
-    const value = await request('/memory');
-    if (!value || typeof value.entityId !== 'string' || !Array.isArray(value.items) || !Array.isArray(value.diaries)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
+  const validMemory = value => value && typeof value.entityId === 'string' && Array.isArray(value.items) && Array.isArray(value.diaries);
+  async function loadMemory(filter = memoryFilter) {
+    const value = await request('/memory', undefined, token, filter ? { person: filter } : undefined);
+    if (!validMemory(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
     setMemory(value);
+  }
+  // The next (older) page of the same filter, appended to what is shown.
+  async function loadMoreMemory() {
+    const value = await request('/memory', undefined, token, { ...(memoryFilter ? { person: memoryFilter } : {}), beforeRevision: Math.min(...memory.items.map(item => item.revision)) });
+    if (!validMemory(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
+    const shown = new Set(memory.items.map(item => item.id));
+    setMemory({ ...memory, items: [...memory.items, ...value.items.filter(item => !shown.has(item.id))], more: value.more === true });
   }
   function dialog(title, body, actions, onCancel) {
     // Modal confirmation: backdrop click and Escape cancel unless a request is running.
@@ -450,16 +460,33 @@ export function WorldConsole({ t, standalone = false }) {
   function memories() {
     const mutate = (path, payload) => run(async () => { await request(path, payload); await loadMemory(); setNotice(t('saved')); });
     const preview = id => button('memoryForgetPreview', () => run(async () => { setForgetPreview(await request('/memory/forget-preview', { entityId: memory.entityId, ids: [id] })); }), { className: 'bff-danger-ghost bff-sm', icon: 'trash' });
+    // Read-only provenance: whose item it is (opaque label, as on the people page) and where it came from.
+    const belongs = item => item.personIsOwner ? badge(t('peoplePanel.owner'), 'primary', icon('star')) : item.personLabel ? h('code', null, item.personLabel) : badge(t('memoryPanel.unowned'));
+    const origin = item => {
+      const role = ['user', 'assistant', 'external'].includes(item.source?.role) ? t(`memoryPanel.role.${item.source.role}`) : null;
+      const proposal = /^(fact|experience|appraisal|learning|self)\./.test(item.source?.proposal || '') ? t(`memoryPanel.proposal.${item.source.proposal.split('.')[0]}`) : null;
+      const parts = [role, proposal, typeof item.source?.channel === 'string' ? item.source.channel : null].filter(Boolean);
+      return h('p', { className: 'bff-small bff-muted' }, `${t('memoryPanel.source')}: ${parts.length ? parts.join(' · ') : t('memoryPanel.sourceUnknown')}`);
+    };
+    const owners = memory && Array.isArray(memory.people) ? memory.people.filter(person => /^p-[0-9a-f]{6}$/.test(person?.label)) : [];
     return h(React.Fragment, null,
       h('section', { className: 'bff-card' }, cardHead(h('h2', null, t('memoryTitle')),
         button('memoryReadExplicitly', () => run(loadMemory), { className: 'bff-primary bff-sm', icon: 'eye' }),
         button('memoryCleanupRefresh', () => run(async () => { const jobs = await request('/memory/cleanup/pending'); setNotice(t(jobs.length ? 'memoryCleanupPending' : 'memoryCleanupComplete')); }), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
         alert('info', t('memoryPrivacy')), text('memoryLifecycle'),
-        memory && h('p', { className: 'bff-small bff-muted' }, `${t('memoryEntity')}: `, h('code', null, memory.entityId))),
+        memory && h('p', { className: 'bff-small bff-muted' }, `${t('memoryEntity')}: `, h('code', null, memory.entityId)),
+        memory && h('label', null, h('span', null, t('memoryPanel.filter')), h('select', { name: 'memoryFilter', value: memoryFilter, disabled: busy, onChange: event => { const value = event.target.value; setMemoryFilter(value); void run(() => loadMemory(value)); } },
+          h('option', { value: '' }, t('memoryPanel.all')),
+          ...owners.map(person => h('option', { key: person.label, value: person.label }, `${person.owner ? t('peoplePanel.owner') : person.label} (${person.items})`)),
+          memory.unowned > 0 || memoryFilter === 'none' ? h('option', { value: 'none' }, `${t('memoryPanel.unowned')} (${memory.unowned || 0})`) : null)),
+        memory && text('memoryPanel.hint'),
+        memory && h('p', { className: 'bff-small bff-muted' }, `${t('memoryPanel.shown')}: ${memory.items.length}`)),
       memory && h(React.Fragment, null,
         ...memory.items.map(item => h('article', { className: 'bff-card bff-memory', key: item.id },
-          h('div', { className: 'bff-actions' }, badge(item.type, 'primary'), badge(item.status), item.pinned ? badge(t('memoryPinned'), 'primary', icon('pin')) : null),
+          h('div', { className: 'bff-actions' }, badge(item.type, 'primary'), badge(item.status), item.pinned ? badge(t('memoryPinned'), 'primary', icon('pin')) : null,
+            belongs(item), item.visibility === 'public' ? badge(t('memoryPanel.public'), 'ok') : null),
           h('p', { style: { whiteSpace: 'pre-wrap' } }, item.summary || item.text || `${item.key || ''}: ${item.value || ''}`),
+          origin(item),
           h('form', { onSubmit: event => { event.preventDefault(); const value = event.currentTarget.elements.eventAt.value; const eventAt = value ? Date.parse(value) : null; if (eventAt !== null && !Number.isFinite(eventAt)) return; void mutate('/memory/retention', { entityId: memory.entityId, id: item.id, eventAt }); } },
             h('label', null, h('span', null, t('memoryEventTime')), h('input', { name: 'eventAt', type: 'datetime-local', disabled: busy, defaultValue: item.eventAt == null ? '' : new Date(item.eventAt - new Date(item.eventAt).getTimezoneOffset() * 60000).toISOString().slice(0, 16) })),
             button('memorySaveEventTime', undefined, { type: 'submit', className: 'bff-secondary bff-sm', icon: 'clock' })),
@@ -473,6 +500,7 @@ export function WorldConsole({ t, standalone = false }) {
           h('div', { className: 'bff-actions' },
             diary.kind === 'public' && diary.status === 'draft' && button('memoryPublishDraft', () => mutate('/diary/publish', { entityId: memory.entityId, id: diary.id }), { className: 'bff-sm', icon: 'check' }),
             preview(diary.id)))),
+        memory.more === true && h('div', { className: 'bff-actions' }, button('memoryPanel.loadMore', () => run(loadMoreMemory), { className: 'bff-secondary bff-sm', icon: 'down' })),
         !memory.items.length && !memory.diaries.length && h('div', { className: 'bff-empty' }, icon('memory'), h('p', null, t('memoryEmpty')))),
       forgetPreview && dialog(t('memoryForgetPreview'), [
         h('p', { key: 'count', className: 'bff-mono' }, `${t('memoryAffected')}: ${forgetPreview.expandedIds.length} · ${t('memorySources')}: ${forgetPreview.sourceObservationIds.length}`),

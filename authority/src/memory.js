@@ -19,6 +19,13 @@ const publicEntry=entry=>({
   }
   :undefined
 });
+// Operator listing only: where an item came from (which channel, whose words, which kind of proposal).
+const PROPOSAL_TYPES={facts:'fact.report',experiences:'experience.remember',appraisals:'appraisal.record'};
+const sourceOf=entry=>({
+  channel:entry.capabilityId??null,
+  role:entry.evidence?.role??null,
+  proposal:entry.proposalId?PROPOSAL_TYPES[entry.type]??(entry.kind==='learning'?'learning.note':'self.note'):null
+});
 export class MemoryDomain {
   entity(id=DEFAULT_ENTITY_ID){
     identifier(id);
@@ -155,24 +162,41 @@ export class MemoryDomain {
       item: item && row.visibility === 'public' ? publicEntry(item) : item
     };
   }
+  /** Operator listing, newest revision first. `beforeRevision` pages back (`more` says whether older
+   * items remain); `person` keeps one owner: an opaque person label, or 'none' for items nobody owns.
+   * Diaries belong to no person and are only listed without that filter. */
   listMemory(input={}){
-    closed(input,['entityId','limit','beforeRevision','includeArchived'],[]);
+    closed(input,['entityId','limit','beforeRevision','includeArchived','person'],[]);
     const e=this.entity(input.entityId??DEFAULT_ENTITY_ID),
     limit=integer(input.limit??50,1,100),
     before=integer(input.beforeRevision??Number.MAX_SAFE_INTEGER),
     now=this.worldStatus().worldNow;
-    const rows=this.store.db.prepare('SELECT * FROM memory_items WHERE entity_id=? AND revision<? ORDER BY revision DESC,id LIMIT ?').all(e.id,before,limit);
-    const entries=rows.map(r=>({
-      ...this.store.memory(r),archived:r.status==='active'&&!r.pinned&&now-r.created_world_at>e.retention_days*DAY*4
-    })).filter(r=>input.includeArchived!==false||(!r.archived&&r.status==='active'));
-    const diaries=this.store.db.prepare('SELECT * FROM diaries WHERE entity_id=? AND revision<? ORDER BY revision DESC LIMIT ?').all(e.id,before,limit).map(r=>({
+    if(input.person!==undefined&&(typeof input.person!=='string'||!/^(p-[0-9a-f]{6}|none)$/.test(input.person)))fail('VALIDATION_ERROR','person must be an opaque person label or none');
+    const owners=this.store.db.prepare('SELECT person_id AS personId,COUNT(*) AS items FROM memory_items WHERE entity_id=? GROUP BY person_id').all(e.id),
+    wanted=owners.filter(o=>o.personId!==null&&opaquePerson(o.personId)===input.person).map(o=>o.personId),
+    scope=input.person===undefined?'':input.person==='none'?' AND person_id IS NULL':wanted.length?` AND person_id IN (${placeholders(wanted)})`:' AND 0';
+    const found=this.store.db.prepare(`SELECT * FROM memory_items WHERE entity_id=? AND revision<?${scope} ORDER BY revision DESC,id LIMIT ?`).all(e.id,before,...wanted,limit+1),
+    rows=found.slice(0,limit);
+    const entries=rows.map(r=>{
+      const entry=this.store.memory(r);
+      return{
+        ...entry,archived:r.status==='active'&&!r.pinned&&now-r.created_world_at>e.retention_days*DAY*4,
+        // For display: the same opaque label the people listing uses, never an account number.
+        personLabel:r.person_id?opaquePerson(r.person_id):null,personIsOwner:r.person_id==='person:owner',source:sourceOf(entry)
+      };
+    }).filter(r=>input.includeArchived!==false||(!r.archived&&r.status==='active'));
+    const diaries=input.person!==undefined?[]:this.store.db.prepare('SELECT * FROM diaries WHERE entity_id=? AND revision<? ORDER BY revision DESC LIMIT ?').all(e.id,before,limit).map(r=>({
       id:r.id,type:'diary',kind:r.kind,status:r.status,revision:r.revision,entityId:e.id,...JSON.parse(r.body)
     }));
     return{
       entityId:e.id,
       memoryEpoch:e.memory_epoch,
       items:entries,
-      diaries
+      diaries,
+      more:found.length>limit,
+      // Who owns items at all (for a filter), with item counts.
+      people:owners.filter(o=>o.personId!==null).map(o=>({label:opaquePerson(o.personId),owner:o.personId==='person:owner',items:o.items})).sort((a,b)=>b.owner-a.owner||(a.label<b.label?-1:1)),
+      unowned:owners.find(o=>o.personId===null)?.items??0
     };
   }
   setMemoryRetention(input) {
