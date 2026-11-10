@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fitActiveWindow, WINDOW_MARKER } from './window.js';
+import { fitActiveWindow, activeDialogue, ACTIVE_CONTEXT_CHARS, ACTIVE_CONTEXT_LOW_CHARS, WINDOW_MARKER } from './window.js';
 
 const system = { role: 'system', content: 'prompt', timestamp: 0 };
 const run = (n, size = 400) => [
@@ -62,4 +62,23 @@ test('a batch cut never reaches into the newest two completed runs', () => {
   // Three large runs: getting under the low-water mark would need to drop protected runs, so only the oldest goes.
   const fitted = fitActiveWindow([system, ...run(1, 900), ...run(2, 900), ...run(3, 900), ...run(4, 900)], 4500, 1000);
   assert.deepEqual(fitted.filter(m => m.role === 'user').map(m => m.content[0].text.slice(0, 2)), ['u2', 'u3', 'u4']);
+});
+
+test('default marks: above 16000 characters one cut brings the earlier runs down to 8000', () => {
+  assert.deepEqual([ACTIVE_CONTEXT_CHARS, ACTIVE_CONTEXT_LOW_CHARS], [16000, 8000]);
+  const size = messages => messages.filter(m => m.role !== 'system').reduce((total, m) => total + JSON.stringify(m).length, 0);
+  const transcript = [system];
+  let n = 0;
+  while (size(transcript) <= ACTIVE_CONTEXT_CHARS) {
+    assert.equal(fitActiveWindow(transcript), transcript, 'nothing is cut up to the high-water mark');
+    transcript.push(...run(++n, 700));
+  }
+  const fitted = fitActiveWindow(transcript), kept = fitted.slice(1), newest = run(n, 700);
+  assert.ok(fitted[0].content.endsWith(WINDOW_MARKER));
+  assert.ok(size(kept) - size(newest) + WINDOW_MARKER.length <= ACTIVE_CONTEXT_LOW_CHARS);
+  // Not more than needed: one more run would have been above the low-water mark.
+  assert.ok(size(kept) - size(newest) + size(run(1, 700)) + WINDOW_MARKER.length > ACTIVE_CONTEXT_LOW_CHARS);
+  assert.deepEqual(activeDialogue(transcript), kept);
+  // A custom limit keeps the same proportion.
+  assert.deepEqual(fitActiveWindow(transcript, 6000), fitActiveWindow(transcript, 6000, 3000));
 });

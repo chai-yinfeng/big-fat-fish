@@ -1,5 +1,9 @@
 const fail = code => Object.assign(new Error(code), { code });
-export const ACTIVE_CONTEXT_CHARS = 32000;
+/** High-water mark of the replayed history, in serialized characters: above it the window is cut. */
+export const ACTIVE_CONTEXT_CHARS = 16000;
+/** Low-water mark: one cut brings the runs before the newest one down to this. */
+export const ACTIVE_CONTEXT_LOW_CHARS = 8000;
+const lowFor = limit => Math.floor(limit * ACTIVE_CONTEXT_LOW_CHARS / ACTIVE_CONTEXT_CHARS);
 export const WINDOW_MARKER = 'Older completed execution dialogue is outside the active window. No facts are asserted by this maintenance marker. Retrieve authoritative long-term memory with companion_scope search/read when needed.';
 
 /** Where the window starts: the leading system messages, the runs, and the index of the first kept run. */
@@ -42,7 +46,7 @@ function cut(messages, limit, low) {
  * The cut is not stored: it is replayed from the whole transcript, run by run,
  * so the same transcript always yields the same cut.
  */
-export function fitActiveWindow(messages, limit = ACTIVE_CONTEXT_CHARS, low = Math.floor(limit / 2)) {
+export function fitActiveWindow(messages, limit = ACTIVE_CONTEXT_CHARS, low = lowFor(limit)) {
   const { lead, runs, start } = cut(messages, limit, low);
   if (!start) return messages;
   const [head, ...rest] = lead;
@@ -51,7 +55,7 @@ export function fitActiveWindow(messages, limit = ACTIVE_CONTEXT_CHARS, low = Ma
 }
 
 /** The dialogue messages `fitActiveWindow` keeps for this transcript (no system message needed). */
-export function activeDialogue(messages, limit = ACTIVE_CONTEXT_CHARS, low = Math.floor(limit / 2)) {
+export function activeDialogue(messages, limit = ACTIVE_CONTEXT_CHARS, low = lowFor(limit)) {
   const { runs, start } = cut(messages, limit, low);
   return runs.slice(start).flat();
 }
