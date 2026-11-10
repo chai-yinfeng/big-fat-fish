@@ -87,6 +87,56 @@ export const STEPS = {
   async expectNoModelCall(run, ctx, { userText }) {
     if (run.modelLog(ctx).some(entry => entry.userText.includes(userText))) fail(`the model received ${JSON.stringify(userText)}`);
   },
+  /** `times` turns with one person, one at a time: `text` is said (`{n}` = the turn number) and the reply awaited. */
+  async converse(run, ctx, { from, text, times, reply }) {
+    for (let n = 1; n <= times; n++) {
+      await STEPS.say(run, ctx, { from, text: text.replaceAll('{n}', String(n)) });
+      await STEPS.expectReply(run, ctx, { to: from, contains: reply });
+    }
+  },
+  /** Injection trace (operator GET /memory/trace) against what the model was really sent, for the run whose
+   * typed text contains `userText`: the newest trace of `person` recorded before that model request. The
+   * memory-hub note must carry exactly one memory line per traced ID, and the content of every traced ID
+   * (read back from operator GET /memory). `contains` / `absent`: about the content of the traced items. */
+  async expectTrace(run, ctx, { person, userText, contains, absent }) {
+    const entry = run.modelLog(ctx).find(item => item.stream && !item.afterTool && item.userText.includes(userText));
+    if (!entry) fail(`the model never received ${JSON.stringify(userText)}`);
+    if (typeof entry.context !== 'string' || !Number.isFinite(entry.at)) fail('the model request log lacks context/at');
+    const label = await run.personLabel(person), response = await run.operator('GET', `/memory/trace?person=${label}&limit=400`);
+    const leaked = [run.data.bot, ...Object.values(run.data.people)].find(account => JSON.stringify(response).includes(account.qq));
+    if (leaked) fail(`the trace contains the account number ${leaked.qq}`);
+    const trace = response.traces.find(item => item.at <= entry.at);
+    if (!trace) fail(`no injection trace of ${person} before the model request for ${JSON.stringify(userText)}`);
+    const ids = trace.sections.flatMap(section => section.ids), lines = (entry.context.match(/^\{"content":.*$/gm) ?? []).length;
+    if (ids.length !== lines) fail(`the trace lists ${ids.length} injected item(s), the model context carries ${lines} memory line(s)`);
+    const known = new Map((await run.memoryPages('')).flatMap(page => page.items).map(item => [item.id, item]));
+    const texts = ids.map(id => {
+      const item = known.get(id);
+      if (!item) fail(`traced item ${id} is not in Authority's memory listing`);
+      const content = item.attribution === 'reported' ? `${item.key}: ${item.value}` : item.summary ?? item.text;
+      // Memory lines are JSON: compare the content as it is written inside one.
+      if (!entry.context.includes(JSON.stringify(content).slice(1, -1))) fail(`the model context lacks the traced item ${JSON.stringify(content.slice(0, 80))}`);
+      return content;
+    });
+    if (contains !== undefined && !texts.some(text => text.includes(contains))) fail(`no traced item of ${person} contains ${JSON.stringify(contains)}`);
+    if (absent !== undefined && texts.some(text => text.includes(absent))) fail(`a traced item of ${person} contains ${JSON.stringify(absent)}`);
+  },
+  /** Owner filter and paging of operator GET /memory (what the console memory page reads): `person`'s items,
+   * `pageSize` a page, until at least `atLeast` exist. The first page must be full and not the last, no item
+   * may repeat, every item must be that person's, and the filtered pages must be exactly that person's part
+   * of the unfiltered listing, which must also hold someone else's items. */
+  async expectMemoryPages(run, _ctx, { person, atLeast, pageSize = 50, timeoutMs = 60000 }) {
+    const label = await run.personLabel(person), count = pages => pages.reduce((sum, page) => sum + page.items.length, 0);
+    const pages = await run.poll(async () => { const read = await run.memoryPages(`person=${label}&`, pageSize); return count(read) >= atLeast ? read : null; }, timeoutMs, `Authority has fewer than ${atLeast} memory items of ${person}`);
+    const items = pages.flatMap(page => page.items), ids = new Set(items.map(item => item.id));
+    if (pages.length < 2 || pages[0].items.length !== pageSize) fail(`expected a full first page of ${pageSize} and a later page, got ${pages.map(page => page.items.length).join('+')}`);
+    if (ids.size !== items.length) fail('an item was listed on two pages');
+    const foreign = items.find(item => item.personId !== run.personId(person) || item.personLabel !== label);
+    if (foreign) fail(`the listing filtered to ${person} returned an item of ${foreign.personLabel}`);
+    const everything = (await run.memoryPages('')).flatMap(page => page.items), own = everything.filter(item => item.personId === run.personId(person));
+    if (own.length === everything.length) fail('nobody else has memory: the filter was not exercised');
+    if (own.length !== items.length || own.some(item => !ids.has(item.id))) fail(`the filtered pages hold ${items.length} item(s), the unfiltered listing has ${own.length} of ${person}`);
+  },
   /** Admission = an actor binding and a private conversation in Authority (operator /people, /conversations). */
   async expectAdmitted(run, _ctx, { person, admitted }) {
     const people = (await run.operator('GET', '/people')).people, conversations = await run.operator('GET', '/conversations');
@@ -110,6 +160,22 @@ export class Runner {
   qq(name) { return this.data.people[name].qq; }
   nameOf(qq) { return Object.keys(this.data.people).find(name => this.data.people[name].qq === qq) ?? qq; }
   personId(name) { return this.data.people[name].owner ? 'person:owner' : 'person:qq:' + this.qq(name); }
+  /** The opaque label Authority shows for a person (operator /people). */
+  async personLabel(name) {
+    const person = (await this.operator('GET', '/people')).people.find(item => item.personId === this.personId(name));
+    return person?.label ?? fail(`${name} is not a person in Authority`);
+  }
+  /** Every page of operator GET /memory for `filter` ("" or "person=<label>&"), newest first. */
+  async memoryPages(filter, pageSize = 100) {
+    const pages = [];
+    for (let before; ;) {
+      const page = await this.operator('GET', `/memory?${filter}limit=${pageSize}${before === undefined ? '' : '&beforeRevision=' + before}`);
+      pages.push(page);
+      if (page.more !== true || !page.items.length) return pages;
+      if (pages.length >= 200) fail('the memory listing does not end');
+      before = Math.min(...page.items.map(item => item.revision));
+    }
+  }
   async sent() { return (await this.onebot('GET', '/state')).sent; }
   async messageCount(name) {
     const row = (await this.operator('GET', '/conversations')).find(item => item.streamId === `qq:${this.data.bot.qq}:private:${this.qq(name)}`);
