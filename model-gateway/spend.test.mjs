@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { createModelGateway } from './server.mjs';
-import { DEFAULT_PRICING, beijingDay, createSpendMeter, isPeak, parseUsage, usageCost, validSpendSettings, validPricing } from './spend.mjs';
+import { CN_HOLIDAYS, DEFAULT_PRICING, beijingDay, createSpendMeter, isPeak, parseUsage, usageCost, validSpendSettings, validPricing } from './spend.mjs';
 
 const operator = 'operator-test-token-with-no-real-credential', infer = 'inference-test-token-with-no-real-credential';
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -166,4 +166,34 @@ test('gateway forces include_usage, meters chat by reported usage, exposes /spen
   assert.equal(calls.length, before, 'no provider call once the cap is reached');
   assert.equal((await control('/spend/settings', { dailyCapYuan: 5, reducedPercent: 60, restrictedPercent: 80 })).json().value.tier, 'normal');
   assert.equal((await chat(prompt)).status, 200);
+});
+
+test('statutory holidays are off-peak all day; make-up weekends and years without data follow the weekday rule', async t => {
+  const peak = (day, hhmm = '10:00') => isPeak(DEFAULT_PRICING, BJ(hhmm, day));
+  assert.deepEqual([CN_HOLIDAYS[2026].length, CN_HOLIDAYS[2027].length, new Set(DEFAULT_PRICING.peak.offPeakDates).size], [33, 29, 62]);
+  assert.equal(validPricing(DEFAULT_PRICING), true);
+  // 2026 (国办发明电〔2025〕7号): first and last day of each holiday, on weekdays.
+  for (const day of ['2026-01-01', '2026-01-02', '2026-02-16', '2026-02-23', '2026-04-06', '2026-05-01', '2026-05-05', '2026-06-19', '2026-09-25', '2026-10-01', '2026-10-07']) assert.equal(peak(day), false, day);
+  // 2027 (国办发明电〔2026〕10号).
+  for (const day of ['2027-01-01', '2027-02-05', '2027-02-12', '2027-04-05', '2027-05-03', '2027-05-05', '2027-06-09', '2027-09-15', '2027-10-01', '2027-10-07']) assert.equal(peak(day), false, day);
+  // The working days around them are peak; make-up Saturdays/Sundays stay off-peak (weekend rule).
+  for (const day of ['2026-01-05', '2026-02-13', '2026-02-24', '2026-04-07', '2026-05-06', '2026-06-22', '2026-09-28', '2026-10-08', '2027-01-04', '2027-02-04', '2027-02-15', '2027-06-08', '2027-06-10', '2027-09-14', '2027-10-08']) assert.equal(peak(day), true, day);
+  for (const day of ['2026-01-04', '2026-02-14', '2026-02-28', '2026-05-09', '2026-09-20', '2026-10-10', '2027-01-31', '2027-02-14', '2027-05-08', '2027-09-26', '2027-10-09']) assert.equal(peak(day), false, day);
+  // No data for 2028: National Day on a weekday is charged at peak price (never undercounted).
+  assert.equal(peak('2028-10-02'), true);
+  assert.equal(usageCost(DEFAULT_PRICING, 'deepseek-flash', { cacheHit: 0, cacheMiss: 1000, output: 1000 }, BJ('10:00', '2026-10-01')), 5000);
+  assert.equal(usageCost(DEFAULT_PRICING, 'deepseek-flash', { cacheHit: 0, cacheMiss: 1000, output: 1000 }, BJ('10:00', '2026-10-08')), 10000);
+
+  // An existing price file from before the holiday data (offPeakDates: []) keeps its prices and gains the holidays.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'fish-spend-'));
+  t.after(async () => { assert.equal(path.dirname(dir), os.tmpdir()); await fs.rm(dir, { recursive: true }); });
+  const old = { ...DEFAULT_PRICING, verifiedAt: '2026-11-08', peak: { ...DEFAULT_PRICING.peak, offPeakDates: ['2026-11-12'] } };
+  await fs.writeFile(path.join(dir, 'model-pricing.json'), JSON.stringify(old), { mode: 0o600 });
+  let now = BJ('10:00', '2026-10-01');
+  const meter = createSpendMeter({ stateFile: path.join(dir, 'spend.json'), settingsFile: path.join(dir, 'spend-settings.json'), pricingFile: path.join(dir, 'model-pricing.json'), clock: () => now });
+  await meter.start(); t.after(() => meter.close());
+  assert.deepEqual([meter.status().pricing, meter.status().window], ['file', 'offPeak']);
+  now = BJ('10:00', '2026-11-12'); assert.equal(meter.status().window, 'offPeak', 'a date listed in the file still counts');
+  now = BJ('10:00', '2026-11-13'); assert.equal(meter.status().window, 'peak');
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, 'model-pricing.json'), 'utf8')), old, 'the operator file is not rewritten');
 });

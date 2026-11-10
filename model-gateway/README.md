@@ -103,7 +103,10 @@ TZ) in three private files next to the settings file: `spend.json` (state),
   per 1M tokens (cache hit / miss / output) at peak, half off-peak; v4-pro
   0.30/9/27 peak, half off-peak; web search/fetch 0.005 per call; vision is a
   conservative 0.01 per call. Peak is Mon–Fri 09:00–12:00 and 14:00–18:00 Beijing
-  time; list statutory holidays (off-peak) in `peak.offPeakDates`. The file is
+  time. Chinese statutory holidays are off-peak all day: the 2026 and 2027 dates from
+  the State Council notices are built in (`CN_HOLIDAYS` in `spend.mjs`) and are added
+  to whatever `peak.offPeakDates` lists, also for a file written before they existed;
+  a year without data gets no holiday discount. The file is
   re-read before every reservation; an invalid file falls back to peak prices at
   every hour (`pricing: 'fallback'`).
 - Chat requests are forced to `stream_options.include_usage`; usage (cache hit,

@@ -10,14 +10,27 @@ const MICROS = 1_000_000;
 const BEIJING_MS = 8 * 3600000; // Asia/Shanghai has no DST; independent of the host TZ.
 export const CATEGORIES = Object.freeze(['conversation', 'maintenance', 'vision', 'web']);
 export const DEFAULT_SPEND_SETTINGS = Object.freeze({ dailyCapYuan: 5, reducedPercent: 60, restrictedPercent: 80 });
-/** DeepSeek official prices (CNY per 1M tokens; web per call), verified 2026-11-08 at
+const days = (first, count) => Array.from({ length: count }, (_, i) => new Date(Date.parse(first + 'T00:00:00Z') + i * 86400000).toISOString().slice(0, 10));
+/** Chinese statutory holidays (the days off) from the State Council General Office notices.
+ * DeepSeek bills them off-peak all day. Make-up working days are Saturdays/Sundays, which the
+ * price page keeps off-peak, so they need no entry. A year without data gets no holiday
+ * discount (weekdays at peak price): the cap can only trigger early, never late. */
+export const CN_HOLIDAYS = Object.freeze({
+  // 国办发明电〔2025〕7号 (2025-11-04): 元旦, 春节, 清明, 劳动节, 端午, 中秋, 国庆.
+  2026: [...days('2026-01-01', 3), ...days('2026-02-15', 9), ...days('2026-04-04', 3), ...days('2026-05-01', 5), ...days('2026-06-19', 3), ...days('2026-09-25', 3), ...days('2026-10-01', 7)],
+  // 国办发明电〔2026〕10号 (2026-11-05).
+  2027: [...days('2027-01-01', 3), ...days('2027-02-05', 9), ...days('2027-04-03', 3), ...days('2027-05-01', 5), '2027-06-09', '2027-09-15', ...days('2027-10-01', 7)],
+});
+const HOLIDAYS = Object.values(CN_HOLIDAYS).flat();
+/** DeepSeek official prices (CNY per 1M tokens; web per call), verified 2026-11-10 at
  * https://api-docs.deepseek.com/zh-cn/quick_start/pricing — peak is Beijing time
- * Mon–Fri 09:00–12:00 and 14:00–18:00 (statutory holidays are off-peak; list them
- * in `offPeakDates`), every other time is off-peak at half price. Vision has no
- * separate price; it is charged per call at a conservative estimate. */
+ * Mon–Fri 09:00–12:00 and 14:00–18:00 except Chinese statutory holidays; every other
+ * time (weekends and holidays all day) is off-peak at half price. Holidays are the
+ * dates in `offPeakDates`. Vision has no separate price; it is charged per call at a
+ * conservative estimate. */
 export const DEFAULT_PRICING = Object.freeze({
-  schema: 1, currency: 'CNY', source: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing', verifiedAt: '2026-11-08',
-  peak: { weekdays: [1, 2, 3, 4, 5], windows: [['09:00', '12:00'], ['14:00', '18:00']], offPeakDates: [] },
+  schema: 1, currency: 'CNY', source: 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing', verifiedAt: '2026-11-10',
+  peak: { weekdays: [1, 2, 3, 4, 5], windows: [['09:00', '12:00'], ['14:00', '18:00']], offPeakDates: HOLIDAYS },
   models: {
     'deepseek-flash': { peak: { cacheHit: 0.04, cacheMiss: 2, output: 8 }, offPeak: { cacheHit: 0.02, cacheMiss: 1, output: 4 } },
     'deepseek-v4-pro': { peak: { cacheHit: 0.3, cacheMiss: 9, output: 27 }, offPeak: { cacheHit: 0.15, cacheMiss: 4.5, output: 13.5 } },
@@ -153,7 +166,9 @@ export function createSpendMeter({ stateFile, settingsFile, pricingFile, clock =
   // The first tier at which each kind of work is refused.
   const STOP = { proactive: 'reduced', maintenance: 'restricted', vision: 'restricted', web: 'restricted', conversation: 'exhausted' };
   async function loadPricing() {
-    try { const value = await readPrivate(pricingFile); if (validPricing(value)) { pricing = value; pricingSource = 'file'; } else { pricing = fallbackPricing(); pricingSource = 'fallback'; } }
+    // A price file written before the holiday data existed (offPeakDates: []) still gets the built-in holidays.
+    const withHolidays = value => ({ ...value, peak: { ...value.peak, offPeakDates: [...new Set([...(value.peak.offPeakDates || []), ...HOLIDAYS])] } });
+    try { const value = await readPrivate(pricingFile); if (validPricing(value)) { pricing = withHolidays(value); pricingSource = 'file'; } else { pricing = fallbackPricing(); pricingSource = 'fallback'; } }
     catch (error) {
       if (error.code !== 'ENOENT') { pricing = fallbackPricing(); pricingSource = 'fallback'; return; }
       pricing = DEFAULT_PRICING; pricingSource = 'default';
