@@ -180,14 +180,17 @@ send_private_msg），`fake-model.mjs` 启动 release 里真实的 model-gateway
 `/memory`、`/people`、`/conversations`、`/spend`，以及假模型收到的整个请求体（`expectPrompt`：
 system、记忆中枢附注、用户原文、历史与工具结果全部在内；加 `"in": "context"` 时只看记忆中枢附注，
 即 Authority 为这一回合检索到的内容）。结束后世界保持暂停。现有场景：S1 两个好友的记忆互不可见，S2 非好友静默且不准入，
-S3 每日上限到顶后所有人静默、主人只收到一次提醒。摘要里有一行 `SCENARIOS n/n passed: ...`，
+S3 每日上限到顶后所有人静默、主人只收到一次提醒；M1 `trace-matches-prompt`：operator
+`/memory/trace` 记下的注入条目与假模型实际收到的附注一致（每个 id 一行、内容都在，别人的条目不在）；
+M2 `console-filter`：`/memory` 按人筛选只返回该人的条目，并能翻到第 50 条之后（同一个人连说 52 轮）。
+M1、M2 排在 S3 之后：S3 要求当日开销从零开始。摘要里有一行 `SCENARIOS n/n passed: ...`，
 任一场景失败则是 `STAGING FAILED`。
 
 - 新功能开工前先加场景：在 `scenarios.json` 的 `scenarios` 里加一项
   `{ id, title, model, steps, finally }`。`model` 是假模型的规则（最新一条用户消息包含 `match`
   时回 `reply`；带 `propose` 则先发起一次 companion_scope propose；`usage` 决定计费）；`steps`
-  每步一个键：`say`、`expectReply`、`expectSilence`、`expectSentCount`、`expectMemory`、
-  `expectPrompt`、`expectNoModelCall`、`expectAdmitted`、`spendSettings`、`expectSpend`
+  每步一个键：`say`、`converse`、`expectReply`、`expectSilence`、`expectSentCount`、`expectMemory`、
+  `expectMemoryPages`、`expectPrompt`、`expectTrace`、`expectNoModelCall`、`expectAdmitted`、`spendSettings`、`expectSpend`
   （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。所有人名必须是 `MOCK-xx`，QQ 号必须是
   9999 开头的 12 位假号，否则运行器拒绝。
 - 本机先跑：`node --test deploy/staging/scenarios.test.mjs` 用本 checkout 的真实 Authority、
