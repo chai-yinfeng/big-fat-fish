@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { AuthorityError, fail } from './identity.js';
 import { tokenize } from '../../core/src/util.js';
+import { MIGRATIONS, migrate } from './migrations.js';
 export const APPLICATION_ID = 0x42464641;
 export const SCHEMA_VERSION = 2;
 export const DEFAULT_ENTITY_ID = 'entity:big-fat-fish';
@@ -34,7 +35,9 @@ const V1 = {
   audit:['seq',
   'body']
 };
-function inspect(db) {
+/** user_version stays 2: later schema changes are additive entries in migrations.js, which the
+ * release being replaced must still be able to open. v2 tolerates unknown tables and columns. */
+export function inspect(db) {
   const app=db.prepare('PRAGMA application_id').get().application_id,
   version=db.prepare('PRAGMA user_version').get().user_version;
   const tables=db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(r=>r.name);
@@ -56,7 +59,7 @@ function inspect(db) {
 }
 /** SQLite retains the EXCLUSIVE writer lease, including through schema migration. */
 export class Store {
-  constructor(file,initialState){
+  constructor(file,initialState,options={}){
     this.closed=false;
     try{
       this.db=new DatabaseSync(file);
@@ -84,6 +87,9 @@ export class Store {
         this.db.exec('ROLLBACK');
         throw error;
       }
+      this.migrated=migrate(this.db,file,options.migrations??MIGRATIONS,{
+        fresh:!version,...(options.now?{now:options.now}:{})
+      });
     }
     catch(error){
       try{

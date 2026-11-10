@@ -13,7 +13,7 @@ export const MAX_ADMITTED_PEOPLE = 40;
 export class Authority extends MemoryDomain {
   constructor(options){
     super();
-    closed(options,['file','clock','persona','initialPaused'],['file']);
+    closed(options,['file','clock','persona','initialPaused','migrations'],['file']);
     text(options.file,4096);
     if(options.initialPaused!==undefined&&typeof options.initialPaused!=='boolean')fail('VALIDATION_ERROR','initialPaused must be boolean');
     if(options.clock!==undefined&&typeof options.clock!=='function')fail('VALIDATION_ERROR','clock must be function');
@@ -25,7 +25,9 @@ export class Authority extends MemoryDomain {
       world:{
         paused:options.initialPaused??false,revision:1,anchorWorldAt:at,anchorRealAt:at
       },persona,personaRevision:1,facts:[],experiences:[],notes:[],appraisals:[],relationships:{}
-    });
+    },options.migrations?{
+      migrations:options.migrations
+    }:{});
     this.processing=false;
   }
   now(){

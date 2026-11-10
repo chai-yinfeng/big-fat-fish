@@ -26,6 +26,7 @@ try {
   if (config.schemaVersion !== 1 || Object.keys(config).some(key => !fields.includes(key)) || !path.isAbsolute(config.databasePath) || !path.isAbsolute(config.socketPath) || !['credentials', 'capabilities', 'actors', 'streams'].every(key => Array.isArray(config[key]))) throw new Error('CONFIG');
   fs.mkdirSync(path.dirname(config.databasePath), { recursive: true, mode: 0o700 });
   authority = new Authority({ file: config.databasePath, initialPaused: config.initialPaused, ...(config.persona ? { persona: config.persona } : {}) });
+  if (authority.store.migrated.applied.length) process.stdout.write(`Authority schema migrated: ${authority.store.migrated.applied.map(m => `${m.id}-${m.name}`).join(', ')}; backup ${authority.store.migrated.backup ? path.basename(authority.store.migrated.backup) : 'none (new database)'}.\n`);
   for (const capability of config.capabilities) authority.registerCapability(capability);
   for (const actor of config.actors) authority.bindActor(actor);
   for (const stream of config.streams) authority.bindStream(stream);
@@ -35,7 +36,7 @@ try {
   await app.start();
   await operator.start();
   process.stdout.write('Companion authority ready; Unix transport only.\n');
-} catch {
-  process.stderr.write('Companion authority could not start; inspect private configuration, schema and writer ownership.\n');
+} catch (error) {
+  process.stderr.write(`Companion authority could not start; inspect private configuration, schema and writer ownership.${/^MIGRATION_[A-Z_]+$/.test(error?.code ?? '') ? ` (${error.code})` : ''}\n`);
   await stop(1);
 }
