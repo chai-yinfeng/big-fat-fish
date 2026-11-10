@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { loadConsole } from './test-harness.mjs';
 import { operatorRequest, consumeOperatorFragment, TOKEN_KEY } from './operator-client.js';
-import { speechPayload, referencePayload, inspectReferenceWav, validRuntime } from './runtime-client.js';
+import { speechPayload, referencePayload, inspectReferenceWav, validRuntime, ttsBackend } from './runtime-client.js';
 const root = new URL('./', import.meta.url);
 const response = value => ({ ok: true, status: 200, json: async () => ({ ok: true, value }) });
 function wav() { const b = Buffer.alloc(44 + 16000 * 2 * 3); b.write('RIFF'); b.writeUInt32LE(b.length - 8, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(16000, 24); b.writeUInt32LE(32000, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write('data', 36); b.writeUInt32LE(b.length - 44, 40); return b; }
@@ -93,4 +93,36 @@ test('degraded speech status renders a localized reason; a failed action keeps t
   fail = true; await button('speechPanel.refresh').props.onClick(); await new Promise(setImmediate);
   assert.equal(states[2], world, 'an error never blanks the loaded world');
   tree = JSON.stringify(render()); assert.match(tree, /errors.validation_error/); assert.doesNotMatch(tree, /reflected-secret/); assert.match(tree, /modelSave/);
+});
+
+test('TTS backend view: configured device, observed or probe-expected backend, known fallback codes only', async () => {
+  assert.equal(ttsBackend({}), null); assert.equal(ttsBackend({ tts: null }), null); assert.equal(ttsBackend({ tts: { device: 'gpu', backend: 'vulkan' } }), null);
+  assert.deepEqual(ttsBackend({ tts: { device: 'auto', backend: 'vulkan', fallback: null, observed: true } }), { device: 'auto', backend: 'vulkan', observed: true, fallback: null });
+  assert.deepEqual(ttsBackend({ tts: { device: 'auto', backend: 'cpu', fallback: 'SPEECH_VULKAN_FAILED', observed: true } }), { device: 'auto', backend: 'cpu', observed: true, fallback: 'SPEECH_VULKAN_FAILED' });
+  assert.deepEqual(ttsBackend({ tts: { device: 'auto', backend: 'cpu', fallback: 'SPEECH_<b>', observed: 1 } }), { device: 'auto', backend: 'cpu', observed: false, fallback: null });
+  // Rendered by the real view from the server's runtime status (no synthesis is triggered to find out).
+  const world = { world: { paused: true, revision: 1 }, persona: { revision: 1, value: {} }, counts: { facts: 0, notes: 0, experiences: 0, pending: 0 }, channels: [], bindings: [], model: { provider: 'deepseek', model: 'deepseek-flash', configured: true, status: 'configured' } };
+  const runtime = tts => ({ speech: { status: 'ready', configurationRevision: 'r1', numThreads: 8, maxTextChars: 100, models: { 'tts:llama-tts': { model: 'm', componentsPresent: true, enabled: true, verified: true } }, ...(tts === undefined ? {} : { tts }) }, voices: { defaultVoice: null, profiles: [], cleanupPending: false }, imageGeneration: { configured: false, status: 'not_configured' } });
+  const states = ['operator-test', '', world, {}, 'runtime', false, '', '', 'deepseek-flash', null, null, null, null, { numThreads: 8, maxTextChars: 100 }], refs = []; let stateIndex = 0, refIndex = 0, calls = 0;
+  const React = { Fragment: 'fragment', useState: initial => { const i = stateIndex++; if (!(i in states)) states[i] = typeof initial === 'function' ? initial() : initial; return [states[i], value => { states[i] = value; }]; }, useRef: initial => refs[refIndex++] ||= { current: initial }, useEffect() {}, createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity) }) };
+  const storage = { getItem: () => 'operator-test', setItem() {}, removeItem() {} };
+  const loaded = await loadConsole({ window: { location: { protocol: 'http:', hostname: '127.0.0.1', port: '19082', hash: '' }, sessionStorage: storage }, sessionStorage: storage, AbortController, AbortSignal, setTimeout, clearTimeout, fetch: async () => { calls++; return response(world); } });
+  const component = loaded.factory(() => React).WorldConsole;
+  const rendered = tts => { states[12] = runtime(tts); stateIndex = 0; refIndex = 0; return JSON.stringify(component({ t: key => key, standalone: true })); };
+  assert.doesNotMatch(rendered(undefined), /speechPanel\.tts(Backend|Device|Last|Expected|Fallback)/); // an older server
+  let tree = rendered({ device: 'auto', backend: 'vulkan', fallback: null, observed: false });
+  assert.match(tree, /speechPanel\.ttsBackend/); assert.match(tree, /"Vulkan"/); assert.match(tree, /speechPanel\.ttsDevice\.auto · speechPanel\.ttsExpected\.vulkan"/);
+  tree = rendered({ device: 'auto', backend: 'cpu', fallback: 'SPEECH_VULKAN_FAILED', observed: true });
+  assert.match(tree, /"bff-badge warn"/); assert.match(tree, /"CPU"/); assert.match(tree, /speechPanel\.ttsDevice\.auto · speechPanel\.ttsLast\.cpu · speechPanel\.ttsFallback\.SPEECH_VULKAN_FAILED"/);
+  tree = rendered({ device: 'cpu', backend: 'cpu', fallback: null, observed: true });
+  assert.match(tree, /speechPanel\.ttsDevice\.cpu · speechPanel\.ttsLast\.cpu"/);
+  assert.equal(calls, 0);
+  const { readFile } = await import('node:fs/promises');
+  for (const name of ['en', 'zh']) {
+    const panel = JSON.parse(await readFile(new URL(`./locale/${name}.json`, import.meta.url), 'utf8')).speechPanel;
+    assert.ok(panel.ttsBackend);
+    assert.deepEqual(Object.keys(panel.ttsDevice), ['auto', 'vulkan', 'cpu']);
+    for (const group of ['ttsLast', 'ttsExpected']) assert.deepEqual(Object.keys(panel[group]), ['vulkan', 'cpu']);
+    assert.deepEqual(Object.keys(panel.ttsFallback), ['SPEECH_VULKAN_UNSUPPORTED', 'SPEECH_VULKAN_NO_DEVICE', 'SPEECH_VULKAN_FAILED']);
+  }
 });

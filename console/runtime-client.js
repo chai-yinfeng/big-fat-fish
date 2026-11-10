@@ -15,6 +15,13 @@ export function validRuntime(value) {
     && typeof v.cleanupPending === 'boolean'
     && value.imageGeneration?.configured === false && value.imageGeneration.status === 'not_configured';
 }
+/** TTS backend as the server reports it: configured device, the backend of the last synthesis in this
+ * service process (observed) or the one a probe expects (not observed), and why auto fell back to CPU. */
+export function ttsBackend(speech) {
+  const t = speech?.tts;
+  if (!t || !['auto', 'vulkan', 'cpu'].includes(t.device) || !['vulkan', 'cpu'].includes(t.backend)) return null;
+  return { device: t.device, backend: t.backend, observed: t.observed === true, fallback: ['SPEECH_VULKAN_UNSUPPORTED', 'SPEECH_VULKAN_NO_DEVICE', 'SPEECH_VULKAN_FAILED'].includes(t.fallback) ? t.fallback : null };
+}
 export function speechPayload(revision, draft) {
   const numThreads = Number(draft.numThreads), maxTextChars = Number(draft.maxTextChars);
   if (typeof revision !== 'string' || !revision

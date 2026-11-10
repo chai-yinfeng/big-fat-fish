@@ -2,7 +2,7 @@
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
 import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount } from './operator-client.js';
-import { validRuntime, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
+import { validRuntime, ttsBackend, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
 const NS = 'companion.world';
@@ -490,6 +490,7 @@ export function WorldConsole({ t, standalone = false }) {
       setAudioTest({ url, model: value.model, durationMs: value.durationMs }); setNotice(t('speechPanel.testReady'));
     });
     const ttsReady = engine => runtimeInfo.speech.models['tts:' + engine]?.componentsPresent && runtimeInfo.speech.models['tts:' + engine]?.enabled;
+    const tts = ttsBackend(runtimeInfo?.speech);
     return h(React.Fragment, null,
       h('section', { className: 'bff-card' }, cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('mic')), h('h2', null, t('speechPanel.title'))),
         button('speechPanel.refresh', () => run(loadRuntime), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
@@ -500,6 +501,9 @@ export function WorldConsole({ t, standalone = false }) {
               h('td', null, key.startsWith('tts:') ? t('speechPanel.tts') : t('speechPanel.' + key)), h('td', { className: 'bff-mono' }, model.model),
               h('td', null, badge(t(model.componentsPresent ? 'speechPanel.present' : 'speechPanel.missing'), model.componentsPresent ? 'ok' : 'danger')),
               h('td', null, badge(t(!model.enabled ? 'disabled' : model.verified ? 'speechPanel.benchmarkPassed' : 'speechPanel.notVerified'), !model.enabled ? '' : model.verified ? 'ok' : 'warn'))))))),
+          // Plain wrapping text (long sentences); only the short backend name is a badge.
+          tts && h('p', { className: 'bff-muted' }, t('speechPanel.ttsBackend'), ' ', badge(tts.backend === 'vulkan' ? 'Vulkan' : 'CPU', !tts.observed ? '' : tts.fallback ? 'warn' : 'ok'), ' ',
+            [t('speechPanel.ttsDevice.' + tts.device), t((tts.observed ? 'speechPanel.ttsLast.' : 'speechPanel.ttsExpected.') + tts.backend), ...(tts.fallback ? [t('speechPanel.ttsFallback.' + tts.fallback)] : [])].join(' · ')),
           text('speechPanel.benchmarkHint'),
           h('form', { onSubmit: event => { event.preventDefault(); if (!paused) return; void run(async () => {
             await request('/speech', speechPayload(runtimeInfo.speech.configurationRevision, speechDraft)); await loadRuntime(); setNotice(t('saved'));
