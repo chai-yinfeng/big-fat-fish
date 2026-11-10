@@ -100,9 +100,10 @@ export function createAuthorityStub({ salt, clock = Date.now }) {
   };
   const excerpt = entry => [entry.key, entry.value, entry.summary, entry.text].filter(Boolean).join(' ');
   return {
-    async context({ query = '', budgetChars = 4000 }) {
+    async context({ query = '', budgetChars = 4000, exclude = [] }) {
       revision += 1;
-      return { revision, entityId: 'entity:mock-bench', memoryEpoch: 0, personaRevision: 2, ...renderContextParts(persona, ranked(query), budgetChars), scope: { audience: 'private' }, world: { paused: false, revision: 1, worldNow: clock() } };
+      const { sections, ...rendered } = renderContextParts(persona, ranked(query).filter(entry => !exclude.includes(entry.id)), budgetChars);
+      return { revision, entityId: 'entity:mock-bench', memoryEpoch: 0, personaRevision: 2, ...rendered, memoryIds: sections.flatMap(section => section.ids), scope: { audience: 'private' }, world: { paused: false, revision: 1, worldNow: clock() } };
     },
     async memorySearch({ query, limit = 4 }) { const items = ranked(query).slice(0, limit).map(entry => ({ id: entry.id, type: entry.type, excerpt: excerpt(entry) })); return { items, text: items.map(item => JSON.stringify({ id: item.id, text: item.excerpt })).join('\n') }; },
     async memoryRead({ id }) { const entry = memories.find(item => item.id === id); if (!entry) throw Object.assign(new Error('NOT_FOUND'), { status: 404 }); return { id, type: entry.type, text: excerpt(entry) }; },

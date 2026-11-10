@@ -90,17 +90,19 @@ export class MemoryDomain {
       args:[scope.personId]
     };
   }
-  candidates(scope,policy,query,limit,{ includeArchived = false } = {}){
+  /** `exclude`: memory IDs that are never candidates (already in front of the model). */
+  candidates(scope,policy,query,limit,{ includeArchived = false, exclude = [] } = {}){
     const e=this.entity(scope.entityId),
     v=this.visibility(scope,policy),
     tokens=[...new Set(tokenize(query))].slice(0,64),
     now=this.worldStatus().worldNow,
     cutoff=now-e.retention_days*DAY*4;
     if(query.trim()&&!tokens.length)return[];
-    const args = [scope.entityId, ...v.args, ...(includeArchived ? [] : [cutoff])];
+    const args = [scope.entityId, ...v.args, ...(includeArchived ? [] : [cutoff]), ...exclude];
     const filter = `m.entity_id=? AND ${v.sql} AND m.status='active'
       AND m.collection IN ('facts','notes','experiences')
-      ${includeArchived ? '' : 'AND (m.pinned=1 OR m.created_world_at>=?)'}`;
+      ${includeArchived ? '' : 'AND (m.pinned=1 OR m.created_world_at>=?)'}
+      ${exclude.length ? `AND m.id NOT IN (${placeholders(exclude)})` : ''}`;
     let rows;
     if(tokens.length)rows=this.store.db.prepare(`SELECT m.*,COUNT(t.token) AS hits FROM memory_items m JOIN memory_tokens t ON t.memory_id=m.id AND t.entity_id=m.entity_id WHERE ${filter} AND t.token IN (${placeholders(tokens)}) GROUP BY m.id ORDER BY hits DESC,m.pinned DESC,m.revision DESC LIMIT ?`).all(...args,...tokens,Math.min(128,limit*4));
     else rows=this.store.db.prepare(`SELECT m.*,0 AS hits FROM memory_items m WHERE ${filter} ORDER BY m.pinned DESC,m.revision DESC LIMIT ?`).all(...args,Math.min(128,limit*4));

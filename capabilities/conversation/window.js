@@ -2,20 +2,8 @@ const fail = code => Object.assign(new Error(code), { code });
 export const ACTIVE_CONTEXT_CHARS = 32000;
 export const WINDOW_MARKER = 'Older completed execution dialogue is outside the active window. No facts are asserted by this maintenance marker. Retrieve authoritative long-term memory with companion_scope search/read when needed.';
 
-/**
- * Bound the replayed history to `limit` serialized characters. Units are whole
- * runs (one user input plus its assistant/tool chain), so tool pairs are never
- * split. The newest two completed runs and the current run are always kept; if
- * they alone do not fit, execution fails instead of slicing them.
- *
- * Trimming is batched for the provider's prefix cache: when the window exceeds
- * `limit`, old runs are dropped in one cut until the runs before the newest one
- * are down to `low`, and that cut stays where it is on the following runs until
- * the window exceeds `limit` again.
- * The cut is not stored: it is replayed from the whole transcript, run by run,
- * so the same transcript always yields the same cut.
- */
-export function fitActiveWindow(messages, limit = ACTIVE_CONTEXT_CHARS, low = Math.floor(limit / 2)) {
+/** Where the window starts: the leading system messages, the runs, and the index of the first kept run. */
+function cut(messages, limit, low) {
   let index = 0;
   const lead = [];
   while (index < messages.length && messages[index].role === 'system') lead.push(messages[index++]);
@@ -37,9 +25,33 @@ export function fitActiveWindow(messages, limit = ACTIVE_CONTEXT_CHARS, low = Ma
     while (total - sizes[last] + WINDOW_MARKER.length > low && start < protectedFrom) total -= sizes[start++];
     while (total + WINDOW_MARKER.length > limit && start < protectedFrom) total -= sizes[start++];
   }
-  if (!start) { if (total > limit) throw fail('ACTIVE_CONTEXT_LIMIT'); return messages; }
-  if (total + WINDOW_MARKER.length > limit) throw fail('ACTIVE_CONTEXT_LIMIT');
+  if (total + (start ? WINDOW_MARKER.length : 0) > limit) throw fail('ACTIVE_CONTEXT_LIMIT');
+  return { lead, runs, start };
+}
+
+/**
+ * Bound the replayed history to `limit` serialized characters. Units are whole
+ * runs (one user input plus its assistant/tool chain), so tool pairs are never
+ * split. The newest two completed runs and the current run are always kept; if
+ * they alone do not fit, execution fails instead of slicing them.
+ *
+ * Trimming is batched for the provider's prefix cache: when the window exceeds
+ * `limit`, old runs are dropped in one cut until the runs before the newest one
+ * are down to `low`, and that cut stays where it is on the following runs until
+ * the window exceeds `limit` again.
+ * The cut is not stored: it is replayed from the whole transcript, run by run,
+ * so the same transcript always yields the same cut.
+ */
+export function fitActiveWindow(messages, limit = ACTIVE_CONTEXT_CHARS, low = Math.floor(limit / 2)) {
+  const { lead, runs, start } = cut(messages, limit, low);
+  if (!start) return messages;
   const [head, ...rest] = lead;
   if (head?.role !== 'system' || typeof head.content !== 'string') throw fail('ACTIVE_CONTEXT_LIMIT');
   return [{ ...head, content: head.content + '\n\n' + WINDOW_MARKER }, ...rest, ...runs.slice(start).flat()];
+}
+
+/** The dialogue messages `fitActiveWindow` keeps for this transcript (no system message needed). */
+export function activeDialogue(messages, limit = ACTIVE_CONTEXT_CHARS, low = Math.floor(limit / 2)) {
+  const { runs, start } = cut(messages, limit, low);
+  return runs.slice(start).flat();
 }

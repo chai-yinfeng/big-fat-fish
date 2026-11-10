@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
-import { Authority, TRACE_LIMIT } from '../src/engine.js';
+import { Authority, TRACE_LIMIT, MAX_CONTEXT_EXCLUDE } from '../src/engine.js';
 import { createOperatorServer } from '../src/operator.js';
 import { opaquePerson, renderContextParts } from '../src/context.js';
 import { MIGRATIONS } from '../src/migrations.js';
@@ -41,7 +41,8 @@ test('context() records what it injected: entry IDs per block and sizes, for an 
   const other = tell(B, 'fact.report', { key: 'MOCK-代号', value: 'MOCK-蓝鲸队长二号' }, 'MOCK-蓝鲸队长二号');
   assert.deepEqual(a.contextTrace(), { capacity: TRACE_LIMIT, recorded: 0, traces: [] });
   const query = 'MOCK-蓝鲸队长 是谁', context = a.context('qq', { streamId: stream(A), query });
-  assert.deepEqual(Object.keys(context).sort(), ['entityId', 'memoryEpoch', 'memoryText', 'personaRevision', 'personaText', 'revision', 'scope', 'text', 'world'], 'the context response is unchanged');
+  assert.deepEqual(Object.keys(context).sort(), ['entityId', 'memoryEpoch', 'memoryIds', 'memoryText', 'personaRevision', 'personaText', 'revision', 'scope', 'text', 'world']);
+  assert.deepEqual([...context.memoryIds].sort(), [fact, experience].sort(), 'the response names the entries it rendered');
   const { traces: [trace], recorded } = a.contextTrace();
   assert.equal(recorded, 1);
   assert.deepEqual(trace, {
@@ -59,6 +60,25 @@ test('context() records what it injected: entry IDs per block and sizes, for an 
   // Nothing private: no memory text, no query, no account number, no raw person or stream ID.
   const serialized = JSON.stringify(a.contextTrace());
   for (const secret of ['蓝鲸', '是谁', A, SELF, 'person:', 'private:']) assert.ok(!serialized.includes(secret), secret);
+});
+
+test('context() never retrieves an excluded ID again; the list is bounded and validated', t => {
+  const { a, tell, stream } = fixture(t);
+  const first = tell(A, 'experience.remember', { summary: 'MOCK-A 在 MOCK-灯塔 下野餐' }, 'MOCK-灯塔 下野餐');
+  const second = tell(A, 'experience.remember', { summary: 'MOCK-A 在 MOCK-灯塔 上看海' }, 'MOCK-灯塔 上看海');
+  const query = 'MOCK-灯塔', all = a.context('qq', { streamId: stream(A), query });
+  assert.deepEqual([...all.memoryIds].sort(), [first, second].sort());
+  const rest = a.context('qq', { streamId: stream(A), query, exclude: [first] });
+  assert.deepEqual(rest.memoryIds, [second]);
+  assert.ok(rest.memoryText.includes('看海') && !rest.memoryText.includes('野餐'));
+  assert.deepEqual(a.contextTrace().traces[0].sections.flatMap(section => section.ids), [second], 'the trace lists what was really rendered');
+  const none = a.context('qq', { streamId: stream(A), query, exclude: [first, second, 'unknown-id'] });
+  assert.deepEqual([none.memoryIds, none.memoryText], [[], '']);
+  // Excluding is per call and changes nothing stored; the search tool is not affected.
+  assert.equal(a.context('qq', { streamId: stream(A), query }).memoryIds.length, 2);
+  assert.equal(a.memorySearch('qq', { streamId: stream(A), query }).items.length, 2);
+  for (const exclude of ['x', [1], [''], Array.from({ length: MAX_CONTEXT_EXCLUDE + 1 }, (_, i) => 'id-' + i)]) assert.throws(() => a.context('qq', { streamId: stream(A), query, exclude }), { code: 'VALIDATION_ERROR' });
+  assert.equal(a.context('qq', { streamId: stream(A), query, exclude: Array.from({ length: MAX_CONTEXT_EXCLUDE }, (_, i) => 'id-' + i) }).memoryIds.length, 2);
 });
 
 test('the trace follows the budget: entries that did not fit are not listed; an empty probe is not recorded', t => {

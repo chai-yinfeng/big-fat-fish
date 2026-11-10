@@ -12,6 +12,8 @@ from './store.js';
 export const MAX_ADMITTED_PEOPLE = 40;
 /** Size of the in-memory injection trace (newest context() calls; gone on restart). */
 export const TRACE_LIMIT = 400;
+/** Most memory IDs one context() call may exclude. */
+export const MAX_CONTEXT_EXCLUDE = 256;
 export class Authority extends MemoryDomain {
   constructor(options){
     super();
@@ -363,14 +365,18 @@ export class Authority extends MemoryDomain {
     }
   }
   context(capabilityId,input){
-    closed(input,['streamId','query','budgetChars'],['streamId']);
+    closed(input,['streamId','query','budgetChars','exclude'],['streamId']);
     const registered=capability(this.store,capabilityId),
     scope=contextScope(this.store,capabilityId,input.streamId),
     e=this.entity(scope.entityId),
     query=input.query===undefined?'':input.query;
     text(query,2000,true);
+    // `exclude`: IDs the caller already shows the model (the executor's persisted notes); never retrieved again.
+    const exclude=input.exclude??[];
+    if(!Array.isArray(exclude)||exclude.length>MAX_CONTEXT_EXCLUDE)fail('VALIDATION_ERROR','exclude must be a bounded list of memory IDs');
+    exclude.forEach(identifier);
     const budget=integer(input.budgetChars===undefined?DEFAULT_CONTEXT_CHARS:input.budgetChars,0,16000),
-    rows=this.candidates(scope,registered.policy,query,64),
+    rows=this.candidates(scope,registered.policy,query,64,{exclude}),
     {sections,...rendered}=renderContextParts(JSON.parse(e.persona),rows,budget),
     result={
       revision:this.store.get('revision'),
@@ -379,6 +385,8 @@ export class Authority extends MemoryDomain {
       personaRevision:e.persona_revision,
       // `text` is the whole context; personaText/memoryText are the same content apart (stable / per-query).
       ...rendered,
+      // The entries rendered into memoryText, so the caller can pass them back as `exclude`.
+      memoryIds:sections.flatMap(section=>section.ids),
       scope,
       world:this.worldStatus()
     };
