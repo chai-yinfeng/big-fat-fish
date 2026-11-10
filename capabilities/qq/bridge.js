@@ -165,9 +165,11 @@ export class QQBridge {
       item.status = item.unobserved ? 'sent_unobserved' : 'sent'; this.save();
     } catch (error) {
       if (error?.code === 'BUDGET_EXHAUSTED' && !sending && !item.receipts?.length) { await this.budgetExhausted(cfg, item); return; }
-      item.status = sending ? item.receipts?.length ? 'partial_unknown' : 'unknown' : item.receipts?.length ? 'partial' : 'failed'; this.save();
+      // The spend tier stopped vision/web (>= restricted): silence, like the daily cap, not an apology per image.
+      const restricted = error?.code === 'CONTENT_SPEND_RESTRICTED' && !sending && !item.receipts?.length;
+      item.status = restricted ? 'budget_restricted' : sending ? item.receipts?.length ? 'partial_unknown' : 'unknown' : item.receipts?.length ? 'partial' : 'failed'; this.save();
       // A failed perception must not be replaced by a hallucinated description.
-      if (!sending && !prepared && message.media.length && await this.current(cfg, observation, item).catch(() => false)) {
+      if (!restricted && !sending && !prepared && message.media.length && await this.current(cfg, observation, item).catch(() => false)) {
         const text = '这条附件暂时没有处理完成，我没有识别其内容。可以重试或改用文字。';
         try {
           const sent = await this.onebot.call('send_private_msg', { user_id: userId, message: [{ type: 'text', data: { text } }], auto_escape: true });

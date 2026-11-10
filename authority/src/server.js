@@ -32,6 +32,7 @@ const ERRORS = {
   BODY_TOO_LARGE: [413, 'Request exceeds the protocol body limit'],
   UNAVAILABLE: [503, 'Authority review is unavailable'],
   PEOPLE_LIMIT: [409, 'The admitted people limit is reached'],
+  SPEND_RESTRICTED: [429, 'The daily spend cap has stopped this capability'],
 };
 function failure(code) { return Object.assign(new Error(ERRORS[code][1]), { code }); }
 function send(res, status, body) {

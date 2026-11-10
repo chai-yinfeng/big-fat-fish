@@ -58,3 +58,21 @@ test('explicit speech creates a record only after synthesis; authorized image at
   for (const row of f.service.replies.values()) row.expiresAt = Date.now() - 1;
   assert.deepEqual(await f.content.call({ action: 'pending', streamId: 'qq:100:private:200', memoryEpoch: 0, requestId: 'expired-reply' }), { parts: [] });
 });
+
+test('an image refused by the spend tier gets silence; any other attachment failure still gets the notice', async t => {
+  const f = fixture(t); await f.bridge.connection(true);
+  const image = [{ type: 'image', data: { file: 'trusted-onebot-image-reference' } }], call = f.service.vision;
+  f.service.vision = async () => { throw Object.assign(new Error('CONTENT_SPEND_RESTRICTED'), { code: 'CONTENT_SPEND_RESTRICTED' }); };
+  await f.bridge.receive(f.event(11, image));
+  await f.bridge.receive(f.event(12, [{ type: 'text', data: { text: '看看这张' } }, ...image]));
+  assert.equal(f.sent.length, 0); assert.equal(f.executions.length, 0);
+  assert.deepEqual(Object.values(f.bridge.state.records).map(item => item.status), ['budget_restricted', 'budget_restricted']);
+  for (const code of ['CONTENT_BUDGET_EXHAUSTED', 'CONTENT_OPERATION_UNAVAILABLE']) {
+    f.service.vision = async () => { throw Object.assign(new Error(code), { code }); };
+    await f.bridge.receive(f.event(code.length, image));
+  }
+  assert.deepEqual(f.sent.map(item => item.message[0].data.text), Array(2).fill('这条附件暂时没有处理完成，我没有识别其内容。可以重试或改用文字。'));
+  f.service.vision = call;
+  await f.bridge.receive(f.event(15, image));
+  assert.equal(f.sent.at(-1).message[0].data.text, '我在。'); assert.equal(f.executions.length, 1);
+});

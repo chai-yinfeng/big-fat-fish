@@ -200,3 +200,20 @@ test('capability credentials and public-only inputs are checked before budget re
   assert.equal((await f.capability('/v1/vision/describe', { imageBase64: tooLarge.toString('base64'), mime: 'image/jpeg' })).status, 400);
   assert.equal(calls, 0); await assert.rejects(fs.access(f.usageFile), { code: 'ENOENT' });
 });
+
+test('a spend-tier refusal of vision/web is SPEND_RESTRICTED; the daily call count stays BUDGET_EXHAUSTED', async t => {
+  let calls = 0;
+  const f = await fixture(t, async () => { calls++; return new Response(JSON.stringify({ results: [] })); }, { budgets: { web: 1, vision: 1 }, clock: () => Date.parse('2026-11-09T02:00:00Z') });
+  await f.control('/model', { model: 'deepseek-flash', apiKey: 'synthetic-key' }); f.pause(false);
+  assert.equal((await f.capability('/v1/web/search', { query: 'x' })).status, 200);
+  const counted = await f.capability('/v1/web/search', { query: 'x' });
+  assert.deepEqual([counted.status, counted.json().error.code], [429, 'BUDGET_EXHAUSTED']);
+  // One web call cost 0.005 of a 0.01 cap: 50%, restricted once that tier starts at 40%.
+  assert.equal((await f.control('/spend/settings', { dailyCapYuan: 0.01, reducedPercent: 30, restrictedPercent: 40 })).json().value.tier, 'restricted');
+  for (const [route, body] of [['/v1/vision/describe', { imageBase64: png, mime: 'image/png' }], ['/v1/web/search', { query: 'x' }], ['/v1/web/fetch', { url: 'https://example.com' }]]) {
+    const refused = await f.capability(route, body);
+    assert.deepEqual([refused.status, refused.json().error.code], [429, 'SPEND_RESTRICTED'], route);
+  }
+  assert.equal(calls, 1);
+  const saved = JSON.parse(await fs.readFile(f.usageFile, 'utf8')); assert.equal(saved.visionCalls, 0, 'a spend refusal does not consume the daily count');
+});

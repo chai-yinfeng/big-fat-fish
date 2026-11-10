@@ -23,6 +23,7 @@ const ERRORS = {
   UPSTREAM_ERROR: [502, 'Model provider request failed'],
   CANCELLED: [503, 'Model request cancelled'],
   BUDGET_EXHAUSTED: [429, 'The daily capability budget is exhausted'],
+  SPEND_RESTRICTED: [429, 'The daily spend cap has stopped this capability'],
 };
 const failure = code => Object.assign(new Error(ERRORS[code][1]), { code });
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -295,7 +296,8 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     // Per-call CNY price; refused from the restricted tier on. Provider errors are not charged.
     let reservation, outcome = 'release';
     try {
-      reservation = await spend.reserve(kind, pricing => pricing.perCall[kind] * 1e6);
+      // The spend tier (not the daily call count below) refused: a distinct code, so channels can stay silent.
+      reservation = await spend.reserve(kind, pricing => pricing.perCall[kind] * 1e6).catch(error => { throw error.code === 'BUDGET_EXHAUSTED' ? failure('SPEND_RESTRICTED') : error; });
       // A failed or cancelled provider attempt still consumes its durable reservation.
       await reserve(kind);
       if (controller.signal.aborted) throw failure('CANCELLED');
