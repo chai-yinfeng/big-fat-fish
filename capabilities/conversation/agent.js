@@ -50,8 +50,9 @@ function validRequest({ scope, requestId, input, timeoutMs }) {
  * once per run with this run's real input as the query; pause and epoch are
  * re-checked before every later provider request. Request layout, for the
  * provider's prefix cache: stable system text (base prompt + persona + the
- * standing profile of the person in this conversation), then the persisted dialogue. Each run's note leads its user message and is stored with
- * it (`hub.memoryIds` lists the memory it carries), so the next request is the
+ * standing profile of the person in this conversation), then the persisted
+ * dialogue. Each run's note leads its user message and is stored with it
+ * (`hub.memoryIds` lists the memory it carries), so the next request is the
  * previous one plus new messages; a memory already in the window is not
  * retrieved again. `hub.personaRevision` records the persona the run was made
  * under: after a persona change the window keeps only two earlier runs.
