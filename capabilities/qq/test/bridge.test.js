@@ -87,3 +87,51 @@ test('QQ passes only the Core epoch scope and discards an in-flight reply after 
   assert.equal(f.sends.length, 0);
   assert.equal(Object.values(f.bridge.state.records)[0].status, 'paused');
 });
+
+// A reply of four sentences, each too long to share a message with the next: four messages.
+const sentence = n => `这是第${n}句话，它的长度刚好让两句放不进同一条消息里面去，所以一句一条。`;
+const LONG = [1, 2, 3, 4].map(sentence).join('');
+/** The fixture with a long reply, numbered send receipts and a recorded (not waited) pause between messages. */
+async function longReply(t, { failAt = 0, onGap = () => {} } = {}) {
+  const f = await fixture(t), gaps = [], texts = []; let runs = 0;
+  f.bridge.executor.execute = async () => { runs++; return LONG; };
+  f.bridge.sleep = async ms => { gaps.push(ms); await onGap(f, gaps.length); };
+  f.bridge.onebot = { call: async (action, args) => {
+    assert.equal(action, 'send_private_msg'); texts.push(args.message[0].data.text);
+    if (texts.length === failAt) throw new Error('ONEBOT_DELIVERY_UNKNOWN');
+    return { message_id: 500 + texts.length };
+  } };
+  return { ...f, gaps, texts, runs: () => runs, record: () => Object.values(f.bridge.state.records)[0] };
+}
+
+test('a long text reply goes out as short messages in order, each observed under its own receipt', async t => {
+  const f = await longReply(t); await f.bridge.receive(f.event);
+  assert.deepEqual(f.texts, [1, 2, 3, 4].map(sentence)); assert.equal(f.texts.join(''), LONG);
+  for (const text of f.texts) assert.ok(text.length <= 60);
+  assert.deepEqual(f.gaps, [1200, 1200, 1200]);
+  assert.equal(f.record().status, 'sent');
+  assert.deepEqual(f.record().receipts, [501, 502, 503, 504].map(id => ({ messageId: String(id), type: 'text' })));
+  assert.deepEqual(f.observations.slice(1).map(o => [o.eventId, o.role, o.text]), [1, 2, 3, 4].map(n => ['qq:sent:' + (500 + n), 'assistant', sentence(n)]));
+});
+test('a short reply is one message with the model text unchanged and no pause', async t => {
+  const f = await fixture(t), gaps = []; f.bridge.sleep = async ms => { gaps.push(ms); };
+  await f.bridge.receive(f.event);
+  assert.deepEqual(f.sends.map(send => send.message), [[{ type: 'text', data: { text: '[CQ:file,file=/secret] just text' } }]]);
+  assert.deepEqual(gaps, []); assert.equal(f.observations[1].text, '[CQ:file,file=/secret] just text');
+});
+test('a message of a split reply without a receipt stops the rest: nothing is resent, only delivered text is recorded', async t => {
+  const f = await longReply(t, { failAt: 2 }); await f.bridge.receive(f.event); await f.bridge.receive(f.event);
+  assert.deepEqual(f.texts, [sentence(1), sentence(2)]); assert.equal(f.runs(), 1);
+  assert.equal(f.record().status, 'partial_unknown');
+  assert.deepEqual(f.record().receipts, [{ messageId: '501', type: 'text' }]);
+  assert.deepEqual(f.observations.map(o => [o.role, o.text]), [['user', 'Hello'], ['assistant', sentence(1)]]);
+  // The first message failing leaves nothing recorded as said.
+  const g = await longReply(t, { failAt: 1 }); await g.bridge.receive(g.event); await g.bridge.receive(g.event);
+  assert.deepEqual(g.texts, [sentence(1)]); assert.equal(g.record().status, 'unknown'); assert.equal(g.observations.length, 1);
+});
+test('a pause between the messages of a split reply stops the rest', async t => {
+  const f = await longReply(t, { onGap: (f, n) => { if (n === 2) { f.world.paused = true; f.world.revision++; } } });
+  await f.bridge.receive(f.event);
+  assert.deepEqual(f.texts, [sentence(1), sentence(2)]); assert.equal(f.record().status, 'partial');
+  assert.deepEqual(f.observations.slice(1).map(o => o.text), [sentence(1), sentence(2)]);
+});

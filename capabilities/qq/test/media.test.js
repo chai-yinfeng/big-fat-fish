@@ -76,3 +76,22 @@ test('an image refused by the spend tier gets silence; any other attachment fail
   await f.bridge.receive(f.event(15, image));
   assert.equal(f.sent.at(-1).message[0].data.text, '我在。'); assert.equal(f.executions.length, 1);
 });
+
+test('with media: only the text of a reply is split; a voice reply and an attachment stay one message each', async t => {
+  const f = fixture(t), gaps = []; await f.bridge.connection(true); f.bridge.sleep = async ms => { gaps.push(ms); };
+  const sentence = n => `这是第${n}句话，它的长度刚好让两句放不进同一条消息里面去，所以一句一条。`, long = sentence(1) + sentence(2);
+  f.executor.execute = async () => long;
+  await f.bridge.receive(f.event(21, [{ type: 'text', data: { text: '请用语音告诉我' } }]));
+  assert.deepEqual(f.sent.map(p => p.message[0].type), ['record']); assert.equal(f.tts(), 1); assert.deepEqual(gaps, []);
+  assert.ok(f.observed.at(-1).text.endsWith(long));
+  // Failed synthesis falls back to one text message, as before.
+  f.service.speech.synthesize = async () => { throw new Error('TTS_UNAVAILABLE'); };
+  await f.bridge.receive(f.event(22, [{ type: 'text', data: { text: '请用语音再说一遍' } }]));
+  assert.deepEqual(f.sent.slice(1).map(p => p.message[0].data.text), [long + '\n（本次语音合成未完成，已改用文字；没有发送残缺语音。）']); assert.deepEqual(gaps, []);
+  f.executor.execute = async request => { const image = f.store.records().find(r => r.kind === 'image'); await f.content.call({ action: 'attach', streamId: 'qq:100:private:200', memoryEpoch: 0, requestId: request.requestId, ref: image.id }); return long; };
+  await f.bridge.receive(f.event(23, [{ type: 'text', data: { text: '把这张图发回来' } }, { type: 'image', data: { file: 'trusted-image-reference' } }]));
+  assert.deepEqual(f.sent.slice(2).map(p => p.message[0].type === 'text' ? p.message[0].data.text : p.message[0].type), [sentence(1), sentence(2), 'image']);
+  assert.deepEqual(gaps, [1200]);
+  assert.equal(Object.values(f.bridge.state.records).at(-1).receipts.length, 3);
+  assert.deepEqual(f.observed.slice(-3, -1).map(o => o.text), [sentence(1), sentence(2)]);
+});
