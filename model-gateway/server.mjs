@@ -25,6 +25,8 @@ const ERRORS = {
   BUDGET_EXHAUSTED: [429, 'The daily capability budget is exhausted'],
   SPEND_RESTRICTED: [429, 'The daily spend cap has stopped this capability'],
 };
+/** Output cap of one maintenance completion (/v1/memory/completions): room for a digest plus quoted facts. */
+export const MAINTENANCE_MAX_TOKENS = 1536;
 const failure = code => Object.assign(new Error(ERRORS[code][1]), { code });
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 function send(res, status, value) {
@@ -374,7 +376,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     if (maintenance) {
       closed(body, ['model', 'messages', 'max_tokens', 'stream']);
       if (body.stream !== false || body.messages.length > 3 || body.messages.some(message => !object(message) || !['system', 'user'].includes(message.role) || typeof message.content !== 'string' || Object.keys(message).some(key => !['role', 'content'].includes(key))) || body.messages.reduce((sum, message) => sum + message.content.length, 0) > 8000) throw failure('INVALID_REQUEST');
-      await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 600, 768), thinking: { type: 'disabled' } }, 'inference', res, 'maintenance');
+      await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 600, MAINTENANCE_MAX_TOKENS), thinking: { type: 'disabled' } }, 'inference', res, 'maintenance');
     } else {
       await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 4096, 4096), thinking: { type: 'enabled' }, reasoning_effort: 'high' }, 'inference', res, 'conversation');
     }
