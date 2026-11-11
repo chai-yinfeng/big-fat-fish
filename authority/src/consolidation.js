@@ -19,7 +19,7 @@ export const CONSOLIDATION = Object.freeze({
   /** Batches handed out per conversation and for the whole entity, per Beijing day. */
   perStreamPerDay: 2, perDay: 24,
   /** One batch: serialized size of its observations, the share of one observation, and their number. */
-  batchChars: 4800, observationChars: 1500, batchObservations: 100,
+  batchChars: 4600, observationChars: 1500, batchObservations: 100,
   /** Unusable model answers for the same batch before it is skipped. */
   maxInvalid: 3,
   /** Dialogue older than this when consolidation first runs is never consolidated. */
