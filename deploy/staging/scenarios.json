@@ -225,6 +225,32 @@
         { "converse": { "from": "MOCK-B", "text": "MOCK-M8 第{n}轮", "times": 3, "reply": "MOCK-REPLY-M8 好", "pad": 6000 } },
         { "expectHistory": { "userText": "MOCK-M8 第3轮", "minEarlier": 1, "maxEarlier": 1 } }
       ]
+    },
+    {
+      "id": "H1",
+      "title": "split-long-reply: a reply of about 150 characters arrives as 2 to 4 short messages, in order, nothing lost",
+      "model": [
+        { "match": "MOCK-H1", "reply": "MOCK-REPLY-H1 今天下班路上看到一只橘猫趴在便利店门口晒太阳，圆滚滚的特别像你上次发给我的那张照片。我蹲下来看了它好一会儿，它居然一点都不怕人，还伸了个懒腰！后来店员出来说它叫大橘，是这条街的常客，每天下午都会准时来报到。你那边今天过得怎么样呀？有没有好好吃饭？记得早点休息，别又熬到半夜。" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-A", "text": "MOCK-H1 今天有什么新鲜事吗" } },
+        { "expectSplitReply": { "to": "MOCK-A", "text": "MOCK-REPLY-H1 今天下班路上看到一只橘猫趴在便利店门口晒太阳，圆滚滚的特别像你上次发给我的那张照片。我蹲下来看了它好一会儿，它居然一点都不怕人，还伸了个懒腰！后来店员出来说它叫大橘，是这条街的常客，每天下午都会准时来报到。你那边今天过得怎么样呀？有没有好好吃饭？记得早点休息，别又熬到半夜。", "minParts": 2, "maxParts": 4, "maxChars": 60 } },
+        { "expectSilence": { "to": "*", "afterMs": 3000 } }
+      ]
+    },
+    {
+      "id": "H2",
+      "title": "beijing-time-in-note: the model is told the real time as Beijing time, and no UTC timestamp",
+      "model": [
+        { "match": "MOCK-H2", "reply": "MOCK-REPLY-H2 好" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-A", "text": "MOCK-H2 现在几点了" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-H2 好" } },
+        { "expectPrompt": { "userText": "MOCK-H2", "contains": "（北京时间）", "in": "context" } },
+        { "expectPrompt": { "userText": "MOCK-H2", "absent": "世界时间", "in": "context" } },
+        { "expectBeijingTime": { "userText": "MOCK-H2" } }
+      ]
     }
   ]
 }
