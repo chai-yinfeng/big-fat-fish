@@ -106,7 +106,7 @@ export class ConsolidationDomain extends MemoryDomain {
     return this.store.transaction(() => {
       const e = this.entity(entityId), world = this.worldStatus(), now = this.now();
       if (world.paused) return { entityId: e.id, task: null, reason: 'paused' };
-      const all = this.consolidationState(), own = this.#today(all, e.id, now);
+      const all = this.consolidationState(), stored = JSON.stringify(all), own = this.#today(all, e.id, now);
       let task = null, reason = 'idle';
       const streams = this.#privateStreams(e.id).map(stream => ({ stream, key: streamKey(stream.capabilityId, stream.streamId) }))
         .sort((a, b) => (own.streams[a.key]?.calls ?? 0) - (own.streams[b.key]?.calls ?? 0));
@@ -140,7 +140,8 @@ export class ConsolidationDomain extends MemoryDomain {
         };
         break;
       }
-      this.#save(all);
+      // An idle tick writes nothing.
+      if (JSON.stringify(all) !== stored) this.#save(all);
       return task ? { entityId: e.id, task } : { entityId: e.id, task: null, reason };
     });
   }
