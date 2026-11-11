@@ -188,7 +188,15 @@ revision 和时间；M4 `batch-trim`：连说 30 轮，历史起点只移动几�
 置顶事实在与它无关的提问里也在本人的 system 里，另一个人的整个请求里没有；M6 `persona-change-trim`：
 经 operator 改人格后的下一轮最多重放 2 个旧回合，事实仍在；M7 `no-duplicate-injection`：同一条记忆只进窗口里的
 一段附注；M8 `oversized-history-still-replies`：连发三条约 6000 字符的消息，第三条放不下前两轮时只带最近一轮、
-照常得到回复。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
+照常得到回复；M9 `rolled-out-digest`：两个人各自聊到原话滚出窗口，各得到自己名下的机器摘要（派生来源含那句原话）和带逐字引文的
+后台事实，每次整合请求里只有一个人的对话，摘要正文和“她的感受”不出现在任何聊天请求里，后台事实只进本人的常驻档案；
+M10 `extract-quote-guard`：假模型给出引文不逐字、value 不在引文里、引用她自己的话各一条，三条都被审核拒收（原因分别是
+`quote_not_in_observation`、`value_not_in_quote`、`unconfirmed_identity`），摘要和一条逐字事实照常写入；
+M12 `budget-gates-consolidation`：把开销的“受限”档调到几乎为零后聊到滚出窗口，整合状态显示因开销暂停、该会话当日批次为 0、
+没有任何整合请求发给模型，恢复档位后补上；同一会话当天第 3 批不发放；M13 `forget-cascade-derived`：经 operator 忘记
+一句原话，覆盖它的摘要和从它抽取的事实消失，只有这个人的会话代次加一，另一个人的摘要还在（M11 游标与崩溃重启由
+`authority/test/consolidation.test.js` 覆盖，不在 staging 回放：运行器没有杀进程的手段）。M9 起每个场景用自己的人
+（MOCK-C…MOCK-H），因为每个会话每天只有 2 批。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
 M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里有一行 `SCENARIOS n/n passed: ...`，
 任一场景失败则是 `STAGING FAILED`。
 
@@ -197,12 +205,20 @@ M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里�
   时回 `reply`；带 `propose` 则先发起一次 companion_scope propose；`usage` 决定计费）；`steps`
   每步一个键：`say`、`converse`、`expectReply`、`expectSilence`、`expectSentCount`、`expectMemory`、
   `expectMemoryPages`、`expectPrompt`、`expectTrace`、`expectStablePrefix`、`expectBatchTrim`、`expectHistory`、
-  `expectInjectedOnce`、`pinMemory`、`setPersona`、`restorePersona`、`expectNoModelCall`、`expectAdmitted`、`spendSettings`、`expectSpend`
-  （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。所有人名必须是 `MOCK-xx`，QQ 号必须是
+  `expectInjectedOnce`、`pinMemory`、`setPersona`、`restorePersona`、`expectNoModelCall`、`expectAdmitted`、`spendSettings`、`expectSpend`、
+  `expectDigest`、`expectNoDigest`、`expectExtracted`、`expectConsolidationInput`、`expectNoChatContains`、
+  `expectConsolidation`、`noteExtracted`、`expectRejected`、`forget`、`resume`
+  （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。带 `consolidate` 的规则只应答记忆 worker 的整合请求
+  （按该批对话里出现的 `match` 选规则，没有规则时回一段固定的合法摘要），不应答聊天；整合请求在请求日志里单独标记，
+  `userText` 为空，所以按用户原文匹配的步骤看不到它。`forget` 里清理任务由运行器自己确认（staging 的 memory 单元连不到
+  operator 端口），不清理会话文件。所有人名必须是 `MOCK-xx`，QQ 号必须是
   9999 开头的 12 位假号，否则运行器拒绝。
 - 本机先跑：`node --test deploy/staging/scenarios.test.mjs` 用本 checkout 的真实 Authority、
-  网关、执行器和 QQ 桥进程回放同一份场景（静默等待缩短）。
-- 在 staging 上单独重跑（沿用上一次生命周期留下的 release，会重置当日开销与主人提醒状态）：
+  网关、执行器、QQ 桥和记忆 worker 进程回放同一份场景（静默等待缩短，worker 每秒一拍）。
+- staging 的记忆 worker 每 5 秒一拍、被开销档位拒绝后 10 秒重试（memory-worker.json 的 `tickMs`、`consolidationDeferMs`；
+  生产缺省 60 秒 / 30 分钟）。每次回放前，staging agent 在 Authority 停着的时候把每个私聊会话的整合游标放到它最新的一条
+  原话、清零当日批次（`reset_consolidation`），所以两次回放的起点相同；已写入的摘要和事实保留。
+- 在 staging 上单独重跑（沿用上一次生命周期留下的 release，会重置当日开销、主人提醒状态和上面的整合起点）：
   `node deploy/staging/run.mjs --scenarios`，或 `--scenarios --only S1,S3`。
 
 部署预检：companion-deploy 在停止任何单元、切换 current 之前，以 companion 身份运行新包的
@@ -306,6 +322,11 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
 启动时自动备份后应用（见下节「数据库迁移」）。authority SCHEMA_VERSION（SQLite user_version）
 保持 2 不变；新 release 的 SCHEMA_VERSION 与当前 release 不同则部署仍被拒绝。配置迁移不在部署
 范围内。回退只切换代码与 unit，不覆盖数据库、人设、记忆或登录态，也不撤销已应用的迁移。
+
+回退到按人整合之前的版本（965c638 及更早）时，库里已有的机器摘要、后台事实、整合游标都原样留着，旧版本能直接运行，
+但它不认识摘要：①摘要会被当成普通“会话经验”检索进**本人**的对话（仍然只有本人，没有“机器整理”的提示）；②忘记一句
+原话时不会连带删除覆盖它的摘要；③控制台允许对摘要点“授权公开”。所以回退期间不要执行忘记，不要对摘要授权公开。重新
+升级后，记忆页“后台整合”卡片会列出仍覆盖已忘记原话的摘要，用正常的忘记流程清掉。
 
 ## 数据库迁移
 
