@@ -45,6 +45,13 @@ test('scripted model: rule by newest user message, propose first, reply after th
   assert.deepEqual([plain.text, plain.usage], [DEFAULT_REPLY, { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }]);
   assert.equal(planReply({ stream: false, messages: [{ role: 'user', content: 'Reply OK.' }] }, rules).text, 'OK');
   assert.equal(planReply({ stream: true, messages: [{ role: 'user', content: '好贵' }] }, rules).usage.total_tokens, 40000);
+  // For the prefix scenarios: the note of every user message, the number of turns, one hash per message.
+  const history = [{ role: 'system', content: system }, user('第一句'), { role: 'assistant', content: 'x' }, { role: 'user', content: '旧版本存的一句' }, { role: 'assistant', content: 'y' }, user('第三句')];
+  const logged = planReply({ stream: true, tools, messages: history }, rules), longer = planReply({ stream: true, tools, messages: [...history, { role: 'assistant', content: 'z' }, user('第四句')] }, rules);
+  assert.deepEqual([logged.notes, logged.turns, logged.hashes.length], [[note, note], 3, 6]);
+  assert.ok(logged.hashes.every(hash => /^[a-f0-9]{16}$/.test(hash)) && new Set(logged.hashes).size === 6);
+  assert.deepEqual(longer.hashes.slice(0, 6), logged.hashes);
+  assert.notEqual(planReply({ stream: true, messages: [{ role: 'system', content: system + ' ' }, ...history.slice(1)] }, rules).hashes[0], logged.hashes[0]);
   const sse = renderReply(first).split('\n\n');
   assert.equal(JSON.parse(sse[0].slice(6)).choices[0].delta.tool_calls[0].function.name, 'companion_scope');
   assert.equal(JSON.parse(sse[1].slice(6)).choices[0].finish_reason, 'tool_calls');

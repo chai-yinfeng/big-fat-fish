@@ -8,6 +8,9 @@
 // The first rule whose `match` occurs in the newest user message applies. `propose` makes the
 // first answer a companion_scope propose tool call (evidence ref taken from the memory-hub note
 // that leads the newest user message); the answer after the tool result is `reply`.
+// Each logged request also records `notes` (the memory-hub note of every user message, oldest first),
+// `turns` (the number of user messages) and `hashes` (one per message, system first), so a scenario can
+// compare whole requests without the log holding every request in full.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -45,7 +48,9 @@ export function planReply(body, rules = []) {
   const rule = rules.find(item => typeof item?.match === 'string' && item.match && userText.includes(item.match)) ?? {};
   const usage = { ...DEFAULT_USAGE, ...rule.usage };
   usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
-  const base = { userText, system, context, rest, afterTool, ...(afterTool ? { toolResult: textOf(toolResult.content) } : {}), usage, stream: body?.stream === true };
+  const users = messages.filter(message => message?.role === 'user');
+  const shape = { notes: users.map(message => splitUser(message.content).context).filter(Boolean), turns: users.length, hashes: messages.map(message => createHash('sha256').update(JSON.stringify(message)).digest('hex').slice(0, 16)) };
+  const base = { userText, system, context, rest, ...shape, afterTool, ...(afterTool ? { toolResult: textOf(toolResult.content) } : {}), usage, stream: body?.stream === true };
   const ref = evidenceRef(context);
   if (base.stream && rule.propose && !afterTool && ref && body.tools?.some(tool => tool?.function?.name === 'companion_scope')) {
     const id = 'mock-' + createHash('sha256').update(ref).digest('hex').slice(0, 16);
@@ -71,7 +76,7 @@ export function createFakeUpstream({ scriptFile, logFile }) {
     const body = JSON.parse(options.body);
     let rules = []; try { rules = JSON.parse(fs.readFileSync(scriptFile, 'utf8')); } catch {}
     const plan = planReply(body, Array.isArray(rules) ? rules : []);
-    const entry = { at: Date.now(), stream: plan.stream, userText: plan.userText, system: plan.system, context: plan.context, rest: plan.rest, afterTool: plan.afterTool, ...(plan.afterTool ? { toolResult: plan.toolResult } : {}), answer: plan.kind === 'tool' ? { tool: plan.call } : { text: plan.text }, usage: plan.usage };
+    const entry = { at: Date.now(), stream: plan.stream, userText: plan.userText, system: plan.system, context: plan.context, rest: plan.rest, notes: plan.notes, turns: plan.turns, hashes: plan.hashes, afterTool: plan.afterTool, ...(plan.afterTool ? { toolResult: plan.toolResult } : {}), answer: plan.kind === 'tool' ? { tool: plan.call } : { text: plan.text }, usage: plan.usage };
     fs.appendFileSync(logFile, JSON.stringify(entry) + '\n', { mode: 0o600 });
     return new Response(renderReply(plan), { status: 200, headers: { 'content-type': plan.stream ? 'text/event-stream' : 'application/json' } });
   };

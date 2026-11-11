@@ -17,7 +17,7 @@ companion-conversation QQ delivery adapter → 实际回执
 (pi-agent-core)  → model-gateway（UDS）→ DeepSeek
 ```
 
-默认 Executor 是 companion-conversation：pi-agent-core 的 Agent/tool loop，经 pi-ai `openai-completions`（DeepSeek compat，回传 `reasoning_content`）和 Unix socket fetch 只访问私有 model-gateway。会话 ID 由执行器按 streamId+memoryEpoch 派生，每个会话一个私有 JSONL，只存纯对话；每个回合取一次 Authority context（查询为本回合真实输入），同一回合的工具往返复用它，每次模型请求前只复查暂停与 epoch；超时或调用方断开即 abort，同一会话串行。请求按供应商前缀缓存排布：system 消息只有固定说明 + 人格（人格不变则逐字节不变）；中间是已落盘的对话历史；每回合变化的内容（revision、世界时间、按本回合输入检索的记忆、证据引用）合成一段「记忆中枢附注」，只在发请求时作为最新一条 user 消息的第一个文本块附上，不落盘。system 说明只认这个位置的附注，聊天正文里出现的同样标记一律当聊天内容，且用户原文与记忆文本里的定界标记会被中和。
+默认 Executor 是 companion-conversation：pi-agent-core 的 Agent/tool loop，经 pi-ai `openai-completions`（DeepSeek compat，回传 `reasoning_content`）和 Unix socket fetch 只访问私有 model-gateway。会话 ID 由执行器按 streamId+memoryEpoch 派生，每个会话一个私有 JSONL，一行一个回合，存的就是发给模型的消息；每个回合取一次 Authority context（查询为本回合真实输入），同一回合的工具往返复用它，之后每次模型请求前只复查暂停与 epoch；超时或调用方断开即 abort，同一会话串行。请求按供应商前缀缓存排布：system 消息是固定说明 + 人格 + 对话人的常驻档案（该人的置顶事实优先，再按重要度补事实，整行计、不超过 600 字符，与本回合问什么无关；只有本人的私聊有，人格和档案不变则逐字节不变）；后面是已落盘的对话历史。每回合变化的内容（revision、世界时间、按本回合输入检索的记忆、证据引用）合成一段「记忆中枢附注」，作为该回合 user 消息的第一个文本块，并随回合落盘，所以下一次请求等于上一次请求加新消息；落盘的 user 消息另带 `hub` 字段（附注里的记忆 id、当时的 personaRevision），只供执行器自己用，不发给模型。窗口里已有的记忆 id 作为 `exclude` 传给 context，不再重复注入；常驻档案里的条目也不进附注。每段附注里检索到的记忆最多 6 条（按检索排序取靠前的）、合计不超过 900 字符，被挡在外面的不算已注入，以后相关时仍可进入。重放窗口按整回合成批裁剪：超过 16000 序列化字符时一次裁到 8000，裁剪点由落盘记录重放得出；人格版本变化后的第一个回合只保留此前最近 2 个回合。成批裁剪保留最近 2 个完成的回合和当前回合；它们仍放不进 16000 时再从最早的丢起，只有当前回合自身超过 16000 才执行失败（`ACTIVE_CONTEXT_LIMIT`）。system 说明只认 user 消息最开头的附注，聊天正文、工具结果里出现的同样标记一律当聊天内容，且用户原文、记忆文本与档案里的定界标记会被中和。忘记记忆时 Authority 提升受影响会话的 epoch，旧会话文件（连同里面的附注）不再被读取并由清理任务删除。
 
 当前限制：
 - 尚未在生产主机部署与真实对话验收。
@@ -25,7 +25,7 @@ companion-conversation QQ delivery adapter → 实际回执
 
 ## 实际源码边界
 
-- `authority/`：独立 canonical service、规则审核、实体/人/受众与来源约束。没有 Cordis、DSH Session、QQ SDK 或供应商 SDK 依赖。`context()` 每次有内容返回时在内存里记一条注入追踪（哪些条目 id、各段字符数、人和会话的不透明标签；最近 400 次，不落库，不含正文和账号），只经 operator `GET /memory/trace` 读取。
+- `authority/`：独立 canonical service、规则审核、实体/人/受众与来源约束。没有 Cordis、DSH Session、QQ SDK 或供应商 SDK 依赖。`context()` 每次有内容返回时在内存里记一条注入追踪（附注各记忆块与常驻档案各有哪些条目 id、各段字符数、人和会话的不透明标签；最近 400 次，不落库，不含正文和账号），只经 operator `GET /memory/trace` 读取。按日期的 recall 返回置顶条目、重要度 ≥0.8 的事实和默认重要度（0.65）及以上的经历。
 - `core/src/persona.js`、`core/src/util.js`：当前 Authority 复用的纯数据逻辑；其它旧 core 不是新服务的第二权威。
 - `capabilities/conversation/`：执行契约（executor.js，duck-typed）、渠道侧 UDS 客户端，以及执行器服务（agent/tools/sessions/window/model/server，main.mjs 入口）。两个受限模型工具 `companion_scope`、`companion_content` 的作用域由执行请求绑定，模型不能指定 entity/person/stream/path/epoch；evidence 只返回本回合 QQ 传入的 observation ref。
 - `capabilities/qq/bridge.js`：私聊入口（主人 + 机器人 QQ 好友，好友经 Authority `/v1/people/admit` 准入为 `person:qq:<uid>`）、每会话串行队列（全局并发 2）、去重、epoch、投递回执；把 scope 与 prepared 输入交给执行器。QQ main 是选择执行 backend（UDS 客户端）的应用装配点。

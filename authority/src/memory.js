@@ -90,17 +90,19 @@ export class MemoryDomain {
       args:[scope.personId]
     };
   }
-  candidates(scope,policy,query,limit,{ includeArchived = false } = {}){
+  /** `exclude`: memory IDs that are never candidates (already in front of the model). */
+  candidates(scope,policy,query,limit,{ includeArchived = false, exclude = [] } = {}){
     const e=this.entity(scope.entityId),
     v=this.visibility(scope,policy),
     tokens=[...new Set(tokenize(query))].slice(0,64),
     now=this.worldStatus().worldNow,
     cutoff=now-e.retention_days*DAY*4;
     if(query.trim()&&!tokens.length)return[];
-    const args = [scope.entityId, ...v.args, ...(includeArchived ? [] : [cutoff])];
+    const args = [scope.entityId, ...v.args, ...(includeArchived ? [] : [cutoff]), ...exclude];
     const filter = `m.entity_id=? AND ${v.sql} AND m.status='active'
       AND m.collection IN ('facts','notes','experiences')
-      ${includeArchived ? '' : 'AND (m.pinned=1 OR m.created_world_at>=?)'}`;
+      ${includeArchived ? '' : 'AND (m.pinned=1 OR m.created_world_at>=?)'}
+      ${exclude.length ? `AND m.id NOT IN (${placeholders(exclude)})` : ''}`;
     let rows;
     if(tokens.length)rows=this.store.db.prepare(`SELECT m.*,COUNT(t.token) AS hits FROM memory_items m JOIN memory_tokens t ON t.memory_id=m.id AND t.entity_id=m.entity_id WHERE ${filter} AND t.token IN (${placeholders(tokens)}) GROUP BY m.id ORDER BY hits DESC,m.pinned DESC,m.revision DESC LIMIT ?`).all(...args,...tokens,Math.min(128,limit*4));
     else rows=this.store.db.prepare(`SELECT m.*,0 AS hits FROM memory_items m WHERE ${filter} ORDER BY m.pinned DESC,m.revision DESC LIMIT ?`).all(...args,Math.min(128,limit*4));
@@ -111,6 +113,20 @@ export class MemoryDomain {
       row
     })=>{
       const entry = { ...this.store.memory(row), archived: !row.pinned && row.created_world_at < cutoff };
+      return row.visibility==='public'?publicEntry(entry):entry;
+    });
+  }
+  /** The facts of the person this private conversation is with, for their standing profile: pinned
+   * first, then by importance, newest first. The order never depends on a query or on the time. */
+  profileEntries(scope,policy){
+    if(scope.audience!=='private'||policy!=='conversation.v1')return[];
+    const e=this.entity(scope.entityId),
+    v=this.visibility(scope,policy),
+    cutoff=this.worldStatus().worldNow-e.retention_days*DAY*4;
+    return this.store.db.prepare(`SELECT m.* FROM memory_items m WHERE m.entity_id=? AND ${v.sql} AND m.status='active'
+      AND m.collection='facts' AND m.person_id=? AND (m.pinned=1 OR m.created_world_at>=?)
+      ORDER BY m.pinned DESC,m.importance DESC,m.revision DESC,m.id LIMIT 64`).all(scope.entityId,...v.args,scope.personId,cutoff).map(row=>{
+      const entry=this.store.memory(row);
       return row.visibility==='public'?publicEntry(entry):entry;
     });
   }
@@ -508,6 +524,7 @@ export class MemoryDomain {
       };
     });
   }
+  /** Date recall: pinned items, important facts (>=0.8) and experiences from their default importance (0.65) up. */
   memoryRecall(capabilityId, input) {
     closed(input, ['streamId', 'fromAt', 'toAt', 'limit', 'budgetChars'], ['streamId', 'fromAt', 'toAt']);
     const policy = capability(this.store, capabilityId).policy;
@@ -520,7 +537,7 @@ export class MemoryDomain {
     budget = integer(input.budgetChars ?? 2400, 0, 16000);
     const rows = this.store.db.prepare(`SELECT m.* FROM memory_items m
       WHERE m.entity_id=? AND ${visible.sql} AND m.status='active'
-      AND m.collection IN ('facts','experiences') AND (m.pinned=1 OR m.importance>=0.8)
+      AND m.collection IN ('facts','experiences') AND (m.pinned=1 OR m.importance>=0.8 OR (m.collection='experiences' AND m.importance>=0.65))
       AND COALESCE(json_extract(m.body,'$.eventAt'),json_extract(m.body,'$.evidence.at'),m.created_world_at) BETWEEN ? AND ?
       ORDER BY m.pinned DESC,m.importance DESC,m.revision DESC LIMIT ?`) .all(entity.id, ...visible.args, input.fromAt, input.toAt, limit);
     let remaining = budget;

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { fitActiveWindow, WINDOW_MARKER } from './window.js';
+import { fitActiveWindow, activeDialogue, ACTIVE_CONTEXT_CHARS, ACTIVE_CONTEXT_LOW_CHARS, WINDOW_MARKER } from './window.js';
 
 const system = { role: 'system', content: 'prompt', timestamp: 0 };
 const run = (n, size = 400) => [
@@ -25,8 +25,28 @@ test('old runs are dropped whole, so no tool call loses its result', () => {
   assert.deepEqual(calls, results);
 });
 
-test('the newest two completed runs and the current run are never sliced', () => {
-  assert.throws(() => fitActiveWindow([system, ...run(1, 2000), ...run(2, 2000), ...run(3, 2000)], 4000), { code: 'ACTIVE_CONTEXT_LIMIT' });
+test('when the newest two completed runs and the current run do not fit, completed runs go, oldest first; only an oversized current run fails', () => {
+  const kept = fitted => fitted.filter(m => m.role === 'user').map(m => m.content[0].text.slice(0, 2));
+  const pairs = fitted => assert.deepEqual(fitted.flatMap(m => m.role === 'assistant' ? m.content.filter(b => b.type === 'toolCall').map(b => b.id) : []), fitted.filter(m => m.role === 'toolResult').map(m => m.toolCallId));
+  const big = [system, ...run(1, 2000), ...run(2, 2000), ...run(3, 2000)];
+  // Three runs of about 2300 characters: 4000 holds one, 5000 holds two.
+  for (const [limit, expected] of [[4000, ['u3']], [5000, ['u2', 'u3']], [32000, ['u1', 'u2', 'u3']]]) {
+    const fitted = fitActiveWindow(big, limit);
+    assert.deepEqual(kept(fitted), expected); pairs(fitted);
+    assert.equal(fitted[0].content, expected.length < 3 ? 'prompt\n\n' + WINDOW_MARKER : 'prompt');
+    assert.deepEqual(activeDialogue(big, limit), fitted.slice(1));
+  }
+  // Request time (the current run is only its user message) and after it was stored: whole runs either way.
+  const [user4, ...answer4] = run(4, 100);
+  assert.deepEqual(kept(fitActiveWindow([...big, user4], 4000)), ['u3', 'u4']);
+  assert.deepEqual(kept(fitActiveWindow([...big, user4, ...answer4], 4000)), ['u3', 'u4']);
+  // A stored run that is itself over the limit is dropped on the next run instead of failing every later message.
+  assert.deepEqual(kept(fitActiveWindow([system, ...run(1, 100), ...run(2, 6000), ...run(3, 100), user4], 4000)), ['u3', 'u4']);
+  assert.deepEqual(kept(fitActiveWindow([system, ...run(1, 100), ...run(2, 100), ...run(3, 6000), user4], 4000)), ['u4']);
+  // The current run alone over the limit is the one remaining failure.
+  assert.throws(() => fitActiveWindow([system, ...run(1, 100), ...run(2, 100), ...run(3, 6000)], 4000), { code: 'ACTIVE_CONTEXT_LIMIT' });
+  assert.throws(() => fitActiveWindow([system, ...run(1, 6000)], 4000), { code: 'ACTIVE_CONTEXT_LIMIT' });
+  assert.throws(() => activeDialogue([...run(1, 6000)], 4000), { code: 'ACTIVE_CONTEXT_LIMIT' });
 });
 
 test('trimming is batched: one cut down to the low-water mark, then the cut stays until the window overflows again', () => {
@@ -62,4 +82,46 @@ test('a batch cut never reaches into the newest two completed runs', () => {
   // Three large runs: getting under the low-water mark would need to drop protected runs, so only the oldest goes.
   const fitted = fitActiveWindow([system, ...run(1, 900), ...run(2, 900), ...run(3, 900), ...run(4, 900)], 4500, 1000);
   assert.deepEqual(fitted.filter(m => m.role === 'user').map(m => m.content[0].text.slice(0, 2)), ['u2', 'u3', 'u4']);
+});
+
+test('default marks: above 16000 characters one cut brings the earlier runs down to 8000', () => {
+  assert.deepEqual([ACTIVE_CONTEXT_CHARS, ACTIVE_CONTEXT_LOW_CHARS], [16000, 8000]);
+  const size = messages => messages.filter(m => m.role !== 'system').reduce((total, m) => total + JSON.stringify(m).length, 0);
+  const transcript = [system];
+  let n = 0;
+  while (size(transcript) <= ACTIVE_CONTEXT_CHARS) {
+    assert.equal(fitActiveWindow(transcript), transcript, 'nothing is cut up to the high-water mark');
+    transcript.push(...run(++n, 700));
+  }
+  const fitted = fitActiveWindow(transcript), kept = fitted.slice(1), newest = run(n, 700);
+  assert.ok(fitted[0].content.endsWith(WINDOW_MARKER));
+  assert.ok(size(kept) - size(newest) + WINDOW_MARKER.length <= ACTIVE_CONTEXT_LOW_CHARS);
+  // Not more than needed: one more run would have been above the low-water mark.
+  assert.ok(size(kept) - size(newest) + size(run(1, 700)) + WINDOW_MARKER.length > ACTIVE_CONTEXT_LOW_CHARS);
+  assert.deepEqual(activeDialogue(transcript), kept);
+  // A custom limit keeps the same proportion.
+  assert.deepEqual(fitActiveWindow(transcript, 6000), fitActiveWindow(transcript, 6000, 3000));
+});
+
+test('persona change: the first run under a new revision keeps two earlier runs; runs without a record never cut', () => {
+  const at = (n, personaRevision) => { const [user, ...rest] = run(n, 100); return [{ ...user, ...(personaRevision === undefined ? {} : { hub: { personaRevision, memoryIds: [] } }) }, ...rest]; };
+  const first = messages => messages.find(m => m.role === 'user').content[0].text.slice(0, 2);
+  const old = [system, ...at(1, 7), ...at(2, 7), ...at(3, 7), ...at(4, 7)];
+  assert.equal(fitActiveWindow(old, 32000), old);
+  // Request time (only the user message of the new run) and after it was stored: the same cut.
+  const [user5, ...answer5] = at(5, 8);
+  for (const messages of [[...old, user5], [...old, user5, ...answer5], [...old, user5, ...answer5, ...at(6, 8), ...at(7, 8)]]) {
+    const fitted = fitActiveWindow(messages, 32000);
+    assert.equal(first(fitted), 'u3');
+    assert.ok(fitted[0].content.endsWith(WINDOW_MARKER));
+  }
+  // A second change cuts again, relative to the run that saw it.
+  assert.equal(first(fitActiveWindow([...old, ...at(5, 8), ...at(6, 8), ...at(7, 8), ...at(8, 9)], 32000)), 'u6');
+  // Lines of the previous release carry no revision: they neither cut nor hide a later change.
+  const legacy = [system, ...at(1), ...at(2), ...at(3), ...at(4, 7), ...at(5)];
+  assert.equal(fitActiveWindow(legacy, 32000), legacy);
+  assert.equal(first(fitActiveWindow([...legacy, ...at(6, 8)], 32000)), 'u4');
+  // With one or two earlier runs there is nothing to cut.
+  const short = [system, ...at(1, 7), ...at(2, 7), ...at(3, 8)];
+  assert.equal(fitActiveWindow(short, 32000), short);
 });

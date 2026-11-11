@@ -178,19 +178,26 @@ send_private_msg），`fake-model.mjs` 启动 release 里真实的 model-gateway
 （`scenarios.mjs`）暂停世界、经 operator `/qq` 绑定主人、写入假 Key、恢复世界，然后按
 `deploy/staging/scenarios.json` 注入私聊并断言：假 OneBot 收到的发送记录、operator 的
 `/memory`、`/people`、`/conversations`、`/spend`，以及假模型收到的整个请求体（`expectPrompt`：
-system、记忆中枢附注、用户原文、历史与工具结果全部在内；加 `"in": "context"` 时只看记忆中枢附注，
-即 Authority 为这一回合检索到的内容）。结束后世界保持暂停。现有场景：S1 两个好友的记忆互不可见，S2 非好友静默且不准入，
+system、记忆中枢附注、用户原文、历史与工具结果全部在内；加 `"in": "context"` 时只看本回合的记忆中枢附注，
+即 Authority 为这一回合检索到的内容；加 `"in": "system"` 时只看 system 消息，即固定说明、人格和对话人的常驻档案）。结束后世界保持暂停。现有场景：S1 两个好友的记忆互不可见，S2 非好友静默且不准入，
 S3 每日上限到顶后所有人静默、主人只收到一次提醒；M1 `trace-matches-prompt`：operator
 `/memory/trace` 记下的注入条目与假模型实际收到的附注一致（每个 id 一行、内容都在，别人的条目不在）；
-M2 `console-filter`：`/memory` 按人筛选只返回该人的条目，并能翻到第 50 条之后（同一个人连说 52 轮）。
-M1、M2 排在 S3 之后：S3 要求当日开销从零开始。摘要里有一行 `SCENARIOS n/n passed: ...`，
+M2 `console-filter`：`/memory` 按人筛选只返回该人的条目，并能翻到第 50 条之后（同一个人连说 52 轮）；
+M3 `stable-prefix`：同一人连续四轮（其中一轮带工具往返），每次请求都以上一次请求为前缀，system 里没有
+revision 和时间；M4 `batch-trim`：连说 30 轮，历史起点只移动几次、每次裁掉多个回合；M5 `profile-always-on`：
+置顶事实在与它无关的提问里也在本人的 system 里，另一个人的整个请求里没有；M6 `persona-change-trim`：
+经 operator 改人格后的下一轮最多重放 2 个旧回合，事实仍在；M7 `no-duplicate-injection`：同一条记忆只进窗口里的
+一段附注；M8 `oversized-history-still-replies`：连发三条约 6000 字符的消息，第三条放不下前两轮时只带最近一轮、
+照常得到回复。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
+M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里有一行 `SCENARIOS n/n passed: ...`，
 任一场景失败则是 `STAGING FAILED`。
 
 - 新功能开工前先加场景：在 `scenarios.json` 的 `scenarios` 里加一项
   `{ id, title, model, steps, finally }`。`model` 是假模型的规则（最新一条用户消息包含 `match`
   时回 `reply`；带 `propose` 则先发起一次 companion_scope propose；`usage` 决定计费）；`steps`
   每步一个键：`say`、`converse`、`expectReply`、`expectSilence`、`expectSentCount`、`expectMemory`、
-  `expectMemoryPages`、`expectPrompt`、`expectTrace`、`expectNoModelCall`、`expectAdmitted`、`spendSettings`、`expectSpend`
+  `expectMemoryPages`、`expectPrompt`、`expectTrace`、`expectStablePrefix`、`expectBatchTrim`、`expectHistory`、
+  `expectInjectedOnce`、`pinMemory`、`setPersona`、`restorePersona`、`expectNoModelCall`、`expectAdmitted`、`spendSettings`、`expectSpend`
   （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。所有人名必须是 `MOCK-xx`，QQ 号必须是
   9999 开头的 12 位假号，否则运行器拒绝。
 - 本机先跑：`node --test deploy/staging/scenarios.test.mjs` 用本 checkout 的真实 Authority、
