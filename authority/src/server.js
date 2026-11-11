@@ -7,7 +7,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 const SCHEMAS = {
   '/v1/observations': ['eventId', 'streamId', 'actorId', 'role', 'text', 'at', 'origin'],
   '/v1/proposals': ['proposalId', 'observationId', 'type', 'payload'],
-  '/v1/context': ['streamId', 'query', 'budgetChars', 'exclude', 'profile'],
+  '/v1/context': ['streamId', 'query', 'budgetChars', 'exclude', 'profile', 'windowFromAt'],
   '/v1/admin/capabilities': ['id', 'policy'],
   '/v1/admin/actors': ['capabilityId', 'externalActorId', 'personId'],
   '/v1/admin/streams': ['capabilityId', 'streamId', 'personId', 'audience', 'entityId'],
@@ -18,6 +18,8 @@ const SCHEMAS = {
   '/v1/people/admit': ['uid'],
   '/v1/maintenance/batch': ['afterRevision', 'limit', 'mode'],
   '/v1/maintenance/diary': ['taskId', 'kind', 'text', 'sourceIds'],
+  '/v1/maintenance/consolidation/next': [],
+  '/v1/maintenance/consolidation/commit': ['taskId', 'outcome', 'digest', 'facts'],
 };
 const ERRORS = {
   AUTH_REQUIRED: [401, 'A valid capability or operator credential is required'],
@@ -138,7 +140,10 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
       } else if (route.startsWith('/v1/maintenance/')) {
         if (grant.role !== 'maintenance' || req.method !== 'POST' || !SCHEMAS[route]) throw failure('FORBIDDEN');
         const body = await bodyOf(req, SCHEMAS[route], maxBodyBytes);
-        value = route === '/v1/maintenance/batch' ? authority.maintenanceBatch(grant.entityId, body) : authority.maintenanceDiary(grant.entityId, body);
+        if (route === '/v1/maintenance/consolidation/next') value = authority.consolidationNext(grant.entityId, body);
+        // A commit may queue quoted facts: they are reviewed like any other proposal.
+        else if (route === '/v1/maintenance/consolidation/commit') { value = authority.consolidationCommit(grant.entityId, body); schedule(); }
+        else value = route === '/v1/maintenance/batch' ? authority.maintenanceBatch(grant.entityId, body) : authority.maintenanceDiary(grant.entityId, body);
       } else if (grant.role === 'maintenance') throw failure('FORBIDDEN');
       else if (req.method === 'GET' && route === '/v1/health') value = authority.health();
       else if (req.method === 'GET' && route === '/v1/admin/state') value = authority.snapshot();
