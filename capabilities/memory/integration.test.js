@@ -61,8 +61,8 @@ test('rolled-out dialogue crosses real UDS/gateway into a digest and a quoted fa
   authority.registerCapability({ id: 'source', policy: 'conversation.v1' });
   authority.bindActor({ capabilityId: 'source', externalActorId: 'owner', personId: 'person:owner' });
   authority.bindStream({ capabilityId: 'source', streamId: 'private', personId: 'person:owner', audience: 'private' });
-  const say = (eventId, text, at) => authority.observe('source', { eventId, streamId: 'private', actorId: 'owner', role: 'user', text, at }).observationId;
-  const first = say('event-1', '我养了一只叫MOCK-年糕的仓鼠', 1000);
+  const say = (eventId, text, at, she = false) => authority.observe('source', { eventId, streamId: 'private', actorId: she ? 'model' : 'owner', role: she ? 'assistant' : 'user', text, at }).observationId;
+  const first = say('event-1', '我养了一只叫MOCK-年糕的仓鼠', 1000), reply = say('reply-1', 'MOCK-REPLY 好可爱', 2000, true);
   const hash = value => createHash('sha256').update(value).digest('hex');
   const coreSocket = path.join(dir, 'core.sock'), inferenceSocket = path.join(dir, 'infer.sock'), tokenFile = path.join(dir, 'maintenance.token'), inferenceTokenFile = path.join(dir, 'inference.token');
   fs.writeFileSync(tokenFile, 'synthetic-maintenance-token-not-a-real-credential', { mode: 0o600 }); fs.writeFileSync(inferenceTokenFile, 'synthetic-inference-token', { mode: 0o600 });
@@ -87,16 +87,16 @@ test('rolled-out dialogue crosses real UDS/gateway into a digest and a quoted fa
   await new Promise(resolve => setTimeout(resolve, 50));
   const items = authority.listMemory({}).items;
   assert.deepEqual(items.map(item => [item.type, item.kind ?? null, item.source.machine, item.summary ?? item.value]).sort(), [['experiences', 'digest', 'digest', 'MOCK-摘要：对方说起自己养的仓鼠。'], ['facts', null, 'extracted', 'MOCK-年糕']]);
-  assert.deepEqual(items.find(item => item.kind === 'digest').derivedFrom, [first]);
+  assert.deepEqual(items.find(item => item.kind === 'digest').derivedFrom, [first, reply]);
   assert.ok(!authority.context('source', { streamId: 'private', query: 'MOCK-摘要 仓鼠' }).text.includes('MOCK-摘要'));
   // More dialogue leaves the window, but today's spend is past the tier that stops maintenance.
-  say('event-2', '它最爱吃MOCK-瓜子', 6000);
+  say('event-2', '它最爱吃MOCK-瓜子', 6000); say('reply-2', 'MOCK-REPLY 记住了', 7000, true);
   authority.context('source', { streamId: 'private', query: 'MOCK', windowFromAt: 9000 });
   const before = authority.consolidationState();
   assert.equal(await worker.runOnce(), 'budget_deferred');
   assert.equal(requests.length, 1, 'no provider call');
   const status = authority.consolidationStatus();
-  assert.deepEqual([status.calls, status.paused, status.streams[0].behind.observations, status.streams[0].digests], [1, 'spend', 1, 1]);
+  assert.deepEqual([status.calls, status.paused, status.streams[0].behind.observations, status.streams[0].waiting, status.streams[0].digests], [1, 'spend', 2, 2, 1]);
   assert.equal(authority.consolidationState()[DEFAULT_ENTITY_ID].streams['source\u0000private'].lastObservationId, before[DEFAULT_ENTITY_ID].streams['source\u0000private'].lastObservationId);
   assert.equal(await worker.runOnce(), 'budget_deferred');
   assert.equal(authority.consolidationStatus().calls, 1, 'while waiting it does not even take a batch');

@@ -64,16 +64,27 @@ export class ConsolidationDomain extends MemoryDomain {
   #cursorRow(state) {
     return state?.lastObservationId ? this.store.db.prepare('SELECT rowid FROM observations WHERE id=?').get(state.lastObservationId)?.rowid ?? 0 : 0;
   }
-  /** The next batch of one conversation, or null: the leading observations after the cursor that are
-   * out of the replay window (`rollout`) or, in the nightly hours, from before today. */
-  #batch(stream, state, since, now) {
+  /** The observations after a conversation's cursor (at most 400): `leading(before)` are the first ones older
+   * than a time, `rolledOut` the completed runs the executor no longer replays, `silent(row)` tells a row with
+   * nothing to read. */
+  #after(stream, state, since) {
     const rows = this.store.db.prepare('SELECT id,body,forgotten FROM observations WHERE capability_id=? AND stream_id=? AND rowid>? ORDER BY rowid LIMIT 400')
       .all(stream.capabilityId, stream.streamId, this.#cursorRow(state)).map(row => ({ id: row.id, ...JSON.parse(row.body), forgotten: Boolean(row.forgotten) }));
     // Nothing to read: forgotten, older than the backfill bound, or not a line of this dialogue.
     const silent = row => row.forgotten || row.at < since || !['user', 'assistant'].includes(row.role) || !row.text;
     const leading = before => { const end = rows.findIndex(row => !(row.at < before)); return rows.slice(0, end < 0 ? rows.length : end); };
-    const rollout = this.windows.get(streamKey(stream.capabilityId, stream.streamId));
-    let trigger = 'rollout', taken = rollout === undefined ? [] : leading(rollout);
+    // The window starts at a run's stored timestamp, taken after that run's own message was observed
+    // and before its reply was: the lines before it end with the previous run's reply. A trailing line
+    // of the person is the first replayed run's (or one never answered) and stays for a later batch.
+    const rollout = this.windows.get(streamKey(stream.capabilityId, stream.streamId)), rolledOut = rollout === undefined ? [] : leading(rollout);
+    while (rolledOut.length && rolledOut.at(-1).role === 'user') rolledOut.pop();
+    return { silent, leading, rolledOut };
+  }
+  /** The next batch of one conversation, or null: the leading observations after the cursor that are
+   * out of the replay window (`rollout`) or, in the nightly hours, from before today. */
+  #batch(stream, state, since, now) {
+    const { silent, leading, rolledOut } = this.#after(stream, state, since);
+    let trigger = 'rollout', taken = rolledOut;
     if (!taken.some(row => !silent(row))) {
       const hour = beijingHour(now), old = hour >= CONSOLIDATION.nightlyFromHour && hour < CONSOLIDATION.nightlyToHour ? leading(beijingMidnight(now)) : [], spoken = old.filter(row => !silent(row));
       if (spoken.length >= CONSOLIDATION.nightlyObservations || spoken.some(row => row.at < now - CONSOLIDATION.nightlyStaleDays * DAY)) { trigger = 'nightly'; taken = old; }
@@ -221,7 +232,9 @@ export class ConsolidationDomain extends MemoryDomain {
       const state = own?.streams[streamKey(stream.capabilityId, stream.streamId)];
       const behind = this.store.db.prepare("SELECT COUNT(*) AS observations,COALESCE(SUM(LENGTH(json_extract(body,'$.text'))),0) AS chars FROM observations WHERE capability_id=? AND stream_id=? AND rowid>? AND forgotten=0 AND json_extract(body,'$.at')>=?")
         .get(stream.capabilityId, stream.streamId, this.#cursorRow(state), since);
-      return { stream: opaqueStream(stream.capabilityId, stream.streamId), person: opaquePerson(stream.personId), owner: stream.personId === 'person:owner', behind, calls: today ? state?.calls ?? 0 : 0, digests: state?.digests ?? 0, skipped: state?.skipped ?? 0, lastAt: state?.lastAt ?? null };
+      const { silent, rolledOut } = this.#after(stream, state, since);
+      // `behind`: everything not consolidated yet, the live window included; `waiting`: what has already left the window.
+      return { stream: opaqueStream(stream.capabilityId, stream.streamId), person: opaquePerson(stream.personId), owner: stream.personId === 'person:owner', behind, waiting: rolledOut.filter(row => !silent(row)).length, calls: today ? state?.calls ?? 0 : 0, digests: state?.digests ?? 0, skipped: state?.skipped ?? 0, lastAt: state?.lastAt ?? null };
     });
     const deferredAt = own?.deferredAt ?? null, calls = today ? own.calls : 0;
     return {
@@ -231,6 +244,9 @@ export class ConsolidationDomain extends MemoryDomain {
       // (`deferredAt`), or today's batches are used up.
       paused: deferredAt !== null && beijingDay(deferredAt) === day ? 'spend' : calls >= CONSOLIDATION.perDay ? 'daily' : null,
       streams,
+      // What review() made of the facts consolidation extracted, by its own reason codes.
+      extracted: this.store.db.prepare("SELECT status,json_extract(receipt,'$.reason') AS reason,COUNT(*) AS n FROM inbox WHERE entity_id=? AND proposal_id LIKE 'cons:%' GROUP BY status,reason").all(e.id)
+        .reduce((counts, row) => { if (row.status === 'rejected') counts.rejected[row.reason ?? 'unknown'] = row.n; else counts[row.status] = row.n; return counts; }, { accepted: 0, pending: 0, rejected: {} }),
       // Digests that still cover a forgotten observation (an older release forgot it without the cascade).
       staleDigestIds: this.store.db.prepare("SELECT DISTINCT m.id FROM memory_items m,json_each(m.body,'$.derivedFrom') j JOIN observations o ON o.id=j.value WHERE m.entity_id=? AND m.kind='digest' AND o.forgotten=1").all(e.id).map(row => row.id),
     };
