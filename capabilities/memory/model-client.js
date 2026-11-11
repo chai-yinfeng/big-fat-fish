@@ -15,6 +15,8 @@ export function completeDiary({ socketPath, tokenFile }) {
       });
       response.on('error', () => reject(new Error('MEMORY_GATEWAY_UNAVAILABLE')));
       response.on('end', () => {
+        // The gateway's spend tier stopped maintenance: not a failure of this request (no provider call was made).
+        if (response.statusCode === 429) { reject(Object.assign(new Error('MEMORY_BUDGET_DEFERRED'), { code: 'MEMORY_BUDGET_DEFERRED' })); return; }
         try {
           const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
           if (response.statusCode !== 200 || typeof value.choices?.[0]?.message?.content !== 'string') throw new Error();

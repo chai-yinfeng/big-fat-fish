@@ -204,7 +204,7 @@ export class ConsolidationDomain extends MemoryDomain {
           .run(task.capabilityId, proposal.proposalId, observationId, canonical(proposal), JSON.stringify(proposal), policy, 'pending', JSON.stringify({ proposalId: proposal.proposalId, status: 'pending', policy }), e.id);
         proposals.push(proposal.proposalId);
       });
-      advance(); state.lastAt = now; own.lastCommittedAt = now;
+      advance(); state.lastAt = now; own.lastCommittedAt = now; delete own.deferredAt;
       this.store.db.prepare('INSERT INTO diary_receipts(task_id,kind,diary_id,canonical) VALUES(?,?,?,?)').run(input.taskId, 'consolidation', digestId ?? '', encoding);
       // IDs, labels and counts only: no dialogue, digest or fact text.
       this.store.audit({ type: 'consolidation.committed', entityId: e.id, ...label, observations: task.ids.length, digestId, ...(digestRejected ? { digestRejected } : {}), proposals, dropped, revision, at: now });
@@ -227,8 +227,9 @@ export class ConsolidationDomain extends MemoryDomain {
     return {
       entityId: e.id, day, timezone: 'Asia/Shanghai', calls, limits: { perDay: CONSOLIDATION.perDay, perStreamPerDay: CONSOLIDATION.perStreamPerDay },
       since, lastIssuedAt: own?.lastIssuedAt ?? null, lastCommittedAt: own?.lastCommittedAt ?? null, deferredAt,
-      // Why nothing is being handed out now, if so: the spend tier refused the last call, or today's batches are used up.
-      paused: deferredAt !== null && beijingDay(deferredAt) === day && deferredAt > (own.lastCommittedAt ?? 0) ? 'spend' : calls >= CONSOLIDATION.perDay ? 'daily' : null,
+      // Why nothing is being handed out now, if so: the spend tier refused a call today and none has gone through since
+      // (`deferredAt`), or today's batches are used up.
+      paused: deferredAt !== null && beijingDay(deferredAt) === day ? 'spend' : calls >= CONSOLIDATION.perDay ? 'daily' : null,
       streams,
       // Digests that still cover a forgotten observation (an older release forgot it without the cascade).
       staleDigestIds: this.store.db.prepare("SELECT DISTINCT m.id FROM memory_items m,json_each(m.body,'$.derivedFrom') j JOIN observations o ON o.id=j.value WHERE m.entity_id=? AND m.kind='digest' AND o.forgotten=1").all(e.id).map(row => row.id),
