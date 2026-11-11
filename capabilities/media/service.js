@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { speechText } from '../speech/text.js';
 
 const fail = code => Object.assign(new Error(code), { code });
 export function imageMime(data) {
@@ -74,12 +75,15 @@ export class MediaService {
       return { ...result, ref: description.id, sourceRef: original.meta.id, derived: true, isNewEvidence: false, isVerbatimUserText: false, ...(original.meta.mime === 'image/gif' || original.meta.mime === 'image/webp' ? { framePolicy: 'first-frame-only' } : {}) };
     }
     if (action === 'synthesize') {
-      if (typeof input.text !== 'string' || !input.text.trim() || [...input.text].length > 120 || !source(input.sourceEventId)) throw fail('MEDIA_SPEECH_INPUT');
+      // Only what is said aloud is synthesized: bracketed asides and emoticons are dropped (speech/text.js).
+      // A reply with nothing left is refused like an empty one. The caller keeps the full text.
+      const spoken = typeof input.text === 'string' ? speechText(input.text) : '';
+      if (!spoken || [...spoken].length > 120 || !source(input.sourceEventId)) throw fail('MEDIA_SPEECH_INPUT');
       const file = path.join(this.workRoot, 'tts-' + randomUUID() + '.wav');
       try {
         // voiceProfile is an operator-registered id (omitted -> default voice),
         // resolved by the speech layer from operator config only.
-        const result = await this.speech.synthesize({ text: input.text, outputFile: file, voiceProfile: input.voiceProfile, signal: input.signal });
+        const result = await this.speech.synthesize({ text: spoken, outputFile: file, voiceProfile: input.voiceProfile, signal: input.signal });
         if (!fs.existsSync(file) || fs.lstatSync(file).isSymbolicLink() || !fs.statSync(file).isFile() || fs.statSync(file).size > this.store.maxBytes) throw fail('MEDIA_SYNTHESIS_INVALID');
         const data = fs.readFileSync(file), durationMs = wavDuration(data);
         return { ...this.store.put({ scope, sourceEventId: input.sourceEventId, kind: 'audio', mime: 'audio/wav', data, durationMs }), model: result.model, generated: true, delivered: false };
