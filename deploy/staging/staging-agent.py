@@ -34,6 +34,7 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -185,7 +186,9 @@ def initialize(release):
         run([str(NODE), str(ops / script)])
     run([str(NODE), str(ROOT / 'src/companion' / release / 'deploy/qq/prepare.mjs')])
     # Staging-only values (old releases ignore the port fields; their units are Unix-only anyway).
-    edit('memory-worker.json', lambda c: c.update(operatorPort=OPERATOR_PORT))
+    # The memory worker ticks every 5 s here (production: 60 s) and retries 10 s after the spend tier refused it
+    # (production: 30 min), so the consolidation scenarios do not wait minutes.
+    edit('memory-worker.json', lambda c: c.update(operatorPort=OPERATOR_PORT, tickMs=5000, consolidationDeferMs=10000))
     edit('qq-bridge.json', lambda c: c.update(onebotPort=ONEBOT_PORT))
     origins = ['http://127.0.0.1:%d' % OPERATOR_PORT, 'http://localhost:%d' % OPERATOR_PORT]
     edit('authority.json', lambda c: c['operator'].update(origins=sorted(set(c['operator']['origins']) | set(origins))))
@@ -286,6 +289,38 @@ def scenario_unit(name, text, root=ROOT):
     return text
 
 
+def reset_consolidation(database):
+    """Deterministic reruns of the consolidation scenarios, while Authority is stopped: every private
+    conversation starts the replay with nothing waiting (its cursor at its newest observation) and with
+    today's batches unused. Digests and facts already written stay. Returns the number of conversations."""
+    if not Path(database).exists():
+        return 0
+    db = sqlite3.connect(str(database))
+    try:
+        row = db.execute("SELECT value FROM metadata WHERE key='consolidation'").fetchone()
+        if row is None:
+            return 0
+        state, count = json.loads(row[0]), 0
+        for entity, own in state.items():
+            own['calls'] = 0
+            own.pop('deferredAt', None)
+            streams = own.setdefault('streams', {})
+            for capability, stream in db.execute("SELECT capability_id,stream_id FROM streams WHERE entity_id=? AND audience='private'", (entity,)).fetchall():
+                entry = streams.setdefault(capability + '\0' + stream, {})
+                newest = db.execute('SELECT id FROM observations WHERE capability_id=? AND stream_id=? ORDER BY rowid DESC LIMIT 1', (capability, stream)).fetchone()
+                entry.update(calls=0, invalid=0)
+                entry.pop('issued', None)
+                if newest:
+                    entry['lastObservationId'] = newest[0]
+                count += 1
+        db.execute("UPDATE metadata SET value=? WHERE key='consolidation'", (json.dumps(state),))
+        db.execute("DELETE FROM maintenance_tasks WHERE mode='consolidation'")
+        db.commit()
+        return count
+    finally:
+        db.close()
+
+
 def stop_fake_onebot():
     subprocess.run(['pkill', '-U', str(os.getuid()), '-f', FAKE_ONEBOT], capture_output=True, timeout=20)
 
@@ -305,10 +340,11 @@ def scenarios(deployer, only=None):
         path = deployer.config.units / name
         path.write_text(scenario_unit(name, path.read_text()))
     deployer.system.systemctl('daemon-reload')
-    # Deterministic reruns: today's spend, the cap and the owner's once-a-day notice start fresh.
+    # Deterministic reruns: today's spend, the cap, the owner's once-a-day notice and consolidation start fresh.
     model_data = Path(json.loads((BASE / 'operator/model-gateway.json').read_text())['settingsFile']).parent
     for label in ('spend.json', 'spend-settings.json'):
         (model_data / label).unlink(missing_ok=True)
+    reset_consolidation(BASE / 'authority-data/authority.sqlite')
     dispatch = Path(qq_config['stateFile'])
     if dispatch.exists():
         state = json.loads(dispatch.read_text())
@@ -335,7 +371,7 @@ def scenarios(deployer, only=None):
         command = [str(NODE), str(TOOLS / 'scenarios.mjs'), '--operator-port', str(OPERATOR_PORT), '--operator-token-file', str(BASE / 'operator/console.token'),
                    '--onebot-control', str(control), '--model-script', str(SCENARIO / 'model-script.json'), '--model-log', str(SCENARIO / 'model-requests.jsonl'),
                    '--scenarios', str(TOOLS / 'scenarios.json')] + (['--only', only] if only else [])
-        result = subprocess.run(command, cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=900)
+        result = subprocess.run(command, cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=1800)
     finally:
         fake.terminate()
         try:

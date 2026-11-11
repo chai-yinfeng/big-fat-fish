@@ -11,6 +11,13 @@
 // Each logged request also records `notes` (the memory-hub note of every user message, oldest first),
 // `turns` (the number of user messages) and `hashes` (one per message, system first), so a scenario can
 // compare whole requests without the log holding every request in full.
+// A consolidation request of the memory worker (not streamed; its user message is JSON with a `messages`
+// list of [ref, speaker, time, text] rows) is answered by the first rule that has `consolidate` and whose
+// `match` occurs in one of those rows: { match, consolidate: { summary, feeling?, facts?: [{ key, value,
+// quote, in? }] } }. Each fact gets the ref of the first row containing `in` (default: its quote), so a
+// script can point a quote at the wrong row or misquote it. Without such a rule the answer is a plain
+// valid digest. Rules with `consolidate` never answer a chat, and chat rules never answer a consolidation.
+// It is logged with `consolidation: true`, its user message as `maintenance`, and an empty `userText`.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -18,6 +25,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const DEFAULT_REPLY = 'MOCK-REPLY';
 export const DEFAULT_USAGE = Object.freeze({ prompt_tokens: 100, completion_tokens: 20 });
+export const DEFAULT_DIGEST = Object.freeze({ summary: 'MOCK-DIGEST 一段没有编排的闲聊', feeling: '', facts: [] });
+
+/** The rows of a consolidation request ([ref, speaker, time, text]), or null for any other request. */
+export function consolidationRows(body, userText) {
+  if (body?.stream === true) return null;
+  try { const rows = JSON.parse(userText)?.messages; return Array.isArray(rows) && rows.every(row => Array.isArray(row) && row.length === 4 && row.every(cell => typeof cell === 'string')) ? rows : null; } catch { return null; }
+}
 const textOf = content => typeof content === 'string' ? content : Array.isArray(content) ? content.filter(part => part?.type === 'text').map(part => part.text).join('') : '';
 
 // The executor's note delimiter (capabilities/conversation/agent.js NOTE_OPEN). This staging tool is
@@ -45,7 +59,14 @@ export function planReply(body, rules = []) {
   const rest = JSON.stringify(messages.filter((message, index) => index !== last && !(index === 0 && message?.role === 'system')));
   const toolResult = last < 0 ? undefined : messages.slice(last + 1).findLast(message => message?.role === 'tool');
   const afterTool = toolResult !== undefined;
-  const rule = rules.find(item => typeof item?.match === 'string' && item.match && userText.includes(item.match)) ?? {};
+  const rows = consolidationRows(body, userText);
+  if (rows) {
+    const scripted = rules.find(item => typeof item?.match === 'string' && item.match && item.consolidate && rows.some(row => row[3].includes(item.match)))?.consolidate ?? DEFAULT_DIGEST;
+    const facts = (scripted.facts ?? []).map(({ in: where, ...fact }) => ({ ...fact, ref: rows.find(row => row[3].includes(where ?? fact.quote))?.[0] ?? 'o999' }));
+    const usage = { ...DEFAULT_USAGE, total_tokens: DEFAULT_USAGE.prompt_tokens + DEFAULT_USAGE.completion_tokens };
+    return { kind: 'text', consolidation: true, maintenance: userText, userText: '', system, context: '', rest: '', notes: [], turns: 1, hashes: [], afterTool: false, usage, stream: false, text: JSON.stringify({ summary: scripted.summary, feeling: scripted.feeling ?? '', facts }) };
+  }
+  const rule = rules.find(item => typeof item?.match === 'string' && item.match && !item.consolidate && userText.includes(item.match)) ?? {};
   const usage = { ...DEFAULT_USAGE, ...rule.usage };
   usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
   const users = messages.filter(message => message?.role === 'user');
@@ -76,7 +97,7 @@ export function createFakeUpstream({ scriptFile, logFile }) {
     const body = JSON.parse(options.body);
     let rules = []; try { rules = JSON.parse(fs.readFileSync(scriptFile, 'utf8')); } catch {}
     const plan = planReply(body, Array.isArray(rules) ? rules : []);
-    const entry = { at: Date.now(), stream: plan.stream, userText: plan.userText, system: plan.system, context: plan.context, rest: plan.rest, notes: plan.notes, turns: plan.turns, hashes: plan.hashes, afterTool: plan.afterTool, ...(plan.afterTool ? { toolResult: plan.toolResult } : {}), answer: plan.kind === 'tool' ? { tool: plan.call } : { text: plan.text }, usage: plan.usage };
+    const entry = { at: Date.now(), stream: plan.stream, userText: plan.userText, system: plan.system, context: plan.context, rest: plan.rest, notes: plan.notes, turns: plan.turns, hashes: plan.hashes, afterTool: plan.afterTool, ...(plan.afterTool ? { toolResult: plan.toolResult } : {}), ...(plan.consolidation ? { consolidation: true, maintenance: plan.maintenance } : {}), answer: plan.kind === 'tool' ? { tool: plan.call } : { text: plan.text }, usage: plan.usage };
     fs.appendFileSync(logFile, JSON.stringify(entry) + '\n', { mode: 0o600 });
     return new Response(renderReply(plan), { status: 200, headers: { 'content-type': plan.stream ? 'text/event-stream' : 'application/json' } });
   };
