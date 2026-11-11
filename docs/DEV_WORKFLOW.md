@@ -190,17 +190,18 @@ revision 和时间；M4 `batch-trim`：连说 30 轮，历史起点只移动几�
 一段附注；M8 `oversized-history-still-replies`：连发三条约 6000 字符的消息，第三条放不下前两轮时只带最近一轮、
 照常得到回复；H1 `split-long-reply`：约 150 字的多句回复，假 OneBot 按顺序收到 2–4 条、每条不超过 60 字符、
 拼起来等于原文；H2 `beijing-time-in-note`：假模型收到的附注里有一行北京时间、与请求的真实时刻相符，
-附注和 system 里没有带 Z 的 UTC 时间。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
+附注和 system 里没有带 Z 的 UTC 时间；H3 `propose-rejection-is-actionable`：假模型先提一条 value 不是原话的事实，
+收到的工具结果是 rejected 并说明怎么改，再提逐字版本后 Authority 里出现该事实。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
 M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里有一行 `SCENARIOS n/n passed: ...`，
 任一场景失败则是 `STAGING FAILED`。
 
 - 新功能开工前先加场景：在 `scenarios.json` 的 `scenarios` 里加一项
   `{ id, title, model, steps, finally }`。`model` 是假模型的规则（最新一条用户消息包含 `match`
-  时回 `reply`；带 `propose` 则先发起一次 companion_scope propose；`usage` 决定计费）；`steps`
+  时回 `reply`；带 `propose` 则先发起一次 companion_scope propose，再带 `retry` 则在第一次工具结果后不带 id 再提一次；`usage` 决定计费）；`steps`
   每步一个键：`say`、`converse`、`expectReply`、`expectSilence`、`expectSentCount`、`expectMemory`、
   `expectMemoryPages`、`expectPrompt`、`expectTrace`、`expectStablePrefix`、`expectBatchTrim`、`expectHistory`、
   `expectInjectedOnce`、`pinMemory`、`setPersona`、`restorePersona`、`expectNoModelCall`、`expectAdmitted`、`spendSettings`、`expectSpend`、
-  `expectSplitReply`、`expectBeijingTime`
+  `expectSplitReply`、`expectBeijingTime`、`expectToolResult`
   （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。所有人名必须是 `MOCK-xx`，QQ 号必须是
   9999 开头的 12 位假号，否则运行器拒绝。
 - 本机先跑：`node --test deploy/staging/scenarios.test.mjs` 用本 checkout 的真实 Authority、

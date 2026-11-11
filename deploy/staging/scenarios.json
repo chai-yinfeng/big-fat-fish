@@ -251,6 +251,22 @@
         { "expectPrompt": { "userText": "MOCK-H2", "absent": "世界时间", "in": "context" } },
         { "expectBeijingTime": { "userText": "MOCK-H2" } }
       ]
+    },
+    {
+      "id": "H3",
+      "title": "propose-rejection-is-actionable: a rejected proposal tells the model how to correct it, and the corrected one is remembered",
+      "model": [
+        { "match": "MOCK-H3", "propose": { "type": "fact.report", "payload": { "key": "MOCK-H3-{run} 搬家日期", "value": "2026年12月5日", "quote": "我下个月 5 号搬家" } }, "retry": { "type": "fact.report", "payload": { "key": "MOCK-H3-{run} 搬家日期", "value": "下个月 5 号", "quote": "我下个月 5 号搬家" } }, "reply": "MOCK-REPLY-H3 记下了" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-A", "text": "MOCK-H3 MOCK-H3-{run} 请记住：我下个月 5 号搬家" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-H3 记下了" } },
+        { "expectToolResult": { "userText": "MOCK-H3", "nth": 1, "contains": "\"status\":\"rejected\"" } },
+        { "expectToolResult": { "userText": "MOCK-H3", "nth": 1, "contains": "value_not_in_quote" } },
+        { "expectToolResult": { "userText": "MOCK-H3", "nth": 1, "contains": "value 必须逐字出自 quote（对方原话），不要改写、换算日期或补全" } },
+        { "expectToolResult": { "userText": "MOCK-H3", "nth": 2, "contains": "\"status\":\"accepted\"", "absent": "rejected" } },
+        { "expectMemory": { "person": "MOCK-A", "contains": "MOCK-H3-{run} 搬家日期 下个月 5 号", "absent": "2026年12月5日" } }
+      ]
     }
   ]
 }

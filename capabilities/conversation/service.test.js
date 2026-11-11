@@ -110,7 +110,12 @@ test('the model cannot widen scope: extra selectors and unobserved refs are refu
   assert.match(results[1], /UNOBSERVED_EVIDENCE/);
   assert.match(results[2], /requestId: unknown field/);
   const routed = f.authority.state.requests.filter(r => r.route !== '/v1/context');
-  assert.deepEqual(routed.map(r => r.route), ['/v1/memory/search', '/v1/content', '/v1/proposals']);
+  // After the submit the tool reads the receipt of that same proposal once, to report the review decision.
+  assert.deepEqual(routed.map(r => r.route), ['/v1/memory/search', '/v1/content', '/v1/proposals', '/v1/receipts/' + encodeURIComponent(routed[2].body.proposalId)]);
+  // The refusals name the problem; the pending proposal is reported as not yet remembered, under the model's own key.
+  assert.match(results[1], /ref 必须是本轮附注/);
+  assert.deepEqual(JSON.parse(toolMessages(f.gateway.state.bodies.at(-1)).at(-1).content), { proposalId: routed[2].body.proposalId, status: 'pending', id: 'tea', remembered: false, hint: '还在审核，尚未记住；可以用 action=receipt 和这个 id 查结果，得到 accepted 之前不要说已经记下。' });
+  assert.match(f.gateway.state.bodies[0].messages[0].content, /只有记忆提案的工具结果是 accepted 时才算记住了，才可以说“记下了”；被拒、出错或还在审核时不要说已经记住/);
   assert.equal(routed[0].body.streamId, scope.streamId);
   assert.deepEqual(routed[1].body, { action: 'attach', ref: 'image-1', streamId: scope.streamId, memoryEpoch: 0, requestId: request('我喜欢红茶').requestId });
   assert.equal(routed[2].body.observationId, 'obs-1');

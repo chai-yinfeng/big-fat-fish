@@ -20,7 +20,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'H1', 'H2']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'H1', 'H2', 'H3']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -203,6 +203,21 @@ test('expectBeijingTime: one Beijing time line that matches the real time of the
   await assert.rejects(check(['现在是 2026年11月15日 周日 00:00（北京时间）'], { at: null }), /lacks context\/at/);
 });
 
+test('expectToolResult reads the tool results of one run in order', async t => {
+  const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-tool-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const log = path.join(dir, 'requests.jsonl'), run = new Runner({ data: shipped(), modelLog: log }), ctx = { logOffset: 0 };
+  const entry = (afterTool, toolResult) => ({ stream: true, userText: 'MOCK 请记住', system: 'S', context: '', rest: '[]', notes: [], turns: 1, hashes: ['a', 'b'], afterTool, ...(afterTool ? { toolResult } : {}) });
+  const write = entries => fs.writeFileSync(log, entries.map(item => JSON.stringify(item)).join('\n') + '\n');
+  const check = args => STEPS.expectToolResult(run, ctx, { userText: 'MOCK 请记住', ...args });
+  write([entry(false), entry(true, '{"status":"rejected","hint":"逐字"}'), entry(true, '{"status":"accepted"}')]);
+  await check({ contains: '逐字' }); await check({ nth: 2, contains: 'accepted', absent: 'rejected' });
+  await assert.rejects(check({ nth: 2, contains: '逐字' }), /tool result 2 for "MOCK 请记住" lacks "逐字"/);
+  await assert.rejects(check({ nth: 1, absent: 'rejected' }), /tool result 1 for "MOCK 请记住" contains "rejected"/);
+  await assert.rejects(check({ nth: 3, contains: 'x' }), /got 2 tool result\(s\) .* expected at least 3/);
+  write([entry(false), { ...entry(true), afterTool: true }]);
+  await assert.rejects(check({ contains: 'x' }), /lacks toolResult/);
+});
+
 test('{run} is replaced by one token per replay of a scenario, everywhere in it', async t => {
   const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-run-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const data = shipped(), said = [];
@@ -289,9 +304,9 @@ async function stack(t) {
 test('scenario replay against the real Authority, gateway (scripted upstream), executor and QQ bridge', { timeout: 300000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'H1', 'H2'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'H1', 'H2', 'H3'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '13/13 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '14/14 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));

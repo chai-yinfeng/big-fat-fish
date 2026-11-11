@@ -270,6 +270,14 @@ export const STEPS = {
       if (utc) fail(`the model was shown the UTC timestamp ${utc[0]}`);
     }
   },
+  /** Tool results the model was sent back during the run whose typed text contains `userText`, in order: the
+   * `nth` one (1 = the first) must contain `contains` and must not contain `absent`. */
+  async expectToolResult(run, ctx, { userText, nth = 1, contains, absent }) {
+    const results = requestsOf(run, ctx, userText).filter(entry => entry.afterTool).map(entry => entry.toolResult);
+    if (results.some(text => typeof text !== 'string')) fail('the model request log lacks toolResult');
+    if (results.length < nth) fail(`the model got ${results.length} tool result(s) for ${JSON.stringify(userText)}, expected at least ${nth}`);
+    if (!includes(results[nth - 1], { contains, absent })) fail(`tool result ${nth} for ${JSON.stringify(userText)} ${contains !== undefined && !results[nth - 1].includes(contains) ? 'lacks ' + JSON.stringify(contains) : 'contains ' + JSON.stringify(absent)}: ${JSON.stringify(results[nth - 1].slice(0, 200))}`);
+  },
 };
 
 export class Runner {
