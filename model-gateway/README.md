@@ -121,7 +121,8 @@ TZ) in three private files next to the settings file: `spend.json` (state),
   refused by the spend tier answers 429 `SPEND_RESTRICTED` (the daily call count stays
   `BUDGET_EXHAUSTED`); QQ then stays silent instead of sending the attachment notice. The cap includes
   the owner's own chats.
-- Control socket: `GET /spend` → `{day,timezone,spentYuan,reservedYuan,capYuan,percent,tier,thresholds,byTier:{conversation,maintenance,vision,web},calls,unreportedUsage,window,pricing}`;
+- Control socket: `GET /spend` → `{day,timezone,spentYuan,reservedYuan,capYuan,percent,tier,thresholds,byTier:{conversation,maintenance,vision,web},calls,unreportedUsage,window,pricing,tokens:{requests,cacheHit,cacheMiss,output,reasoning}}`
+  (`tokens`: the day's reported chat/maintenance usage, observation only);
   `POST /spend/settings {dailyCapYuan?,reducedPercent?,restrictedPercent?}` validates
   0.01 ≤ cap ≤ 1000 and 0 < reduced < restricted < 100, persists atomically and
   applies to the next reservation without restart or pause.
