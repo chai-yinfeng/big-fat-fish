@@ -12,7 +12,7 @@ import { prepareQQ } from '../authority/prepare-qq.mjs';
 import { prepareConversation } from '../authority/prepare-conversation.mjs';
 import { prepareMemory } from '../authority/prepare-memory.mjs';
 import { createFakeOneBot } from './fake-onebot.mjs';
-import { Runner, STEPS, validateScenarios, summaryLine } from './scenarios.mjs';
+import { Runner, STEPS, validateScenarios, summaryLine, gatewayCaller } from './scenarios.mjs';
 import { planReply } from './fake-model.mjs';
 
 const project = fileURLToPath(new URL('../../', import.meta.url));
@@ -21,7 +21,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -407,16 +407,55 @@ async function stack(t) {
     req.on('error', reject); req.end(body === undefined ? undefined : JSON.stringify(body));
   });
   // Silence windows are shortened here; staging waits the full time.
-  const runner = input => new Runner({ data: input, modelScript: files.script, modelLog: files.log, operator: call(path.join(base, 'ipc/operator/operator.sock'), { authorization: 'Bearer ' + operatorToken }), onebot: call(files.control, {}), sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 1500))) });
+  const runner = input => new Runner({ data: input, modelScript: files.script, modelLog: files.log, operator: call(path.join(base, 'ipc/operator/operator.sock'), { authorization: 'Bearer ' + operatorToken }), onebot: call(files.control, {}), gateway: gatewayCaller(path.join(base, 'ipc/model/inference.sock'), fs.readFileSync(path.join(base, 'service-config/inference.token'), 'utf8').trim()), sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 1500))) });
   return { runner, data, files, fake, base };
 }
+
+test('usage steps: a row must change by exactly what was expected, the ledger must agree with the spend meter, and a limit can be set to what is used', async () => {
+  const row = (id, extra = {}) => ({ id, used: 0, calls: 0, ok: 0, failed: 0, denied: {}, costYuan: 0, spendCategory: null, ...extra });
+  let usage = { day: '2026-11-12', rows: [row('chat', { spendCategory: 'conversation' }), row('vision', { used: 4, calls: 4, ok: 4, denied: { paused: 1 }, costYuan: 0.04, spendCategory: 'vision' }), row('speech-tts')] };
+  let spend = { day: '2026-11-12', spentYuan: 0.04, byTier: { conversation: 0, maintenance: 0, vision: 0.04, web: 0 } };
+  const posted = [], asked = [];
+  const run = new Runner({ data: shipped(), sleep: async () => {},
+    operator: async (method, route, body) => { if (method === 'POST') { posted.push([route, body]); return usage; } return route === '/usage' ? usage : spend; },
+    gateway: async (route, body) => { asked.push([route, Object.keys(body).sort().join()]); return route === '/v1/web/search' ? 'ok' : 'BUDGET_EXHAUSTED'; } });
+  const ctx = {};
+  await assert.rejects(STEPS.expectUsage(run, ctx, { capability: 'vision' }), /no noted usage row for vision/);
+  await STEPS.noteUsage(run, ctx);
+  await STEPS.expectUsage(run, ctx, { capability: 'vision' });
+  usage = { ...usage, rows: [row('chat', { used: 1, calls: 1, ok: 1, costYuan: 0.002, spendCategory: 'conversation' }), row('vision', { used: 4, calls: 4, ok: 4, denied: { paused: 1, daily_limit: 1 }, costYuan: 0.04, spendCategory: 'vision' }), row('speech-tts')] };
+  await STEPS.expectUsage(run, ctx, { capability: 'chat', used: 1, calls: 1, ok: 1 });
+  await STEPS.expectUsage(run, ctx, { capability: 'vision', denied: { daily_limit: 1 } });
+  await STEPS.expectUsage(run, ctx, { capability: 'speech-tts' });
+  // Anything else than the expected change fails and says what changed: a call too many, a missing or a different refusal.
+  await assert.rejects(STEPS.expectUsage(run, ctx, { capability: 'chat', timeoutMs: 0 }), /usage of chat changed by \{"used":1,"calls":1,"ok":1,"failed":0,"denied":\[\]\}, expected/);
+  await assert.rejects(STEPS.expectUsage(run, ctx, { capability: 'vision', timeoutMs: 0 }), /usage of vision changed by .*\["daily_limit",1\]/);
+  await assert.rejects(STEPS.expectUsage(run, ctx, { capability: 'vision', denied: { spend_tier: 1 }, timeoutMs: 0 }), /usage of vision changed by/);
+  // Money: every paid row equals its spend category and the rows add up to the day's spend.
+  await assert.rejects(STEPS.expectUsageMatchesSpend(run, ctx, { timeoutMs: 0 }), /the usage ledger and the spend meter disagree: .*"chat":\[0.002,0\]/);
+  spend = { day: '2026-11-12', spentYuan: 0.042, byTier: { conversation: 0.002, maintenance: 0, vision: 0.04, web: 0 } };
+  await STEPS.expectUsageMatchesSpend(run, ctx, { minPaidRows: 2 });
+  await assert.rejects(STEPS.expectUsageMatchesSpend(run, ctx, { minPaidRows: 3, timeoutMs: 0 }), /disagree/);
+  await assert.rejects(STEPS.expectUsageMatchesSpend({ ...run, poll: run.poll, operator: async (_method, route) => route === '/usage' ? usage : { ...spend, spentYuan: 0.05 } }, ctx, { timeoutMs: 0 }), /"total":\[42000,50000\]/);
+  await assert.rejects(STEPS.expectUsageMatchesSpend({ ...run, poll: run.poll, operator: async (_method, route) => route === '/usage' ? usage : { ...spend, day: '2026-11-13' } }, ctx, { timeoutMs: 0 }), /"day":\["2026-11-12","2026-11-13"\]/);
+  // Limits go through the operator route; "used" is the row's count so far.
+  await STEPS.usageLimit(run, ctx, { capability: 'vision', limit: 'used' }); await STEPS.usageLimit(run, ctx, { capability: 'vision', limit: null }); await STEPS.usageLimit(run, ctx, { capability: 'web', limit: 3 });
+  assert.deepEqual(posted, [['/usage/limits', { limits: { vision: 4 } }], ['/usage/limits', { limits: { vision: null } }], ['/usage/limits', { limits: { web: 3 } }]]);
+  // gatewayCall posts what the content service would, and holds the answer against the expectation.
+  await STEPS.gatewayCall(run, ctx, { kind: 'search', text: 'MOCK-搜' });
+  await STEPS.gatewayCall(run, ctx, { kind: 'vision', text: 'MOCK-看', expect: 'BUDGET_EXHAUSTED' });
+  await assert.rejects(STEPS.gatewayCall(run, ctx, { kind: 'vision', text: 'MOCK-看' }), /the gateway answered BUDGET_EXHAUSTED to a vision call, expected ok/);
+  await assert.rejects(STEPS.gatewayCall(run, ctx, { kind: 'video', text: 'x' }), /unknown kind/);
+  await assert.rejects(STEPS.gatewayCall(new Runner({ data: shipped() }), ctx, { kind: 'search', text: 'x' }), /needs --inference-socket/);
+  assert.deepEqual(asked, [['/v1/web/search', 'query'], ['/v1/vision/describe', 'imageBase64,mime,question'], ['/v1/vision/describe', 'imageBase64,mime,question']]);
+});
 
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge and memory worker', { timeout: 600000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '19/19 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '21/21 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));

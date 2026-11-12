@@ -119,8 +119,8 @@ class ReuseTests(unittest.TestCase):
 class LifecycleOrderTests(unittest.TestCase):
     def test_rollback_round_trip_happens_after_the_upgrade_was_used_and_before_the_from_release_is_pruned(self):
         steps = re.findall(r"^    step\('([^']+)'", (HERE / 'staging-agent.py').read_text(), re.M)
-        order = ['upgrade (preflight, switch, health)', 'smoke-upgraded', 'scenarios-upgraded', 'migration-drill (copy)', 'rollback (to from)',
-                 'smoke-from', 'roll-forward (rollback again)', 'prune-from', 'restart-all', 'manager-restart (default.target)', 'smoke', 'scenarios', 'prod-untouched']
+        order = ['upgrade (preflight, switch, health)', 'smoke-upgraded', 'scenarios-upgraded', 'ledger-before-rollback', 'migration-drill (copy)', 'rollback (to from)',
+                 'smoke-from', 'roll-forward (rollback again)', 'Q3 ledger-survives-rollback', 'prune-from', 'restart-all', 'manager-restart (default.target)', 'smoke', 'scenarios', 'prod-untouched']
         self.assertEqual(steps[steps.index(order[0]):], order)
 
     def test_the_drill_tool_is_uploaded_and_only_ever_given_a_copy(self):
@@ -128,6 +128,52 @@ class LifecycleOrderTests(unittest.TestCase):
         source = (HERE / 'staging-agent.py').read_text()
         self.assertIn("'--database', str(work / live.name)]", source)
         self.assertEqual(source.count('migration-drill.mjs'), 3)  # docstrings and the one command
+
+
+class LedgerRollbackTests(unittest.TestCase):
+    ROW = {'used': 1, 'calls': 1, 'ok': 1, 'failed': 0, 'denied': {'daily_limit': 1}, 'units': {'inputTokens': 100}, 'costYuan': 0.01, 'busyMs': 20}
+    IDLE = {'used': 0, 'calls': 0, 'ok': 0, 'failed': 0, 'denied': {}, 'units': {}, 'costYuan': 0, 'busyMs': 0}
+
+    def answers(self, usage, history=None):
+        return lambda method, route, body=None: usage if route == '/usage' else history
+
+    def today(self, day, rows):
+        return {'day': day, 'rows': [dict(row, id=name) for name, row in rows.items()]}
+
+    def test_the_days_numbers_must_still_be_there_after_the_old_release_ran_on_the_data_root(self):
+        before = ('2026-11-12', {'chat': dict(self.ROW), 'web': dict(self.IDLE)})
+        original = sa.operator
+        try:
+            sa.operator = self.answers(self.today('2026-11-12', before[1]))
+            self.assertIn('day 2026-11-12 kept', sa.ledger_survives(before))
+            # Counting more since is fine; losing a call, a refusal, a unit or money is not.
+            sa.operator = self.answers(self.today('2026-11-12', {'chat': dict(self.ROW, calls=3, ok=3, denied={'daily_limit': 1, 'paused': 2}), 'web': dict(self.IDLE)}))
+            sa.ledger_survives(before)
+            for lost in ({'calls': 0}, {'denied': {}}, {'units': {}}, {'costYuan': 0}, {'used': 0}):
+                sa.operator = self.answers(self.today('2026-11-12', {'chat': dict(self.ROW, **lost), 'web': dict(self.IDLE)}))
+                with self.assertRaisesRegex(RuntimeError, 'usage of 2026-11-12 lost across the rollback: chat'):
+                    sa.ledger_survives(before)
+            sa.operator = self.answers(self.today('2026-11-12', {'web': dict(self.IDLE)}))
+            with self.assertRaisesRegex(RuntimeError, 'lost across the rollback: chat'):
+                sa.ledger_survives(before)
+            # Past Beijing midnight the finished day must be a history line; unused capabilities have none.
+            sa.operator = self.answers(self.today('2026-11-13', {'chat': dict(self.IDLE), 'web': dict(self.IDLE)}), {'days': [{'day': '2026-11-12', 'rows': {'chat': dict(self.ROW)}}]})
+            self.assertIn('now a history line', sa.ledger_survives(before))
+            sa.operator = self.answers(self.today('2026-11-13', {'chat': dict(self.IDLE), 'web': dict(self.IDLE)}), {'days': []})
+            with self.assertRaisesRegex(RuntimeError, 'lost across the rollback: chat'):
+                sa.ledger_survives(before)
+            # An empty ledger, or none noted, proves nothing.
+            with self.assertRaisesRegex(RuntimeError, 'empty before the rollback'):
+                sa.ledger_survives(('2026-11-12', {'chat': dict(self.IDLE)}))
+            with self.assertRaisesRegex(RuntimeError, 'no usage rows were noted'):
+                sa.ledger_survives(None)
+        finally:
+            sa.operator = original
+
+    def test_a_replay_resets_the_ledger_together_with_the_spend_meter_but_keeps_its_history(self):
+        source = (HERE / 'staging-agent.py').read_text()
+        self.assertIn("for label in ('spend.json', 'spend-settings.json', 'capability-usage.json', 'usage-ledger.json', 'usage-limits.json'):", source)
+        self.assertNotIn("'usage-history.jsonl'", source)
 
 
 class ConsolidationResetTests(unittest.TestCase):
