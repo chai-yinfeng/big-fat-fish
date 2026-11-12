@@ -24,7 +24,9 @@ const PROPOSAL_TYPES={facts:'fact.report',experiences:'experience.remember',appr
 const sourceOf=entry=>({
   channel:entry.capabilityId??null,
   role:entry.evidence?.role??null,
-  proposal:entry.proposalId?PROPOSAL_TYPES[entry.type]??(entry.kind==='learning'?'learning.note':'self.note'):null
+  proposal:entry.proposalId?PROPOSAL_TYPES[entry.type]??(entry.kind==='learning'?'learning.note':'self.note'):null,
+  // Only on what background consolidation wrote, not the conversation: a machine digest, or a fact it extracted.
+  ...(entry.kind==='digest'?{machine:'digest'}:entry.proposalId?.startsWith('cons:')?{machine:'extracted'}:{})
 });
 export class MemoryDomain {
   entity(id=DEFAULT_ENTITY_ID){
@@ -76,17 +78,19 @@ export class MemoryDomain {
       });
     });
   }
+  /** What a conversation may read. Machine digests (kind 'digest') are written but not read back yet:
+   * like 'inner' notes they are in no retrieval, read, recall or profile. */
   visibility(scope,policy){
     if(scope.audience==='shared')return{
-      sql:"m.visibility='public' AND COALESCE(m.kind,'')!='inner'",
+      sql:"m.visibility='public' AND COALESCE(m.kind,'') NOT IN ('inner','digest')",
       args:[]
     };
     if(policy==='learning.v1')return{
-      sql:"COALESCE(m.kind,'')!='inner' AND m.collection='notes' AND m.kind='learning'",
+      sql:"COALESCE(m.kind,'') NOT IN ('inner','digest') AND m.collection='notes' AND m.kind='learning'",
       args:[]
     };
     return{
-      sql:"COALESCE(m.kind,'')!='inner' AND (m.visibility='public' OR m.person_id=? OR (m.collection='notes' AND m.kind='learning'))",
+      sql:"COALESCE(m.kind,'') NOT IN ('inner','digest') AND (m.visibility='public' OR m.person_id=? OR (m.collection='notes' AND m.kind='learning'))",
       args:[scope.personId]
     };
   }
@@ -239,7 +243,8 @@ export class MemoryDomain {
     return this.store.transaction(()=>{
       this.entity(input.entityId);
       const row=this.store.db.prepare('SELECT * FROM memory_items WHERE entity_id=? AND id=?').get(input.entityId,input.id);
-      if(!row||row.kind==='inner'||row.collection==='appraisals')fail('FORBIDDEN','Not a public material',403);
+      // A digest paraphrases one person's private conversation: it is never made public.
+      if(!row||row.kind==='inner'||row.kind==='digest'||row.collection==='appraisals')fail('FORBIDDEN','Not a public material',403);
       if(SENSITIVE.test(memoryContent(JSON.parse(row.body))))fail('FORBIDDEN','Sensitive material requires a separate explicit process',403);
       const body={
         ...JSON.parse(row.body),visibility:'public'
@@ -401,6 +406,9 @@ export class MemoryDomain {
       const n=memoryIds.size+sources.size+diaryIds.size;
       for(const id of memoryIds)for(const r of this.store.db.prepare('SELECT observation_id FROM memory_sources WHERE memory_id=?').all(id))sources.add(r.observation_id);
       for(const source of sources)for(const r of this.store.db.prepare('SELECT m.id FROM memory_items m JOIN memory_sources s ON s.memory_id=m.id WHERE m.entity_id=? AND s.observation_id=?').all(e.id,source))memoryIds.add(r.id);
+      // One way: a digest derived from a forgotten observation goes with it. A digest has no evidence
+      // row, so it pulls in neither the other observations it covers nor their memories.
+      for(const source of sources)for(const r of this.store.db.prepare("SELECT m.id FROM memory_items m,json_each(m.body,'$.derivedFrom') j WHERE m.entity_id=? AND m.kind='digest' AND j.value=?").all(e.id,source))memoryIds.add(r.id);
       for(const id of memoryIds)for(const r of this.store.db.prepare('SELECT d.id FROM diaries d JOIN diary_sources s ON s.diary_id=d.id WHERE d.entity_id=? AND s.memory_id=?').all(e.id,id))diaryIds.add(r.id);
       changed=n!==memoryIds.size+sources.size+diaryIds.size;
     }
@@ -427,6 +435,8 @@ export class MemoryDomain {
       expandedIds:[...memoryIds,
       ...diaryIds],
       memoryIds:[...memoryIds],
+      // Of those, the machine digests (for the preview: "digests removed along").
+      digestIds:[...memoryIds].filter(id=>this.store.db.prepare("SELECT 1 FROM memory_items WHERE id=? AND kind='digest'").get(id)),
       diaryIds:[...diaryIds],
       sourceObservationIds:[...sources],
       sourceEvents,
@@ -449,6 +459,8 @@ export class MemoryDomain {
         const row=this.store.db.prepare('SELECT person_id FROM memory_items WHERE id=?').get(id);
         if(row?.person_id)people.add(row.person_id);
         this.store.db.prepare('DELETE FROM memory_items WHERE id=? AND entity_id=?').run(id,input.entityId);
+        // A consolidation receipt names the digest it wrote (a hash, no text).
+        this.store.db.prepare("DELETE FROM diary_receipts WHERE diary_id=? AND kind='consolidation'").run(id);
       }
       for(const id of preview.diaryIds){
         this.store.db.prepare('DELETE FROM diary_receipts WHERE diary_id=?').run(id);

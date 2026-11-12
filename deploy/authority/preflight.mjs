@@ -65,6 +65,9 @@ const CHECKS = [
   { label: 'memory-worker.json', required: true, ignored: ['purgeModule'], check: file => {
     const c = readPrivate(file, { owner: true });
     if (!plain(c) || !plain(c.authority) || !plain(c.gateway) || !absolute(c.base) || !absolute(c.operatorTokenFile) || !port(c.operatorPort)) throw fail('CONFIG_INVALID');
+    // Optional timings (staging shortens them); the worker refuses to start on a value out of range.
+    const within = (value, min, max) => value === undefined || (Number.isInteger(value) && value >= min && value <= max);
+    if (!within(c.tickMs, 1000, 600000) || !within(c.consolidationDeferMs, 1000, 86400000)) throw fail('CONFIG_INVALID');
     return c;
   } },
   // capabilities/media/main.mjs

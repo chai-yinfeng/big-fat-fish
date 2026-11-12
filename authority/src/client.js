@@ -37,7 +37,8 @@ export class AuthorityClient {
     return this.#request('GET', `/v1/receipts/${encodeURIComponent(id)}`);
   }
   async context(value) {
-    closed(value, ['streamId', 'query', 'budgetChars', 'exclude', 'profile'], ['streamId']);
+    closed(value, ['streamId', 'query', 'budgetChars', 'exclude', 'profile', 'windowFromAt'], ['streamId']);
+    if (value.windowFromAt !== undefined && (!Number.isSafeInteger(value.windowFromAt) || value.windowFromAt < 0)) throw fail('INVALID_REQUEST');
     if (!text(value.streamId) || (value.query !== undefined && (typeof value.query !== 'string' || value.query.length > 512)) || (value.budgetChars !== undefined && (!Number.isInteger(value.budgetChars) || value.budgetChars < 1 || value.budgetChars > 4000))) throw fail('INVALID_REQUEST');
     if (value.profile !== undefined && typeof value.profile !== 'boolean') throw fail('INVALID_REQUEST');
     if (value.exclude !== undefined && (!Array.isArray(value.exclude) || value.exclude.length > 256 || !value.exclude.every(id => text(id)))) throw fail('INVALID_REQUEST');
@@ -76,6 +77,13 @@ export class AuthorityClient {
     const taskId = value.taskId || this.maintenanceTasks?.[value.kind];
     if (!text(taskId)) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/maintenance/diary', { ...value, taskId });
+  }
+  /** Maintenance credential: the next consolidation batch Authority chose, or `task: null` with a reason. */
+  consolidationNext() { return this.#request('POST', '/v1/maintenance/consolidation/next', {}); }
+  async consolidationCommit(value) {
+    closed(value, ['taskId', 'outcome', 'digest', 'facts'], ['taskId', 'outcome']);
+    if (!text(value.taskId) || !['ok', 'invalid', 'deferred'].includes(value.outcome)) throw fail('INVALID_REQUEST');
+    return this.#request('POST', '/v1/maintenance/consolidation/commit', value);
   }
   async #request(method, path, value) {
     let body;

@@ -86,9 +86,10 @@ export function createConversationExecutor({ authority, content, store, model, s
     }
     const guard = async () => { await current(1, query); };
     // One full context per run: the tool loop reuses its text, so the request prefix only grows.
-    // `exclude`: memory the window already carries in an earlier note.
-    async function runPrompt(exclude) {
-      const context = await current(4000, query, { exclude, profile: true });
+    // `exclude`: memory the window already carries in an earlier note. `windowFromAt`: when the oldest
+    // replayed run began; Authority may consolidate the dialogue before it. It does not change the context.
+    async function runPrompt(exclude, windowFromAt) {
+      const context = await current(4000, query, { exclude, profile: true, ...(windowFromAt === undefined ? {} : { windowFromAt }) });
       if (typeof context.personaText !== 'string' || typeof context.memoryText !== 'string' || context.personaText.length + context.memoryText.length > 4000 || ![context.revision, context.personaRevision].every(value => Number.isSafeInteger(value) && value >= 0)) throw fail('CONTEXT_UNAVAILABLE');
       if (typeof context.profileText !== 'string' || context.profileText.length > MAX_PROFILE_CHARS) throw fail('CONTEXT_UNAVAILABLE');
       if (!Array.isArray(context.memoryIds) || context.memoryIds.length > 64 || context.memoryIds.some(id => typeof id !== 'string' || !id || id.length > 256)) throw fail('CONTEXT_UNAVAILABLE');
@@ -104,7 +105,10 @@ export function createConversationExecutor({ authority, content, store, model, s
     // The window is measured here without the new note and before the persona revision is known; if
     // the request then drops more old runs, a memory only they carried is retrieved again on a later
     // run, never twice in one window.
-    const prompt = await runPrompt(injectedIds(activeDialogue([...persisted.messages, { role: 'user', content: [typed] }], limit)).slice(-MAX_EXCLUDED));
+    const window = activeDialogue([...persisted.messages, { role: 'user', content: [typed] }], limit);
+    // The first replayed message is a stored run's user message (it has a timestamp) or this run's own (now).
+    const windowFromAt = window.length === 1 ? Date.now() : Number.isSafeInteger(window[0].timestamp) && window[0].timestamp >= 0 ? window[0].timestamp : undefined;
+    const prompt = await runPrompt(injectedIds(window).slice(-MAX_EXCLUDED), windowFromAt);
     signal.throwIfAborted();
     const agent = new Agent({
       initialState: { systemPrompt: BASE_PROMPT, model, thinkingLevel: 'high', messages: persisted.messages,

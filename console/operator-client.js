@@ -71,13 +71,18 @@ export function memoryQuery({ person, beforeRevision } = {}) {
   const query = new URLSearchParams({ ...(person === undefined ? {} : { person }), ...(beforeRevision === undefined ? {} : { beforeRevision: String(beforeRevision) }) }).toString();
   return query ? `?${query}` : '';
 }
+/** Read-only query of GET /memory/sources: the one memory item whose source observations are read. */
+export function sourcesQuery({ id } = {}) {
+  if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new Error('invalid_memory_query');
+  return `?${new URLSearchParams({ id }).toString()}`;
+}
 export async function operatorRequest({ location, token, path, payload, query, fetchImpl = fetch, signal, sameOrigin = false }) {
   if (!token) throw Object.assign(new Error('authorization_required'), { code: 'authorization_required' });
-  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/conversations', '/spend', '/spend/settings'].includes(path)) throw new Error('unsupported_operator_path');
+  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/conversations', '/spend', '/spend/settings'].includes(path)) throw new Error('unsupported_operator_path');
   if (['/model', '/model/test', '/spend/settings', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
-  if (['/runtime', '/people', '/conversations', '/spend'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
-  if (query !== undefined && (path !== '/memory' || payload !== undefined)) throw new Error('operator_query_unsupported');
-  const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}${query === undefined ? '' : memoryQuery(query)}`, {
+  if (['/runtime', '/people', '/conversations', '/spend', '/memory/consolidation', '/memory/sources'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
+  if (query !== undefined && (!['/memory', '/memory/sources'].includes(path) || payload !== undefined) || path === '/memory/sources' && query === undefined) throw new Error('operator_query_unsupported');
+  const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}${query === undefined ? '' : path === '/memory/sources' ? sourcesQuery(query) : memoryQuery(query)}`, {
     method: payload === undefined ? 'GET' : 'POST',
     mode: sameOrigin ? 'same-origin' : 'cors', credentials: 'omit', cache: 'no-store', redirect: 'error',
     headers: { Authorization: `Bearer ${token}`, ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }) },

@@ -5,6 +5,12 @@
     "MOCK-OWNER": { "qq": "999900000002", "owner": true, "friend": true },
     "MOCK-A": { "qq": "999900000011", "friend": true },
     "MOCK-B": { "qq": "999900000012", "friend": true },
+    "MOCK-C": { "qq": "999900000013", "friend": true },
+    "MOCK-D": { "qq": "999900000014", "friend": true },
+    "MOCK-E": { "qq": "999900000015", "friend": true },
+    "MOCK-F": { "qq": "999900000016", "friend": true },
+    "MOCK-G": { "qq": "999900000017", "friend": true },
+    "MOCK-H": { "qq": "999900000018", "friend": true },
     "MOCK-STRANGER": { "qq": "999900000099", "friend": false }
   },
   "scenarios": [
@@ -224,6 +230,123 @@
       "steps": [
         { "converse": { "from": "MOCK-B", "text": "MOCK-M8 第{n}轮", "times": 3, "reply": "MOCK-REPLY-M8 好", "pad": 6000 } },
         { "expectHistory": { "userText": "MOCK-M8 第3轮", "minEarlier": 1, "maxEarlier": 1 } }
+      ]
+    },
+    {
+      "id": "M9",
+      "title": "rolled-out-digest: dialogue that left the window becomes that person's digest and quoted fact; one batch holds one conversation; no digest reaches any chat",
+      "model": [
+        { "match": "MOCK-M9", "reply": "MOCK-REPLY-M9 好" },
+        { "match": "MOCK-M9-{run} 甲", "consolidate": { "summary": "MOCK-DIGEST-M9-{run} 摘要正文甲：对方说起养了一只仓鼠", "feeling": "MOCK-FEELING-M9-{run} 听着很开心", "facts": [{ "key": "MOCK-M9 宠物", "value": "MOCK-M9-{run}-年糕", "quote": "我养了一只仓鼠叫MOCK-M9-{run}-年糕" }] } },
+        { "match": "MOCK-M9-{run} 乙", "consolidate": { "summary": "MOCK-DIGEST-M9-{run} 摘要正文乙：对方说起在学大提琴", "feeling": "MOCK-FEELING-M9-{run} 想听一听" } }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-C", "text": "MOCK-M9-{run} 甲 说一件事：我养了一只仓鼠叫MOCK-M9-{run}-年糕" } },
+        { "expectReply": { "to": "MOCK-C", "contains": "MOCK-REPLY-M9 好" } },
+        { "say": { "from": "MOCK-D", "text": "MOCK-M9-{run} 乙 说一件事：我在学大提琴MOCK-M9-{run}-琴" } },
+        { "expectReply": { "to": "MOCK-D", "contains": "MOCK-REPLY-M9 好" } },
+        { "converse": { "from": "MOCK-C", "text": "MOCK-M9-{run} 甲 第{n}轮", "times": 3, "reply": "MOCK-REPLY-M9 好", "pad": 6000 } },
+        { "converse": { "from": "MOCK-D", "text": "MOCK-M9-{run} 乙 第{n}轮", "times": 3, "reply": "MOCK-REPLY-M9 好", "pad": 6000 } },
+        { "expectDigest": { "person": "MOCK-C", "contains": "MOCK-DIGEST-M9-{run} 摘要正文甲", "covers": "MOCK-M9-{run}-年糕" } },
+        { "expectExtracted": { "person": "MOCK-C", "contains": "MOCK-M9-{run}-年糕" } },
+        { "expectDigest": { "person": "MOCK-D", "contains": "MOCK-DIGEST-M9-{run} 摘要正文乙", "covers": "MOCK-M9-{run}-琴" } },
+        { "expectConsolidationInput": { "contains": "MOCK-M9-{run} 甲", "absent": "MOCK-M9-{run} 乙" } },
+        { "expectConsolidationInput": { "contains": "MOCK-M9-{run} 乙", "absent": "MOCK-M9-{run} 甲" } },
+        { "expectNoDigest": { "person": "MOCK-D", "contains": "摘要正文甲" } },
+        { "expectMemory": { "person": "MOCK-D", "absent": "MOCK-M9-{run}-年糕" } },
+        { "say": { "from": "MOCK-C", "text": "MOCK-M9-{run} 甲 追问：MOCK-DIGEST-M9-{run} 仓鼠 上次聊了什么" } },
+        { "expectReply": { "to": "MOCK-C", "contains": "MOCK-REPLY-M9 好" } },
+        { "say": { "from": "MOCK-D", "text": "MOCK-M9-{run} 乙 追问：MOCK-DIGEST-M9-{run} 仓鼠 上次聊了什么" } },
+        { "expectReply": { "to": "MOCK-D", "contains": "MOCK-REPLY-M9 好" } },
+        { "expectNoChatContains": { "text": "摘要正文甲", "minRequests": 10 } },
+        { "expectNoChatContains": { "text": "摘要正文乙", "minRequests": 10 } },
+        { "expectNoChatContains": { "text": "MOCK-FEELING-M9-{run}", "minRequests": 10 } },
+        { "expectPrompt": { "userText": "乙 追问", "absent": "MOCK-M9-{run}-年糕" } },
+        { "expectPrompt": { "userText": "甲 追问", "contains": "MOCK-M9-{run}-年糕", "in": "system" } }
+      ]
+    },
+    {
+      "id": "M10",
+      "title": "extract-quote-guard: a misquote, a value outside its quote and her own words do not become facts; the digest and a verbatim fact are written",
+      "model": [
+        { "match": "MOCK-M10 说一件事", "reply": "MOCK-REPLY-M10-{run} 她说的话" },
+        { "match": "MOCK-M10", "reply": "MOCK-REPLY-M10 好" },
+        { "match": "MOCK-M10-{run}", "consolidate": { "summary": "MOCK-DIGEST-M10-{run} 对方说了生日和住处", "facts": [
+          { "key": "MOCK-M10 生日", "value": "MOCK-M10-{run}-三月", "quote": "我生日是MOCK-M10-{run}-三月", "in": "MOCK-M10 说一件事" },
+          { "key": "MOCK-M10 生日", "value": "MOCK-M10-{run}-四月", "quote": "我的生日是MOCK-M10-{run}-三月" },
+          { "key": "MOCK-M10 口头禅", "value": "MOCK-REPLY-M10-{run} 她说的话", "quote": "MOCK-REPLY-M10-{run} 她说的话" },
+          { "key": "MOCK-M10 住处", "value": "MOCK-M10-{run}-杭州", "quote": "我住在MOCK-M10-{run}-杭州" }] } }
+      ],
+      "steps": [
+        { "noteExtracted": {} },
+        { "say": { "from": "MOCK-E", "text": "MOCK-M10 说一件事 MOCK-M10-{run}：我的生日是MOCK-M10-{run}-三月，我住在MOCK-M10-{run}-杭州" } },
+        { "expectReply": { "to": "MOCK-E", "contains": "MOCK-REPLY-M10-{run} 她说的话" } },
+        { "converse": { "from": "MOCK-E", "text": "MOCK-M10 第{n}轮", "times": 3, "reply": "MOCK-REPLY-M10 好", "pad": 6000 } },
+        { "expectDigest": { "person": "MOCK-E", "contains": "MOCK-DIGEST-M10-{run}", "covers": "MOCK-M10-{run}-三月" } },
+        { "expectExtracted": { "person": "MOCK-E", "contains": "MOCK-M10-{run}-杭州" } },
+        { "expectRejected": { "reasons": { "quote_not_in_observation": 1, "value_not_in_quote": 1, "unconfirmed_identity": 1 } } },
+        { "expectMemory": { "person": "MOCK-E", "absent": "MOCK-M10-{run}-三月" } },
+        { "expectMemory": { "person": "MOCK-E", "absent": "MOCK-M10-{run}-四月" } },
+        { "expectMemory": { "person": "MOCK-E", "absent": "MOCK-REPLY-M10-{run} 她说的话" } }
+      ]
+    },
+    {
+      "id": "M12",
+      "title": "budget-gates-consolidation: at the restricted spend tier no consolidation request is made and nothing moves; afterwards it catches up; a conversation gets two batches a day",
+      "model": [
+        { "match": "MOCK-M12", "reply": "MOCK-REPLY-M12 好" },
+        { "match": "MOCK-M12-{run}", "consolidate": { "summary": "MOCK-DIGEST-M12-{run} 一段闲聊" } }
+      ],
+      "steps": [
+        { "spendSettings": { "dailyCapYuan": 5, "reducedPercent": 0.0005, "restrictedPercent": 0.001 } },
+        { "converse": { "from": "MOCK-F", "text": "MOCK-M12-{run} 第{n}轮", "times": 4, "reply": "MOCK-REPLY-M12 好", "pad": 6000 } },
+        { "expectSpend": { "tier": "restricted" } },
+        { "expectConsolidation": { "person": "MOCK-F", "paused": "spend", "calls": 0, "waitingMin": 4, "steadyMs": 12000 } },
+        { "expectConsolidationInput": { "contains": "MOCK-M12-{run}", "count": 0 } },
+        { "spendSettings": { "dailyCapYuan": 5, "reducedPercent": 60, "restrictedPercent": 80 } },
+        { "expectSpend": { "tier": "normal" } },
+        { "expectDigest": { "person": "MOCK-F", "contains": "MOCK-DIGEST-M12-{run}", "covers": "MOCK-M12-{run} 第1轮" } },
+        { "expectConsolidation": { "person": "MOCK-F", "calls": 1, "waitingMin": 0 } },
+        { "converse": { "from": "MOCK-F", "text": "MOCK-M12-{run} 再聊第{n}轮", "times": 1, "reply": "MOCK-REPLY-M12 好", "pad": 6000 } },
+        { "expectConsolidation": { "person": "MOCK-F", "calls": 2 } },
+        { "converse": { "from": "MOCK-F", "text": "MOCK-M12-{run} 又聊第{n}轮", "times": 2, "reply": "MOCK-REPLY-M12 好", "pad": 6000 } },
+        { "expectConsolidation": { "person": "MOCK-F", "calls": 2, "waitingMin": 4, "steadyMs": 12000 } },
+        { "expectConsolidationInput": { "contains": "MOCK-M12-{run}", "count": 2 } }
+      ],
+      "finally": [
+        { "spendSettings": { "dailyCapYuan": 5, "reducedPercent": 60, "restrictedPercent": 80 } }
+      ]
+    },
+    {
+      "id": "M13",
+      "title": "forget-cascade-derived: forgetting a line removes the digest and the fact derived from it and restarts only that person's conversation",
+      "model": [
+        { "match": "MOCK-M13", "reply": "MOCK-REPLY-M13 好" },
+        { "match": "MOCK-M13-{run} 甲", "consolidate": { "summary": "MOCK-DIGEST-M13-{run} 摘要正文甲", "facts": [{ "key": "MOCK-M13 暗号", "value": "MOCK-M13-{run}-暗号", "quote": "我的暗号是MOCK-M13-{run}-暗号" }] } },
+        { "match": "MOCK-M13-{run} 乙", "consolidate": { "summary": "MOCK-DIGEST-M13-{run} 摘要正文乙" } }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-G", "text": "MOCK-M13-{run} 甲 想被忘掉的一句：我的暗号是MOCK-M13-{run}-暗号" } },
+        { "expectReply": { "to": "MOCK-G", "contains": "MOCK-REPLY-M13 好" } },
+        { "say": { "from": "MOCK-H", "text": "MOCK-M13-{run} 乙 的一句" } },
+        { "expectReply": { "to": "MOCK-H", "contains": "MOCK-REPLY-M13 好" } },
+        { "converse": { "from": "MOCK-G", "text": "MOCK-M13-{run} 甲 第{n}轮", "times": 3, "reply": "MOCK-REPLY-M13 好", "pad": 6000 } },
+        { "converse": { "from": "MOCK-H", "text": "MOCK-M13-{run} 乙 第{n}轮", "times": 3, "reply": "MOCK-REPLY-M13 好", "pad": 6000 } },
+        { "expectDigest": { "person": "MOCK-G", "contains": "MOCK-DIGEST-M13-{run} 摘要正文甲", "covers": "想被忘掉的一句" } },
+        { "expectExtracted": { "person": "MOCK-G", "contains": "MOCK-M13-{run}-暗号" } },
+        { "expectDigest": { "person": "MOCK-H", "contains": "MOCK-DIGEST-M13-{run} 摘要正文乙", "covers": "MOCK-M13-{run} 乙 的一句" } },
+        { "forget": { "person": "MOCK-G", "source": "想被忘掉的一句" } },
+        { "expectNoDigest": { "person": "MOCK-G", "contains": "MOCK-DIGEST-M13-{run} 摘要正文甲" } },
+        { "expectMemory": { "person": "MOCK-G", "absent": "MOCK-M13-{run}-暗号" } },
+        { "expectDigest": { "person": "MOCK-H", "contains": "MOCK-DIGEST-M13-{run} 摘要正文乙", "covers": "MOCK-M13-{run} 乙 的一句", "timeoutMs": 1000 } },
+        { "say": { "from": "MOCK-G", "text": "MOCK-M13-{run} 甲 忘记之后：暗号 还记得吗" } },
+        { "expectReply": { "to": "MOCK-G", "contains": "MOCK-REPLY-M13 好" } },
+        { "expectPrompt": { "userText": "甲 忘记之后", "absent": "MOCK-M13-{run}-暗号" } },
+        { "expectPrompt": { "userText": "甲 忘记之后", "absent": "想被忘掉的一句" } },
+        { "expectHistory": { "userText": "甲 忘记之后", "maxEarlier": 0 } }
+      ],
+      "finally": [
+        { "resume": {} }
       ]
     }
   ]

@@ -91,3 +91,74 @@ test('memory queries carry only an opaque owner label and a page cursor', async 
   await assert.rejects(operatorRequest({ location, token: 'operator-test', path: '/memory/forget', payload: {}, query: { person: 'none' }, fetchImpl }), /operator_query_unsupported/);
   await assert.rejects(operatorRequest({ location, token: 'operator-test', path: '/people', query: {}, fetchImpl }), /operator_query_unsupported/);
 });
+
+test('machine digests are marked as machine text with what they cover; consolidation status and source lines are explicit reads', async () => {
+  const world = { world: { paused: true, revision: 1 }, persona: { revision: 1, value: {} }, counts: { facts: 1, notes: 0, experiences: 1, pending: 0 }, channels: [], bindings: [], model: { provider: 'deepseek', model: 'deepseek-flash', configured: false, status: 'unconfigured' } };
+  const base = { status: 'active', visibility: 'private', personId: 'person:qq:999900000011', personLabel: 'p-aaaaaa', personIsOwner: false };
+  const digest = { ...base, id: 'd-1', revision: 30, type: 'experiences', kind: 'digest', summary: 'MOCK-摘要：对方说起养了仓鼠', feeling: 'MOCK-感受：很开心', derivedFrom: ['o1', 'o2'], fromAt: 1_800_000_000_000, toAt: 1_800_000_060_000, source: { channel: 'qq', role: null, proposal: null, machine: 'digest' } };
+  const fact = { ...base, id: 'f-1', revision: 20, type: 'facts', key: 'MOCK-宠物', value: 'MOCK-年糕', source: { channel: 'qq', role: 'user', proposal: 'fact.report', machine: 'extracted' } };
+  const plain = { ...base, id: 'e-1', revision: 10, type: 'experiences', summary: 'MOCK-当场记下的经历', source: { channel: 'qq', role: 'user', proposal: 'experience.remember' } };
+  const pages = {
+    '/memory': { entityId: 'entity:test', memoryEpoch: 0, more: false, people: [{ label: 'p-aaaaaa', owner: false, items: 3 }], unowned: 0, diaries: [], items: [digest, fact, plain] },
+    '/memory/sources?id=d-1': { entityId: 'entity:test', id: 'd-1', machine: true, sources: [{ id: 'o1', role: 'user', at: 1_800_000_000_000, text: 'MOCK-原话：我养了一只仓鼠', forgotten: false }, { id: 'o2', role: 'assistant', at: 1_800_000_060_000, text: '', forgotten: true }] },
+    '/memory/consolidation': { entityId: 'entity:test', day: '2026-11-11', calls: 3, limits: { perDay: 24, perStreamPerDay: 2 }, lastCommittedAt: 1_800_000_090_000, paused: 'spend', staleDigestIds: ['d-9'], extracted: { accepted: 4, pending: 0, rejected: { quote_not_in_observation: 2, value_not_in_quote: 1 } },
+      streams: [{ stream: 's-111111', person: 'p-aaaaaa', owner: false, behind: { observations: 12, chars: 340 }, waiting: 5, calls: 2, digests: 7, skipped: 1, lastAt: 1_800_000_090_000 }, { stream: 's-222222', person: 'p-0f0f0f', owner: true, behind: { observations: 0, chars: 0 }, waiting: 0, calls: 0, digests: 0, skipped: 0, lastAt: null }] },
+    '/memory/forget-preview': { entityId: 'entity:test', memoryEpoch: 0, revision: 4, ids: ['o1'], expandedIds: ['d-1'], digestIds: ['d-1'], sourceObservationIds: ['o1'] },
+  };
+  const states = ['operator-test', '', world, {}, 'memory']; const refs = [], calls = [], writes = [];
+  let cursor = 0, refCursor = 0;
+  const React = { Fragment: 'fragment', useState: initial => { const i = cursor++; if (!(i in states)) states[i] = typeof initial === 'function' ? initial() : initial; return [states[i], value => { states[i] = value; }]; }, useRef: initial => refs[refCursor++] ||= { current: initial }, useEffect() {}, createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity) }) };
+  const storage = { getItem: () => 'operator-test', setItem: (...args) => writes.push(args), removeItem() {} };
+  const loaded = await loadConsole({ window: { location: { protocol: 'http:', hostname: '127.0.0.1', hash: '' }, sessionStorage: storage }, sessionStorage: storage, AbortController, AbortSignal, setTimeout, clearTimeout, URLSearchParams,
+    fetch: async (url, options) => { const route = url.slice(url.indexOf('3082') + 4); calls.push(`${options.method} ${route}`); return { ok: true, status: 200, json: async () => ({ ok: true, value: pages[route] }) }; } });
+  const component = loaded.factory(() => React).WorldConsole;
+  const render = () => { cursor = 0; refCursor = 0; return component({ t: key => key }); };
+  const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...tree.children.flatMap(nodes)];
+  const buttons = key => nodes(render()).filter(n => n.type === 'button' && n.children.includes(key));
+  const cards = () => nodes(render()).filter(n => n.type === 'article').map(n => JSON.stringify(n));
+  // Nothing about consolidation is fetched until asked for.
+  assert.equal(JSON.stringify(render()).includes('consolidation.callsToday'), false);
+  await buttons('memoryReadExplicitly')[0].props.onClick();
+  const [digestCard, factCard, plainCard] = cards();
+  // The digest: machine badge, her feeling, what it covers, its origin; it cannot be made public.
+  for (const shown of ['memoryPanel.machineBadge', 'MOCK-摘要：对方说起养了仓鼠', 'memoryPanel.feeling: MOCK-感受：很开心', 'memoryPanel.lines: 2', 'memoryPanel.source: memoryPanel.machine.digest · qq', 'p-aaaaaa']) assert.ok(digestCard.includes(shown), shown);
+  assert.ok(!digestCard.includes('memoryPublicAuthorize') && digestCard.includes('memoryPanel.showSources'));
+  assert.ok(factCard.includes('memoryPanel.extractedBadge') && factCard.includes('memoryPanel.machine.extracted') && factCard.includes('memoryPublicAuthorize') && factCard.includes('memoryPanel.showSources'));
+  assert.ok(!plainCard.includes('memoryPanel.machineBadge') && !plainCard.includes('memoryPanel.extractedBadge') && !plainCard.includes('memoryPanel.showSources') && plainCard.includes('memoryPanel.source: memoryPanel.role.user · memoryPanel.proposal.experience · qq'));
+  // Source lines of one item: read on click, whose words they are; a forgotten line shows no text.
+  assert.ok(!JSON.stringify(render()).includes('MOCK-原话'));
+  await buttons('memoryPanel.showSources')[0].props.onClick();
+  assert.ok(cards()[0].includes('memoryPanel.role.user · ') && cards()[0].includes(': MOCK-原话：我养了一只仓鼠') && cards()[0].includes(': memoryPanel.sourceForgotten'));
+  assert.ok(!cards()[1].includes('MOCK-原话'));
+  // Status card: counters, the spend pause, leftovers, one row per conversation by opaque label.
+  await buttons('consolidation.read')[0].props.onClick();
+  const page = JSON.stringify(render());
+  for (const shown of ['consolidation.paused.spend', 'consolidation.stale: 1', 'consolidation.today (2026-11-11): 3 / 24 · consolidation.perConversation: 2', 'consolidation.extracted: 4 · consolidation.refused: 3']) assert.ok(page.includes(shown), shown);
+  const rows = nodes(render()).filter(n => n.type === 'tr').map(n => nodes(n).filter(cell => cell.type === 'td').map(cell => JSON.stringify(cell.children)));
+  assert.deepEqual(rows.filter(row => row.length).map(row => row.slice(1, 6).map(cell => JSON.parse(cell)[0])), [['12', '5', '2', '7', '1'], ['0', '0', '0', '0', '0']]);
+  assert.ok(rows.filter(row => row.length)[0][0].includes('p-aaaaaa') && rows.filter(row => row.length)[1][0].includes('peoplePanel.owner'));
+  // The forget preview names the digests that go along.
+  await buttons('memoryForgetPreview')[0].props.onClick();
+  assert.ok(JSON.stringify(render()).includes('memoryPanel.digestsRemoved: 1'));
+  // Read-only: GETs and the existing forget preview; nothing written to the browser, no account number rendered.
+  assert.deepEqual(calls, ['GET /memory', 'GET /memory/sources?id=d-1', 'GET /memory/consolidation', 'POST /memory/forget-preview']);
+  assert.equal(writes.length, 0);
+  assert.ok(!JSON.stringify(render()).includes('999900000011'));
+  // Leaving the page drops what was read.
+  nodes(render()).find(n => n.type === 'button' && n.children.includes('overview')).props.onClick();
+  assert.deepEqual([states[10], Object.keys(states.at(-1)).length], [null, 0]);
+});
+
+test('consolidation status and source reads are GET-only; a source read names exactly one item', async () => {
+  const { operatorRequest, sourcesQuery } = await import('./operator-client.js');
+  assert.equal(sourcesQuery({ id: 'd-1' }), '?id=d-1');
+  for (const bad of [{}, { id: '' }, { id: 'a b' }, { id: 'x&person=p-aaaaaa' }, { id: 'x'.repeat(65) }]) assert.throws(() => sourcesQuery(bad), /invalid_memory_query/);
+  const location = { protocol: 'http:', hostname: '127.0.0.1', hash: '' }, urls = [], fetchImpl = async (url, options) => { urls.push(`${options.method} ${url.slice(url.indexOf('3082') + 4)}`); return { ok: true, status: 200, json: async () => ({ ok: true, value: {} }) }; };
+  const ask = extra => operatorRequest({ location, token: 'operator-test', fetchImpl, ...extra });
+  await ask({ path: '/memory/consolidation' }); await ask({ path: '/memory/sources', query: { id: 'd-1' } });
+  assert.deepEqual(urls, ['GET /memory/consolidation', 'GET /memory/sources?id=d-1']);
+  for (const path of ['/memory/consolidation', '/memory/sources']) await assert.rejects(ask({ path, payload: {} }), /operator_get_required/);
+  await assert.rejects(ask({ path: '/memory/sources' }), /operator_query_unsupported/);
+  await assert.rejects(ask({ path: '/memory/consolidation', query: { id: 'd-1' } }), /operator_query_unsupported/);
+  await assert.rejects(ask({ path: '/memory/consolidation/next' }), /unsupported_operator_path/);
+});

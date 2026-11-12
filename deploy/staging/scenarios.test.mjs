@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { prepareModel } from '../authority/prepare-model.mjs';
 import { prepareQQ } from '../authority/prepare-qq.mjs';
 import { prepareConversation } from '../authority/prepare-conversation.mjs';
+import { prepareMemory } from '../authority/prepare-memory.mjs';
 import { createFakeOneBot } from './fake-onebot.mjs';
 import { Runner, STEPS, validateScenarios, summaryLine } from './scenarios.mjs';
 import { planReply } from './fake-model.mjs';
@@ -20,7 +21,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -198,8 +199,93 @@ test('expectMemoryPages requires a complete, owner-only listing that continues p
   await assert.rejects(check(broken((page, route) => route.includes('beforeRevision') ? { ...page, items: [mine[1]] } : page), { atLeast: 50 }), /the filtered pages hold 51 item\(s\), the unfiltered listing has 52 of MOCK-A/);
 });
 
+test('consolidation steps: a digest must be its owner\'s machine digest of the named line, stay out of every chat, and one batch holds one conversation', async t => {
+  const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-cons-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const log = path.join(dir, 'requests.jsonl'), ctx = { logOffset: 0 };
+  const digest = owned('MOCK-A', 'p-aaaaaa', 'd1', 9, { type: 'experiences', kind: 'digest', visibility: 'private', summary: 'MOCK-DIGEST 摘要正文甲', derivedFrom: ['o1', 'o2'], source: { machine: 'digest' }, entityId: 'entity:test' });
+  const fact = owned('MOCK-A', 'p-aaaaaa', 'f1', 8, { type: 'facts', key: '宠物', value: 'MOCK-年糕', source: { machine: 'extracted' }, evidence: { quote: '仓鼠叫MOCK-年糕' } });
+  const state = { items: [digest, fact], sources: { d1: [{ id: 'o1', role: 'user', text: '我养了一只仓鼠叫MOCK-年糕' }, { id: 'o2', role: 'assistant', text: 'MOCK-REPLY' }], f1: [{ id: 'o1', role: 'user', text: '我养了一只仓鼠叫MOCK-年糕' }] },
+    status: { paused: null, extracted: { rejected: {} }, streams: [{ person: 'p-aaaaaa', calls: 1, digests: 1, waiting: 0 }] }, epochs: { 'MOCK-A': 0, 'MOCK-B': 3 }, preview: { digestIds: ['d1'], sourceObservationIds: ['o1'], memoryEpoch: 0 }, bump: ['MOCK-A'], calls: [] };
+  const listing = fakeOperator(state), show = (...items) => { state.items.splice(0, state.items.length, ...items); };
+  const operator = async (method, route, body) => {
+    const url = new URL(route, 'http://operator.invalid'), data = shipped();
+    state.calls.push(`${method} ${url.pathname}`);
+    if (url.pathname === '/memory/sources') return { sources: state.sources[url.searchParams.get('id')] };
+    if (url.pathname === '/memory/consolidation') return typeof state.status === 'function' ? state.status() : state.status;
+    if (url.pathname === '/conversations') return Object.entries(state.epochs).map(([name, memoryEpoch]) => ({ streamId: `qq:${data.bot.qq}:private:${data.people[name].qq}`, memoryEpoch }));
+    if (url.pathname === '/world') return { world: { paused: state.paused ?? false, revision: 1 } };
+    if (url.pathname === '/world/pause') { state.paused = body.paused; return {}; }
+    if (url.pathname === '/qq') return { paused: state.paused ?? false };
+    if (url.pathname === '/memory/forget-preview') return state.preview;
+    if (url.pathname === '/memory/forget') { for (const name of state.bump) state.epochs[name]++; show(...state.items.filter(item => item.id !== 'd1')); return {}; }
+    if (url.pathname === '/memory/cleanup/pending') return [{ id: 'job', memoryEpoch: 1 }];
+    if (url.pathname === '/memory/cleanup/complete') return {};
+    return listing(method, route);
+  };
+  const run = new Runner({ data: shipped(), operator, modelLog: log, sleep: async () => {} });
+  run.poll = async (probe, _timeoutMs, message) => (await probe()) || (() => { throw new Error(message); })();
+  // Digest and extracted fact, read the way the console reads them.
+  await STEPS.expectDigest(run, ctx, { person: 'MOCK-A', contains: '摘要正文甲', covers: 'MOCK-年糕' });
+  await STEPS.expectExtracted(run, ctx, { person: 'MOCK-A', contains: 'MOCK-年糕' });
+  await assert.rejects(STEPS.expectDigest(run, ctx, { person: 'MOCK-B', contains: '摘要正文甲' }), /no digest of MOCK-B/);
+  await assert.rejects(STEPS.expectDigest(run, ctx, { person: 'MOCK-A', contains: '摘要正文甲', covers: '没说过的话' }), /not derived from an observation containing "没说过的话"/);
+  await assert.rejects(STEPS.expectNoDigest(run, ctx, { person: 'MOCK-A', contains: '摘要正文甲' }), /still has a digest of MOCK-A/);
+  for (const change of [{ source: { machine: null } }, { visibility: 'public' }, { evidence: { observationId: 'o1' } }]) {
+    show({ ...digest, ...change }, fact);
+    await assert.rejects(STEPS.expectDigest(run, ctx, { person: 'MOCK-A', contains: '摘要正文甲' }), /not a private machine digest without evidence/, JSON.stringify(change));
+  }
+  show(digest, { ...fact, evidence: { quote: '仓鼠叫 MOCK-年糕' } });
+  await assert.rejects(STEPS.expectExtracted(run, ctx, { person: 'MOCK-A', contains: 'MOCK-年糕' }), /does not quote that person's own words verbatim/);
+  state.sources.f1 = [{ id: 'o2', role: 'assistant', text: '仓鼠叫MOCK-年糕' }]; show(digest, fact);
+  await assert.rejects(STEPS.expectExtracted(run, ctx, { person: 'MOCK-A', contains: 'MOCK-年糕' }), /does not quote that person's own words verbatim/);
+  // The model log: chats and consolidation requests are told apart.
+  const chat = (userText, extra = {}) => ({ stream: true, userText, system: 'MOCK system', context: '', rest: '[]', ...extra });
+  const batch = text => ({ stream: false, consolidation: true, userText: '', maintenance: text });
+  const logged = entries => fs.writeFileSync(log, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+  logged([chat('MOCK-甲 在吗'), chat('MOCK-乙 在吗'), batch('甲的对话 MOCK-甲'), batch('乙的对话 MOCK-乙')]);
+  await STEPS.expectNoChatContains(run, ctx, { text: '摘要正文甲', minRequests: 2 });
+  await STEPS.expectConsolidationInput(run, ctx, { contains: 'MOCK-甲', absent: 'MOCK-乙' });
+  await STEPS.expectConsolidationInput(run, ctx, { contains: 'MOCK-甲', count: 1 });
+  await STEPS.expectConsolidationInput(run, ctx, { contains: 'MOCK-丙', count: 0 });
+  await assert.rejects(STEPS.expectNoChatContains(run, ctx, { text: '摘要正文甲', minRequests: 3 }), /only 2 chat request\(s\)/);
+  await assert.rejects(STEPS.expectConsolidationInput(run, ctx, { contains: 'MOCK-丙' }), /0 consolidation request\(s\) contain "MOCK-丙", expected at least 1/);
+  for (const where of ['system', 'context', 'rest', 'userText']) {
+    logged([chat('MOCK-甲 在吗'), chat('MOCK-乙 在吗', { [where]: 'x 摘要正文甲 x' })]);
+    await assert.rejects(STEPS.expectNoChatContains(run, ctx, { text: '摘要正文甲' }), /the chat request for .* contains "摘要正文甲"/, where);
+  }
+  logged([batch('甲的对话 MOCK-甲 还混进了 MOCK-乙')]);
+  await assert.rejects(STEPS.expectConsolidationInput(run, ctx, { contains: 'MOCK-甲', absent: 'MOCK-乙' }), /also contains "MOCK-乙"/);
+  await assert.rejects(STEPS.expectNoChatContains(run, ctx, { text: 'x' }), /only 0 chat request/);
+  // Status: every condition, and still so after the steady time.
+  await STEPS.expectConsolidation(run, ctx, { person: 'MOCK-A', calls: 1, digests: 1, paused: null, steadyMs: 10 });
+  await assert.rejects(STEPS.expectConsolidation(run, ctx, { person: 'MOCK-A', calls: 0 }), /consolidation of MOCK-A is \{"calls":1,"digests":1,"waiting":0,"paused":null\}, expected \{"calls":0\}/);
+  await assert.rejects(STEPS.expectConsolidation(run, ctx, { person: 'MOCK-A', waitingMin: 1 }), /expected \{"waitingMin":1\}/);
+  let reads = 0; const steady = state.status;
+  state.status = () => ({ ...steady, streams: [{ ...steady.streams[0], calls: ++reads > 1 ? 2 : 1 }] });
+  await assert.rejects(STEPS.expectConsolidation(run, ctx, { person: 'MOCK-A', calls: 1, steadyMs: 10 }), /became \{"calls":2/);
+  state.status = { ...steady, extracted: { rejected: { quote_not_in_observation: 2 } }, note: shipped().people['MOCK-A'].qq };
+  await assert.rejects(STEPS.expectConsolidation(run, ctx, { person: 'MOCK-A', calls: 1 }), /contains the account number/);
+  delete state.status.note;
+  await STEPS.noteExtracted(run, ctx);
+  state.status = { ...steady, extracted: { rejected: { quote_not_in_observation: 3, value_not_in_quote: 1 } } };
+  await STEPS.expectRejected(run, ctx, { reasons: { value_not_in_quote: 1, quote_not_in_observation: 1 } });
+  await assert.rejects(STEPS.expectRejected(run, ctx, { reasons: { value_not_in_quote: 1 } }), /refused as \{"quote_not_in_observation":1,"value_not_in_quote":1\}/);
+  // Forgetting: preview, pause, forget, acknowledge the cleanup, resume; only that person's epoch moves.
+  state.calls = [];
+  await STEPS.forget(run, ctx, { person: 'MOCK-A', source: 'MOCK-年糕' });
+  assert.deepEqual(state.calls.filter(call => call.startsWith('POST')), ['POST /memory/forget-preview', 'POST /world/pause', 'POST /memory/forget', 'POST /memory/cleanup/complete', 'POST /world/pause']);
+  assert.deepEqual([state.paused, state.epochs], [false, { 'MOCK-A': 1, 'MOCK-B': 3 }]);
+  show(digest, fact);
+  await assert.rejects(STEPS.forget(run, ctx, { person: 'MOCK-A', source: '没说过的话' }), /no digest of MOCK-A is derived from/);
+  state.preview = { digestIds: [], sourceObservationIds: ['o1'], memoryEpoch: 0 };
+  await assert.rejects(STEPS.forget(run, ctx, { person: 'MOCK-A', source: 'MOCK-年糕' }), /does not list the digest/);
+  state.preview = { digestIds: ['d1'], sourceObservationIds: ['o1'], memoryEpoch: 0 }; state.bump = ['MOCK-A', 'MOCK-B'];
+  await assert.rejects(STEPS.forget(run, ctx, { person: 'MOCK-A', source: 'MOCK-年糕' }), /memory epoch of MOCK-B went from 3 to 4/);
+});
+
 // The real services of this checkout, as processes, on a throwaway data root: Authority, the model
-// gateway behind fake-model.mjs, the conversation executor and the QQ bridge against the fake OneBot.
+// gateway behind fake-model.mjs, the conversation executor, the QQ bridge against the fake OneBot, and
+// the memory worker (ticking every second here).
 async function stack(t) {
   const root = path.join(fs.realpathSync(fs.mkdtempSync('/tmp/fscn-')), 'companion-staging'), base = path.join(root, 'companion-world-v1');
   const children = [];
@@ -217,12 +303,14 @@ async function stack(t) {
     operator: { socketPath: path.join(base, 'ipc/operator/operator.sock'), tokenHash: hash(operatorToken), origins: [] },
     credentials: [{ hash: hash(healthToken), role: 'capability', capabilityId: 'health' }], capabilities: [{ id: 'health', policy: 'learning.v1' }], actors: [], streams: [], persona: { name: '大肥鱼' },
   });
-  prepareModel(base); prepareQQ(base); prepareConversation(base);
+  prepareModel(base); prepareQQ(base); prepareConversation(base); prepareMemory(base);
   const edit = (label, change) => { const file = path.join(base, 'operator', label), value = JSON.parse(fs.readFileSync(file, 'utf8')); change(value); fs.writeFileSync(file, JSON.stringify(value), { mode: 0o600 }); return value; };
   // The prepare scripts write the paths Authority sees inside its production sandbox.
   edit('authority.json', c => Object.assign(c.operator, { modelSocketPath: path.join(base, 'ipc/model-control/control.sock'), qqSocketPath: path.join(base, 'ipc/qq-control/control.sock') }));
   const onebotPort = await new Promise(resolve => { const probe = net.createServer(); probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
   edit('qq-bridge.json', c => { c.onebotPort = onebotPort; });
+  // The worker's cleanup client gets a port nobody listens on (as in staging, where it cannot reach the operator).
+  edit('memory-worker.json', c => Object.assign(c, { operatorPort: onebotPort === 65535 ? 65534 : onebotPort + 1, tickMs: 1000, consolidationDeferMs: 2000 }));
   const data = shipped(), files = { control: path.join(base, 'scenario/onebot.sock'), script: path.join(base, 'scenario/script.json'), log: path.join(base, 'scenario/requests.jsonl') };
   fs.writeFileSync(files.script, '[]');
   const fake = createFakeOneBot({ port: onebotPort, token: onebotToken, controlSocket: files.control, selfId: data.bot.qq });
@@ -238,6 +326,7 @@ async function stack(t) {
   await ready(path.join(base, 'ipc/conversation/execute.sock'));
   start(path.join(project, 'capabilities/qq/main.mjs'), '--config', path.join(base, 'operator/qq-bridge.json'));
   await ready(path.join(base, 'ipc/qq-control/control.sock'));
+  start(path.join(project, 'capabilities/memory/main.mjs'), '--config', path.join(base, 'operator/memory-worker.json'));
   const call = (socketPath, headers) => (method, route, body) => new Promise((resolve, reject) => {
     const req = http.request({ socketPath, method, path: route, agent: false, headers: { ...headers, ...(body === undefined ? {} : { 'content-type': 'application/json' }) } }, res => {
       let raw = ''; res.setEncoding('utf8'); res.on('data', chunk => { raw += chunk; });
@@ -250,12 +339,12 @@ async function stack(t) {
   return { runner, data, files, fake, base };
 }
 
-test('scenario replay against the real Authority, gateway (scripted upstream), executor and QQ bridge', { timeout: 300000 }, async t => {
+test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge and memory worker', { timeout: 600000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '11/11 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '15/15 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));
@@ -265,7 +354,8 @@ test('scenario replay against the real Authority, gateway (scripted upstream), e
 
   await t.test('a second replay on the same state passes too (staging replays again after the rollback round trip)', async () => {
     // Without S2 and S3: the spend meter and the owner's once-a-day notice are only reset by the staging agent.
-    const again = ids.filter(id => !['S2', 'S3'].includes(id)), second = await runner(data).run(again);
+    // Without M9-M13: so are the day's consolidation batches (two a conversation).
+    const again = ids.filter(id => !['S2', 'S3', 'M9', 'M10', 'M12', 'M13'].includes(id)), second = await runner(data).run(again);
     assert.deepEqual(second.results.map(result => [result.id, result.ok, result.error]), again.map(id => [id, true, undefined]));
   });
 

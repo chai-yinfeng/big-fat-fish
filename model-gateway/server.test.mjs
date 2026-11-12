@@ -125,7 +125,7 @@ test('memory completion is bounded and toolless, disables reasoning, and still r
   assert.equal(calls.length, 0);
   f.pause(false);
   assert.equal((await f.memory(request)).status, 200);
-  assert.equal(calls[0].max_tokens, 768);
+  assert.equal(calls[0].max_tokens, 1536);
   assert.deepEqual(calls[0].thinking, { type: 'disabled' });
   assert.equal(calls[0].reasoning_effort, undefined);
   assert.equal((await f.memory({ ...request, tools: [] })).status, 400);
