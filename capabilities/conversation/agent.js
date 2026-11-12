@@ -9,7 +9,7 @@ export const MAX_EXECUTION_TIMEOUT_MS = 600000;
 /** Most memory IDs sent to Authority as already in the window (its limit for `exclude`). */
 const MAX_EXCLUDED = 256;
 /** Authority's bound for a person's standing profile (authority/src/context.js PROFILE_CHARS). */
-const MAX_PROFILE_CHARS = 600;
+const MAX_PROFILE_CHARS = 1000;
 const KNOWN = new Set(['WORLD_PAUSED', 'EXECUTION_EPOCH_RETIRED', 'AUTHORITY_BINDING_REQUIRED', 'CONTEXT_UNAVAILABLE', 'ACTIVE_CONTEXT_LIMIT', 'TOOL_LOOP_LIMIT', 'REAL_USER_INPUT_REQUIRED']);
 /** Delimiters of the memory-hub note that leads the user message of the run it was written for. */
 export const NOTE_OPEN = '<<<记忆中枢附注开始>>>', NOTE_CLOSE = '<<<记忆中枢附注结束>>>';

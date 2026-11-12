@@ -3,7 +3,7 @@ import { Store, DEFAULT_ENTITY_ID } from './store.js';
 import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
 import { POLICIES, validatePayload, review } from './policies.js';
 import { normalizePersona, validatePersonaPatch } from '../../core/src/persona.js';
-import { renderContextParts, renderProfile, RETRIEVED_ITEMS, DEFAULT_CONTEXT_CHARS, personaShare, personaContextText, opaquePerson, opaqueStream } from './context.js';
+import { renderContextParts, renderProfile, RETRIEVED_ITEMS, DEFAULT_CONTEXT_CHARS, personaBudget, personaContextText, opaquePerson, opaqueStream } from './context.js';
 import { ConsolidationDomain, BACKGROUND_PROPOSAL } from './consolidation.js';
 export {
   DEFAULT_ENTITY_ID
@@ -213,14 +213,14 @@ export class Authority extends ConsolidationDomain {
       };
     });
   }
-  /** Read-only: the persona block a patch would render into context, and its share of the default budget. */
+  /** Read-only: the persona block a patch would render into context, and the persona budget it must fit. */
   previewPersona(input){
     closed(input,['entityId','patch'],['patch']);
     jsonValue(input.patch);
     validated(()=>validatePersonaPatch(input.patch));
     const e=this.entity(input.entityId??DEFAULT_ENTITY_ID),
     text=personaContextText(validated(()=>normalizePersona({...JSON.parse(e.persona),...input.patch})));
-    return{text,chars:text.length,limit:personaShare(DEFAULT_CONTEXT_CHARS)};
+    return{text,chars:text.length,limit:personaBudget(DEFAULT_CONTEXT_CHARS)};
   }
   contentScope(capabilityId, input) {
     closed(input, ['streamId', 'memoryEpoch', 'sourceEventId'], ['streamId', 'memoryEpoch']);

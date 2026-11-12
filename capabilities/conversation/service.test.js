@@ -291,12 +291,16 @@ test('standing profile: it follows the persona in the system message, the same b
   f.authority.state.profile = ''; f.gateway.state.script.push(reply('三号'));
   await f.executor.execute(request('第三句'));
   assert.ok(f.gateway.state.bodies[3].messages[0].content.endsWith('\n\n[人格]\n大肥鱼，说话简短'));
+  // A profile of up to 1000 characters is carried whole.
+  f.authority.state.profile = 'x'.repeat(1000); f.gateway.state.script.push(reply('四号'));
+  await f.executor.execute(request('第三句半'));
+  assert.ok(f.gateway.state.bodies[4].messages[0].content.endsWith('\n\n' + 'x'.repeat(1000)));
   // A missing or oversized profile fails closed.
-  for (const bad of [undefined, 'x'.repeat(601)]) {
+  for (const bad of [undefined, 'x'.repeat(1001)]) {
     f.authority.state.profile = bad; f.gateway.state.script.length = 0; f.gateway.state.script.push(reply('x'));
     await assert.rejects(f.executor.execute(request('第四句')), { code: 'CONTEXT_UNAVAILABLE' });
   }
-  assert.equal(f.gateway.state.bodies.length, 4);
+  assert.equal(f.gateway.state.bodies.length, 5);
 });
 
 test('persona change: the next run replays only the two runs before it; later runs keep that cut', async t => {
