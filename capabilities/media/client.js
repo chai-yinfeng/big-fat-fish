@@ -48,5 +48,26 @@ export class ContentClient {
 }
 export function capabilityGateway({ socketPath, tokenFile }) {
   const call = (route, body) => unixJson({ socketPath, tokenFile, route, body, maxBytes: 65536, timeoutMs: 90000 });
-  return { vision: body => call('/v1/vision/describe', body), search: body => call('/v1/web/search', body), fetchPage: body => call('/v1/web/fetch', body) };
+  return { vision: body => call('/v1/vision/describe', body), search: body => call('/v1/web/search', body), fetchPage: body => call('/v1/web/fetch', body),
+    // The gateway's usage ledger: how a local run ended (count, units, elapsed time; never text or audio).
+    recordUsage: body => unixJson({ socketPath, tokenFile, route: '/v1/usage/record', body, maxBytes: 4096, timeoutMs: 5000 }) };
+}
+/** The local speech runner with every transcription and synthesis reported through `record` (the usage ledger):
+ * outcome, elapsed time including the wait for the serial runner, seconds of audio, characters spoken. Reporting
+ * is best effort and never awaited: a ledger that is down neither delays nor fails speech. */
+export function meteredSpeech(speech, record, clock = Date.now) {
+  const report = body => { try { Promise.resolve(record(body)).catch(() => {}); } catch {} };
+  const seconds = ms => Math.round(ms / 100) / 10;
+  const timed = async (capability, run, units) => {
+    const from = clock(), busyMs = () => Math.max(0, Math.round(clock() - from));
+    let result;
+    try { result = await run(); } catch (error) { report({ capability, outcome: 'failed', busyMs: busyMs() }); throw error; }
+    report({ capability, outcome: 'ok', busyMs: busyMs(), units: units(result) });
+    return result;
+  };
+  return {
+    ...speech,
+    transcribe: input => timed('speech-asr', () => speech.transcribe(input), result => ({ audioSeconds: seconds(result.durationMs) })),
+    synthesize: input => timed('speech-tts', () => speech.synthesize(input), result => ({ chars: [...input.text].length, audioSeconds: seconds(result.durationMs) })),
+  };
 }

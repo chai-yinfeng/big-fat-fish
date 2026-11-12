@@ -7,7 +7,7 @@ import { createLocalSpeechRunner } from '../speech/runner.js';
 import { ArtifactStore } from './artifacts.js';
 import { MediaService } from './service.js';
 import { createContentServer } from './server.mjs';
-import { capabilityGateway } from './client.js';
+import { capabilityGateway, meteredSpeech } from './client.js';
 import { createContentOperator } from './operator.js';
 
 process.umask(0o077);
@@ -18,8 +18,9 @@ try {
   if (!stat.isFile() || stat.size > 16384 || (stat.mode & 0o077) !== 0) throw Error('CONFIG');
   const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
   if (Object.keys(cfg).some(k => !['store', 'workRoot', 'speechConfigFile', 'authority', 'gateway', 'sharpModule', 'control'].includes(k)) || !path.isAbsolute(cfg.sharpModule)) throw Error('CONFIG');
-  const store = new ArtifactStore(cfg.store), speech = createLocalSpeechRunner({ configFile: cfg.speechConfigFile });
   const authority = new AuthorityClient(cfg.authority), gateway = capabilityGateway(cfg.gateway);
+  // Conversation speech and the operator's voice test share this runner, so both are counted.
+  const store = new ArtifactStore(cfg.store), speech = meteredSpeech(createLocalSpeechRunner({ configFile: cfg.speechConfigFile }), gateway.recordUsage);
   let sharp;
   const normalizeImage = async data => {
     sharp ||= createRequire(import.meta.url)(cfg.sharpModule);
