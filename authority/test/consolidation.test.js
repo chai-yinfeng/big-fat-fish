@@ -81,21 +81,28 @@ test('dialogue that left the window becomes a digest and a quoted fact of that p
   assert.throws(() => a.submit('qq', { proposalId: 'cons:forged', observationId: first, type: 'fact.report', payload: { key: 'k', value: '我', quote: '我' } }), { code: 'VALIDATION_ERROR' });
 });
 
-test('a fact needs a verbatim quote of the person in this batch; a bad one is refused and the digest is still written', t => {
+test('a fact needs an observation of the person in this batch; a loose quote or value is stored and marked, and the digest is still written', t => {
   const { a, say, rollOut, next, commit, digests } = fixture(t);
-  say(A, '我的生日是MOCK-三月十二'); say(A, 'MOCK-REPLY 我的生日是MOCK-腊月初八', { she: true }); say(B, '我的生日是MOCK-七月初七');
-  say(A, 'MOCK-好的'); rollOut(A);
+  const first = say(A, '我的生日是MOCK-三月十二'); say(A, 'MOCK-REPLY 我的生日是MOCK-腊月初八', { she: true }); say(B, '我的生日是MOCK-七月初七');
+  const third = say(A, 'MOCK-我下个月 5 号搬家'); rollOut(A);
   const { task } = next();
   const result = commit(answer(task.taskId, { facts: [
     { key: '生日', value: 'MOCK-三月十二', quote: '我生日是MOCK-三月十二', ref: 'o1' },   // not verbatim
-    { key: '生日', value: 'MOCK-三月十三', quote: '我的生日是MOCK-三月十二', ref: 'o1' }, // value not in the quote
+    { key: '搬家', value: 'MOCK-2026-12-05', quote: 'MOCK-我下个月 5 号搬家', ref: 'o3' }, // value not in the quote
     { key: '生日', value: 'MOCK-腊月初八', quote: '我的生日是MOCK-腊月初八', ref: 'o2' }, // her own words
     { key: '生日', value: 'MOCK-七月初七', quote: '我的生日是MOCK-七月初七', ref: 'o9' }, // not in this batch (B said it)
   ] }));
   assert.deepEqual(result.dropped, [{ index: 3, reason: 'ref_unavailable' }]);
-  assert.deepEqual(a.processPending().map(receipt => [receipt.status, receipt.reason]), [['rejected', 'quote_not_in_observation'], ['rejected', 'value_not_in_quote'], ['rejected', 'unconfirmed_identity']]);
-  assert.deepEqual(a.consolidationStatus().extracted, { accepted: 0, pending: 0, rejected: { quote_not_in_observation: 1, value_not_in_quote: 1, unconfirmed_identity: 1 } });
-  assert.deepEqual(a.listMemory({ limit: 100 }).items.filter(item => item.type === 'facts'), []);
+  assert.deepEqual(a.processPending().map(receipt => [receipt.status, receipt.reason]), [['accepted', undefined], ['accepted', undefined], ['rejected', 'unconfirmed_identity']]);
+  assert.deepEqual(a.consolidationStatus().extracted, { accepted: 2, pending: 0, rejected: { unconfirmed_identity: 1 } });
+  const facts = Object.fromEntries(a.listMemory({ limit: 100 }).items.filter(item => item.type === 'facts').map(item => [item.key, item]));
+  assert.deepEqual(Object.keys(facts).sort(), ['搬家', '生日']);
+  assert.deepEqual([facts.生日.value, facts.生日.personId, facts.生日.importance, facts.生日.source.machine, facts.生日.evidence.observationId, facts.生日.evidence.quoteVerbatim], ['MOCK-三月十二', person(A), 0.7, 'extracted', first, false]);
+  assert.deepEqual([facts.搬家.value, facts.搬家.personId, facts.搬家.evidence.observationId, facts.搬家.evidence.quoteVerbatim], ['MOCK-2026-12-05', person(A), third, undefined]);
+  assert.deepEqual(a.memorySources({ id: facts.生日.id }).sources.map(source => [source.id, source.text]), [[first, '我的生日是MOCK-三月十二']]);
+  // Marked or not, the fact is that person's alone.
+  assert.ok(a.context('qq', { streamId: stream(A), query: 'MOCK', profile: true }).profileText.includes('MOCK-三月十二'));
+  assert.ok(!/MOCK-三月十二|MOCK-2026-12-05/.test(JSON.stringify(a.context('qq', { streamId: stream(B), query: 'MOCK-三月十二 生日 搬家', profile: true }))));
   assert.equal(digests(A).length, 1);
 });
 

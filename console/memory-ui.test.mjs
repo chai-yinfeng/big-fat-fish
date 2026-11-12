@@ -98,10 +98,13 @@ test('machine digests are marked as machine text with what they cover; consolida
   const digest = { ...base, id: 'd-1', revision: 30, type: 'experiences', kind: 'digest', summary: 'MOCK-摘要：对方说起养了仓鼠', feeling: 'MOCK-感受：很开心', derivedFrom: ['o1', 'o2'], fromAt: 1_800_000_000_000, toAt: 1_800_000_060_000, source: { channel: 'qq', role: null, proposal: null, machine: 'digest' } };
   const fact = { ...base, id: 'f-1', revision: 20, type: 'facts', key: 'MOCK-宠物', value: 'MOCK-年糕', source: { channel: 'qq', role: 'user', proposal: 'fact.report', machine: 'extracted' } };
   const plain = { ...base, id: 'e-1', revision: 10, type: 'experiences', summary: 'MOCK-当场记下的经历', source: { channel: 'qq', role: 'user', proposal: 'experience.remember' } };
+  // Noted in conversation with a quote that is not word for word in the observation it cites.
+  const loose = { ...base, id: 'f-2', revision: 5, type: 'facts', key: 'MOCK-搬家', value: 'MOCK-2026-12-05', evidence: { observationId: 'o7', quote: 'MOCK-下个月五号搬家', role: 'user', quoteVerbatim: false }, source: { channel: 'qq', role: 'user', proposal: 'fact.report' } };
   const pages = {
-    '/memory': { entityId: 'entity:test', memoryEpoch: 0, more: false, people: [{ label: 'p-aaaaaa', owner: false, items: 3 }], unowned: 0, diaries: [], items: [digest, fact, plain] },
+    '/memory': { entityId: 'entity:test', memoryEpoch: 0, more: false, people: [{ label: 'p-aaaaaa', owner: false, items: 4 }], unowned: 0, diaries: [], items: [digest, fact, plain, loose] },
+    '/memory/sources?id=f-2': { entityId: 'entity:test', id: 'f-2', machine: false, sources: [{ id: 'o7', role: 'user', at: 1_800_000_000_000, text: 'MOCK-原话：我下个月 5 号搬家', forgotten: false }] },
     '/memory/sources?id=d-1': { entityId: 'entity:test', id: 'd-1', machine: true, sources: [{ id: 'o1', role: 'user', at: 1_800_000_000_000, text: 'MOCK-原话：我养了一只仓鼠', forgotten: false }, { id: 'o2', role: 'assistant', at: 1_800_000_060_000, text: '', forgotten: true }] },
-    '/memory/consolidation': { entityId: 'entity:test', day: '2026-11-11', calls: 3, limits: { perDay: 24, perStreamPerDay: 2 }, lastCommittedAt: 1_800_000_090_000, paused: 'spend', staleDigestIds: ['d-9'], extracted: { accepted: 4, pending: 0, rejected: { quote_not_in_observation: 2, value_not_in_quote: 1 } },
+    '/memory/consolidation': { entityId: 'entity:test', day: '2026-11-11', calls: 3, limits: { perDay: 24, perStreamPerDay: 2 }, lastCommittedAt: 1_800_000_090_000, paused: 'spend', staleDigestIds: ['d-9'], extracted: { accepted: 4, pending: 0, rejected: { unconfirmed_identity: 2, newer_fact_kept: 1 } },
       streams: [{ stream: 's-111111', person: 'p-aaaaaa', owner: false, behind: { observations: 12, chars: 340 }, waiting: 5, calls: 2, digests: 7, skipped: 1, lastAt: 1_800_000_090_000 }, { stream: 's-222222', person: 'p-0f0f0f', owner: true, behind: { observations: 0, chars: 0 }, waiting: 0, calls: 0, digests: 0, skipped: 0, lastAt: null }] },
     '/memory/forget-preview': { entityId: 'entity:test', memoryEpoch: 0, revision: 4, ids: ['o1'], expandedIds: ['d-1'], digestIds: ['d-1'], sourceObservationIds: ['o1'] },
   };
@@ -119,17 +122,22 @@ test('machine digests are marked as machine text with what they cover; consolida
   // Nothing about consolidation is fetched until asked for.
   assert.equal(JSON.stringify(render()).includes('consolidation.callsToday'), false);
   await buttons('memoryReadExplicitly')[0].props.onClick();
-  const [digestCard, factCard, plainCard] = cards();
+  const [digestCard, factCard, plainCard, looseCard] = cards();
   // The digest: machine badge, her feeling, what it covers, its origin; it cannot be made public.
   for (const shown of ['memoryPanel.machineBadge', 'MOCK-摘要：对方说起养了仓鼠', 'memoryPanel.feeling: MOCK-感受：很开心', 'memoryPanel.lines: 2', 'memoryPanel.source: memoryPanel.machine.digest · qq', 'p-aaaaaa']) assert.ok(digestCard.includes(shown), shown);
   assert.ok(!digestCard.includes('memoryPublicAuthorize') && digestCard.includes('memoryPanel.showSources'));
   assert.ok(factCard.includes('memoryPanel.extractedBadge') && factCard.includes('memoryPanel.machine.extracted') && factCard.includes('memoryPublicAuthorize') && factCard.includes('memoryPanel.showSources'));
   assert.ok(!plainCard.includes('memoryPanel.machineBadge') && !plainCard.includes('memoryPanel.extractedBadge') && !plainCard.includes('memoryPanel.showSources') && plainCard.includes('memoryPanel.source: memoryPanel.role.user · memoryPanel.proposal.experience · qq'));
+  // A quote that is not verbatim is marked, shown as she noted it, and its source can be read; nothing else carries the mark.
+  for (const shown of ['memoryPanel.looseQuoteBadge', 'memoryPanel.notedQuote: MOCK-下个月五号搬家', 'memoryPanel.showSources', 'MOCK-搬家: MOCK-2026-12-05']) assert.ok(looseCard.includes(shown), shown);
+  for (const card of [digestCard, factCard, plainCard]) assert.ok(!card.includes('memoryPanel.looseQuoteBadge') && !card.includes('memoryPanel.notedQuote'));
   // Source lines of one item: read on click, whose words they are; a forgotten line shows no text.
   assert.ok(!JSON.stringify(render()).includes('MOCK-原话'));
   await buttons('memoryPanel.showSources')[0].props.onClick();
   assert.ok(cards()[0].includes('memoryPanel.role.user · ') && cards()[0].includes(': MOCK-原话：我养了一只仓鼠') && cards()[0].includes(': memoryPanel.sourceForgotten'));
-  assert.ok(!cards()[1].includes('MOCK-原话'));
+  assert.ok(!cards()[1].includes('MOCK-原话') && !cards()[3].includes('MOCK-原话'));
+  await buttons('memoryPanel.showSources')[2].props.onClick();
+  assert.ok(cards()[3].includes(': MOCK-原话：我下个月 5 号搬家') && calls.includes('GET /memory/sources?id=f-2'));
   // Status card: counters, the spend pause, leftovers, one row per conversation by opaque label.
   await buttons('consolidation.read')[0].props.onClick();
   const page = JSON.stringify(render());
@@ -141,7 +149,7 @@ test('machine digests are marked as machine text with what they cover; consolida
   await buttons('memoryForgetPreview')[0].props.onClick();
   assert.ok(JSON.stringify(render()).includes('memoryPanel.digestsRemoved: 1'));
   // Read-only: GETs and the existing forget preview; nothing written to the browser, no account number rendered.
-  assert.deepEqual(calls, ['GET /memory', 'GET /memory/sources?id=d-1', 'GET /memory/consolidation', 'POST /memory/forget-preview']);
+  assert.deepEqual(calls, ['GET /memory', 'GET /memory/sources?id=d-1', 'GET /memory/sources?id=f-2', 'GET /memory/consolidation', 'POST /memory/forget-preview']);
   assert.equal(writes.length, 0);
   assert.ok(!JSON.stringify(render()).includes('999900000011'));
   // Leaving the page drops what was read.

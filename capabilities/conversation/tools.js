@@ -28,8 +28,6 @@ const payloadKeys = {
 const SETTLE_TRIES = 5, SETTLE_MS = 150;
 /** Authority's rejection reasons (authority/src/policies.js review) as what the model can do about them. */
 export const REJECTION_HINTS = {
-  value_not_in_quote: 'value 必须逐字出自 quote（对方原话），不要改写、换算日期或补全。用原话里的那几个字重新提交；换算后的理解可以另提一条 experience.remember，写在 summary 里。',
-  quote_not_in_observation: 'quote 必须逐字出自 ref 指向的那条消息，不要改写、拼接或改标点。照原话摘一段重新提交。',
   real_user_required: '这种类型只能用对方说的话作证据：ref 要选 role 为 user 的那条。',
   conversation_role_required: 'self.note 的证据只能是这段对话里对方或你自己说过的话。',
   conversation_policy_kind_denied: '聊天里不能用 learning.note；改用 fact.report、experience.remember、appraisal.record 或 self.note。',
@@ -65,11 +63,11 @@ export const SCOPE_TOOL_SCHEMA = {
       payload: {
         type: 'object', additionalProperties: false,
         properties: {
-          quote: { type: 'string', description: 'Copied verbatim from the evidence message; each field ≤1200 characters.' },
+          quote: { type: 'string', description: 'The source: copy the words of the evidence message as closely as you can; each field ≤1200 characters.' },
           key: { type: 'string' }, value: { type: 'string' }, summary: { type: 'string' }, text: { type: 'string' },
           kind: { type: 'string', enum: ['gratitude', 'support', 'repair', 'boundary', 'outer', 'inner'] },
         },
-        description: 'fact.report: key,value,quote; experience.remember: summary,quote; appraisal.record: kind,quote; learning.note: text,quote; self.note: text,quote,kind. fact.report value must be copied verbatim from quote: no rewording, no date conversion, no completion.',
+        description: 'fact.report: key,value,quote; experience.remember: summary,quote; appraisal.record: kind,quote; learning.note: text,quote; self.note: text,quote,kind. fact.report value is the fact as you understand it, normalised (a relative date as the concrete date).',
       },
     }, required: ['action'],
   },

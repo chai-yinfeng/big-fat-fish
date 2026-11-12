@@ -267,13 +267,13 @@
     },
     {
       "id": "M10",
-      "title": "extract-quote-guard: a misquote, a value outside its quote and her own words do not become facts; the digest and a verbatim fact are written",
+      "title": "extract-quote-guard: a misquote is stored marked as not verbatim and a normalised value is stored, both traced to that person's own words and seen by nobody else; her own words do not become a fact",
       "model": [
         { "match": "MOCK-M10 说一件事", "reply": "MOCK-REPLY-M10-{run} 她说的话" },
         { "match": "MOCK-M10", "reply": "MOCK-REPLY-M10 好" },
         { "match": "MOCK-M10-{run}", "consolidate": { "summary": "MOCK-DIGEST-M10-{run} 对方说了生日和住处", "facts": [
           { "key": "MOCK-M10 生日", "value": "MOCK-M10-{run}-三月", "quote": "我生日是MOCK-M10-{run}-三月", "in": "MOCK-M10 说一件事" },
-          { "key": "MOCK-M10 生日", "value": "MOCK-M10-{run}-四月", "quote": "我的生日是MOCK-M10-{run}-三月" },
+          { "key": "MOCK-M10 出生季节", "value": "MOCK-M10-{run}-春天", "quote": "我的生日是MOCK-M10-{run}-三月" },
           { "key": "MOCK-M10 口头禅", "value": "MOCK-REPLY-M10-{run} 她说的话", "quote": "MOCK-REPLY-M10-{run} 她说的话" },
           { "key": "MOCK-M10 住处", "value": "MOCK-M10-{run}-杭州", "quote": "我住在MOCK-M10-{run}-杭州" }] } }
       ],
@@ -283,11 +283,19 @@
         { "expectReply": { "to": "MOCK-E", "contains": "MOCK-REPLY-M10-{run} 她说的话" } },
         { "converse": { "from": "MOCK-E", "text": "MOCK-M10 第{n}轮", "times": 3, "reply": "MOCK-REPLY-M10 好", "pad": 6000 } },
         { "expectDigest": { "person": "MOCK-E", "contains": "MOCK-DIGEST-M10-{run}", "covers": "MOCK-M10-{run}-三月" } },
-        { "expectExtracted": { "person": "MOCK-E", "contains": "MOCK-M10-{run}-杭州" } },
-        { "expectRejected": { "reasons": { "quote_not_in_observation": 1, "value_not_in_quote": 1, "unconfirmed_identity": 1 } } },
-        { "expectMemory": { "person": "MOCK-E", "absent": "MOCK-M10-{run}-三月" } },
-        { "expectMemory": { "person": "MOCK-E", "absent": "MOCK-M10-{run}-四月" } },
-        { "expectMemory": { "person": "MOCK-E", "absent": "MOCK-REPLY-M10-{run} 她说的话" } }
+        { "expectExtracted": { "person": "MOCK-E", "contains": "MOCK-M10-{run}-杭州", "source": "MOCK-M10 说一件事 MOCK-M10-{run}" } },
+        { "expectExtracted": { "person": "MOCK-E", "contains": "MOCK-M10-{run}-三月", "source": "MOCK-M10 说一件事 MOCK-M10-{run}", "verbatim": false } },
+        { "expectExtracted": { "person": "MOCK-E", "contains": "MOCK-M10-{run}-春天", "source": "MOCK-M10 说一件事 MOCK-M10-{run}" } },
+        { "expectRejected": { "reasons": { "unconfirmed_identity": 1 } } },
+        { "expectMemory": { "person": "MOCK-E", "absent": "MOCK-REPLY-M10-{run} 她说的话" } },
+        { "expectMemory": { "person": "MOCK-A", "absent": "MOCK-M10-{run}" } },
+        { "say": { "from": "MOCK-E", "text": "MOCK-M10 本人追问：MOCK-M10 生日 出生季节 是什么" } },
+        { "expectReply": { "to": "MOCK-E", "contains": "MOCK-REPLY-M10 好" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-M10 别人追问：MOCK-M10 生日 出生季节 是什么" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-M10 好" } },
+        { "expectPrompt": { "userText": "本人追问", "contains": "MOCK-M10-{run}-三月", "in": "system" } },
+        { "expectPrompt": { "userText": "别人追问", "absent": "MOCK-M10-{run}-三月" } },
+        { "expectPrompt": { "userText": "别人追问", "absent": "MOCK-M10-{run}-春天" } }
       ]
     },
     {
@@ -379,16 +387,34 @@
       "id": "H3",
       "title": "propose-rejection-is-actionable: a rejected proposal tells the model how to correct it, and the corrected one is remembered",
       "model": [
-        { "match": "MOCK-H3", "propose": { "type": "fact.report", "payload": { "key": "MOCK-H3-{run} 搬家日期", "value": "2026年12月5日", "quote": "我下个月 5 号搬家" } }, "retry": { "type": "fact.report", "payload": { "key": "MOCK-H3-{run} 搬家日期", "value": "下个月 5 号", "quote": "我下个月 5 号搬家" } }, "reply": "MOCK-REPLY-H3 记下了" }
+        { "match": "MOCK-H3", "propose": { "type": "learning.note", "payload": { "text": "MOCK-H3-{run} 搬家日期 学习笔记", "quote": "我下个月 5 号搬家" } }, "retry": { "type": "fact.report", "payload": { "key": "MOCK-H3-{run} 搬家日期", "value": "下个月 5 号", "quote": "我下个月 5 号搬家" } }, "reply": "MOCK-REPLY-H3 记下了" }
       ],
       "steps": [
         { "say": { "from": "MOCK-A", "text": "MOCK-H3 MOCK-H3-{run} 请记住：我下个月 5 号搬家" } },
         { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-H3 记下了" } },
         { "expectToolResult": { "userText": "MOCK-H3", "nth": 1, "contains": "\"status\":\"rejected\"" } },
-        { "expectToolResult": { "userText": "MOCK-H3", "nth": 1, "contains": "value_not_in_quote" } },
-        { "expectToolResult": { "userText": "MOCK-H3", "nth": 1, "contains": "value 必须逐字出自 quote（对方原话），不要改写、换算日期或补全" } },
+        { "expectToolResult": { "userText": "MOCK-H3", "nth": 1, "contains": "conversation_policy_kind_denied" } },
+        { "expectToolResult": { "userText": "MOCK-H3", "nth": 1, "contains": "聊天里不能用 learning.note；改用 fact.report" } },
         { "expectToolResult": { "userText": "MOCK-H3", "nth": 2, "contains": "\"status\":\"accepted\"", "absent": "rejected" } },
-        { "expectMemory": { "person": "MOCK-A", "contains": "MOCK-H3-{run} 搬家日期 下个月 5 号", "absent": "2026年12月5日" } }
+        { "expectMemory": { "person": "MOCK-A", "contains": "MOCK-H3-{run} 搬家日期 下个月 5 号", "absent": "MOCK-H3-{run} 搬家日期 学习笔记" } }
+      ]
+    },
+    {
+      "id": "H4",
+      "title": "normalized-value-is-stored: a relative date she resolved to a concrete one is remembered at once, traced to the words it came from, and reaches nobody else",
+      "model": [
+        { "match": "MOCK-H4 请记住", "propose": { "type": "fact.report", "payload": { "key": "MOCK-H4-{run} 去上海", "value": "2026-12-05", "quote": "我下个月 5 号去上海" } }, "reply": "MOCK-REPLY-H4 记下了" },
+        { "match": "MOCK-H4", "reply": "MOCK-REPLY-H4 好" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-A", "text": "MOCK-H4 请记住 MOCK-H4-{run}：我下个月 5 号去上海，待三天" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-H4 记下了" } },
+        { "expectToolResult": { "userText": "MOCK-H4 请记住", "nth": 1, "contains": "\"status\":\"accepted\"", "absent": "rejected" } },
+        { "expectProvenance": { "person": "MOCK-A", "contains": "MOCK-H4-{run} 去上海 2026-12-05", "source": "MOCK-H4-{run}：我下个月 5 号去上海" } },
+        { "say": { "from": "MOCK-B", "text": "MOCK-H4 别人追问：去上海 是哪天" } },
+        { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-H4 好" } },
+        { "expectPrompt": { "userText": "别人追问", "absent": "MOCK-H4-{run}" } },
+        { "expectMemory": { "person": "MOCK-B", "absent": "MOCK-H4-{run}" } }
       ]
     }
   ]

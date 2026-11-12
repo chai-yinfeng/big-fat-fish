@@ -206,7 +206,8 @@ export class ConsolidationDomain extends MemoryDomain {
         }, world.worldNow);
         state.digests = (state.digests ?? 0) + 1;
       }
-      // Facts go through the ordinary inbox and review(): the quote must be this person's own words, verbatim.
+      // Facts go through the ordinary inbox and review(): the cited observation must be this person's own words;
+      // a quote that is not word for word is stored marked (evidence.quoteVerbatim false).
       const policy = this.store.db.prepare('SELECT policy FROM capabilities WHERE id=?').get(task.capabilityId).policy, proposals = [], dropped = [];
       answer.facts.forEach((fact, index) => {
         const observationId = task.refs[fact.ref];

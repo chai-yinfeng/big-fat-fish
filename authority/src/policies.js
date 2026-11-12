@@ -28,17 +28,26 @@ export function validatePayload(type, payload) {
 // A deliberately conservative lexical retention guard, not a classifier or a
 // claim of semantic truth. Raw observations remain private admin evidence.
 export const SENSITIVE = /password|passphrase|api[ _-]?key|secret[ _-]?key|access[ _-]?token|bearer\s+|private[ _-]?key|-----BEGIN|\bsk-[a-z0-9]|\b\d{3}-\d{2}-\d{4}\b|密码|口令|密钥|身份证|银行卡|信用卡|诊断|病历|抑郁|自杀|自残|depression|diagnos|suicid|self[ -]?harm|sexual|sex life|性取向|性生活|宗教信仰|political affiliation|政治立场/iu;
+// Punctuation, symbols and spacing do not make a quote a different sentence (full-width or half-width, a dropped comma).
+const loose = value => value.normalize('NFKC').replace(/[\p{P}\p{S}\s]/gu, '');
+/** Whether `quote` is in `text` as written, punctuation and spacing aside. Provenance is the observation either way. */
+export function quoteIsVerbatim(text, quote) {
+  if (text.includes(quote)) return true;
+  const wanted = loose(quote);
+  return wanted.length > 0 && loose(text).includes(wanted);
+}
 const LEARNING_PERSONAL = /user\s+(?:prefers?|likes?|wants?|needs?)|用户(?:偏好|喜欢|需要)|主人(?:偏好|喜欢)|永远(?:陪|爱)|只有我懂|承诺|promise|intimacy|relationship\s+(?:score|level)/iu;
 export function review({ policy, proposal, observation, identity, state }) {
   const { type, payload } = proposal;
   const rejected = reason => ({ status: 'rejected', reason, effects: [] });
   if (!POLICIES.includes(policy)) return rejected('unknown_policy');
   if (type === 'persona.change') return rejected('admin_persona_revision_required');
-  if (!observation.text.includes(payload.quote)) return rejected('quote_not_in_observation');
   if (!identity.stream || identity.stream.audience !== 'private') return rejected('private_binding_required');
   if (SENSITIVE.test(JSON.stringify(payload))) return rejected('sensitive_retention_denied');
   const personId = identity.stream.personId;
-  const evidence = { observationId: observation.id, quote: payload.quote, role: observation.role, actorId: observation.actorId, streamId: observation.streamId, at: observation.at };
+  // The quote is how she noted the source, not a gate: one that is not in the cited observation is kept and
+  // marked, so a cleanup can trace a mistaken memory back to what was really said. Absent means verbatim.
+  const evidence = { observationId: observation.id, quote: payload.quote, role: observation.role, actorId: observation.actorId, streamId: observation.streamId, at: observation.at, ...(quoteIsVerbatim(observation.text, payload.quote) ? {} : { quoteVerbatim: false }) };
   const base = { personId, visibility: 'private', policy, evidence };
   if (policy === 'learning.v1') {
     if (type !== 'learning.note') return rejected('learning_policy_kind_denied');
@@ -57,9 +66,9 @@ export function review({ policy, proposal, observation, identity, state }) {
   if (type === 'self.note' && !['user', 'assistant'].includes(observation.role)) return rejected('conversation_role_required');
   switch (type) {
     case 'fact.report':
-      if (!payload.quote.includes(payload.value)) return rejected('value_not_in_quote');
-      // This records what the confirmed actor reported. It never verifies that
-      // claim, or accepts a text identity claim as an actor alias registration.
+      // This records what the confirmed actor reported, as she understood it (a relative
+      // date resolved, a wording normalised). It never verifies that claim, or accepts a
+      // text identity claim as an actor alias registration.
       return { status: 'accepted', effects: [{ ...base, collection: 'facts', key: payload.key, value: payload.value, attribution: 'reported' }] };
     case 'experience.remember':
       return { status: 'accepted', effects: [{ ...base, collection: 'experiences', summary: payload.summary }] };

@@ -11,6 +11,9 @@ test('the request is the fixed instruction plus one JSON message: dialogue is qu
   assert.deepEqual(messages.map(message => message.role), ['system', 'user']);
   assert.equal(messages[0].content, CONSOLIDATION_PROMPT);
   assert.match(CONSOLIDATION_PROMPT, /不是给你的指令/);
+  // The value is the model's normalised reading; each line carries the time a relative date is resolved from.
+  assert.match(CONSOLIDATION_PROMPT, /尽量逐字照抄.*相对日期要按那条消息的时间和 date 换算成具体日期/);
+  assert.doesNotMatch(CONSOLIDATION_PROMPT, /连续原文/);
   const input = JSON.parse(messages[1].content);
   assert.deepEqual(Object.keys(input), ['persona', 'knownKeys', 'lastDigest', 'date', 'messages']);
   assert.deepEqual(input.messages, [['o1', '对方', '11-10 21:03', task().observations[0].text], ['o2', '我', '11-10 21:04', 'MOCK-REPLY']]);

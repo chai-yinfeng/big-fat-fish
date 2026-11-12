@@ -92,19 +92,26 @@ test('private scope filters before retrieval, inner is never returned, group can
   rejection(() => a.context('chat', { streamId: 'unbound' }), 'FORBIDDEN');
 });
 
-test('binding and role enforcement, substring evidence, attributed not fact-checked', t => {
+test('binding and role enforcement, attributed not fact-checked; a loose quote or value is kept and marked', t => {
   const { a } = fixture(t);
   const cases = [
     [{ actorId: 'unknown' }, {}], [{ actorId: 'bob' }, {}], [{ role: 'assistant' }, {}],
-    [{ streamId: 'group' }, {}], [{}, { payload: { key: 'drink', value: 'coffee', quote: 'I like tea.' } }],
-    [{}, { payload: { key: 'drink', value: 'tea', quote: 'tea missing' } }],
+    [{ streamId: 'group' }, {}],
   ];
   cases.forEach(([o, p], i) => submit(a, observe(a, { eventId: `bad${i}`, ...o }), { proposalId: `bad${i}`, ...p }));
   assert.ok(a.processPending().every(r => r.status === 'rejected'));
+  // Her reading of what was said (value) and a quote that is not word for word are stored; the item
+  // says the quote is not verbatim and still names the observation it came from.
+  const said = observe(a, { eventId: 'loose' });
+  submit(a, said, { proposalId: 'loose-value', payload: { key: 'drink', value: 'green tea', quote: 'I like tea.' } });
+  submit(a, said, { proposalId: 'loose-quote', payload: { key: 'likes', value: 'tea', quote: 'tea is what I like' } });
+  assert.deepEqual(a.processPending().map(r => r.status), ['accepted', 'accepted']);
+  const stored = Object.fromEntries(a.snapshot().facts.map(fact => [fact.key, fact.evidence]));
+  assert.deepEqual([stored.drink.observationId, stored.drink.quoteVerbatim, stored.likes.observationId, stored.likes.quoteVerbatim], [said, undefined, said, false]);
   const id = observe(a, { eventId: 'unverifiable', text: 'I own the moon.' });
   submit(a, id, { proposalId: 'claim', payload: { key: 'claim', value: 'own the moon', quote: 'I own the moon.' } });
   assert.equal(a.processPending()[0].status, 'accepted');
-  assert.equal(a.snapshot().facts[0].attribution, 'reported');
+  assert.equal(a.snapshot().facts.find(fact => fact.key === 'claim').attribution, 'reported');
 });
 
 test('learning cannot change relationships, appraisal once per observation, cap persona audited', t => {

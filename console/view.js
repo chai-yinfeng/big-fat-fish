@@ -485,6 +485,8 @@ export function WorldConsole({ t, standalone = false }) {
     }), { className: 'bff-ghost bff-sm', icon: 'eye' });
     const sourceLines = item => Array.isArray(memorySources[item.id]) ? h('div', null, ...memorySources[item.id].map((line, index) => h('p', { key: index, className: 'bff-small', style: { whiteSpace: 'pre-wrap' } },
       `${['user', 'assistant', 'external'].includes(line.role) ? t(`memoryPanel.role.${line.role}`) : ''} · ${time(line.at)}: ${line.forgotten ? t('memoryPanel.sourceForgotten') : line.text}`))) : null;
+    // The quote she noted is not word for word in the observation it cites: marked, with the source one click away.
+    const looseQuote = item => item.evidence?.quoteVerbatim === false;
     const validConsolidation = value => value && Array.isArray(value.streams) && Array.isArray(value.staleDigestIds) && Number.isFinite(value.calls) && Number.isFinite(value.limits?.perDay) && Number.isFinite(value.limits?.perStreamPerDay);
     const refused = consolidation ? Object.values(consolidation.extracted?.rejected || {}).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0) : 0;
     const consolidationCard = h('section', { className: 'bff-card' }, cardHead(h('h2', null, t('consolidation.title')),
@@ -518,16 +520,18 @@ export function WorldConsole({ t, standalone = false }) {
         ...memory.items.map(item => h('article', { className: 'bff-card bff-memory', key: item.id },
           h('div', { className: 'bff-actions' }, badge(item.type, 'primary'), badge(item.status), item.pinned ? badge(t('memoryPinned'), 'primary', icon('pin')) : null,
             belongs(item), item.visibility === 'public' ? badge(t('memoryPanel.public'), 'ok') : null,
-            isDigest(item) ? badge(t('memoryPanel.machineBadge'), 'warn') : item.source?.machine === 'extracted' ? badge(t('memoryPanel.extractedBadge')) : null),
+            isDigest(item) ? badge(t('memoryPanel.machineBadge'), 'warn') : item.source?.machine === 'extracted' ? badge(t('memoryPanel.extractedBadge')) : null,
+            looseQuote(item) ? badge(t('memoryPanel.looseQuoteBadge'), 'warn') : null),
           h('p', { style: { whiteSpace: 'pre-wrap' } }, item.summary || item.text || `${item.key || ''}: ${item.value || ''}`),
           isDigest(item) && typeof item.feeling === 'string' && item.feeling ? h('p', { className: 'bff-small', style: { whiteSpace: 'pre-wrap' } }, `${t('memoryPanel.feeling')}: ${item.feeling}`) : null,
+          looseQuote(item) && typeof item.evidence.quote === 'string' ? h('p', { className: 'bff-small bff-muted', style: { whiteSpace: 'pre-wrap' } }, `${t('memoryPanel.notedQuote')}: ${item.evidence.quote}`) : null,
           origin(item), covered(item), sourceLines(item),
           h('form', { onSubmit: event => { event.preventDefault(); const value = event.currentTarget.elements.eventAt.value; const eventAt = value ? Date.parse(value) : null; if (eventAt !== null && !Number.isFinite(eventAt)) return; void mutate('/memory/retention', { entityId: memory.entityId, id: item.id, eventAt }); } },
             h('label', null, h('span', null, t('memoryEventTime')), h('input', { name: 'eventAt', type: 'datetime-local', disabled: busy, defaultValue: item.eventAt == null ? '' : new Date(item.eventAt - new Date(item.eventAt).getTimezoneOffset() * 60000).toISOString().slice(0, 16) })),
             button('memorySaveEventTime', undefined, { type: 'submit', className: 'bff-secondary bff-sm', icon: 'clock' })),
           h('div', { className: 'bff-actions' },
             button(item.pinned ? 'memoryUnpin' : 'memoryPin', () => mutate('/memory/retention', { entityId: memory.entityId, id: item.id, pinned: !item.pinned }), { className: 'bff-ghost bff-sm', icon: 'pin' }),
-            item.source?.machine ? readSources(item) : null,
+            item.source?.machine || looseQuote(item) ? readSources(item) : null,
             item.visibility !== 'public' && item.kind !== 'inner' && item.kind !== 'digest' && button('memoryPublicAuthorize', () => mutate('/memory/public', { entityId: memory.entityId, id: item.id }), { className: 'bff-ghost bff-sm', icon: 'shield' }),
             preview(item.id)))),
         ...memory.diaries.map(diary => h('article', { className: 'bff-card bff-memory', key: diary.id },
