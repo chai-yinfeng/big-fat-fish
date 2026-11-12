@@ -43,7 +43,7 @@ test('operator UI uses its separate credential and real world/persona operations
   assert.equal((await call('POST', '/persona', { patch: { examples: [{ user: '缺回复' }] } })).status, 400);
   assert.equal((await call('POST', '/persona', { patch: { mood: 'x' } })).status, 400);
   const preview = await call('POST', '/persona/preview', { patch: { name: '预览鱼' } });
-  assert.equal(preview.status, 200); assert.equal(preview.body.value.limit, 1600);
+  assert.equal(preview.status, 200); assert.equal(preview.body.value.limit, 2400);
   assert.ok(preview.body.value.text.startsWith('[人格]\n你是预览鱼。用户称呼：你。')); assert.equal(preview.body.value.chars, preview.body.value.text.length);
   assert.match(preview.body.value.text, /对方：再见\n你：回头见/);
   assert.equal((await call('POST', '/persona/preview', { patch: { name: '' } })).status, 400);

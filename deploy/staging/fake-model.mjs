@@ -4,10 +4,11 @@
 // as fetchImpl. No provider is ever called. Never part of a release or a production unit;
 // the production gateway has no configurable upstream.
 //   node fake-model.mjs --release <release dir> --config <model-gateway.json> --script <rules.json> --log <requests.jsonl>
-// Script file: [{ match, reply?, propose?: { type, payload }, usage?: { prompt_tokens, completion_tokens } }]
+// Script file: [{ match, reply?, propose?: { type, payload }, retry?: { type, payload }, usage?: { prompt_tokens, completion_tokens } }]
 // The first rule whose `match` occurs in the newest user message applies. `propose` makes the
 // first answer a companion_scope propose tool call (evidence ref taken from the memory-hub note
-// that leads the newest user message); the answer after the tool result is `reply`.
+// that leads the newest user message); the answer after the tool result is `reply`. `retry` (with `propose`)
+// makes the answer to the first tool result a second propose, without an id; `reply` follows its result.
 // Each logged request also records `notes` (the memory-hub note of every user message, oldest first),
 // `turns` (the number of user messages) and `hashes` (one per message, system first), so a scenario can
 // compare whole requests without the log holding every request in full.
@@ -76,6 +77,9 @@ export function planReply(body, rules = []) {
   if (base.stream && rule.propose && !afterTool && ref && body.tools?.some(tool => tool?.function?.name === 'companion_scope')) {
     const id = 'mock-' + createHash('sha256').update(ref).digest('hex').slice(0, 16);
     return { ...base, kind: 'tool', call: { name: 'companion_scope', arguments: { action: 'propose', id, ref, type: rule.propose.type, payload: rule.propose.payload } } };
+  }
+  if (base.stream && rule.propose && rule.retry && ref && messages.slice(last + 1).filter(message => message?.role === 'tool').length === 1) {
+    return { ...base, kind: 'tool', call: { name: 'companion_scope', arguments: { action: 'propose', ref, type: rule.retry.type, payload: rule.retry.payload } } };
   }
   return { ...base, kind: 'text', text: typeof rule.reply === 'string' ? rule.reply : base.stream ? DEFAULT_REPLY : 'OK' };
 }

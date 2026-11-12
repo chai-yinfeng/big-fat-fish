@@ -7,7 +7,7 @@ import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { Authority, TRACE_LIMIT, MAX_CONTEXT_EXCLUDE } from '../src/engine.js';
 import { createOperatorServer } from '../src/operator.js';
-import { opaquePerson, renderContextParts, renderProfile, PROFILE_CHARS, RETRIEVED_ITEMS, RETRIEVED_CHARS } from '../src/context.js';
+import { opaquePerson, renderContextParts, renderProfile, personaBudget, PERSONA_CHARS, PROFILE_CHARS, RETRIEVED_ITEMS, RETRIEVED_CHARS } from '../src/context.js';
 import { MIGRATIONS } from '../src/migrations.js';
 
 // Visibly fake accounts: 12 digits starting with 9999.
@@ -122,21 +122,23 @@ test('standing profile: a person\'s pinned and important facts are returned what
   for (const profile of ['yes', 1, null]) assert.throws(() => a.context('qq', { streamId: stream(A), profile }), { code: 'VALIDATION_ERROR' });
 });
 
-test('standing profile: bounded to 600 characters with pinned items first; a shared conversation and a learning capability get none', t => {
+test('standing profile: bounded to 1000 characters with pinned items first; a shared conversation and a learning capability get none', t => {
   const { a, tell, stream } = fixture(t);
   const ids = Array.from({ length: 12 }, (_, i) => tell(A, 'fact.report', { key: `MOCK-键${i}`, value: `MOCK-值${i}` + '很长的内容'.repeat(8) }, `MOCK-值${i}` + '很长的内容'.repeat(8)));
-  const huge = tell(A, 'fact.report', { key: 'MOCK-巨大', value: 'MOCK-巨大' + '字'.repeat(700) }, 'MOCK-巨大' + '字'.repeat(700));
+  const huge = tell(A, 'fact.report', { key: 'MOCK-巨大', value: 'MOCK-巨大' + '字'.repeat(990) }, 'MOCK-巨大' + '字'.repeat(990));
   a.setMemoryRetention({ entityId: 'entity:big-fat-fish', id: ids[0], pinned: true });
   a.setMemoryRetention({ entityId: 'entity:big-fat-fish', id: huge, pinned: true });
   const context = a.context('qq', { streamId: stream(A), query: 'MOCK-巨大', profile: true }), kept = a.contextTrace().traces[0].profile;
-  assert.equal(PROFILE_CHARS, 600);
-  assert.ok(context.profileText.length <= PROFILE_CHARS && context.profileText.length > 400);
+  assert.equal(PROFILE_CHARS, 1000);
+  assert.ok(context.profileText.length <= PROFILE_CHARS && context.profileText.length > 800);
   assert.equal(context.profileText.split('\n').length - 1, kept.length);
   // The oldest fact is pinned, so it leads; the rest are the newest that fit, whole lines only.
   assert.equal(kept[0], ids[0]);
   assert.ok(kept.length >= 3 && kept.length < ids.length && kept.slice(1).every((id, i) => id === ids[ids.length - 1 - i]));
-  // A pinned fact too long for the profile stays out of it and is still retrieved like any other memory.
-  assert.ok(!kept.includes(huge) && context.memoryIds.includes(huge));
+  // A pinned fact too long for the profile stays out of it. At this size its line is over the 900 characters
+  // of retrieved memory too, so it is in neither; it is still there to be searched.
+  assert.ok(!kept.includes(huge) && !context.memoryIds.includes(huge));
+  assert.ok(a.memorySearch('qq', { streamId: stream(A), query: 'MOCK-巨大' }).items.some(item => item.id === huge));
   assert.deepEqual(renderProfile([]), { text: '', ids: [] });
   // No profile outside a private chat with the person, or for a capability that may not read facts.
   a.bindStream({ capabilityId: 'qq', streamId: 'qq:999900000001:group:999900009999', personId: `person:qq:${A}`, audience: 'shared' });
@@ -241,6 +243,61 @@ test('the trace is a bounded in-memory ring, filtered by opaque person label, ne
   assert.deepEqual([a.snapshot().audit.length, a.health().revision], [audit, revision]);
   assert.deepEqual(MIGRATIONS, []);
   assert.deepEqual(a.store.db.prepare("SELECT name FROM sqlite_schema WHERE name LIKE '%trace%'").all(), []);
+});
+
+test('standing profile: nine facts that did not all fit in 600 characters fit in 1000, the first one told included', t => {
+  const { a, tell, stream } = fixture(t);
+  // Nine facts of about 105 characters a line, like the real-model trial that lost its oldest facts at 600.
+  const ids = Array.from({ length: 9 }, (_, i) => tell(A, 'fact.report', { key: `MOCK-事实${i}`, value: `MOCK-内容${i}` + '细节'.repeat(8) }, `MOCK-内容${i}` + '细节'.repeat(8)));
+  const context = a.context('qq', { streamId: stream(A), query: 'MOCK-无关', profile: true }), kept = a.contextTrace().traces[0].profile;
+  assert.deepEqual([...kept].sort(), [...ids].sort());
+  for (let i = 0; i < 9; i++) assert.ok(context.profileText.includes(`MOCK-内容${i}`));
+  assert.ok(context.profileText.length > 600 && context.profileText.length <= 1000);
+  // The same entries under the old bound: only the newest five, the four told first left out. The order is unchanged.
+  const entries = kept.map(id => a.store.memory(a.store.db.prepare('SELECT * FROM memory_items WHERE id=?').get(id)));
+  const old = renderProfile(entries, 600);
+  assert.deepEqual(old.ids, kept.slice(0, old.ids.length)); assert.equal(old.ids.length, 5);
+  assert.deepEqual(kept.slice(5).sort(), ids.slice(0, 4).sort());
+  assert.equal(renderProfile(entries).text, context.profileText);
+  // A pinned fact that does not fit in what is left of the profile is still retrieved like any other memory.
+  const big = [1, 2].map(n => tell(A, 'fact.report', { key: `MOCK-大${n}`, value: `MOCK-大${n}` + '字'.repeat(500) }, `MOCK-大${n}` + '字'.repeat(500)));
+  for (const id of big) a.setMemoryRetention({ entityId: 'entity:big-fat-fish', id, pinned: true });
+  const full = a.context('qq', { streamId: stream(A), query: 'MOCK-大1 MOCK-大2', profile: true }), inProfile = a.contextTrace().traces[0].profile;
+  assert.equal(big.filter(id => inProfile.includes(id)).length, 1);
+  assert.equal(big.filter(id => full.memoryIds.includes(id)).length, 1);
+  assert.ok(full.profileText.length <= PROFILE_CHARS);
+  // Still only this person's: nobody else's conversation carries any of it.
+  const other = a.context('qq', { streamId: stream(B), query: 'MOCK-内容0 MOCK-事实0', profile: true });
+  assert.deepEqual([other.profileText, other.memoryIds], ['', []]); assert.ok(!other.text.includes('MOCK-内容'));
+});
+
+test('persona budget: 2400 characters of its own, rendered the same with or without retrieved memory', t => {
+  assert.deepEqual([PERSONA_CHARS, personaBudget(4000), personaBudget(16000), personaBudget(800), personaBudget(1)], [2400, 2400, 2400, 480, 0]);
+  const examples = n => Array.from({ length: n }, (_, i) => ({ user: `MOCK-示例${i} 对方说的话` + '问'.repeat(40), assistant: `MOCK-示例${i} 她的回答` + '答'.repeat(40) }));
+  const memory = [{ id: 'm1', attribution: 'reported', personId: 'person:mock', key: 'MOCK-键', value: 'MOCK-值' }, { id: 'm2', summary: 'MOCK-经历 ' + '很长'.repeat(300) }, { id: 'm3', summary: 'MOCK-经历二' }];
+  // About 2000 characters: over the old 1600 share, within the budget. Nothing is cut, the last example is whole.
+  const persona = { name: 'MOCK-鱼', examples: examples(16) }, alone = renderContextParts(persona, [], 4000), withMemory = renderContextParts(persona, memory, 4000);
+  assert.ok(alone.personaText.length > 1900 && alone.personaText.length <= 2400, 'persona length ' + alone.personaText.length);
+  assert.equal(withMemory.personaText, alone.personaText);
+  assert.ok(alone.personaText.endsWith('对话示例——对方：' + persona.examples[15].user + '\n你：' + persona.examples[15].assistant));
+  assert.ok(!alone.personaText.includes('[截断]'));
+  assert.ok(withMemory.memoryText.includes('MOCK-值') && withMemory.memoryText.includes('MOCK-经历二') && withMemory.memoryText.length <= RETRIEVED_CHARS);
+  assert.equal(withMemory.text, alone.personaText + '\n\n' + withMemory.memoryText);
+  // A larger budget changes nothing; a persona over the budget is cut at its end, identically either way.
+  assert.equal(renderContextParts(persona, memory, 16000).personaText, alone.personaText);
+  const long = { name: 'MOCK-鱼', examples: examples(20) }, cut = renderContextParts(long, [], 4000), cutWithMemory = renderContextParts(long, memory, 4000);
+  assert.equal(cut.personaText.length, 2400); assert.ok(cut.personaText.endsWith('…[截断]')); assert.ok(cut.personaText.includes('MOCK-示例0') && !cut.personaText.includes(long.examples[19].assistant));
+  assert.equal(cutWithMemory.personaText, cut.personaText); assert.equal(cutWithMemory.memoryText, withMemory.memoryText);
+  // Through context(): the stored persona reads back the same whether the query retrieves anything.
+  const { a, tell, stream } = fixture(t);
+  a.revisePersona({ patch: { examples: examples(12) }, reason: 'MOCK test persona' });
+  const before = a.context('qq', { streamId: stream(A), query: 'MOCK-灯塔' });
+  tell(A, 'experience.remember', { summary: 'MOCK-灯塔 的约定' }, 'MOCK-灯塔 的约定');
+  const after = a.context('qq', { streamId: stream(A), query: 'MOCK-灯塔' });
+  assert.deepEqual([before.memoryIds.length, after.memoryIds.length], [0, 1]);
+  assert.equal(after.personaText, before.personaText); assert.ok(before.personaText.length > 1600 && before.personaText.length <= 2400 && !before.personaText.includes('[截断]'), 'persona length ' + before.personaText.length);
+  assert.ok(before.personaText.endsWith(examples(12)[11].assistant));
+  assert.equal(a.previewPersona({ patch: {} }).limit, 2400);
 });
 
 test('renderContextParts lists the kept entries per block without changing the rendered text', () => {

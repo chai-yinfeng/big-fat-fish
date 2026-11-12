@@ -123,3 +123,17 @@ test('the launcher refuses a data root outside companion-staging', () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Refusing a path outside companion-staging/);
 });
+
+test('scripted model: `retry` answers the first tool result with a second propose without an id, then replies', () => {
+  const retry = { type: 'fact.report', payload: { key: '代号', value: '蓝鲸', quote: '我是蓝鲸' } };
+  const script = [{ match: '记住', propose: { type: 'fact.report', payload: { ...retry.payload, value: '蓝鲸队长' } }, retry, reply: 'MOCK-记住了' }];
+  const turn = [{ role: 'system', content: system }, user('请记住 我是蓝鲸')], call = { role: 'assistant', tool_calls: [] }, result = text => ({ role: 'tool', content: text });
+  assert.equal(planReply({ stream: true, tools, messages: turn }, script).call.arguments.payload.value, '蓝鲸队长');
+  const second = planReply({ stream: true, tools, messages: [...turn, call, result('{"status":"rejected"}')] }, script);
+  assert.deepEqual([second.kind, second.afterTool, second.toolResult], ['tool', true, '{"status":"rejected"}']);
+  assert.deepEqual(second.call.arguments, { action: 'propose', ref: 'obs-1', type: 'fact.report', payload: retry.payload });
+  const third = planReply({ stream: true, tools, messages: [...turn, call, result('{"status":"rejected"}'), call, result('{"status":"accepted"}')] }, script);
+  assert.deepEqual([third.kind, third.text, third.toolResult], ['text', 'MOCK-记住了', '{"status":"accepted"}']);
+  // Without `retry` the first tool result is answered with the reply, as before.
+  assert.equal(planReply({ stream: true, tools, messages: [...turn, call, result('{"status":"rejected"}')] }, rules).kind, 'text');
+});

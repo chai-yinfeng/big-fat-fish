@@ -196,18 +196,23 @@ M12 `budget-gates-consolidation`：把开销的“受限”档调到几乎为零
 没有任何整合请求发给模型，恢复档位后补上；同一会话当天第 3 批不发放；M13 `forget-cascade-derived`：经 operator 忘记
 一句原话，覆盖它的摘要和从它抽取的事实消失，只有这个人的会话代次加一，另一个人的摘要还在（M11 游标与崩溃重启由
 `authority/test/consolidation.test.js` 覆盖，不在 staging 回放：运行器没有杀进程的手段）。M9 起每个场景用自己的人
-（MOCK-C…MOCK-H），因为每个会话每天只有 2 批。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
+（MOCK-C…MOCK-H），因为每个会话每天只有 2 批；
+H1 `split-long-reply`：约 150 字的多句回复，假 OneBot 按顺序收到 2–4 条、每条不超过 60 字符、
+拼起来等于原文；H2 `beijing-time-in-note`：假模型收到的附注里有一行北京时间、与请求的真实时刻相符，
+附注和 system 里没有带 Z 的 UTC 时间；H3 `propose-rejection-is-actionable`：假模型先提一条 value 不是原话的事实，
+收到的工具结果是 rejected 并说明怎么改，再提逐字版本后 Authority 里出现该事实。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
 M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里有一行 `SCENARIOS n/n passed: ...`，
 任一场景失败则是 `STAGING FAILED`。
 
 - 新功能开工前先加场景：在 `scenarios.json` 的 `scenarios` 里加一项
   `{ id, title, model, steps, finally }`。`model` 是假模型的规则（最新一条用户消息包含 `match`
-  时回 `reply`；带 `propose` 则先发起一次 companion_scope propose；`usage` 决定计费）；`steps`
+  时回 `reply`；带 `propose` 则先发起一次 companion_scope propose，再带 `retry` 则在第一次工具结果后不带 id 再提一次；`usage` 决定计费）；`steps`
   每步一个键：`say`、`converse`、`expectReply`、`expectSilence`、`expectSentCount`、`expectMemory`、
   `expectMemoryPages`、`expectPrompt`、`expectTrace`、`expectStablePrefix`、`expectBatchTrim`、`expectHistory`、
   `expectInjectedOnce`、`pinMemory`、`setPersona`、`restorePersona`、`expectNoModelCall`、`expectAdmitted`、`spendSettings`、`expectSpend`、
   `expectDigest`、`expectNoDigest`、`expectExtracted`、`expectConsolidationInput`、`expectNoChatContains`、
-  `expectConsolidation`、`noteExtracted`、`expectRejected`、`forget`、`resume`
+  `expectConsolidation`、`noteExtracted`、`expectRejected`、`forget`、`resume`、
+  `expectSplitReply`、`expectBeijingTime`、`expectToolResult`
   （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。带 `consolidate` 的规则只应答记忆 worker 的整合请求
   （按该批对话里出现的 `match` 选规则，没有规则时回一段固定的合法摘要），不应答聊天；整合请求在请求日志里单独标记，
   `userText` 为空，所以按用户原文匹配的步骤看不到它。`forget` 里清理任务由运行器自己确认（staging 的 memory 单元连不到

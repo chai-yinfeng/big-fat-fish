@@ -339,6 +339,44 @@ export const STEPS = {
   async expectSpend(run, _ctx, { tier, timeoutMs = 10000 }) {
     await run.poll(async () => (await run.operator('GET', '/spend')).tier === tier, timeoutMs, `spend tier never became ${tier}`);
   },
+  /** One reply sent as several messages: the not-yet-matched messages delivered to `to`, in the order they
+   * were sent, must be `minParts`..`maxParts` messages of at most `maxChars` characters each that together
+   * are `text`, apart from white space. */
+  async expectSplitReply(run, ctx, { to, text, minParts = 2, maxParts = 4, maxChars = 60, timeoutMs = 60000 }) {
+    const squeeze = value => value.replace(/\s+/g, ''), whole = squeeze(text);
+    const pending = async () => (await run.sent()).filter(item => item.user_id === run.qq(to) && !ctx.matched.has(item.message_id));
+    let parts = [];
+    await run.poll(async () => { parts = await pending(); return parts.length > maxParts || squeeze(parts.map(item => item.text).join('')).length >= whole.length; }, timeoutMs, `${to} did not receive the whole reply`).catch(error => fail(`${error.message}: got ${parts.length} message(s) ${JSON.stringify(parts.map(item => item.text.slice(0, 20)))}`));
+    for (const item of parts) ctx.matched.add(item.message_id);
+    if (parts.length < minParts || parts.length > maxParts) fail(`${to} received the reply as ${parts.length} message(s), expected ${minParts}..${maxParts}`);
+    const long = parts.find(item => item.text.length > maxChars);
+    if (long) fail(`a message to ${to} has ${long.text.length} characters, more than ${maxChars}: ${JSON.stringify(long.text.slice(0, 40))}`);
+    if (squeeze(parts.map(item => item.text).join('')) !== whole) fail(`the messages to ${to} do not add up to the reply, in order: ${JSON.stringify(parts.map(item => item.text.slice(0, 20)))}`);
+  },
+  /** The memory-hub note of every request for the run whose typed text contains `userText` tells the time in
+   * one line, as Beijing wall-clock time within `toleranceMs` of when the model was really asked (the real
+   * time, not a world clock that stopped during a pause); the note and the system message carry no UTC timestamp. */
+  async expectBeijingTime(run, ctx, { userText, toleranceMs = 120000 }) {
+    for (const entry of requestsOf(run, ctx, userText)) {
+      if (typeof entry.context !== 'string' || !Number.isFinite(entry.at)) fail('the model request log lacks context/at');
+      const lines = entry.context.match(/^现在是 .*$/gm) ?? [], told = /^现在是 (\d{4})年(\d{1,2})月(\d{1,2})日 周([日一二三四五六]) (\d\d):(\d\d)（北京时间）$/.exec(lines[0] ?? '');
+      if (lines.length !== 1 || !told) fail(`the note for ${JSON.stringify(userText)} has no single Beijing time line: ${JSON.stringify(lines)}`);
+      const [year, month, day, , hour, minute] = told.slice(1).map(Number), at = Date.UTC(year, month - 1, day, hour - 8, minute);
+      if ('日一二三四五六'[new Date(at + 8 * 3600000).getUTCDay()] !== told[4]) fail(`the note names the wrong weekday: ${lines[0]}`);
+      // The line is to the minute: the request may be up to a minute later than it says.
+      if (entry.at - at < -toleranceMs || entry.at - at > 60000 + toleranceMs) fail(`the note says ${JSON.stringify(lines[0])}, but the model was asked at ${new Date(entry.at).toISOString()}`);
+      const utc = /\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?Z/.exec(entry.context + '\n' + entry.system);
+      if (utc) fail(`the model was shown the UTC timestamp ${utc[0]}`);
+    }
+  },
+  /** Tool results the model was sent back during the run whose typed text contains `userText`, in order: the
+   * `nth` one (1 = the first) must contain `contains` and must not contain `absent`. */
+  async expectToolResult(run, ctx, { userText, nth = 1, contains, absent }) {
+    const results = requestsOf(run, ctx, userText).filter(entry => entry.afterTool).map(entry => entry.toolResult);
+    if (results.some(text => typeof text !== 'string')) fail('the model request log lacks toolResult');
+    if (results.length < nth) fail(`the model got ${results.length} tool result(s) for ${JSON.stringify(userText)}, expected at least ${nth}`);
+    if (!includes(results[nth - 1], { contains, absent })) fail(`tool result ${nth} for ${JSON.stringify(userText)} ${contains !== undefined && !results[nth - 1].includes(contains) ? 'lacks ' + JSON.stringify(contains) : 'contains ' + JSON.stringify(absent)}: ${JSON.stringify(results[nth - 1].slice(0, 200))}`);
+  },
 };
 
 export class Runner {

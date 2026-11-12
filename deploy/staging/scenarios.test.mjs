@@ -21,7 +21,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -166,6 +166,57 @@ test('prefix steps compare whole logged requests: stable prefix, batch trim, rep
   // A log written by an older fake model is refused instead of passing vacuously.
   fs.writeFileSync(log, JSON.stringify({ stream: true, userText: '第三问', system: 'S', context: '', rest: '[]' }) + '\n');
   for (const step of ['expectStablePrefix', 'expectBatchTrim', 'expectHistory', 'expectInjectedOnce']) await assert.rejects(STEPS[step](run, ctx, { userText: '第三问', contains: 'x', minMoves: 0, maxMoves: 0 }), /lacks hashes\/notes\/turns\/system/, step);
+});
+
+test('expectSplitReply: 2 to 4 short messages, in order, that add up to the reply', async () => {
+  const data = shipped(), qq = data.people['MOCK-A'].qq, text = '第一句话。第二句话！\n\n第三句话？';
+  const check = (texts, args = {}, ctx = { matched: new Set() }) => {
+    const sent = texts.map((part, index) => ({ message_id: index + 1, user_id: qq, text: part }));
+    return STEPS.expectSplitReply(new Runner({ data, sleep: async () => {}, onebot: async () => ({ sent }) }), ctx, { to: 'MOCK-A', text, timeoutMs: 0, ...args }).then(() => ctx);
+  };
+  assert.deepEqual([...(await check(['第一句话。', '第二句话！', '第三句话？'])).matched], [1, 2, 3]);
+  await check(['第一句话。第二句话！', '第三句话？']);
+  // Messages matched by an earlier step are not part of this reply.
+  await check(['更早的一条', '第一句话。', '第二句话！第三句话？'], {}, { matched: new Set([1]) });
+  await assert.rejects(check([text]), /received the reply as 1 message\(s\), expected 2\.\.4/);
+  await assert.rejects(check(['第一', '句话。', '第二句话！', '第三', '句话？']), /received the reply as 5 message\(s\), expected 2\.\.4/);
+  await assert.rejects(check(['第一句话。', '第二句话！第三句话？'], { maxChars: 8 }), /a message to MOCK-A has 10 characters, more than 8/);
+  await assert.rejects(check(['第二句话！', '第一句话。', '第三句话？']), /do not add up to the reply, in order/);
+  await assert.rejects(check(['第一句话。', '第二句话！', '第三句话。']), /do not add up to the reply, in order/);
+  await assert.rejects(check(['第一句话。', '第二句话！']), /MOCK-A did not receive the whole reply: got 2 message\(s\)/);
+});
+
+test('expectBeijingTime: one Beijing time line that matches the real time of the request, and no UTC timestamp', async t => {
+  const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-time-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const log = path.join(dir, 'requests.jsonl'), run = new Runner({ data: shipped(), modelLog: log });
+  const at = Date.parse('2026-11-14T16:00:40Z'), note = lines => `<<<记忆中枢附注开始>>>\n[记忆中枢版本 revision=9; personaRevision=1]\n${lines.join('\n')}\n本轮可引用的聊天证据：[]\n<<<记忆中枢附注结束>>>\n`;
+  const check = (lines, extra = {}) => { fs.writeFileSync(log, JSON.stringify({ at, stream: true, userText: 'MOCK 几点了', system: 'S', context: note(lines), rest: '[]', notes: [], turns: 1, hashes: ['a', 'b'], afterTool: false, ...extra }) + '\n'); return STEPS.expectBeijingTime(run, { logOffset: 0 }, { userText: 'MOCK 几点了' }); };
+  await check(['现在是 2026年11月15日 周日 00:00（北京时间）', '{"content":"MOCK 记忆","date":"2026-11-10"}']);
+  await assert.rejects(check([]), /has no single Beijing time line/);
+  await assert.rejects(check(['当前世界时间：2026-11-14T16:00:00.000Z']), /has no single Beijing time line/);
+  await assert.rejects(check(['现在是 2026年11月15日 周日 00:00（北京时间）', '现在是 2026年11月15日 周日 00:00（北京时间）']), /has no single Beijing time line/);
+  await assert.rejects(check(['现在是 2026年11月15日 周六 00:00（北京时间）']), /names the wrong weekday/);
+  // A world clock that stopped an hour ago, or UTC wall-clock time presented as Beijing time.
+  await assert.rejects(check(['现在是 2026年11月14日 周六 23:00（北京时间）']), /but the model was asked at 2026-11-14T16:00:40/);
+  await assert.rejects(check(['现在是 2026年11月14日 周六 16:00（北京时间）']), /but the model was asked at/);
+  await assert.rejects(check(['现在是 2026年11月15日 周日 00:00（北京时间）', '记录于 2026-11-14T16:00:00.000Z']), /shown the UTC timestamp 2026-11-14T16:00:00.000Z/);
+  await assert.rejects(check(['现在是 2026年11月15日 周日 00:00（北京时间）'], { system: 'S 2026-11-14T16:00:00Z' }), /shown the UTC timestamp/);
+  await assert.rejects(check(['现在是 2026年11月15日 周日 00:00（北京时间）'], { at: null }), /lacks context\/at/);
+});
+
+test('expectToolResult reads the tool results of one run in order', async t => {
+  const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-tool-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const log = path.join(dir, 'requests.jsonl'), run = new Runner({ data: shipped(), modelLog: log }), ctx = { logOffset: 0 };
+  const entry = (afterTool, toolResult) => ({ stream: true, userText: 'MOCK 请记住', system: 'S', context: '', rest: '[]', notes: [], turns: 1, hashes: ['a', 'b'], afterTool, ...(afterTool ? { toolResult } : {}) });
+  const write = entries => fs.writeFileSync(log, entries.map(item => JSON.stringify(item)).join('\n') + '\n');
+  const check = args => STEPS.expectToolResult(run, ctx, { userText: 'MOCK 请记住', ...args });
+  write([entry(false), entry(true, '{"status":"rejected","hint":"逐字"}'), entry(true, '{"status":"accepted"}')]);
+  await check({ contains: '逐字' }); await check({ nth: 2, contains: 'accepted', absent: 'rejected' });
+  await assert.rejects(check({ nth: 2, contains: '逐字' }), /tool result 2 for "MOCK 请记住" lacks "逐字"/);
+  await assert.rejects(check({ nth: 1, absent: 'rejected' }), /tool result 1 for "MOCK 请记住" contains "rejected"/);
+  await assert.rejects(check({ nth: 3, contains: 'x' }), /got 2 tool result\(s\) .* expected at least 3/);
+  write([entry(false), { ...entry(true), afterTool: true }]);
+  await assert.rejects(check({ contains: 'x' }), /lacks toolResult/);
 });
 
 test('{run} is replaced by one token per replay of a scenario, everywhere in it', async t => {
@@ -342,9 +393,9 @@ async function stack(t) {
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge and memory worker', { timeout: 600000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '15/15 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '18/18 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));

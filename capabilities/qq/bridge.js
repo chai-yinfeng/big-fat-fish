@@ -3,6 +3,7 @@ import path from 'node:path';
 import { messageFromOneBot } from './source.js';
 import { qqRequestId } from './worker-route.js';
 import { executeConversation } from '../conversation/executor.js';
+import { splitReply, SPLIT_GAP_MS } from './split.js';
 
 const identifier = value => typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value);
 export const FRIEND_REFRESH_MS = 10 * 60 * 1000;
@@ -12,8 +13,8 @@ const STREAM_QUEUE_LIMIT = 10;
 export const beijingDay = ms => new Date(ms + 8 * 3600000).toISOString().slice(0, 10);
 export const OWNER_BUDGET_NOTICE = '提醒：今天的模型开销已经到达每日上限，大肥鱼今天先不再回复任何人，北京时间零点后自动恢复。可以在控制台查看今日开销或调整上限。';
 export class QQBridge {
-  constructor({ authority, port, onebot, executor, media, settingsFile, stateFile, clock = Date.now }) {
-    Object.assign(this, { authority, port, onebot, executor, media, settingsFile, stateFile, clock });
+  constructor({ authority, port, onebot, executor, media, settingsFile, stateFile, clock = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+    Object.assign(this, { authority, port, onebot, executor, media, settingsFile, stateFile, clock, sleep });
     this.settings = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile, 'utf8')) : null;
     this.state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : { records: {} };
     for (const item of Object.values(this.state.records)) { if (['queued', 'processing'].includes(item.status)) item.status = 'interrupted'; else if (item.status === 'sending') item.status = 'unknown'; }
@@ -149,8 +150,13 @@ export class QQBridge {
       const input = { text: prepared.executionText, queryText: prepared.queryText, mediaRefs: prepared.mediaRefs, evidence: [{ ref: observed.observationId, eventId: observation.eventId, role: observation.role }] };
       const text = await executeConversation(this.executor, { scope, requestId, input, timeoutMs: this.media && (prepared.mediaRefs.length || /音频|语音|转写|识别|qwen/i.test(prepared.queryText)) ? 420000 : 120000 });
       if (!await this.current(cfg, observation, item)) { item.status = 'paused'; this.save(); return; }
-      const parts = this.media ? await this.media.plan({ scope, requestId, sourceEventId: observation.eventId, text, voiceRequested: prepared.voiceRequested, voiceProfile: prepared.voiceProfile }) : [{ type: 'text', text }];
+      const planned = this.media ? await this.media.plan({ scope, requestId, sourceEventId: observation.eventId, text, voiceRequested: prepared.voiceRequested, voiceProfile: prepared.voiceProfile }) : [{ type: 'text', text }];
+      // A long text reply goes out as a few short messages. Each is its own send with its own receipt, so the
+      // loop below stops at the first one that fails or is unknown, and only delivered ones are observed.
+      // A voice reply (and its text fallback) is never split.
+      const parts = planned.flatMap(part => part.type === 'text' && !prepared.voiceRequested ? splitReply(part.text).map((piece, index) => ({ type: 'text', text: piece, ...(index ? { follows: true } : {}) })) : [part]);
       for (const part of parts) {
+        if (part.follows) await this.sleep(SPLIT_GAP_MS);
         if (!await this.current(cfg, observation, item)) { item.status = item.receipts?.length ? 'partial' : 'paused'; this.save(); return; }
         sending = true; item.status = 'sending'; this.save();
         let receipt;
