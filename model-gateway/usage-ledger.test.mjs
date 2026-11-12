@@ -160,7 +160,7 @@ function request(socketPath, route, body, token, method = 'POST') {
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 const sse = 'data: {"choices":[{"delta":{"content":"MOCK"}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":1000,"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":1000,"completion_tokens":100}}\n\ndata: [DONE]\n\n';
 async function gateway(t, overrides = {}) {
-  const directory = await temporary(t), calls = [];
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'fish-ledger-')), calls = [];
   const state = { paused: false, now: Date.parse('2026-11-14T04:00:00Z') }; // a Saturday: off-peak prices
   await fs.writeFile(path.join(directory, 'settings.json'), JSON.stringify({ model: 'deepseek-flash', apiKey: 'MOCK-KEY-not-a-real-key' }), { mode: 0o600 });
   const fetchImpl = async (url, options) => {
@@ -173,7 +173,8 @@ async function gateway(t, overrides = {}) {
   const options = { settingsFile: path.join(directory, 'settings.json'), inferenceSocket: path.join(directory, 'infer.sock'), controlSocket: path.join(directory, 'control.sock'), inferenceTokenHash: hash(infer), operatorTokenHash: hash(operator), clock: () => state.now, worldStatus: async () => ({ paused: state.paused }), fetchImpl, ...overrides };
   const start = async () => { const instance = createModelGateway(options); await instance.start(); return instance; };
   let instance = await start();
-  t.after(() => instance.close());
+  // The directory goes only after the gateway has closed: a call is written down after its response.
+  t.after(async () => { await instance.close(); assert.equal(path.dirname(directory), os.tmpdir()); await fs.rm(directory, { recursive: true }); });
   const control = (route, body, method) => request(options.controlSocket, route, body, operator, method ?? (body === undefined ? 'GET' : 'POST'));
   const inference = (route, body, token = infer) => request(options.inferenceSocket, route, body, token);
   // The ledger is written after the response: wait until it shows what the caller expects.

@@ -155,7 +155,7 @@ function request(socketPath, route, body, token, method = 'POST') {
   });
 }
 test('gateway forces include_usage, meters chat by reported usage, exposes /spend and honors a new cap at once', async t => {
-  const dir = await directory(t), calls = [];
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'fish-spend-')), calls = [];
   const usage = { prompt_tokens: 1200, prompt_cache_hit_tokens: 1000, prompt_cache_miss_tokens: 200, completion_tokens: 500, completion_tokens_details: { reasoning_tokens: 400 } };
   const sse = `data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: {"choices":[],"usage":${JSON.stringify(usage)}}\n\ndata: [DONE]\n\n`;
   let mode = 'ok';
@@ -163,7 +163,8 @@ test('gateway forces include_usage, meters chat by reported usage, exposes /spen
     inferenceTokenHash: hash(infer), operatorTokenHash: hash(operator), worldStatus: async () => ({ paused: false }), clock: () => BJ('10:00'),
     fetchImpl: async (url, options) => { calls.push(JSON.parse(options.body)); return mode === 'error' ? new Response('no', { status: 500 }) : new Response(mode === 'nousage' ? 'data: [DONE]\n\n' : sse); } });
   await fs.writeFile(path.join(dir, 'settings.json'), JSON.stringify({ model: 'deepseek-flash', apiKey: 'synthetic-key-not-a-real-secret' }), { mode: 0o600 });
-  await gateway.start(); t.after(() => gateway.close());
+  // The directory goes only after the gateway has closed: a call is written down after its response.
+  await gateway.start(); t.after(async () => { await gateway.close(); await fs.rm(dir, { recursive: true, force: true }); });
   const control = (route, body, method) => request(path.join(dir, 'control.sock'), route, body, operator, method);
   const chat = body => request(path.join(dir, 'infer.sock'), '/v1/chat/completions', body, infer);
   const settled = async expected => { for (let i = 0; i < 50 && (await control('/spend', undefined, 'GET')).json().value.calls !== expected; i++) await new Promise(r => setTimeout(r, 10)); return (await control('/spend', undefined, 'GET')).json().value; };

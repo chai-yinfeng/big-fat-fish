@@ -424,8 +424,10 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 4096, 4096), thinking: { type: 'enabled' }, reasoning_effort: 'high' }, 'inference', res, 'conversation', note);
     }
   }
+  // Requests still being handled; a handler outlives its response by its bookkeeping (settling spend, the usage ledger).
+  const handling = new Set();
   function serverFor(hash, handler) {
-    const server = http.createServer({ maxHeaderSize: 8192 }, async (req, res) => {
+    const answer = async (req, res) => {
       try {
         authenticate(req, hash);
         if (closing) throw failure('UNAVAILABLE');
@@ -436,6 +438,10 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
         if (!res.headersSent) send(res, ERRORS[code][0], { ok: false, error: { code, message: ERRORS[code][1] } });
         else res.destroy();
       }
+    };
+    const server = http.createServer({ maxHeaderSize: 8192 }, (req, res) => {
+      const work = answer(req, res).catch(() => {}).finally(() => handling.delete(work));
+      handling.add(work);
     });
     server.requestTimeout = 15000; server.headersTimeout = 5000; server.keepAliveTimeout = 1000; server.maxConnections = 32;
     return server;
@@ -477,6 +483,8 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     async close() {
       closing = true; cancel();
       await closeServers();
+      // Cancelled and finished calls first write down what they cost and how they ended.
+      await Promise.all(handling);
       await controlQueue;
       await usageQueue;
       await ledger.close();
