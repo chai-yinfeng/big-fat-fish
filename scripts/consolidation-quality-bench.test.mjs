@@ -38,7 +38,8 @@ test('one consolidation call per case through the real gateway and Authority; th
   const result = await runQuality({ ...f, label: 'test', only: ['daily', 'venting'], fetchImpl });
   assert.deepEqual(bodies.map(body => [body.max_tokens, body.thinking, body.stream, body.messages.length]), [[1536, { type: 'disabled' }, false, 2], [1536, { type: 'disabled' }, false, 2]]);
   const [daily, venting] = result.cases;
-  assert.deepEqual([daily.workerStatus, daily.digest.summary, daily.digest.covers, daily.facts, daily.refused], ['committed', 'MOCK-摘要：对方下班后聊了开会和猫。', 20, [{ key: '猫', value: 'MOCK-煤球', quote: '我家猫叫MOCK-煤球', verbatim: true }], ['quote_not_in_observation']]);
+  assert.deepEqual([daily.workerStatus, daily.digest.summary, daily.digest.covers, daily.facts, daily.refused], ['committed', 'MOCK-摘要：对方下班后聊了开会和猫。', 20, [{ key: '猫', value: 'MOCK-煤球', quote: '我家猫叫MOCK-煤球', verbatim: true }], ['newer_fact_kept']]);
+  // The second fact (same key, a quote that is not word for word) is no longer refused for its quote: it only may not replace the first.
   assert.deepEqual([daily.upstream.output.includes('MOCK-摘要'), daily.upstream.finishReason, daily.upstream.promptTokens, daily.upstream.completionTokens], [true, 'stop', 3000, 200]);
   assert.deepEqual([venting.workerStatus, venting.digest, venting.upstream.output], ['invalid_output', null, 'not json']);
   assert.ok(result.total.calls === 2 && result.total.spendYuan > 0 && result.dailyCapYuan === DAILY_CAP_YUAN);
