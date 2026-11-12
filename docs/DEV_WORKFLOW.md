@@ -188,10 +188,11 @@ revision 和时间；M4 `batch-trim`：连说 30 轮，历史起点只移动几�
 置顶事实在与它无关的提问里也在本人的 system 里，另一个人的整个请求里没有；M6 `persona-change-trim`：
 经 operator 改人格后的下一轮最多重放 2 个旧回合，事实仍在；M7 `no-duplicate-injection`：同一条记忆只进窗口里的
 一段附注；M8 `oversized-history-still-replies`：连发三条约 6000 字符的消息，第三条放不下前两轮时只带最近一轮、
-照常得到回复；M9 `rolled-out-digest`：两个人各自聊到原话滚出窗口，各得到自己名下的机器摘要（派生来源含那句原话）和带逐字引文的
+照常得到回复；M9 `rolled-out-digest`：两个人各自聊到原话滚出窗口，各得到自己名下的机器摘要（派生来源含那句原话）和出处指向那句原话的
 后台事实，每次整合请求里只有一个人的对话，摘要正文和“她的感受”不出现在任何聊天请求里，后台事实只进本人的常驻档案；
-M10 `extract-quote-guard`：假模型给出引文不逐字、value 不在引文里、引用她自己的话各一条，三条都被审核拒收（原因分别是
-`quote_not_in_observation`、`value_not_in_quote`、`unconfirmed_identity`），摘要和一条逐字事实照常写入；
+M10 `extract-quote-guard`：假模型给出引文不逐字、value 不在引文里、引用她自己的话各一条：前两条入库（引文不逐字的带
+`evidence.quoteVerbatim:false` 标记，出处都指向本人那句原话，归属本人、私有），引用她自己的话仍被拒收（`unconfirmed_identity`），
+摘要和一条逐字事实照常写入；本人追问时这些事实在本人的 system 里，另一个人的整个请求里没有；
 M12 `budget-gates-consolidation`：把开销的“受限”档调到几乎为零后聊到滚出窗口，整合状态显示因开销暂停、该会话当日批次为 0、
 没有任何整合请求发给模型，恢复档位后补上；同一会话当天第 3 批不发放；M13 `forget-cascade-derived`：经 operator 忘记
 一句原话，覆盖它的摘要和从它抽取的事实消失，只有这个人的会话代次加一，另一个人的摘要还在（M11 游标与崩溃重启由
@@ -199,8 +200,9 @@ M12 `budget-gates-consolidation`：把开销的“受限”档调到几乎为零
 （MOCK-C…MOCK-H），因为每个会话每天只有 2 批；
 H1 `split-long-reply`：约 150 字的多句回复，假 OneBot 按顺序收到 2–4 条、每条不超过 60 字符、
 拼起来等于原文；H2 `beijing-time-in-note`：假模型收到的附注里有一行北京时间、与请求的真实时刻相符，
-附注和 system 里没有带 Z 的 UTC 时间；H3 `propose-rejection-is-actionable`：假模型先提一条 value 不是原话的事实，
-收到的工具结果是 rejected 并说明怎么改，再提逐字版本后 Authority 里出现该事实。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
+附注和 system 里没有带 Z 的 UTC 时间；H3 `propose-rejection-is-actionable`：假模型先提一条聊天里不允许的 learning.note，
+收到的工具结果是 rejected（`conversation_policy_kind_denied`）并说明怎么改，改提 fact.report 后 Authority 里出现该事实；
+H4 `normalized-value-is-stored`：对方说“下个月 5 号去上海”，假模型提交换算后的具体日期，当场入库，出处指向那句原话，另一个人的请求和记忆里没有。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
 M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里有一行 `SCENARIOS n/n passed: ...`，
 任一场景失败则是 `STAGING FAILED`。
 
@@ -210,7 +212,7 @@ M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里�
   每步一个键：`say`、`converse`、`expectReply`、`expectSilence`、`expectSentCount`、`expectMemory`、
   `expectMemoryPages`、`expectPrompt`、`expectTrace`、`expectStablePrefix`、`expectBatchTrim`、`expectHistory`、
   `expectInjectedOnce`、`pinMemory`、`setPersona`、`restorePersona`、`expectNoModelCall`、`expectAdmitted`、`spendSettings`、`expectSpend`、
-  `expectDigest`、`expectNoDigest`、`expectExtracted`、`expectConsolidationInput`、`expectNoChatContains`、
+  `expectDigest`、`expectNoDigest`、`expectExtracted`、`expectProvenance`、`expectConsolidationInput`、`expectNoChatContains`、
   `expectConsolidation`、`noteExtracted`、`expectRejected`、`forget`、`resume`、
   `expectSplitReply`、`expectBeijingTime`、`expectToolResult`
   （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。带 `consolidate` 的规则只应答记忆 worker 的整合请求
