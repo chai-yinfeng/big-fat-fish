@@ -115,6 +115,9 @@ export function WorldConsole({ t, standalone = false }) {
   const [spendDraft, setSpendDraft] = useState(null);
   // Memory page filter: '' (everyone), an opaque person label, or 'none' (appended, same reason).
   const [memoryFilter, setMemoryFilter] = useState('');
+  // Consolidation status and the source lines read for single items (appended, same reason). Never stored in the browser.
+  const [consolidation, setConsolidation] = useState(null);
+  const [memorySources, setMemorySources] = useState({});
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -221,7 +224,7 @@ export function WorldConsole({ t, standalone = false }) {
   const effectiveTheme = theme === 'system' ? (systemDark() ? 'dark' : 'light') : theme;
   const toggleTheme = () => setTheme(effectiveTheme === 'dark' ? 'light' : 'dark');
   function go(key) {
-    if (key !== 'memory') { setMemory(null); setForgetPreview(null); setMemoryFilter(''); }
+    if (key !== 'memory') { setMemory(null); setForgetPreview(null); setMemoryFilter(''); setConsolidation(null); setMemorySources({}); }
     setTab(key); setDrawer(false);
   }
   const refreshAll = () => run(async () => { await load(); if (standalone && tab === 'runtime') await loadRuntime(); });
@@ -465,10 +468,39 @@ export function WorldConsole({ t, standalone = false }) {
     const origin = item => {
       const role = ['user', 'assistant', 'external'].includes(item.source?.role) ? t(`memoryPanel.role.${item.source.role}`) : null;
       const proposal = /^(fact|experience|appraisal|learning|self)\./.test(item.source?.proposal || '') ? t(`memoryPanel.proposal.${item.source.proposal.split('.')[0]}`) : null;
-      const parts = [role, proposal, typeof item.source?.channel === 'string' ? item.source.channel : null].filter(Boolean);
+      const machine = ['digest', 'extracted'].includes(item.source?.machine) ? t(`memoryPanel.machine.${item.source.machine}`) : null;
+      const parts = [role, proposal, machine, typeof item.source?.channel === 'string' ? item.source.channel : null].filter(Boolean);
       return h('p', { className: 'bff-small bff-muted' }, `${t('memoryPanel.source')}: ${parts.length ? parts.join(' · ') : t('memoryPanel.sourceUnknown')}`);
     };
     const owners = memory && Array.isArray(memory.people) ? memory.people.filter(person => /^p-[0-9a-f]{6}$/.test(person?.label)) : [];
+    // Read-only: what background consolidation wrote. A digest is machine text, shown with what it covers.
+    const isDigest = item => item.kind === 'digest' && item.source?.machine === 'digest';
+    const covered = item => isDigest(item) && Number.isFinite(item.fromAt) && Number.isFinite(item.toAt) && Array.isArray(item.derivedFrom)
+      ? h('p', { className: 'bff-small bff-muted' }, `${t('memoryPanel.covers')}: ${time(item.fromAt)} – ${time(item.toAt)} · ${t('memoryPanel.lines')}: ${item.derivedFrom.length}`) : null;
+    // The observations behind one machine-written item: read on click, kept only in this page's state.
+    const readSources = item => button('memoryPanel.showSources', () => run(async () => {
+      const value = await request('/memory/sources', undefined, token, { id: item.id });
+      if (!Array.isArray(value?.sources)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
+      setMemorySources({ ...memorySources, [item.id]: value.sources });
+    }), { className: 'bff-ghost bff-sm', icon: 'eye' });
+    const sourceLines = item => Array.isArray(memorySources[item.id]) ? h('div', null, ...memorySources[item.id].map((line, index) => h('p', { key: index, className: 'bff-small', style: { whiteSpace: 'pre-wrap' } },
+      `${['user', 'assistant', 'external'].includes(line.role) ? t(`memoryPanel.role.${line.role}`) : ''} · ${time(line.at)}: ${line.forgotten ? t('memoryPanel.sourceForgotten') : line.text}`))) : null;
+    const validConsolidation = value => value && Array.isArray(value.streams) && Array.isArray(value.staleDigestIds) && Number.isFinite(value.calls) && Number.isFinite(value.limits?.perDay) && Number.isFinite(value.limits?.perStreamPerDay);
+    const refused = consolidation ? Object.values(consolidation.extracted?.rejected || {}).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0) : 0;
+    const consolidationCard = h('section', { className: 'bff-card' }, cardHead(h('h2', null, t('consolidation.title')),
+      button('consolidation.read', () => run(async () => { const value = await request('/memory/consolidation'); if (!validConsolidation(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' }); setConsolidation(value); }), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
+      text('consolidation.hint'),
+      consolidation && h(React.Fragment, null,
+        consolidation.paused === 'spend' || consolidation.paused === 'daily' ? alert('warn', t(`consolidation.paused.${consolidation.paused}`)) : null,
+        consolidation.staleDigestIds.length ? alert('warn', `${t('consolidation.stale')}: ${consolidation.staleDigestIds.length}`) : null,
+        h('p', { className: 'bff-small bff-muted' }, `${t('consolidation.today')} (${consolidation.day}): ${consolidation.calls} / ${consolidation.limits.perDay} · ${t('consolidation.perConversation')}: ${consolidation.limits.perStreamPerDay} · ${t('consolidation.lastRun')}: ${consolidation.lastCommittedAt ? time(consolidation.lastCommittedAt) : '—'}`),
+        h('p', { className: 'bff-small bff-muted' }, `${t('consolidation.extracted')}: ${consolidation.extracted?.accepted ?? 0} · ${t('consolidation.refused')}: ${refused}`),
+        consolidation.streams.length ? h('div', { className: 'bff-table' }, h('table', null,
+          h('thead', null, h('tr', null, ...['peoplePanel.person', 'consolidation.behind', 'consolidation.waiting', 'consolidation.callsToday', 'consolidation.digests', 'consolidation.skipped', 'consolidation.lastRun'].map(key => h('th', { key, scope: 'col' }, t(key))))),
+          h('tbody', null, ...consolidation.streams.map(row => h('tr', { key: row.stream },
+            h('td', null, row.owner ? badge(t('peoplePanel.owner'), 'primary', icon('star')) : h('code', null, row.person)),
+            ...[row.behind?.observations, row.waiting, row.calls, row.digests, row.skipped].map((value, index) => h('td', { key: index, className: 'bff-mono' }, String(value ?? 0))),
+            h('td', null, row.lastAt ? time(row.lastAt) : '—')))))) : null));
     return h(React.Fragment, null,
       h('section', { className: 'bff-card' }, cardHead(h('h2', null, t('memoryTitle')),
         button('memoryReadExplicitly', () => run(loadMemory), { className: 'bff-primary bff-sm', icon: 'eye' }),
@@ -481,18 +513,22 @@ export function WorldConsole({ t, standalone = false }) {
           memory.unowned > 0 || memoryFilter === 'none' ? h('option', { value: 'none' }, `${t('memoryPanel.unowned')} (${memory.unowned || 0})`) : null)),
         memory && text('memoryPanel.hint'),
         memory && h('p', { className: 'bff-small bff-muted' }, `${t('memoryPanel.shown')}: ${memory.items.length}`)),
+      consolidationCard,
       memory && h(React.Fragment, null,
         ...memory.items.map(item => h('article', { className: 'bff-card bff-memory', key: item.id },
           h('div', { className: 'bff-actions' }, badge(item.type, 'primary'), badge(item.status), item.pinned ? badge(t('memoryPinned'), 'primary', icon('pin')) : null,
-            belongs(item), item.visibility === 'public' ? badge(t('memoryPanel.public'), 'ok') : null),
+            belongs(item), item.visibility === 'public' ? badge(t('memoryPanel.public'), 'ok') : null,
+            isDigest(item) ? badge(t('memoryPanel.machineBadge'), 'warn') : item.source?.machine === 'extracted' ? badge(t('memoryPanel.extractedBadge')) : null),
           h('p', { style: { whiteSpace: 'pre-wrap' } }, item.summary || item.text || `${item.key || ''}: ${item.value || ''}`),
-          origin(item),
+          isDigest(item) && typeof item.feeling === 'string' && item.feeling ? h('p', { className: 'bff-small', style: { whiteSpace: 'pre-wrap' } }, `${t('memoryPanel.feeling')}: ${item.feeling}`) : null,
+          origin(item), covered(item), sourceLines(item),
           h('form', { onSubmit: event => { event.preventDefault(); const value = event.currentTarget.elements.eventAt.value; const eventAt = value ? Date.parse(value) : null; if (eventAt !== null && !Number.isFinite(eventAt)) return; void mutate('/memory/retention', { entityId: memory.entityId, id: item.id, eventAt }); } },
             h('label', null, h('span', null, t('memoryEventTime')), h('input', { name: 'eventAt', type: 'datetime-local', disabled: busy, defaultValue: item.eventAt == null ? '' : new Date(item.eventAt - new Date(item.eventAt).getTimezoneOffset() * 60000).toISOString().slice(0, 16) })),
             button('memorySaveEventTime', undefined, { type: 'submit', className: 'bff-secondary bff-sm', icon: 'clock' })),
           h('div', { className: 'bff-actions' },
             button(item.pinned ? 'memoryUnpin' : 'memoryPin', () => mutate('/memory/retention', { entityId: memory.entityId, id: item.id, pinned: !item.pinned }), { className: 'bff-ghost bff-sm', icon: 'pin' }),
-            item.visibility !== 'public' && item.kind !== 'inner' && button('memoryPublicAuthorize', () => mutate('/memory/public', { entityId: memory.entityId, id: item.id }), { className: 'bff-ghost bff-sm', icon: 'shield' }),
+            item.source?.machine ? readSources(item) : null,
+            item.visibility !== 'public' && item.kind !== 'inner' && item.kind !== 'digest' && button('memoryPublicAuthorize', () => mutate('/memory/public', { entityId: memory.entityId, id: item.id }), { className: 'bff-ghost bff-sm', icon: 'shield' }),
             preview(item.id)))),
         ...memory.diaries.map(diary => h('article', { className: 'bff-card bff-memory', key: diary.id },
           h('div', { className: 'bff-actions' }, badge(t(diary.kind === 'private' ? 'memoryPrivateDiary' : diary.status === 'published' ? 'memoryPublishedDiary' : 'memoryPublicDraft'), diary.kind === 'private' ? '' : 'primary', icon('note'))),
@@ -503,7 +539,7 @@ export function WorldConsole({ t, standalone = false }) {
         memory.more === true && h('div', { className: 'bff-actions' }, button('memoryPanel.loadMore', () => run(loadMoreMemory), { className: 'bff-secondary bff-sm', icon: 'down' })),
         !memory.items.length && !memory.diaries.length && h('div', { className: 'bff-empty' }, icon('memory'), h('p', null, t('memoryEmpty')))),
       forgetPreview && dialog(t('memoryForgetPreview'), [
-        h('p', { key: 'count', className: 'bff-mono' }, `${t('memoryAffected')}: ${forgetPreview.expandedIds.length} · ${t('memorySources')}: ${forgetPreview.sourceObservationIds.length}`),
+        h('p', { key: 'count', className: 'bff-mono' }, `${t('memoryAffected')}: ${forgetPreview.expandedIds.length} · ${t('memorySources')}: ${forgetPreview.sourceObservationIds.length}${Array.isArray(forgetPreview.digestIds) && forgetPreview.digestIds.length ? ` · ${t('memoryPanel.digestsRemoved')}: ${forgetPreview.digestIds.length}` : ''}`),
         h('p', { key: 'warning', className: 'bff-muted' }, t('memoryForgetWarning')), !data.world.paused && h('div', { key: 'pause' }, alert('warn', t('memoryPauseRequired')))], [
         button('discard', () => setForgetPreview(null), { className: 'bff-ghost', autoFocus: true, key: 'discard' }),
         button('memoryForgetConfirm', () => run(async () => {

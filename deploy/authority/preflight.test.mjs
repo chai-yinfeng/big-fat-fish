@@ -201,3 +201,11 @@ test('a migration that widens an existing table needs a running release that nam
   fs.writeFileSync(path.join(w.releases, OLD, 'authority/src/migrations.js'), '// level removed\n');
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations })).failures), ['authority-db MIGRATION_ROLLBACK_UNSAFE m2-widen-streams']);
 });
+
+test('memory worker timings are optional; a value out of range is refused, as the worker would refuse to start', async t => {
+  const w = world(t);
+  w.edit('memory-worker.json', c => { c.tickMs = 5000; c.consolidationDeferMs = 10000; });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), []);
+  w.edit('memory-worker.json', c => { c.tickMs = 10; });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['memory-worker.json CONFIG_INVALID']);
+});

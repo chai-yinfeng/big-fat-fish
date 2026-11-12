@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createModelGateway } from '../../model-gateway/server.mjs';
-import { planReply, renderReply, evidenceRef, createFakeUpstream, DEFAULT_REPLY } from './fake-model.mjs';
+import { consolidationRows, DEFAULT_DIGEST, planReply, renderReply, evidenceRef, createFakeUpstream, DEFAULT_REPLY } from './fake-model.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 const system = 'persona';
@@ -56,6 +56,26 @@ test('scripted model: rule by newest user message, propose first, reply after th
   assert.equal(JSON.parse(sse[0].slice(6)).choices[0].delta.tool_calls[0].function.name, 'companion_scope');
   assert.equal(JSON.parse(sse[1].slice(6)).choices[0].finish_reason, 'tool_calls');
   assert.equal(sse[2], 'data: [DONE]');
+});
+
+test('scripted model: a consolidation request is answered by a `consolidate` rule, with refs taken from its rows', async () => {
+  const { consolidationMessages, parseConsolidation } = await import('../../capabilities/memory/consolidation.js');
+  const task = { taskId: 't', personaText: 'MOCK 人设', knownKeys: [], lastDigest: '', observations: [
+    { ref: 'o1', role: 'user', time: '2026-11-10 21:03', text: 'MOCK-甲 我的生日是MOCK-三月' }, { ref: 'o2', role: 'assistant', time: '2026-11-10 21:04', text: 'MOCK-REPLY 好' }] };
+  const body = { stream: false, messages: consolidationMessages(task) };
+  const scripted = [{ match: 'MOCK-甲', reply: 'MOCK-聊天回复' }, { match: 'MOCK-乙', consolidate: { summary: 'MOCK-别人的' } },
+    { match: 'MOCK-甲', consolidate: { summary: 'MOCK-DIGEST 甲', feeling: 'MOCK-感受', facts: [{ key: '生日', value: 'MOCK-三月', quote: '我的生日是MOCK-三月' }, { key: '生日', value: 'MOCK-三月', quote: '我生日是MOCK-三月', in: 'MOCK-甲' }, { key: '话', value: 'MOCK-REPLY 好', quote: 'MOCK-REPLY 好' }, { key: '无', value: 'x', quote: '没有这句' }] } }];
+  const plan = planReply(body, scripted);
+  // What the worker makes of it: the refs point at the rows the script named; a quote found nowhere gets a ref outside the batch.
+  assert.deepEqual(parseConsolidation(plan.text), { digest: { summary: 'MOCK-DIGEST 甲', feeling: 'MOCK-感受' }, facts: [
+    { key: '生日', value: 'MOCK-三月', quote: '我的生日是MOCK-三月', ref: 'o1' }, { key: '生日', value: 'MOCK-三月', quote: '我生日是MOCK-三月', ref: 'o1' }, { key: '话', value: 'MOCK-REPLY 好', quote: 'MOCK-REPLY 好', ref: 'o2' }, { key: '无', value: 'x', quote: '没有这句', ref: 'o999' }] });
+  // Logged apart from chats: no `userText` for the chat steps to match, the whole input under `maintenance`.
+  assert.deepEqual([plan.consolidation, plan.userText, plan.stream, plan.maintenance], [true, '', false, body.messages[1].content]);
+  assert.deepEqual(parseConsolidation(planReply(body, []).text), { digest: { summary: DEFAULT_DIGEST.summary, feeling: '' }, facts: [] });
+  // A chat is never answered by a `consolidate` rule, and other non-streamed requests are not consolidations.
+  assert.equal(planReply({ stream: true, messages: [{ role: 'user', content: 'MOCK-乙 在吗' }] }, scripted).text, DEFAULT_REPLY);
+  assert.equal(planReply({ stream: true, messages: [{ role: 'user', content: 'MOCK-甲 在吗' }] }, scripted).text, 'MOCK-聊天回复');
+  for (const content of ['Reply OK.', JSON.stringify({ persona: '', sources: [] }), JSON.stringify({ messages: [['o1', '对方']] })]) assert.deepEqual([consolidationRows({ stream: false }, content), planReply({ stream: false, messages: [{ role: 'user', content }] }, scripted).consolidation], [null, undefined]);
 });
 
 function post(socketPath, token, route, body) {

@@ -4,7 +4,7 @@ import { capability, canonical, closed, contextScope, enumeration, fail, identif
 import { POLICIES, validatePayload, review } from './policies.js';
 import { normalizePersona, validatePersonaPatch } from '../../core/src/persona.js';
 import { renderContextParts, renderProfile, RETRIEVED_ITEMS, DEFAULT_CONTEXT_CHARS, personaShare, personaContextText, opaquePerson, opaqueStream } from './context.js';
-import { MemoryDomain } from './memory.js';
+import { ConsolidationDomain, BACKGROUND_PROPOSAL } from './consolidation.js';
 export {
   DEFAULT_ENTITY_ID
 }
@@ -14,7 +14,7 @@ export const MAX_ADMITTED_PEOPLE = 40;
 export const TRACE_LIMIT = 400;
 /** Most memory IDs one context() call may exclude. */
 export const MAX_CONTEXT_EXCLUDE = 256;
-export class Authority extends MemoryDomain {
+export class Authority extends ConsolidationDomain {
   constructor(options){
     super();
     closed(options,['file','clock','persona','initialPaused','migrations'],['file']);
@@ -35,6 +35,9 @@ export class Authority extends MemoryDomain {
     this.processing=false;
     this.traces=[];
     this.traceSeq=0;
+    // Where each private conversation's replay window starts, as its executor last reported it
+    // (`windowFromAt` of context()). In memory only: after a restart the nightly routine covers the gap.
+    this.windows=new Map();
   }
   now(){
     return integer(this.clock());
@@ -267,6 +270,8 @@ export class Authority extends MemoryDomain {
     capability(this.store,capabilityId);
     closed(input,['proposalId','observationId','type','payload']);
     identifier(input.proposalId);
+    // Reserved for facts Authority itself queues from a consolidation commit.
+    if(input.proposalId.startsWith(BACKGROUND_PROPOSAL))fail('VALIDATION_ERROR','Reserved proposal identifier');
     identifier(input.observationId);
     validated(()=>validatePayload(input.type,input.payload));
     const encoded=canonical(input);
@@ -312,7 +317,10 @@ export class Authority extends MemoryDomain {
         };
          const alreadyAppraised=Boolean(this.store.db.prepare("SELECT 1 FROM memory_items m JOIN memory_sources s ON m.id=s.memory_id WHERE m.entity_id=? AND m.collection='appraisals' AND s.observation_id=? LIMIT 1").get(row.entity_id,source.id));
          const identity = resolveIdentity(this.store, row.capability_id, observation);
-        const decision=source.forgotten?{
+        // Extracted by consolidation, after the conversation: it ranks below a fact proposed in the
+        // conversation and never replaces a pinned fact or one recorded from words at least as recent.
+        const background=row.proposal_id.startsWith(BACKGROUND_PROPOSAL);
+        let decision=source.forgotten?{
           status:'rejected',reason:'source_forgotten',effects:[]
         }
         : identity.stream && identity.stream.entityId !== row.entity_id ? { status: 'rejected', reason: 'source_entity_mismatch', effects: [] }
@@ -320,7 +328,11 @@ export class Authority extends MemoryDomain {
           policy:row.policy,proposal:JSON.parse(row.body),observation,identity,state:{
             alreadyAppraised
           }
-        }),revision=this.store.nextRevision(),at=this.now(),worldAt=this.worldStatus().worldNow;
+        });
+        if(background&&decision.effects.some(effect=>effect.collection==='facts'&&this.store.db.prepare("SELECT pinned,json_extract(body,'$.evidence.at') AS at FROM memory_items WHERE entity_id=? AND collection='facts' AND person_id=? AND json_extract(body,'$.key')=? AND status='active'").all(row.entity_id,effect.personId,effect.key).some(old=>old.pinned||old.at>=observation.at)))decision={
+          status:'rejected',reason:'newer_fact_kept',effects:[]
+        };
+        const revision=this.store.nextRevision(),at=this.now(),worldAt=this.worldStatus().worldNow;
          const effects=decision.effects.map(({
           collection,...effect
         })=>{
@@ -331,7 +343,7 @@ export class Authority extends MemoryDomain {
             this.store.db.prepare("UPDATE memory_items SET status='superseded',superseded_by=? WHERE id=?").run(entry.id,old.id);
             this.store.db.prepare('DELETE FROM memory_tokens WHERE memory_id=?').run(old.id);
           }
-          this.store.insertMemory(row.entity_id,collection,entry,worldAt);
+          this.store.insertMemory(row.entity_id,collection,entry,worldAt,background&&collection==='facts'?{importance:0.7}:{});
           if(collection==='appraisals'){
             const p=this.store.db.prepare('SELECT body FROM relationships WHERE entity_id=? AND person_id=?').get(row.entity_id,entry.personId),previous=p?JSON.parse(p.body):{
               score:0
@@ -365,13 +377,17 @@ export class Authority extends MemoryDomain {
     }
   }
   context(capabilityId,input){
-    closed(input,['streamId','query','budgetChars','exclude','profile'],['streamId']);
+    closed(input,['streamId','query','budgetChars','exclude','profile','windowFromAt'],['streamId']);
     if(input.profile!==undefined&&typeof input.profile!=='boolean')fail('VALIDATION_ERROR','profile must be boolean');
+    if(input.windowFromAt!==undefined)integer(input.windowFromAt);
     const registered=capability(this.store,capabilityId),
     scope=contextScope(this.store,capabilityId,input.streamId),
     e=this.entity(scope.entityId),
     query=input.query===undefined?'':input.query;
     text(query,2000,true);
+    // `windowFromAt`: when the oldest run the executor still replays for this conversation began. Dialogue
+    // before it has left the window and may be consolidated. It changes nothing in this response.
+    if(input.windowFromAt!==undefined&&scope.audience==='private'&&registered.policy==='conversation.v1')this.windows.set(`${capabilityId}\u0000${input.streamId}`,Math.min(input.windowFromAt,this.now()));
     // `exclude`: IDs the caller already shows the model (the executor's persisted notes); never retrieved again.
     const exclude=input.exclude??[];
     if(!Array.isArray(exclude)||exclude.length>MAX_CONTEXT_EXCLUDE)fail('VALIDATION_ERROR','exclude must be a bounded list of memory IDs');

@@ -235,6 +235,105 @@ export const STEPS = {
     const stream = conversations.some(item => item.streamId.endsWith(':private:' + run.qq(person)));
     if (actor !== admitted || stream !== admitted) fail(`${person}: actor bound=${actor}, conversation bound=${stream}, expected ${admitted}`);
   },
+  /** A machine digest of `person` (operator GET /memory: kind "digest", marked as machine-written, private, no
+   * evidence) whose summary contains `contains`; waits for the memory worker to write it. `covers`: one of the
+   * observations it was derived from (operator GET /memory/sources) must contain this text. */
+  async expectDigest(run, _ctx, { person, contains, covers, timeoutMs = 90000 }) {
+    const digest = await run.poll(async () => (await run.digests(person)).find(item => item.summary.includes(contains)), timeoutMs, `Authority has no digest of ${person} containing ${JSON.stringify(contains)}`);
+    if (digest.personId !== run.personId(person) || digest.source?.machine !== 'digest' || digest.visibility !== 'private' || digest.evidence !== undefined) fail(`the digest of ${person} is not a private machine digest without evidence`);
+    if (covers === undefined) return;
+    const { sources } = await run.operator('GET', '/memory/sources?id=' + encodeURIComponent(digest.id));
+    if (sources.length !== digest.derivedFrom.length || !sources.some(source => source.text.includes(covers))) fail(`the digest of ${person} is not derived from an observation containing ${JSON.stringify(covers)}`);
+  },
+  async expectNoDigest(run, _ctx, { person, contains }) {
+    if ((await run.digests(person)).some(item => item.summary.includes(contains))) fail(`Authority still has a digest of ${person} containing ${JSON.stringify(contains)}`);
+  },
+  /** A fact of `person` that consolidation extracted (marked "extracted") whose value contains `contains`; its
+   * quote must be verbatim in the observation it cites (operator GET /memory/sources). */
+  async expectExtracted(run, _ctx, { person, contains, timeoutMs = 30000 }) {
+    const label = await run.personLabel(person);
+    const fact = await run.poll(async () => (await run.memoryPages(`person=${label}&`)).flatMap(page => page.items).find(item => item.type === 'facts' && item.status === 'active' && item.source?.machine === 'extracted' && String(item.value).includes(contains)), timeoutMs, `Authority has no extracted fact of ${person} containing ${JSON.stringify(contains)}`);
+    const { sources } = await run.operator('GET', '/memory/sources?id=' + encodeURIComponent(fact.id));
+    if (sources.length !== 1 || sources[0].role !== 'user' || !sources[0].text.includes(fact.evidence.quote) || !fact.evidence.quote.includes(fact.value)) fail(`the extracted fact of ${person} does not quote that person's own words verbatim`);
+  },
+  /** The consolidation requests the model was sent during this scenario (the fake model logs their whole input).
+   * `contains` selects them: at least one, or exactly `count`; none of the selected may contain `absent`.
+   * `afterMs`: wait first, to give an unwanted request the time to happen. */
+  async expectConsolidationInput(run, ctx, { contains, absent, count, afterMs = 0 }) {
+    await run.sleep(afterMs);
+    const requests = run.modelLog(ctx).filter(entry => entry.consolidation === true);
+    if (!requests.every(entry => typeof entry.maintenance === 'string' && entry.stream === false)) fail('the model request log lacks the consolidation input');
+    const selected = requests.filter(entry => entry.maintenance.includes(contains));
+    if (count === undefined ? !selected.length : selected.length !== count) fail(`${selected.length} consolidation request(s) contain ${JSON.stringify(contains)}, expected ${count ?? 'at least 1'}`);
+    if (absent !== undefined && selected.some(entry => entry.maintenance.includes(absent))) fail(`a consolidation request containing ${JSON.stringify(contains)} also contains ${JSON.stringify(absent)}`);
+  },
+  /** No chat request of this scenario contains `text` anywhere (system message, memory-hub notes, typed text,
+   * earlier dialogue, tool results). At least `minRequests` chat requests must have been made. */
+  async expectNoChatContains(run, ctx, { text, minRequests = 1 }) {
+    const requests = run.modelLog(ctx).filter(entry => entry.stream);
+    if (requests.length < minRequests) fail(`only ${requests.length} chat request(s) were made, expected at least ${minRequests}`);
+    if (!requests.every(entry => [entry.system, entry.context, entry.userText, entry.rest].every(value => typeof value === 'string'))) fail('the model request log lacks system/context/rest');
+    const leaked = requests.find(entry => [entry.system, entry.context, entry.userText, entry.rest].join('\n').includes(text));
+    if (leaked) fail(`the chat request for ${JSON.stringify(leaked.userText.slice(0, 40))} contains ${JSON.stringify(text)}`);
+  },
+  /** Consolidation status (operator GET /memory/consolidation) of `person`'s conversation: waits until every given
+   * condition holds (`calls` and `digests` exactly, `waitingMin` observations out of the window and not yet
+   * consolidated, `paused` the reason nothing is handed out); with `steadyMs` they must still hold after that time. */
+  async expectConsolidation(run, _ctx, { person, calls, digests, waitingMin, paused, steadyMs = 0, timeoutMs = 90000 }) {
+    const label = await run.personLabel(person);
+    const read = async () => {
+      const status = await run.operator('GET', '/memory/consolidation'), row = status.streams.find(item => item.person === label);
+      const leaked = [run.data.bot, ...Object.values(run.data.people)].find(account => JSON.stringify(status).includes(account.qq));
+      if (leaked) fail(`the consolidation status contains the account number ${leaked.qq}`);
+      return { calls: row?.calls, digests: row?.digests, waiting: row?.waiting, paused: status.paused };
+    };
+    const holds = seen => (calls === undefined || seen.calls === calls) && (digests === undefined || seen.digests === digests) && (waitingMin === undefined || seen.waiting >= waitingMin) && (paused === undefined || seen.paused === paused);
+    let seen;
+    const wanted = JSON.stringify({ calls, digests, waitingMin, paused });
+    try { await run.poll(async () => holds(seen = await read()), timeoutMs, 'timeout'); } catch (error) { if (error.message !== 'timeout') throw error; fail(`consolidation of ${person} is ${JSON.stringify(seen)}, expected ${wanted}`); }
+    if (!steadyMs) return;
+    await run.sleep(steadyMs);
+    if (holds(seen = await read())) return;
+    // A batch is counted when handed out and uncounted when the spend tier refuses it: look once more.
+    await run.sleep(1000);
+    if (!holds(seen = await read())) fail(`consolidation of ${person} became ${JSON.stringify(seen)}, expected it to stay ${wanted}`);
+  },
+  /** `noteExtracted` remembers how many extracted facts review() has refused so far, by reason;
+   * `expectRejected` then requires exactly these new refusals since (`reasons`: { reason: count }). */
+  async noteExtracted(run, ctx) { ctx.rejected = (await run.operator('GET', '/memory/consolidation')).extracted.rejected; },
+  async expectRejected(run, ctx, { reasons, timeoutMs = 30000 }) {
+    let seen;
+    const since = async () => { const now = (await run.operator('GET', '/memory/consolidation')).extracted.rejected; return Object.fromEntries(Object.keys(now).map(reason => [reason, now[reason] - (ctx.rejected?.[reason] ?? 0)]).filter(([, n]) => n)); };
+    const same = value => JSON.stringify(Object.entries(value).sort()) === JSON.stringify(Object.entries(reasons).sort());
+    try { await run.poll(async () => same(seen = await since()), timeoutMs, 'timeout'); } catch (error) { if (error.message !== 'timeout') throw error; fail(`extracted facts were refused as ${JSON.stringify(seen)}, expected ${JSON.stringify(reasons)}`); }
+  },
+  /** Forget the observation of `person` containing `source`, the way the console does: preview, pause, forget,
+   * resume. The preview must list the digest derived from it; afterwards only that person's conversation has a
+   * new memory epoch. Staging's memory unit cannot reach the operator port, so the runner acknowledges the
+   * cleanup job itself: no session file is purged here (the retired session is simply never loaded again). */
+  async forget(run, _ctx, { person, source }) {
+    let observation, digest;
+    for (const item of await run.digests(person)) {
+      const found = (await run.operator('GET', '/memory/sources?id=' + encodeURIComponent(item.id))).sources.find(row => row.text.includes(source));
+      if (found) { observation = found; digest = item; break; }
+    }
+    if (!observation) fail(`no digest of ${person} is derived from an observation containing ${JSON.stringify(source)}`);
+    const preview = await run.operator('POST', '/memory/forget-preview', { entityId: digest.entityId, ids: [observation.id] });
+    if (!preview.digestIds?.includes(digest.id) || !preview.sourceObservationIds.includes(observation.id)) fail('the forget preview does not list the digest derived from the observation');
+    const epochs = async () => new Map((await run.operator('GET', '/conversations')).map(row => [row.streamId, row.memoryEpoch]));
+    const before = await epochs();
+    await run.setPaused(true);
+    await run.operator('POST', '/memory/forget', { entityId: digest.entityId, ids: [observation.id], expectedMemoryEpoch: preview.memoryEpoch });
+    for (const job of await run.operator('GET', '/memory/cleanup/pending')) await run.operator('POST', '/memory/cleanup/complete', { id: job.id, memoryEpoch: job.memoryEpoch, report: { sdkPurged: true, localSourcesPurged: true, platform: 'outside-control' } });
+    await STEPS.resume(run);
+    const own = `qq:${run.data.bot.qq}:private:${run.qq(person)}`;
+    for (const [streamId, epoch] of await epochs()) if (epoch !== before.get(streamId) + (streamId === own ? 1 : 0)) fail(`memory epoch of ${run.nameOf(streamId.split(':').at(-1))} went from ${before.get(streamId)} to ${epoch}`);
+  },
+  /** The world runs and the QQ bridge has noticed (also as a `finally` after `forget`). */
+  async resume(run) {
+    await run.setPaused(false);
+    await run.poll(async () => !(await run.operator('GET', '/qq')).paused, 15000, 'the QQ bridge stayed paused');
+  },
   /** Daily cap / tiers through the real operator route (POST /spend/settings). */
   async spendSettings(run, _ctx, settings) { await run.operator('POST', '/spend/settings', settings); },
   async expectSpend(run, _ctx, { tier, timeoutMs = 10000 }) {
@@ -304,6 +403,11 @@ export class Runner {
       if (pages.length >= 200) fail('the memory listing does not end');
       before = Math.min(...page.items.map(item => item.revision));
     }
+  }
+  /** The active machine digests of a person (operator GET /memory, every page). */
+  async digests(name) {
+    const label = await this.personLabel(name);
+    return (await this.memoryPages(`person=${label}&`)).flatMap(page => page.items).filter(item => item.kind === 'digest' && item.status === 'active' && typeof item.summary === 'string');
   }
   async sent() { return (await this.onebot('GET', '/state')).sent; }
   async messageCount(name) {

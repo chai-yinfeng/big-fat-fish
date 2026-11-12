@@ -59,7 +59,10 @@ test('plain reply: persona in the system prompt, the memory-hub note leads the u
   // Several private chats, each independent; the model never sees "owner" or raw person IDs.
   assert.match(body.messages[0].content, /每段私聊都是独立的/);
   assert.doesNotMatch(JSON.stringify(body), /owner|person:/i);
-  assert.deepEqual(contexts(f.authority.state).map(r => r.body), [{ streamId: scope.streamId, query: '你好', budgetChars: 4000, exclude: [], profile: true }]);
+  // `windowFromAt`: nothing is stored yet, so the replayed window starts with this run.
+  const [{ windowFromAt, ...asked }] = contexts(f.authority.state).map(r => r.body);
+  assert.deepEqual([asked], [{ streamId: scope.streamId, query: '你好', budgetChars: 4000, exclude: [], profile: true }]);
+  assert.ok(Number.isSafeInteger(windowFromAt) && Math.abs(Date.now() - windowFromAt) < 60000);
   const file = path.join(f.sessionsDir, conversationSessionId(scope.streamId, 0) + '.jsonl');
   assert.equal(fs.statSync(file).mode & 0o777, 0o600); assert.equal(fs.statSync(f.sessionsDir).mode & 0o777, 0o700);
   const run = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -338,6 +341,12 @@ test('a memory already in the window is not retrieved again; one that left the w
   assert.deepEqual(f.gateway.state.bodies[4].messages.filter(m => m.role === 'user').map(m => said(m).slice(0, 2)), ['问2', '问3', '问4']);
   assert.deepEqual(excluded().at(-1), []);
   assert.doesNotMatch(JSON.stringify(f.gateway.state.bodies[4].messages), /MOCK-记忆/);
+  // Each full context call reports where the replayed window starts: the stored timestamp of its first run.
+  const began = fs.readFileSync(path.join(f.sessionsDir, conversationSessionId(scope.streamId, 0) + '.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line).messages[0].timestamp);
+  const reported = contexts(f.authority.state).filter(r => r.body.budgetChars === 4000).map(r => r.body.windowFromAt);
+  assert.deepEqual([reported[1], reported[2], reported[4]], [began[0], began[0], began[2]]);
+  assert.ok(reported[0] <= began[0]);
+  assert.ok(contexts(f.authority.state).filter(r => r.body.budgetChars !== 4000).every(r => r.body.windowFromAt === undefined), 'pause/epoch probes report nothing');
   // A context response without the injected IDs fails closed.
   f.authority.state.memoryIds = undefined; f.gateway.state.script.push(reply('x'));
   await assert.rejects(f.executor.execute(request('问5')), { code: 'CONTEXT_UNAVAILABLE' });

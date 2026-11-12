@@ -73,6 +73,14 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         if (url.searchParams.has('limit')) input.limit = Number(url.searchParams.get('limit'));
         respond(200, { ok: true, value: authority.contextTrace(input) }); return;
       }
+      // Read-only: consolidation counters and backlog per conversation (labels and numbers, no text).
+      if (req.method === 'GET' && url.pathname === '/memory/consolidation') {
+        respond(200, { ok: true, value: authority.consolidationStatus(url.searchParams.has('entityId') ? { entityId: url.searchParams.get('entityId') } : {}) }); return;
+      }
+      // Read on request: the observations one memory item was made from (private evidence).
+      if (req.method === 'GET' && url.pathname === '/memory/sources') {
+        respond(200, { ok: true, value: authority.memorySources({ id: url.searchParams.get('id') ?? '', ...(url.searchParams.has('entityId') ? { entityId: url.searchParams.get('entityId') } : {}) }) }); return;
+      }
       if (req.method === 'GET' && req.url === '/memory/cleanup/pending') { respond(200, { ok: true, value: authority.cleanupPending() }); return; }
       if (req.method === 'GET' && req.url === '/world') { respond(200, { ok: true, value: await overview(req.headers.authorization) }); return; }
       if (req.method === 'GET' && req.url === '/people') {

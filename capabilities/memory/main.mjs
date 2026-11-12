@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { MemoryCleanup, operatorURL } from './cleanup.js';
 import { AuthorityClient } from '../../authority/src/client.js';
 import { MemoryMaintenance } from './maintenance.js';
+import { MemoryConsolidation } from './consolidation.js';
 import { completeDiary } from './model-client.js';
 import { purgeModuleURL } from './purge-module.js';
 
@@ -16,6 +17,11 @@ async function main() {
   const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
   const authority = new AuthorityClient(cfg.authority);
   const worker = new MemoryMaintenance({ authority, complete: completeDiary(cfg.gateway), stateFile: cfg.stateFile, maxCallsPerDay: cfg.maxCallsPerDay ?? 4 });
+  // Per-person consolidation: Authority picks the conversation and keeps the cursor and the daily budget.
+  const consolidation = new MemoryConsolidation({ authority, complete: completeDiary(cfg.gateway), ...(cfg.consolidationDeferMs === undefined ? {} : { deferMs: cfg.consolidationDeferMs }) });
+  // Optional memory-worker.json `tickMs` / `consolidationDeferMs` (staging shortens both).
+  const tickMs = cfg.tickMs ?? 60000;
+  if (!Number.isInteger(tickMs) || tickMs < 1000 || tickMs > 600000) throw new Error('MEMORY_CONFIG');
   const operatorOrigin = operatorURL(cfg.operatorPort);
   // A legacy cfg.purgeModule (a pinned release path) is ignored.
   const { purgeExecution } = await import(purgeModuleURL());
@@ -31,9 +37,9 @@ async function main() {
     startExecution: () => service('start', ['companion-content.service', 'companion-conversation.service', 'companion-qq.service']),
   });
   let ticking = false;
-  const tick = async () => { if (ticking) return; ticking = true; try { await cleanup.runOnce(); await worker.runOnce(); } finally { ticking = false; } };
+  const tick = async () => { if (ticking) return; ticking = true; try { await cleanup.runOnce(); await worker.runOnce(); await consolidation.runOnce(); } finally { ticking = false; } };
   await tick();
-  const timer = setInterval(() => { void tick(); }, 60000);
+  const timer = setInterval(() => { void tick(); }, tickMs);
   let stopping = false;
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { if (stopping) return; stopping = true; clearInterval(timer); });
   process.stdout.write('Incremental memory maintenance ready; pause and source/budget gates remain active.\n');

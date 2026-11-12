@@ -130,5 +130,34 @@ class LifecycleOrderTests(unittest.TestCase):
         self.assertEqual(source.count('migration-drill.mjs'), 3)  # docstrings and the one command
 
 
+class ConsolidationResetTests(unittest.TestCase):
+    def test_every_private_conversation_restarts_with_nothing_waiting_and_unused_batches(self):
+        import json
+        import sqlite3
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / 'authority.sqlite'
+            self.assertEqual(sa.reset_consolidation(database), 0)  # no database yet
+            db = sqlite3.connect(str(database))
+            db.executescript('''CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                CREATE TABLE streams(capability_id TEXT,stream_id TEXT,person_id TEXT,audience TEXT,entity_id TEXT);
+                CREATE TABLE observations(id TEXT PRIMARY KEY,capability_id TEXT,stream_id TEXT);
+                CREATE TABLE maintenance_tasks(id TEXT PRIMARY KEY,mode TEXT);''')
+            db.executemany('INSERT INTO streams VALUES(?,?,?,?,?)', [('qq', 'MOCK-a', 'p1', 'private', 'e'), ('qq', 'MOCK-b', 'p2', 'private', 'e'), ('qq', 'MOCK-group', 'p1', 'shared', 'e')])
+            db.executemany('INSERT INTO observations VALUES(?,?,?)', [('o1', 'qq', 'MOCK-a'), ('o2', 'qq', 'MOCK-a'), ('o3', 'qq', 'MOCK-b'), ('o4', 'qq', 'MOCK-group')])
+            db.executemany('INSERT INTO maintenance_tasks VALUES(?,?)', [('t1', 'consolidation'), ('t2', 'private')])
+            db.commit()
+            self.assertEqual(sa.reset_consolidation(database), 0)  # the release before consolidation left no state
+            state = {'e': {'since': 5, 'day': '2026-11-10', 'calls': 7, 'deferredAt': 9, 'streams': {'qq\0MOCK-a': {'calls': 2, 'invalid': 2, 'issued': 't1', 'skipped': 1, 'digests': 3, 'lastObservationId': 'o1'}}}}
+            db.execute("INSERT INTO metadata VALUES('consolidation',?)", (json.dumps(state),))
+            db.commit()
+            self.assertEqual(sa.reset_consolidation(database), 2)
+            after = json.loads(db.execute("SELECT value FROM metadata WHERE key='consolidation'").fetchone()[0])
+            self.assertEqual(after, {'e': {'since': 5, 'day': '2026-11-10', 'calls': 0, 'streams': {
+                'qq\0MOCK-a': {'calls': 0, 'invalid': 0, 'skipped': 1, 'digests': 3, 'lastObservationId': 'o2'},
+                'qq\0MOCK-b': {'calls': 0, 'invalid': 0, 'lastObservationId': 'o3'}}}})
+            self.assertEqual(db.execute('SELECT id FROM maintenance_tasks').fetchall(), [('t2',)])
+            db.close()
+
+
 if __name__ == '__main__':
     unittest.main()
