@@ -44,6 +44,8 @@ export function review({ policy, proposal, observation, identity, state }) {
   if (type === 'persona.change') return rejected('admin_persona_revision_required');
   if (!identity.stream || identity.stream.audience !== 'private') return rejected('private_binding_required');
   if (SENSITIVE.test(JSON.stringify(payload))) return rejected('sensitive_retention_denied');
+  // The words a proposal cites are held to the same guard as what it would store: a paraphrase does not make them retainable.
+  if (typeof observation.text === 'string' && SENSITIVE.test(observation.text)) return rejected('sensitive_source');
   const personId = identity.stream.personId;
   // The quote is how she noted the source, not a gate: one that is not in the cited observation is kept and
   // marked, so a cleanup can trace a mistaken memory back to what was really said. Absent means verbatim.

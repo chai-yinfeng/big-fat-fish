@@ -61,6 +61,17 @@ test('a quote that is not in the observation is accepted and marked; the observa
   assert.throws(() => validatePayload('fact.report', { key: 'k', value: 'v', quote: '' }));
 });
 
+test('a proposal that cites a sensitive line is refused with its own reason, whatever it would store', () => {
+  const said = { ...observation, text: '我的银行卡密码是MOCK-1234，生日是 3 月 5 日' };
+  for (const [type, payload] of [['fact.report', { key: '生日', value: '03-05', quote: '生日是 3 月 5 日' }], ['experience.remember', { summary: 'MOCK 聊了生日', quote: '生日是 3 月 5 日' }], ['appraisal.record', { kind: 'support', quote: '生日' }], ['self.note', { text: 'MOCK 记一下', quote: '生日', kind: 'inner' }]])
+    assert.deepEqual(decide(type, payload, { observation: said }), { status: 'rejected', reason: 'sensitive_source', effects: [] }, type);
+  assert.equal(decide('self.note', { text: 'MOCK 记一下', quote: '生日', kind: 'outer' }, { observation: { ...said, role: 'assistant' } }).reason, 'sensitive_source');
+  assert.equal(decide('learning.note', { text: 'A reading distinction', quote: 'tea' }, { policy: 'learning.v1', observation: { ...observation, role: 'external', text: 'the admin password is MOCK-1' } }).reason, 'sensitive_source');
+  // What the proposal itself would store keeps its own reason; an ordinary line is unaffected.
+  assert.equal(decide('fact.report', { key: '密码', value: 'MOCK-1234', quote: 'MOCK-1234' }, { observation: said }).reason, 'sensitive_retention_denied');
+  assert.equal(decide('fact.report', { key: '生日', value: '03-05', quote: '生日是 3 月 5 日' }, { observation: { ...said, text: '我的生日是 3 月 5 日' } }).status, 'accepted');
+});
+
 test('learning keeps reading notes separate from personal preference or intimacy interpretations', () => {
   for (const value of ['user prefers tea', '用户喜欢茶', 'I promise eternal intimacy']) {
     const result = decide('learning.note', { text: value, quote: 'tea' }, { policy: 'learning.v1', observation: { ...observation, role: 'external' } });
