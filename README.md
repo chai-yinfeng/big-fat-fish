@@ -11,6 +11,7 @@
 | console | 独立世界控制台（同源 operator 入口） |
 | capabilities/conversation | 执行契约与基于 pi-agent-core 的对话执行器服务（companion-conversation） |
 | capabilities/qq、media、speech、memory | 渠道、受控素材、本地文件语音与记忆维护 |
+| capabilities/providers | 能力声明（注册表）：每个能力一份数据声明，入口 `index.js`；额度账本和控制台额度页读它 |
 | model-gateway | 私有模型出口及预算，不拥有角色记忆 |
 | deploy | 完整发布与运维入口；不可直接修改正式版本目录 |
 

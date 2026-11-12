@@ -30,6 +30,7 @@ companion-conversation QQ delivery adapter → 实际回执
 - `capabilities/conversation/`：执行契约（executor.js，duck-typed）、渠道侧 UDS 客户端，以及执行器服务（agent/tools/sessions/window/model/server，main.mjs 入口）。两个受限模型工具 `companion_scope`、`companion_content` 的作用域由执行请求绑定，模型不能指定 entity/person/stream/path/epoch；evidence 只返回本回合 QQ 传入的 observation ref。
 - `capabilities/qq/bridge.js`：私聊入口（主人 + 机器人 QQ 好友，好友经 Authority `/v1/people/admit` 准入为 `person:qq:<uid>`）、每会话串行队列（全局并发 2）、去重、epoch、投递回执；把 scope 与 prepared 输入交给执行器。QQ main 是选择执行 backend（UDS 客户端）的应用装配点。
 - `capabilities/media/`：文件引用、ACL、来源派生、感知/合成/附件表达；不解析 OneBot 字段。平台原生表情描述是 opaque 数据，仅所属渠道解释。
+- `capabilities/providers/`：能力声明（注册表）。每个能力一个目录、一份无依赖的数据声明（`manifest.js`：动作、计量方式、凭据位置、产物、运行方式），`index.js` 是唯一入口。目前只有额度账本和控制台额度页读它；模型工具、Authority 的 `/v1/content` 白名单和 content 的分发仍各自写死。
 - `capabilities/speech/`：纯本地文件 ASR/TTS provider，单请求只跑选中引擎。无麦克风、音箱、虚拟声卡、声纹身份或实时直播假设。
 - `model-gateway/`：固定供应商出口、私有 Key、取消与有界预算；不拥有实体/人格/记忆。新增视觉与网页仍经 Authority 作用域授权后使用。
 - [console](<console/README.md>)：独立管理页由 operator 同源入口提供；管理世界状态、人格、模型、QQ 绑定、记忆、语音参数与授权参考录音。
@@ -75,6 +76,7 @@ ASR/OCR/视觉描述不是真人逐字输入。只有附件时 Core 原观察保
 - content 用户服务限 2 核/4GiB，不修改全局 GPU/Node/PATH。
 - Flash 视觉默认512缩图/动图首帧；网页仅公网 search/fetch，无登录cookies或点击购买。默认全产品每北京时间日 vision12/web20次，先预留，失败也占。
 - 每日金额上限（model-gateway，按北京时间日）：默认 ¥5，60%/80%/100% 三档（控制台可改）；chat 按流式 usage 计价，区分高峰/闲时；到 100% 网关直接拒绝，QQ 对任何人静默，只给主人每天发一次 QQ 提醒。同一处按日累计上报的 token（命中/未命中输入、输出、其中推理、请求数），控制台概览显示缓存命中率；只用于观察，不参与上限。
+- 额度账本（model-gateway，按北京时间日）：每种声明过的能力一行（聊天、后台整合、看图、联网、语音合成、语音识别），记尝试/成功/失败次数、被拒次数与原因、各自的单位（token、合成字数、音频秒数）、花费和耗时，保留 90 天的每日一行；控制台“额度”页显示，看图/联网的每日上限可在页面上改。账本只观察：钱仍以 `spend.json` 为准，看图/联网的当日次数仍在 `capability-usage.json`（文件结构不变，旧版本可照常启动），整合批次仍在 Authority。本地 TTS/ASR 由 content 服务事后上报，账本不可用不影响发语音。
 - 两个模型工具的 schema 按 4chars/token 估计比旧 memory-only 多约252 tokens（估算，非 provider 实测）。
 
 当前限制：

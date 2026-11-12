@@ -122,6 +122,9 @@ NapCat WebUI 6099 / OneBot WS 3001（沿用旧记录，未在新布局下复核�
 - QQ：扫码后只在暂停且已登录时绑定本人发送号（须与机器人号不同）。当前仅本人私聊，
   不开群、广播或自动加好友。
 - 语音识别在本地，但转写会进入 DeepSeek 对话，不是全本地对话。
+- 额度：“额度”页顶部是当日花费，下面每种能力一行（聊天、后台整合、看图、联网、语音合成、语音识别），
+  可展开看被拒原因和最近 7 天；看图/联网的每日上限在行内改，下一次调用起生效，不需要暂停。
+  每日金额上限和三档仍在“世界概览”的开销卡片里改。
 - 音色：暂停后在“音色”中上传参考 WAV 登记（ID、名称、参考语言、使用范围），可设默认、试听、移除。
   使用范围只是记录（“内部”=家人朋友间使用，私聊和群聊都可用；“可公开”=可公开发布）；没有默认音色时语音请求改回文字。
 - 暂停：冻结世界、拒绝新模型/记忆效果、取消在途请求；不补算停机期间、不补发消息。
@@ -159,8 +162,8 @@ staging 以 home-agent 上无 sudo 的 `agent` 账号（`ssh home-agent-dev`，�
 用该包的 bootstrap、prepare-memory、prepare-content、QQ prepare 初始化（无模型 Key、
 不登录 QQ）→ start → disable 全部单元（模拟旧版 companion-deploy 留下的未 enable 状态）→
 升级到 to 包（预检、切换、健康检查、enable）→ 冒烟与场景回放（让新版本先用过这个数据根）→
-迁移演练（见「数据库迁移」）→ `companion-deploy rollback` 回到 from 包并冒烟（旧版本在新版本用过的
-数据根上健康启动、能读能写）→ 再 rollback 一次回到 to 包 → 删除 from 包 → 重启全部单元 →
+记下额度账本当天各行（`ledger-before-rollback`）→ 迁移演练（见「数据库迁移」）→ `companion-deploy rollback` 回到 from 包并冒烟（旧版本在新版本用过的
+数据根上健康启动、能读能写）→ 再 rollback 一次回到 to 包 → `Q3 ledger-survives-rollback`（账本当天的数字一项不少；跨了北京时间零点则要求那一天成为历史里的一行）→ 删除 from 包 → 重启全部单元 →
 manager 重启代理（确认均已 enable，停掉全部单元但不 disable，daemon-reload 后确认
 default.target 的依赖树覆盖全部单元，再 `systemctl --user start default.target sockets.target`
 并做健康检查；已激活的 sockets.target 不会因 start default.target 被重新拉起，故单独启动）→ operator API 冒烟（/world、/runtime、/qq、/memory、人格预览与保存、对话执行器鉴权）→
@@ -203,6 +206,9 @@ H1 `split-long-reply`：约 150 字的多句回复，假 OneBot 按顺序收到 
 附注和 system 里没有带 Z 的 UTC 时间；H3 `propose-rejection-is-actionable`：假模型先提一条聊天里不允许的 learning.note，
 收到的工具结果是 rejected（`conversation_policy_kind_denied`）并说明怎么改，改提 fact.report 后 Authority 里出现该事实；
 H4 `normalized-value-is-stored`：对方说“下个月 5 号去上海”，假模型提交换算后的具体日期，当场入库，出处指向那句原话，另一个人的请求和记忆里没有。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
+Q1 `ledger-counts-every-exit`：聊一轮、看一张图、搜一次，额度账本（operator `/usage`）里聊天、看图、联网各 +1、语音两行不变，各付费行的花费与 `/spend` 同类金额相等、合计等于当日花费；
+Q2 `ledger-records-denials`：把看图上限设成已用次数后再看，网关回 `BUDGET_EXHAUSTED`，账本被拒 +1（原因 `daily_limit`），假模型没有收到这次请求；恢复上限后再看成功。
+staging 没有图片运行时（sharp），图进不了 QQ 这条路，所以 Q1/Q2 的看图和搜索由运行器用 `gatewayCall` 直接打到网关的 inference socket（与 content 服务发的请求相同）；本地 TTS/ASR 在 staging 没有模型，上报与计数由单元测试覆盖。每次回放开始时，账本当天文件和上限随开销一起清零（历史不清）。
 M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里有一行 `SCENARIOS n/n passed: ...`，
 任一场景失败则是 `STAGING FAILED`。
 
@@ -214,7 +220,8 @@ M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里�
   `expectInjectedOnce`、`pinMemory`、`setPersona`、`restorePersona`、`expectNoModelCall`、`expectAdmitted`、`spendSettings`、`expectSpend`、
   `expectDigest`、`expectNoDigest`、`expectExtracted`、`expectProvenance`、`expectConsolidationInput`、`expectNoChatContains`、
   `expectConsolidation`、`noteExtracted`、`expectRejected`、`forget`、`resume`、
-  `expectSplitReply`、`expectBeijingTime`、`expectToolResult`
+  `expectSplitReply`、`expectBeijingTime`、`expectToolResult`、
+  `gatewayCall`、`noteUsage`、`expectUsage`、`expectUsageMatchesSpend`、`usageLimit`
   （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。带 `consolidate` 的规则只应答记忆 worker 的整合请求
   （按该批对话里出现的 `match` 选规则，没有规则时回一段固定的合法摘要），不应答聊天；整合请求在请求日志里单独标记，
   `userText` 为空，所以按用户原文匹配的步骤看不到它。`forget` 里清理任务由运行器自己确认（staging 的 memory 单元连不到
