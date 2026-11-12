@@ -21,7 +21,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -254,7 +254,7 @@ test('consolidation steps: a digest must be its owner\'s machine digest of the n
   const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-cons-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const log = path.join(dir, 'requests.jsonl'), ctx = { logOffset: 0 };
   const digest = owned('MOCK-A', 'p-aaaaaa', 'd1', 9, { type: 'experiences', kind: 'digest', visibility: 'private', summary: 'MOCK-DIGEST 摘要正文甲', derivedFrom: ['o1', 'o2'], source: { machine: 'digest' }, entityId: 'entity:test' });
-  const fact = owned('MOCK-A', 'p-aaaaaa', 'f1', 8, { type: 'facts', key: '宠物', value: 'MOCK-年糕', source: { machine: 'extracted' }, evidence: { quote: '仓鼠叫MOCK-年糕' } });
+  const fact = owned('MOCK-A', 'p-aaaaaa', 'f1', 8, { type: 'facts', key: '宠物', value: 'MOCK-年糕', visibility: 'private', source: { machine: 'extracted' }, evidence: { observationId: 'o1', quote: '仓鼠叫MOCK-年糕' } });
   const state = { items: [digest, fact], sources: { d1: [{ id: 'o1', role: 'user', text: '我养了一只仓鼠叫MOCK-年糕' }, { id: 'o2', role: 'assistant', text: 'MOCK-REPLY' }], f1: [{ id: 'o1', role: 'user', text: '我养了一只仓鼠叫MOCK-年糕' }] },
     status: { paused: null, extracted: { rejected: {} }, streams: [{ person: 'p-aaaaaa', calls: 1, digests: 1, waiting: 0 }] }, epochs: { 'MOCK-A': 0, 'MOCK-B': 3 }, preview: { digestIds: ['d1'], sourceObservationIds: ['o1'], memoryEpoch: 0 }, bump: ['MOCK-A'], calls: [] };
   const listing = fakeOperator(state), show = (...items) => { state.items.splice(0, state.items.length, ...items); };
@@ -285,10 +285,31 @@ test('consolidation steps: a digest must be its owner\'s machine digest of the n
     show({ ...digest, ...change }, fact);
     await assert.rejects(STEPS.expectDigest(run, ctx, { person: 'MOCK-A', contains: '摘要正文甲' }), /not a private machine digest without evidence/, JSON.stringify(change));
   }
-  show(digest, { ...fact, evidence: { quote: '仓鼠叫 MOCK-年糕' } });
-  await assert.rejects(STEPS.expectExtracted(run, ctx, { person: 'MOCK-A', contains: 'MOCK-年糕' }), /does not quote that person's own words verbatim/);
-  state.sources.f1 = [{ id: 'o2', role: 'assistant', text: '仓鼠叫MOCK-年糕' }]; show(digest, fact);
-  await assert.rejects(STEPS.expectExtracted(run, ctx, { person: 'MOCK-A', contains: 'MOCK-年糕' }), /does not quote that person's own words verbatim/);
+  await STEPS.expectExtracted(run, ctx, { person: 'MOCK-A', contains: 'MOCK-年糕', source: '我养了一只仓鼠' });
+  await STEPS.expectProvenance(run, ctx, { person: 'MOCK-A', contains: '宠物 MOCK-年糕', source: '我养了一只仓鼠' });
+  await assert.rejects(STEPS.expectExtracted(run, ctx, { person: 'MOCK-A', contains: 'MOCK-年糕', source: '没说过的话' }), /not traced to the observation containing "没说过的话"/);
+  await assert.rejects(STEPS.expectExtracted(run, ctx, { person: 'MOCK-A', contains: 'MOCK-年糕', verbatim: false }), /not marked as not verbatim/);
+  await assert.rejects(STEPS.expectProvenance(run, ctx, { person: 'MOCK-B', contains: 'MOCK-年糕' }), /no memory of MOCK-B/);
+  // A quote that is not in the observation: accepted only with the mark, and only when the step expects it.
+  const loose = { ...fact, evidence: { observationId: 'o1', quote: '仓鼠叫 MOCK-年糕', quoteVerbatim: false } };
+  show(digest, loose);
+  await STEPS.expectExtracted(run, ctx, { person: 'MOCK-A', contains: 'MOCK-年糕', verbatim: false });
+  await assert.rejects(STEPS.expectExtracted(run, ctx, { person: 'MOCK-A', contains: 'MOCK-年糕' }), /not verbatim in its observation, or is marked as not verbatim/);
+  for (const evidence of [{ observationId: 'o1', quote: '仓鼠叫 MOCK-年糕' }, { observationId: 'o1', quote: '仓鼠叫MOCK-年糕', quoteVerbatim: false }]) {
+    show(digest, { ...fact, evidence });
+    await assert.rejects(STEPS.expectExtracted(run, ctx, { person: 'MOCK-A', contains: 'MOCK-年糕' }), /not verbatim in its observation, or is marked as not verbatim/);
+    await assert.rejects(STEPS.expectExtracted(run, ctx, { person: 'MOCK-A', contains: 'MOCK-年糕', verbatim: false }), /not marked as not verbatim/);
+  }
+  // Whose words, which observation, how visible: never relaxed, marked or not.
+  for (const [change, sources] of [[{}, [{ id: 'o2', role: 'assistant', text: '仓鼠叫MOCK-年糕' }]], [{}, [{ id: 'o9', role: 'user', text: '仓鼠叫MOCK-年糕' }]], [{ visibility: 'public' }, state.sources.f1], [{}, [...state.sources.f1, ...state.sources.f1]]]) {
+    const kept = state.sources.f1; state.sources.f1 = sources;
+    for (const item of [fact, loose]) {
+      show(digest, { ...item, ...change });
+      await assert.rejects(STEPS.expectExtracted(run, ctx, { person: 'MOCK-A', contains: 'MOCK-年糕', verbatim: item === fact }), /not a private item traced to one observation of that person's own words/);
+    }
+    state.sources.f1 = kept;
+  }
+  show(digest, fact);
   // The model log: chats and consolidation requests are told apart.
   const chat = (userText, extra = {}) => ({ stream: true, userText, system: 'MOCK system', context: '', rest: '[]', ...extra });
   const batch = text => ({ stream: false, consolidation: true, userText: '', maintenance: text });
@@ -314,13 +335,13 @@ test('consolidation steps: a digest must be its owner\'s machine digest of the n
   let reads = 0; const steady = state.status;
   state.status = () => ({ ...steady, streams: [{ ...steady.streams[0], calls: ++reads > 1 ? 2 : 1 }] });
   await assert.rejects(STEPS.expectConsolidation(run, ctx, { person: 'MOCK-A', calls: 1, steadyMs: 10 }), /became \{"calls":2/);
-  state.status = { ...steady, extracted: { rejected: { quote_not_in_observation: 2 } }, note: shipped().people['MOCK-A'].qq };
+  state.status = { ...steady, extracted: { rejected: { unconfirmed_identity: 2 } }, note: shipped().people['MOCK-A'].qq };
   await assert.rejects(STEPS.expectConsolidation(run, ctx, { person: 'MOCK-A', calls: 1 }), /contains the account number/);
   delete state.status.note;
   await STEPS.noteExtracted(run, ctx);
-  state.status = { ...steady, extracted: { rejected: { quote_not_in_observation: 3, value_not_in_quote: 1 } } };
-  await STEPS.expectRejected(run, ctx, { reasons: { value_not_in_quote: 1, quote_not_in_observation: 1 } });
-  await assert.rejects(STEPS.expectRejected(run, ctx, { reasons: { value_not_in_quote: 1 } }), /refused as \{"quote_not_in_observation":1,"value_not_in_quote":1\}/);
+  state.status = { ...steady, extracted: { rejected: { unconfirmed_identity: 3, newer_fact_kept: 1 } } };
+  await STEPS.expectRejected(run, ctx, { reasons: { newer_fact_kept: 1, unconfirmed_identity: 1 } });
+  await assert.rejects(STEPS.expectRejected(run, ctx, { reasons: { newer_fact_kept: 1 } }), /refused as \{"unconfirmed_identity":1,"newer_fact_kept":1\}/);
   // Forgetting: preview, pause, forget, acknowledge the cleanup, resume; only that person's epoch moves.
   state.calls = [];
   await STEPS.forget(run, ctx, { person: 'MOCK-A', source: 'MOCK-年糕' });
@@ -393,9 +414,9 @@ async function stack(t) {
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge and memory worker', { timeout: 600000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '18/18 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '19/19 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));

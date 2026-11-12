@@ -53,6 +53,14 @@ function requestsOf(run, ctx, userText) {
 const includes = (text, { contains, absent }) => (contains === undefined || text.includes(contains)) && (absent === undefined || !text.includes(absent));
 
 /** Step implementations. `run` is the Runner; `ctx` is per-scenario state. */
+async function provenance(run, item, person, { source, verbatim = true }) {
+  const { sources } = await run.operator('GET', '/memory/sources?id=' + encodeURIComponent(item.id));
+  if (item.personId !== run.personId(person) || item.visibility !== 'private' || sources.length !== 1 || sources[0].role !== 'user' || sources[0].id !== item.evidence?.observationId) fail(`the memory of ${person} is not a private item traced to one observation of that person's own words`);
+  if (source !== undefined && !sources[0].text.includes(source)) fail(`the memory of ${person} is not traced to the observation containing ${JSON.stringify(source)}`);
+  const quoted = typeof item.evidence.quote === 'string' && sources[0].text.includes(item.evidence.quote);
+  if (verbatim ? !quoted || item.evidence.quoteVerbatim !== undefined : quoted || item.evidence.quoteVerbatim !== false) fail(`the quote of the memory of ${person} is ${verbatim ? 'not verbatim in its observation, or is marked as not verbatim' : 'not marked as not verbatim'}`);
+}
+
 export const STEPS = {
   /** A private message arrives from a person (subType: OneBot sub_type, default "friend"). */
   async say(run, ctx, { from, text, subType }) {
@@ -248,13 +256,21 @@ export const STEPS = {
   async expectNoDigest(run, _ctx, { person, contains }) {
     if ((await run.digests(person)).some(item => item.summary.includes(contains))) fail(`Authority still has a digest of ${person} containing ${JSON.stringify(contains)}`);
   },
-  /** A fact of `person` that consolidation extracted (marked "extracted") whose value contains `contains`; its
-   * quote must be verbatim in the observation it cites (operator GET /memory/sources). */
-  async expectExtracted(run, _ctx, { person, contains, timeoutMs = 30000 }) {
+  /** A fact of `person` that consolidation extracted (marked "extracted") whose value contains `contains`, with
+   * the provenance of `expectProvenance` (`source`, `verbatim`). */
+  async expectExtracted(run, _ctx, { person, contains, source, verbatim, timeoutMs = 30000 }) {
     const label = await run.personLabel(person);
     const fact = await run.poll(async () => (await run.memoryPages(`person=${label}&`)).flatMap(page => page.items).find(item => item.type === 'facts' && item.status === 'active' && item.source?.machine === 'extracted' && String(item.value).includes(contains)), timeoutMs, `Authority has no extracted fact of ${person} containing ${JSON.stringify(contains)}`);
-    const { sources } = await run.operator('GET', '/memory/sources?id=' + encodeURIComponent(fact.id));
-    if (sources.length !== 1 || sources[0].role !== 'user' || !sources[0].text.includes(fact.evidence.quote) || !fact.evidence.quote.includes(fact.value)) fail(`the extracted fact of ${person} does not quote that person's own words verbatim`);
+    await provenance(run, fact, person, { source, verbatim });
+  },
+  /** The active memory item of `person` that mentions `contains` is private, that person's, and traced to exactly
+   * one observation of that person's own words (operator GET /memory/sources); `source`: text that observation
+   * must contain. Its quote is in that observation and the item is unmarked, or with `verbatim: false` the quote
+   * is not in it and the item carries the non-verbatim mark. */
+  async expectProvenance(run, _ctx, { person, contains, source, verbatim, timeoutMs = 20000 }) {
+    const mentions = item => item.personId === run.personId(person) && item.status === 'active' && [item.key, item.value, item.summary, item.text].filter(Boolean).join(' ').includes(contains);
+    const item = await run.poll(async () => (await run.operator('GET', '/memory?limit=100')).items.find(mentions), timeoutMs, `Authority has no memory of ${person} containing ${JSON.stringify(contains)}`);
+    await provenance(run, item, person, { source, verbatim });
   },
   /** The consolidation requests the model was sent during this scenario (the fake model logs their whole input).
    * `contains` selects them: at least one, or exactly `count`; none of the selected may contain `absent`.
