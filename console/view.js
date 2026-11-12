@@ -1,7 +1,7 @@
 // Shared UI for the standalone browser entry. Styling lives in standalone.css.
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
-import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount } from './operator-client.js';
+import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory } from './operator-client.js';
 import { validRuntime, ttsBackend, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
@@ -17,6 +17,7 @@ const NAV = [
   { id: 'channels', icon: 'channels', key: 'C' },
   { id: 'people', icon: 'people', key: 'U' },
   { id: 'memory', icon: 'memory', key: 'M' },
+  { id: 'quota', icon: 'wallet', key: 'Q' },
   { id: 'runtime', icon: 'runtime', key: 'R' },
 ];
 // Inline icon geometry (24px grid, Lucide-style strokes) so the page needs no icon font or CDN.
@@ -118,6 +119,11 @@ export function WorldConsole({ t, standalone = false }) {
   // Consolidation status and the source lines read for single items (appended, same reason). Never stored in the browser.
   const [consolidation, setConsolidation] = useState(null);
   const [memorySources, setMemorySources] = useState({});
+  // Quota page (appended, same reason): today's usage with spend and consolidation, the open row, its history, limit drafts.
+  const [quota, setQuota] = useState(null);
+  const [quotaOpen, setQuotaOpen] = useState(null);
+  const [quotaHistory, setQuotaHistory] = useState(null);
+  const [limitDraft, setLimitDraft] = useState({});
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -139,6 +145,7 @@ export function WorldConsole({ t, standalone = false }) {
     clearAudio(); clearReferenceInputs();
     setToken(''); setInput(''); setData(null); setDraft(null); setQQ(null); setMemory(null); setForgetPreview(null); setRuntimeInfo(null); setSpeechDraft(null); setConfirmRemove(false); setNotice('');
     setPalette(null); setDrawer(false); setPeople(null); setSpendDraft(null); setMemoryFilter('');
+    setQuota(null); setQuotaOpen(null); setQuotaHistory(null); setLimitDraft({});
   }
   async function request(path, payload, credential = token, query) {
     const controller = new AbortController();
@@ -189,6 +196,15 @@ export function WorldConsole({ t, standalone = false }) {
     if (!mounted.current || generation.current !== current) return;
     setPeople({ ...list, conversations });
   }
+  async function loadQuota(credential = token) {
+    const current = generation.current, usage = await request('/usage', undefined, credential);
+    if (!validUsage(usage)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
+    // The spend bar and the consolidation batches have their own routes; without either the table still shows.
+    const spend = await request('/spend', undefined, credential).catch(() => null), batches = await request('/memory/consolidation', undefined, credential).catch(() => null);
+    if (!mounted.current || generation.current !== current) return;
+    setQuota({ usage, spend: validSpend(spend) ? spend : null, consolidation: Number.isFinite(batches?.calls) && Number.isFinite(batches?.limits?.perDay) ? batches : null });
+    setQuotaHistory(null);
+  }
   async function loadRuntime(credential = token) {
     const current = generation.current, value = await request('/runtime', undefined, credential);
     if (!validRuntime(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
@@ -198,6 +214,7 @@ export function WorldConsole({ t, standalone = false }) {
   useEffect(() => { if (token) void run(async () => { await load(token); if (standalone && tab === 'runtime') await loadRuntime(token); }); }, [token]);
   useEffect(() => { if (token && tab === 'channels') void run(() => loadQQ(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'people') void run(() => loadPeople(token)); }, [token, tab]);
+  useEffect(() => { if (token && tab === 'quota') void run(() => loadQuota(token)); }, [token, tab]);
   useEffect(() => { if (standalone && token && tab === 'runtime') void run(() => loadRuntime(token)); }, [tab]);
   // Shell effects: theme attribute, toast lifetime, scroll reset, global shortcuts.
   useEffect(() => {
@@ -225,9 +242,10 @@ export function WorldConsole({ t, standalone = false }) {
   const toggleTheme = () => setTheme(effectiveTheme === 'dark' ? 'light' : 'dark');
   function go(key) {
     if (key !== 'memory') { setMemory(null); setForgetPreview(null); setMemoryFilter(''); setConsolidation(null); setMemorySources({}); }
+    if (key !== 'quota') { setQuotaOpen(null); setQuotaHistory(null); setLimitDraft({}); }
     setTab(key); setDrawer(false);
   }
-  const refreshAll = () => run(async () => { await load(); if (standalone && tab === 'runtime') await loadRuntime(); });
+  const refreshAll = () => run(async () => { await load(); if (standalone && tab === 'runtime') await loadRuntime(); if (tab === 'quota') await loadQuota(); });
   function field(key, multiline = false) {
     return h('label', { key }, h('span', null, t(key)), h(multiline ? 'textarea' : 'input', {
       name: key, value: draft[key], disabled: busy, rows: multiline ? 3 : undefined, onChange: event => setDraft({ ...draft, [key]: event.target.value }),
@@ -288,6 +306,83 @@ export function WorldConsole({ t, standalone = false }) {
         h('span', null, t(`spend.${key}`)), h('input', { name: key, type: 'number', min, max, step, required: true, value: draftValue[key], disabled: busy, onChange: event => setSpendDraft({ ...draftValue, [key]: event.target.value }) })))),
       text('spend.settingsHint'),
       h('button', { type: 'submit', disabled: busy }, icon('save'), t('spend.save'))));
+  }
+  // Quota: the day's spend on top, then one row per capability from the gateway's usage ledger (GET /usage).
+  // Rows come from the capability declarations, so a new capability shows up without a change here.
+  function quotaPage() {
+    if (!quota) return h('section', { className: 'bff-card' }, text('quotaPanel.pending'));
+    const { usage, spend, consolidation: batches } = quota;
+    const yuanText = value => `¥${value.toFixed(value < 1 ? 4 : 2)}`, number = value => value.toLocaleString('en-US');
+    const duration = ms => ms < 1000 ? `${Math.round(ms)} ms` : ms < 60000 ? `${Math.round(ms / 100) / 10} s` : `${Math.round(ms / 6000) / 10} min`;
+    const named = (key, fallback) => { const label = t(key); return label === key ? fallback : label; };
+    const TIERS = ['normal', 'reduced', 'restricted', 'exhausted'], nowrap = { whiteSpace: 'nowrap' };
+    const refusals = denied => Object.values(denied).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0);
+    const reasons = denied => Object.entries(denied).map(([reason, n]) => `${named(`quotaPanel.reason.${reason}`, reason)} ${n}`).join(' · ');
+    const amount = row => row.limit === null ? number(row.used) : `${number(row.used)} / ${number(row.limit)}`;
+    const measured = row => Object.entries(row.units).map(([unit, value]) => `${named(`quotaPanel.units.${unit}`, unit)} ${number(value)}`);
+    const refused = row => [refusals(row.denied) ? `${t('quotaPanel.denied')} ${refusals(row.denied)}` : '', row.failed ? `${t('quotaPanel.failed')} ${row.failed}` : ''].filter(Boolean).join(' · ') || '—';
+    const elapsed = row => !row.calls ? '—' : [`${t('quotaPanel.average')} ${duration(row.busyMs / row.calls)}`, row.kind === 'local' ? `${t('quotaPanel.total')} ${duration(row.busyMs)}` : '',
+      row.kind === 'local' && row.units.audioSeconds > 0 ? `${t('quotaPanel.realtime')} ${Math.round(row.busyMs / 10 / row.units.audioSeconds) / 100}×` : ''].filter(Boolean).join(' · ');
+    const extras = row => [row.id === 'consolidation' && batches ? `${t('quotaPanel.batches')} ${batches.calls} / ${batches.limits.perDay}` : '', ...measured(row)].filter(Boolean).join(' · ');
+    function status(row) {
+      if (row.limit !== null && row.used >= row.limit || row.id === 'consolidation' && batches?.paused === 'daily') return badge(t('quotaPanel.status.limitReached'), 'warn');
+      if (spend && row.stopTier && TIERS.indexOf(spend.tier) >= TIERS.indexOf(row.stopTier)) return badge(t(`quotaPanel.status.stopped.${row.stopTier}`), 'danger');
+      return row.kind === 'local' ? badge(t('quotaPanel.status.local')) : badge(t('quotaPanel.status.normal'), 'ok');
+    }
+    // The finished days are read once, when a row is first opened.
+    const open = id => {
+      if (quotaOpen === id) { setQuotaOpen(null); return; }
+      setQuotaOpen(id);
+      if (!quotaHistory) void run(async () => { const value = await request('/usage/history'); if (!validUsageHistory(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' }); setQuotaHistory(value); });
+    };
+    const saveLimit = (row, value) => run(async () => {
+      const next = await request('/usage/limits', limitsPayload(row.id, value));
+      if (!validUsage(next)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
+      setQuota({ ...quota, usage: next }); setLimitDraft({ ...limitDraft, [row.id]: undefined }); setNotice(t('saved'));
+    });
+    function detail(row) {
+      const draftValue = limitDraft[row.id] ?? String(row.limit ?? '');
+      const days = quotaHistory ? quotaHistory.days.slice(0, 7).filter(day => day.rows[row.id]) : null;
+      return h('div', { className: 'bff-quota-detail' },
+        refusals(row.denied) ? h('p', { className: 'bff-small' }, `${t('quotaPanel.deniedToday')}: ${reasons(row.denied)}`) : null,
+        row.limitDefault !== null && h('form', { className: 'bff-row', onSubmit: event => { event.preventDefault(); void saveLimit(row, draftValue); } },
+          h('label', null, h('span', null, `${t('quotaPanel.limit')} (${t('quotaPanel.limitDefault')} ${row.limitDefault})`),
+            h('input', { name: `limit-${row.id}`, type: 'number', min: 0, max: 1000, step: 1, required: true, value: draftValue, disabled: busy, onChange: event => setLimitDraft({ ...limitDraft, [row.id]: event.target.value }) })),
+          h('button', { type: 'submit', disabled: busy }, icon('save'), t('quotaPanel.limitSave')),
+          row.limit !== row.limitDefault && button('quotaPanel.limitReset', () => saveLimit(row, null), { className: 'bff-ghost bff-sm', icon: 'reset' })),
+        row.limitDefault !== null && text('quotaPanel.limitHint'),
+        h('h3', null, t('quotaPanel.history')),
+        !days ? text('loading') : !days.length ? text('quotaPanel.historyEmpty') : h('div', { className: 'bff-table' }, h('table', null,
+          h('thead', null, h('tr', null, ...['day', 'usage', 'outcome', 'cost', 'time', 'refused'].map(key => h('th', { key, scope: 'col' }, t(`quotaPanel.columns.${key}`))))),
+          h('tbody', null, ...days.map(day => {
+            const past = { ...row, ...day.rows[row.id] };
+            return h('tr', { key: day.day },
+              h('td', { className: 'bff-mono' }, day.day), h('td', { className: 'bff-mono' }, [amount(past), ...measured(past)].join(' · ')),
+              h('td', { className: 'bff-mono' }, `${past.ok} / ${past.failed}`), h('td', { className: 'bff-mono' }, row.kind === 'paid' ? yuanText(past.costYuan) : '—'),
+              h('td', null, elapsed(past)), h('td', null, refusals(past.denied) ? reasons(past.denied) : '—'));
+          })))));
+    }
+    const tokens = spend && ['cacheHit', 'cacheMiss'].every(key => Number.isFinite(spend.tokens?.[key])) ? spend.tokens : null;
+    return h(React.Fragment, null,
+      h('section', { className: 'bff-card' }, cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('wallet')), h('h2', null, t('quotaPanel.spendTitle'))),
+        spend && badge(t(`spend.tier.${spend.tier}`), { normal: 'ok', reduced: 'primary', restricted: 'warn', exhausted: 'danger' }[spend.tier], h('span', { className: 'bff-dot' })),
+        button('refresh', () => run(loadQuota), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
+        !spend ? text('spend.unavailable') : h(React.Fragment, null,
+          h('div', { className: 'bff-spread bff-small' }, h('span', { className: 'bff-muted' }, `${t('spend.today')} ${spend.day} · ${t(`spend.window.${spend.window}`)}${tokens && tokens.cacheHit + tokens.cacheMiss ? ` · ${t('spend.tokens.hitRate')} ${Math.round(tokens.cacheHit / (tokens.cacheHit + tokens.cacheMiss) * 1000) / 10}%` : ''}`),
+            h('span', { className: 'bff-mono' }, `${yuanText(spend.spentYuan)} / ¥${spend.capYuan} (${spend.percent}%)`)),
+          h('div', { className: `bff-progress bff-ticks ${spend.tier === 'exhausted' ? 'over' : ''}`, 'aria-hidden': true }, h('i', { style: { width: `${Math.min(100, Math.max(0, spend.percent))}%` } }),
+            ...[spend.thresholds.reducedPercent, spend.thresholds.restrictedPercent].map(percent => h('b', { key: percent, style: { left: `${percent}%` } }))),
+          h('p', { className: 'bff-small bff-muted' }, `${spend.thresholds.reducedPercent}% ${t('spend.tier.reduced')} · ${spend.thresholds.restrictedPercent}% ${t('spend.tier.restricted')} · 100% ${t('spend.tier.exhausted')}`)),
+        text('quotaPanel.spendHint')),
+      h('section', { className: 'bff-card' }, h('h2', null, `${t('quotaPanel.title')} · ${usage.day}`), text('quotaPanel.hint'),
+        h('div', { className: 'bff-table' }, h('table', null,
+          h('thead', null, h('tr', null, ...['capability', 'kind', 'usage', 'cost', 'time', 'refused', 'status', 'more'].map(key => h('th', { key, scope: 'col' }, t(`quotaPanel.columns.${key}`))))),
+          h('tbody', null, ...usage.rows.flatMap(row => [h('tr', { key: row.id },
+            h('td', { style: nowrap }, h('strong', null, named(`quotaPanel.rows.${row.id}`, row.title))), h('td', { style: nowrap }, t(`quotaPanel.kind.${row.kind}`)),
+            h('td', null, h('span', { className: 'bff-mono' }, `${amount(row)} ${named(`quotaPanel.unit.${row.unit}`, '')}`.trim()), extras(row) ? h('p', { className: 'bff-small bff-muted' }, extras(row)) : null),
+            h('td', { className: 'bff-mono', style: nowrap }, row.kind === 'paid' ? yuanText(row.costYuan) : '—'), h('td', null, elapsed(row)), h('td', null, refused(row)), h('td', { style: nowrap }, status(row)),
+            h('td', { style: nowrap }, h('button', { type: 'button', className: 'bff-ghost bff-sm', disabled: busy, 'aria-expanded': quotaOpen === row.id, onClick: () => open(row.id) }, icon(quotaOpen === row.id ? 'up' : 'down'), t(quotaOpen === row.id ? 'quotaPanel.less' : 'quotaPanel.more')))),
+          quotaOpen === row.id ? h('tr', { key: `${row.id}:detail` }, h('td', { colSpan: 8 }, detail(row))) : null].filter(Boolean)))))));
   }
   function peoplePage() {
     if (!people) return h('section', { className: 'bff-card' }, text('peoplePanel.pending'));
@@ -707,7 +802,7 @@ export function WorldConsole({ t, standalone = false }) {
         h('button', { type: 'submit', disabled: busy || !input.trim() }, icon('lock'), t('login')))),
       busyLive, toasts);
   }
-  const tabLoading = busy && ((tab === 'channels' && !qq) || (tab === 'people' && !people) || (standalone && tab === 'runtime' && !runtimeInfo));
+  const tabLoading = busy && ((tab === 'channels' && !qq) || (tab === 'people' && !people) || (tab === 'quota' && !quota) || (standalone && tab === 'runtime' && !runtimeInfo));
   const current = NAV.find(item => item.id === tab) || NAV[0];
   return h('div', { className: `bff-world bff-app${drawer ? ' bff-drawer-open' : ''}`, 'aria-busy': busy },
     h('aside', { className: 'bff-side', 'aria-label': t('title') },
@@ -741,7 +836,7 @@ export function WorldConsole({ t, standalone = false }) {
           : tabLoading ? skeleton()
           : h('section', { className: 'bff-page', key: tab, 'aria-labelledby': 'bff-page-title' },
             h('div', { className: 'bff-page-head' }, h('div', null, h('h1', { id: 'bff-page-title' }, t(current.id)), tab === 'overview' && h('p', null, t(standalone ? 'standaloneDescription' : 'description')))),
-            tab === 'overview' ? overview() : tab === 'persona' ? persona() : tab === 'channels' ? channels() : tab === 'people' ? peoplePage() : tab === 'memory' ? memories() : runtime()))),
+            tab === 'overview' ? overview() : tab === 'persona' ? persona() : tab === 'channels' ? channels() : tab === 'people' ? peoplePage() : tab === 'memory' ? memories() : tab === 'quota' ? quotaPage() : runtime()))),
     palette && commandPalette(), busyLive, toasts);
 }
 export function flattenDictionary(dictionary, prefix = '') {

@@ -173,6 +173,10 @@ body{margin:0;min-width:320px;background:var(--bff-page);color:var(--bff-text);f
 .bff-progress{height:6px;border-radius:999px;background:var(--bff-secondary);overflow:hidden;border:1px solid var(--bff-border)}
 .bff-progress>i{display:block;height:100%;background:var(--bff-primary);border-radius:inherit;transition:width 250ms var(--bff-ease)}
 .bff-progress.over>i{background:var(--bff-danger)}
+/* tier marks on the spend bar of the quota page */
+.bff-progress.bff-ticks{position:relative}
+.bff-progress.bff-ticks>b{position:absolute;top:0;bottom:0;width:2px;background:var(--bff-border-strong)}
+.bff-quota-detail{display:flex;flex-direction:column;gap:10px;padding:4px 0}
 .bff-savebar{position:sticky;bottom:12px;z-index:5;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--bff-border);border-radius:var(--bff-radius);background:var(--bff-popover);box-shadow:var(--bff-pop-shadow)}
 .bff-savebar>.bff-grow{font-size:12px;color:var(--bff-muted)}
 
