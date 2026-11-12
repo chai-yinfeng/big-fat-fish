@@ -51,16 +51,24 @@ test('conversation tools -> restricted UDS -> serial authority -> same-person ch
   assert.deepEqual((await call(scopeTool('a'), { action: 'evidence' })).evidence, evidence);
   const submitted = await call(scopeTool('a'), { action: 'propose', id: 'tea', ref: observed.observationId, type: 'fact.report', payload: { key: '饮料', value: '红茶', quote: '我喜欢红茶' } });
   assert.equal((await settled(clients.native, submitted.proposalId)).status, 'accepted');
-  // Quote checks against the immutable observation are Authority's, not the executor's.
-  const invented = await call(scopeTool('a'), { action: 'propose', id: 'coffee', ref: observed.observationId, type: 'fact.report', payload: { key: '饮料', value: '咖啡', quote: '我喜欢咖啡' } });
-  assert.equal((await settled(clients.native, invented.proposalId)).status, 'rejected');
+  // The quote is compared with the immutable observation by Authority, not the executor: one that is not
+  // word for word is stored, marked, and still traced to the observation it cites.
+  const loose = await call(scopeTool('a'), { action: 'propose', id: 'coffee', ref: observed.observationId, type: 'fact.report', payload: { key: '别的饮料', value: 'MOCK-咖啡', quote: '我也喜欢咖啡' } });
+  assert.equal((await settled(clients.native, loose.proposalId)).status, 'accepted');
+  const marked = authority.snapshot().facts.find(fact => fact.key === '别的饮料');
+  assert.deepEqual([marked.evidence.observationId, marked.evidence.quoteVerbatim, marked.visibility], [observed.observationId, false, 'private']);
+  assert.equal(authority.snapshot().facts.find(fact => fact.key === '饮料').evidence.quoteVerbatim, undefined);
   assert.match((await clients.native.context({ streamId: 'b', query: '记得我喜欢红茶吗' })).text, /红茶/);
   assert.equal((await call(scopeTool('a'), { action: 'receipt', id: 'tea' })).status, 'accepted');
   assert.equal(await call(scopeTool('b'), { action: 'receipt', id: 'tea' }), null, 'another stream derives a different proposal ID');
   assert.match((await clients['qq-fixture'].context({ streamId: 'qq:123:private:456', query: '红茶' })).text, /红茶/);
   for (const streamId of ['qq:123:private:789', 'qq:123:group:999']) assert.doesNotMatch((await clients['qq-fixture'].context({ streamId, query: '红茶' })).text, /红茶/);
   assert.doesNotMatch((await clients.reader.context({ streamId: 'reading', query: '红茶' })).text, /红茶/);
-  assert.equal(authority.snapshot().facts.length, 1);
+  // A fact with a non-verbatim quote is as private as any other: its own person's, nobody else's.
+  assert.match((await clients['qq-fixture'].context({ streamId: 'qq:123:private:456', query: 'MOCK-咖啡 别的饮料' })).text, /MOCK-咖啡/);
+  for (const streamId of ['qq:123:private:789', 'qq:123:group:999']) assert.doesNotMatch(JSON.stringify(await clients['qq-fixture'].context({ streamId, query: 'MOCK-咖啡 别的饮料', profile: true })), /MOCK-咖啡/);
+  assert.doesNotMatch(JSON.stringify(await clients.reader.context({ streamId: 'reading', query: 'MOCK-咖啡 别的饮料' })), /MOCK-咖啡/);
+  assert.equal(authority.snapshot().facts.length, 2);
 });
 
 test('QQ body self-claims cannot become an owner alias or edit persona', async t => {
