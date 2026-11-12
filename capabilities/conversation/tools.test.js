@@ -55,18 +55,16 @@ test('a rejected proposal says it was not remembered and how to correct it, for 
     assert.equal(result.status, 'rejected'); assert.equal(result.reason, reason); assert.equal(result.remembered, false);
     assert.equal(result.hint, '没有记住。' + hint, reason);
   }
-  assert.deepEqual(Object.keys(REJECTION_HINTS).sort(), ['authored_text_required', 'conversation_policy_kind_denied', 'conversation_role_required', 'observation_already_appraised', 'private_binding_required', 'quote_not_in_observation', 'real_user_required', 'sensitive_retention_denied', 'unconfirmed_identity', 'value_not_in_quote', 'world_paused']);
-  assert.match(REJECTION_HINTS.value_not_in_quote, /value 必须逐字出自 quote（对方原话），不要改写、换算日期或补全/);
-  assert.match(REJECTION_HINTS.value_not_in_quote, /experience\.remember/);
-  assert.match(REJECTION_HINTS.quote_not_in_observation, /quote 必须逐字出自 ref 指向的那条消息/);
+  assert.deepEqual(Object.keys(REJECTION_HINTS).sort(), ['authored_text_required', 'conversation_policy_kind_denied', 'conversation_role_required', 'observation_already_appraised', 'private_binding_required', 'real_user_required', 'sensitive_retention_denied', 'unconfirmed_identity', 'world_paused']);
+  assert.match(REJECTION_HINTS.real_user_required, /ref 要选 role 为 user 的那条/);
   // A reason without a hint is passed on as its code; a world paused at submit is rejected at once.
   assert.equal((await tools({ review: () => ({ status: 'rejected', reason: 'unknown_kind' }) }).call({ action: 'propose', ref: 'obs-1', type: 'fact.report', payload: fact })).hint, '没有记住。被拒收（unknown_kind）。');
   const paused = await tools({ submit: async body => ({ proposalId: body.proposalId, status: 'rejected', policy: 'conversation.v1', revision: 3, reason: 'world_paused' }) }).call({ action: 'propose', ref: 'obs-1', type: 'fact.report', payload: fact });
   assert.equal(paused.hint, '没有记住。世界已暂停，现在不能记。不要重试。');
   // The correction the hint asks for is then accepted in the same run.
-  const t = tools({ review: body => body.payload.quote.includes(body.payload.value) ? { status: 'accepted' } : { status: 'rejected', reason: 'value_not_in_quote' } });
-  assert.equal((await t.call({ action: 'propose', ref: 'obs-1', type: 'fact.report', payload: { ...fact, value: '2026年12月5日' } })).remembered, false);
-  assert.equal((await t.call({ action: 'propose', ref: 'obs-1', type: 'fact.report', payload: fact })).remembered, true);
+  const t = tools({ review: body => body.type === 'fact.report' ? { status: 'accepted' } : { status: 'rejected', reason: 'conversation_policy_kind_denied' } });
+  assert.equal((await t.call({ action: 'propose', ref: 'obs-1', type: 'learning.note', payload: { text: '搬家日期是 2026年12月5日', quote: fact.quote } })).remembered, false);
+  assert.equal((await t.call({ action: 'propose', ref: 'obs-1', type: 'fact.report', payload: { ...fact, value: '2026年12月5日' } })).remembered, true);
 });
 
 test('a review that does not resolve in time is reported as pending, not as remembered', async () => {
@@ -100,9 +98,10 @@ test('an invalid call names the field and the expected shape', async () => {
   assert.equal(t.submitted.length, 0);
 });
 
-test('the tool definition says what is remembered, that id is optional and that value is verbatim', () => {
+test('the tool definition says what is remembered, that id is optional and that value is her normalised reading', () => {
   assert.match(SCOPE_TOOL_SCHEMA.description, /Only a proposal whose status is accepted is remembered; pending or rejected is not\./);
   assert.match(SCOPE_TOOL_SCHEMA.parameters.properties.id.description, /^propose: optional key \(1–96 chars\); omit it and one is generated and returned/);
-  assert.match(SCOPE_TOOL_SCHEMA.parameters.properties.payload.description, /fact\.report value must be copied verbatim from quote: no rewording, no date conversion, no completion\./);
+  assert.match(SCOPE_TOOL_SCHEMA.parameters.properties.payload.description, /fact\.report value is the fact as you understand it, normalised \(a relative date as the concrete date\)\.$/);
+  assert.match(SCOPE_TOOL_SCHEMA.parameters.properties.payload.properties.quote.description, /^The source: copy the words of the evidence message as closely as you can/);
   assert.deepEqual(SCOPE_TOOL_SCHEMA.parameters.required, ['action']);
 });
