@@ -33,3 +33,42 @@ test('human model configuration crosses the private control socket without enter
   assert.equal((await call('/model', { model: 'deepseek-v4-pro' })).status, 409);
   assert.equal((await call('/world/pause', { paused: true, expectedRevision: 2 })).value.paused, true);
 });
+
+test('operator proxies the gateway usage ledger: today, history and daily limits, like /spend', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'world-model-'));
+  const authority = new Authority({ file: path.join(dir, 'world.sqlite'), initialPaused: true });
+  const token = 'operator'.repeat(6), inferenceToken = 'inference'.repeat(6);
+  const hash = value => createHash('sha256').update(value).digest('hex');
+  let now = Date.parse('2026-11-12T04:00:00Z');
+  const gateway = createModelGateway({ settingsFile: path.join(dir, 'model.json'), inferenceSocket: path.join(dir, 'infer.sock'), controlSocket: path.join(dir, 'control.sock'), inferenceTokenHash: hash(inferenceToken), operatorTokenHash: hash(token), clock: () => now, worldStatus: () => authority.worldStatus(), fetchImpl: async () => { throw new Error('no provider call expected'); } });
+  await gateway.start();
+  const operator = createOperatorServer({ authority, socketPath: path.join(dir, 'op.sock'), tokenHash: hash(token), origins: [], modelControl: createModelControlClient(path.join(dir, 'control.sock')) });
+  await operator.start();
+  t.after(async () => { await operator.close(); await gateway.close(); authority.close(); assert.ok(fs.realpathSync(dir).startsWith(fs.realpathSync(os.tmpdir()) + path.sep + 'world-model-')); fs.rmSync(dir, { recursive: true }); });
+  const send = (socket, route, body, bearer) => new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: path.join(dir, socket), path: route, method: body ? 'POST' : 'GET', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' } }, res => { let raw = ''; res.on('data', chunk => { raw += chunk; }); res.on('end', () => resolve({ status: res.statusCode, ...JSON.parse(raw) })); }); req.on('error', reject); req.end(body ? JSON.stringify(body) : undefined);
+  });
+  const call = (route, body, bearer = token) => send('op.sock', route, body, bearer);
+  const usage = await call('/usage');
+  assert.equal(usage.status, 200);
+  assert.deepEqual([usage.value.day, usage.value.rows.map(row => row.id)], ['2026-11-12', ['chat', 'consolidation', 'vision', 'web', 'speech-tts', 'speech-asr']]);
+  assert.equal((await call('/usage', undefined, 'x'.repeat(48))).status, 401);
+  // A daily limit is changed through the operator route; unknown fields never reach the gateway.
+  const changed = await call('/usage/limits', { limits: { vision: 3 } });
+  assert.deepEqual([changed.status, changed.value.rows.find(row => row.id === 'vision').limit], [200, 3]);
+  assert.equal((await call('/usage/limits', { limits: { vision: 3 }, extra: 1 })).status, 400);
+  assert.equal((await call('/usage/limits', { limits: { chat: 3 } })).status, 400);
+  // The content process reports a local run; the next Beijing day it is a history line the operator can read.
+  assert.equal((await send('infer.sock', '/v1/usage/record', { capability: 'speech-tts', outcome: 'ok', busyMs: 3000, units: { chars: 12, audioSeconds: 2.5 } }, inferenceToken)).status, 200);
+  assert.deepEqual((await call('/usage/history')).value.days, []);
+  now += 86400000;
+  for (const route of ['/usage/history', '/usage/history?days=7', '/usage/history?days=90']) {
+    const history = await call(route);
+    assert.deepEqual([history.status, history.value.days.map(day => day.day), history.value.days[0].rows['speech-tts'].units], [200, ['2026-11-12'], { chars: 12, audioSeconds: 2.5 }], route);
+  }
+  for (const route of ['/usage/history?days=0', '/usage/history?days=91', '/usage/history?days=x', '/usage/history?days=7&x=1']) assert.equal((await call(route)).status, 400, route);
+  // Without a gateway the routes answer 503 instead of failing the console.
+  const alone = createOperatorServer({ authority, socketPath: path.join(dir, 'op2.sock'), tokenHash: hash(token), origins: [] });
+  await alone.start(); t.after(() => alone.close());
+  for (const [route, body] of [['/usage'], ['/usage/history'], ['/usage/limits', { limits: { vision: 3 } }]]) assert.equal((await send('op2.sock', route, body, token)).status, 503, route);
+});

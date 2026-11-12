@@ -92,6 +92,13 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
         respond(200, { ok: true, value: await modelControl('/spend', undefined, req.headers.authorization) }); return;
       }
+      // Today's usage per capability and the finished days before it, from the model gateway's ledger (same proxying as /spend).
+      if (req.method === 'GET' && (req.url === '/usage' || url.pathname === '/usage/history')) {
+        const days = req.url === '/usage' ? null : Number(url.searchParams.get('days') ?? 7);
+        if (days !== null && (!Number.isSafeInteger(days) || days < 1 || days > 90 || [...url.searchParams.keys()].some(key => key !== 'days'))) throw Object.assign(new Error('Invalid usage history request'), { statusCode: 400, code: 'INVALID_REQUEST' });
+        if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
+        respond(200, { ok: true, value: await modelControl(days === null ? '/usage' : `/usage/history?days=${days}`, undefined, req.headers.authorization) }); return;
+      }
       if (req.method === 'GET' && req.url === '/qq' && qqControl) { respond(200, { ok: true, value: await qqControl('/qq', undefined, req.headers.authorization) }); return; }
       if (req.method === 'GET' && req.url === '/runtime') {
         if (!contentOperator) throw Object.assign(new Error('Content runtime unavailable'), { statusCode: 503 });
@@ -134,6 +141,10 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         object(body, ['dailyCapYuan', 'reducedPercent', 'restrictedPercent']);
         if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
         value = await modelControl('/spend/settings', body, req.headers.authorization);
+      } else if (req.url === '/usage/limits') {
+        object(body, ['limits']);
+        if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
+        value = await modelControl('/usage/limits', body, req.headers.authorization);
       } else if (req.url === '/model' || req.url === '/model/test') {
         object(body, req.url === '/model' ? ['model', 'apiKey'] : []);
         if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
