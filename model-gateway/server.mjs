@@ -227,7 +227,10 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     if (!snapshot.apiKey) throw failure('UNCONFIGURED');
     const controller = new AbortController();
     active.set(controller, kind);
-    const disconnected = () => { if (!res.writableEnded) controller.abort(); };
+    // A client that hangs up after the provider's usage (the last event before `data: [DONE]`) had the whole reply:
+    // the OpenAI client closes at [DONE], often before the provider's stream ends. That call succeeded.
+    let delivered = false;
+    const disconnected = () => { delivered = usage !== null && !controller.signal.aborted; if (!res.writableEnded) controller.abort(); };
     res.on('close', disconnected);
     const timer = setTimeout(() => controller.abort(), kind === 'test' ? 20000 : 300000);
     // Metered calls: reserve before, settle after. Not fetched or a provider error: released.
@@ -272,6 +275,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       if (category) await pipeline(Readable.fromWeb(response.body), usageTap(Boolean(body.stream), value => { usage = parseUsage(value) ?? usage; }), res);
       else await pipeline(Readable.fromWeb(response.body), res);
     } catch (error) {
+      if (delivered) return;
       if (ERRORS[error.code]) throw error;
       throw failure(controller.signal.aborted ? 'CANCELLED' : 'UPSTREAM_ERROR');
     } finally {

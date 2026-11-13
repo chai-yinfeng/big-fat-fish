@@ -338,3 +338,27 @@ test('gateway: a run she starts herself is proactive work, with its own row and 
   rows = await f.usage(seen => seen.consolidation.ok === 1);
   assert.deepEqual([rows.consolidation.calls, rows.proactive.calls], [1, 1]);
 });
+
+test('gateway: a client that hangs up once the reply is complete is ok; one that hangs up before it is failed', async t => {
+  // A provider whose stream end comes a moment after its last event, as over a network.
+  const state = { text: sse };
+  const late = text => new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(text)); setTimeout(() => { try { controller.close(); } catch {} }, 150); } }));
+  const f = await gateway(t, { fetchImpl: async () => late(state.text) });
+  // What the executor's OpenAI client does: it stops reading at `data: [DONE]` and closes the connection.
+  const hangUp = (headers = {}, until = 'data: [DONE]') => new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: f.directory + '/infer.sock', path: '/v1/chat/completions', method: 'POST', agent: false, headers: { authorization: `Bearer ${infer}`, 'content-type': 'application/json', ...headers } }, res => {
+      let text = ''; res.on('data', chunk => { text += chunk; if (text.includes(until)) { res.destroy(); resolve(res.statusCode); } });
+    });
+    req.on('error', reject); req.end(JSON.stringify({ model: 'deepseek', messages: [{ role: 'user', content: 'MOCK synthetic test' }], stream: true }));
+  });
+  assert.equal(await hangUp(), 200);
+  assert.equal(await hangUp({ [INITIATED_HEADER]: 'initiated' }), 200);
+  let rows = await f.usage(seen => seen.chat.calls === 1 && seen.proactive.calls === 1);
+  assert.deepEqual([rows.chat.ok, rows.chat.failed, rows.proactive.ok, rows.proactive.failed], [1, 0, 1, 0]);
+  assert.deepEqual([rows.chat.units, rows.proactive.units], [{ inputTokens: 1000, outputTokens: 100 }, { inputTokens: 1000, outputTokens: 100 }]);
+  // Gone before the provider reported its usage: the reply was cut short and stays failed.
+  state.text = sse.split('\n\n')[0] + '\n\n';
+  assert.equal(await hangUp({}, 'MOCK'), 200);
+  rows = await f.usage(seen => seen.chat.calls === 2);
+  assert.deepEqual([rows.chat.ok, rows.chat.failed], [1, 1]);
+});
