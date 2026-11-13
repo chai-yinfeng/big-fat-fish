@@ -6,7 +6,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { AuthorityClient } from '../../authority/src/client.js';
 import { ConversationPort } from '../conversation/index.js';
 import { createConversationClient } from '../conversation/client.js';
-import { QQBridge, FRIEND_REFRESH_MS } from './bridge.js';
+import { QQBridge, FRIEND_REFRESH_MS, INITIATION_POLL_MS } from './bridge.js';
 import { OneBotClient, onebotURL } from './onebot-client.js';
 import { ContentClient } from '../media/client.js';
 import { QQMedia } from './media.js';
@@ -17,6 +17,9 @@ async function main() {
   const file = path.resolve(process.argv[3]), stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.uid !== process.getuid() || stat.mode & 0o077) throw new Error('QQ_CONFIG');
   const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  // Optional qq-bridge.json `initiationPollMs` (staging shortens it).
+  const initiationPollMs = cfg.initiationPollMs ?? INITIATION_POLL_MS;
+  if (!Number.isInteger(initiationPollMs) || initiationPollMs < 1000 || initiationPollMs > 600000) throw new Error('QQ_CONFIG');
   const authority = new AuthorityClient(cfg.authority), port = new ConversationPort(authority);
   let bridge;
   const onebot = new OneBotClient({ url: onebotURL(cfg.onebotPort), token: fs.readFileSync(cfg.onebotTokenFile, 'utf8').trim(), onEvent: event => bridge.receive(event), onStatus: connected => { void bridge.connection(connected); } });
@@ -53,8 +56,11 @@ async function main() {
   identityTimer.unref();
   const friendTimer = setInterval(() => { void bridge.refreshFriends(); }, FRIEND_REFRESH_MS);
   friendTimer.unref();
+  // A run she starts herself is fetched from Authority, never pushed here; the bridge skips the round while QQ is down.
+  const initiationTimer = setInterval(() => { void bridge.pollInitiations(); }, initiationPollMs);
+  initiationTimer.unref();
   let stopping = false;
-  const stop = () => { if (stopping) return; stopping = true; clearInterval(identityTimer); clearInterval(friendTimer); onebot.stop(); server.closeIdleConnections(); server.close(); };
+  const stop = () => { if (stopping) return; stopping = true; clearInterval(identityTimer); clearInterval(friendTimer); clearInterval(initiationTimer); onebot.stop(); server.closeIdleConnections(); server.close(); };
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, stop);
   process.stdout.write('QQ private transport ready (owner and bot friends); waiting for authenticated runtime and caller configuration.\n');
 }
