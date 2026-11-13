@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planChunks, joinTranscripts, CHUNK_SECONDS } from './chunks.js';
+import { planChunks, joinTranscripts, speechMs, transcriptSegments, CHUNK_SECONDS } from './chunks.js';
 
 const rate = 100, sec = n => n * rate;
 
@@ -27,4 +27,26 @@ test('transcripts join in order; text repeated across a hard-split overlap is dr
   assert.equal(joinTranscripts([{ text: 'hello there', overlapsPrevious: false }, { text: '', overlapsPrevious: false }, { text: 'general kenobi', overlapsPrevious: false }]), 'hello there general kenobi');
   // Without an overlap the same words are genuine repetition and stay.
   assert.equal(joinTranscripts([{ text: '好的好的', overlapsPrevious: false }, { text: '好的', overlapsPrevious: false }]), '好的好的好的');
+});
+
+test('timed segments: one per chunk that added text, in ms, and together they are the joined transcript', () => {
+  const parts = [
+    { start: sec(0.2), end: sec(20.4), text: ' 回家路上还下雨了 ', overlapsPrevious: false },
+    { start: sec(19.4), end: sec(44.4), text: '下雨了，特别冷。', overlapsPrevious: true },
+    { start: sec(50), end: sec(52), text: '  ', overlapsPrevious: false },
+    { start: sec(60), end: sec(61.5), text: 'hello', overlapsPrevious: false },
+    { start: sec(70), end: sec(71), text: 'there', overlapsPrevious: false },
+  ];
+  const segments = transcriptSegments(parts, rate);
+  assert.deepEqual(segments, [
+    { startMs: 200, endMs: 20400, text: '回家路上还下雨了' },
+    { startMs: 19400, endMs: 44400, text: '，特别冷。' },
+    { startMs: 60000, endMs: 61500, text: 'hello' },
+    { startMs: 70000, endMs: 71000, text: 'there' },
+  ]);
+  assert.equal(joinTranscripts(parts), '回家路上还下雨了，特别冷。hello there');
+  assert.equal(joinTranscripts(segments.map(s => ({ text: s.text, overlapsPrevious: false }))), joinTranscripts(parts));
+  assert.deepEqual(transcriptSegments([], rate), []);
+  assert.equal(speechMs([[sec(0.4), sec(3.4)], [sec(4.1), sec(6)]], rate), 4900);
+  assert.equal(speechMs([], rate), 0);
 });

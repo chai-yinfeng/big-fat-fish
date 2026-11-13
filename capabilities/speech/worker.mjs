@@ -3,9 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
-import { loadSpeechConfig, inputPath, engineFor, componentsPresent, wavInfo, failure, inside, trustedReference, resolveVoice, asrLimitSeconds, ttsDevice, SINGLE_PASS_SECONDS } from './config.js';
+import { loadSpeechConfig, inputPath, engineFor, componentsPresent, wavInfo, failure, inside, trustedReference, resolveVoice, asrLimitSeconds, vadPresent, ttsDevice, SINGLE_PASS_SECONDS } from './config.js';
 import { llamaTtsArgs, vulkanProbe, synthesizeOnDevice, BACKEND_FAILED } from './llama-tts.js';
-import { planChunks, joinTranscripts } from './chunks.js';
+import { planChunks, joinTranscripts, speechMs, transcriptSegments } from './chunks.js';
 import { toSimplifiedChinese } from './text.js';
 
 process.umask(0o077);
@@ -69,6 +69,9 @@ async function run(c, job) {
     const info = wavInfo(job.inputFile);
     if (info.durationMs > asrLimitSeconds(c) * 1000) throw failure('SPEECH_AUDIO_LIMIT');
     if (info.format !== 1 || info.bits !== 16) throw failure('SPEECH_AUDIO_FORMAT');
+    // Optional timed output (job.segments): speechMs always comes from the VAD.
+    const timed = job.segments === true;
+    if (timed && !vadPresent(c)) throw failure('SPEECH_NOT_CONFIGURED');
     const sherpa = require(c.sherpaModule), f = e.files;
     const modelConfig = { tokens: f.tokens || '', numThreads: c.numThreads, provider: 'cpu', debug: 0 };
     if (e.engine === 'sherpa-qwen3-asr') modelConfig.qwen3Asr = { convFrontend: f.convFrontend, encoder: f.encoder, decoder: f.decoder, tokenizer: f.tokenizer, hotwords: '', maxNewTokens: 1024 };
@@ -83,17 +86,26 @@ async function run(c, job) {
       if (typeof result.text !== 'string' || result.text.length > 12000) throw failure('SPEECH_WORKER_FAILED');
       return result.text;
     };
-    let raw;
-    if (info.durationMs <= SINGLE_PASS_SECONDS * 1000) raw = decode(wave.sampleRate, wave.samples);
-    else {
-      // Silero VAD runs at 16 kHz; Qwen3-ASR resamples to 16 kHz anyway.
-      const samples = wave.sampleRate === 16000 ? wave.samples : new sherpa.LinearResampler(wave.sampleRate, 16000).flush(wave.samples);
-      const parts = planChunks(speechRegions(sherpa, c, samples), samples.length, 16000).map(chunk => ({ text: decode(16000, samples.subarray(chunk.start, chunk.end)), overlapsPrevious: chunk.overlapsPrevious }));
+    // Silero VAD runs at 16 kHz; Qwen3-ASR resamples to 16 kHz anyway.
+    const at16k = () => wave.sampleRate === 16000 ? wave.samples : new sherpa.LinearResampler(wave.sampleRate, 16000).flush(wave.samples);
+    let raw, regions, parts;
+    if (info.durationMs <= SINGLE_PASS_SECONDS * 1000) {
+      raw = decode(wave.sampleRate, wave.samples);
+      // Still one pass; the VAD runs only to measure the voiced time.
+      if (timed) regions = speechRegions(sherpa, c, at16k());
+    } else {
+      const samples = at16k();
+      regions = speechRegions(sherpa, c, samples);
+      parts = planChunks(regions, samples.length, 16000).map(chunk => ({ text: decode(16000, samples.subarray(chunk.start, chunk.end)), overlapsPrevious: chunk.overlapsPrevious, start: chunk.start, end: chunk.end }));
       raw = joinTranscripts(parts);
       if (raw.length > 12000) throw failure('SPEECH_WORKER_FAILED');
     }
     const text = e.engine === 'sherpa-qwen3-asr' ? toSimplifiedChinese(raw.trim()) : raw.trim();
-    return { text, model: e.id, durationMs: info.durationMs, complete: true, derived: true };
+    const value = { text, model: e.id, durationMs: info.durationMs, complete: true, derived: true };
+    if (!timed) return value;
+    // One segment per decoded chunk; single-pass audio is one segment over the whole clip.
+    const segments = parts ? transcriptSegments(parts, 16000).map(s => ({ ...s, text: toSimplifiedChinese(s.text) })) : text ? [{ startMs: 0, endMs: info.durationMs, text }] : [];
+    return { ...value, segments, speechMs: speechMs(regions, 16000) };
   }
   if (job.kind !== 'tts' || typeof job.text !== 'string' || !job.text.trim() || [...job.text].length > c.maxTextChars || !inside(fs.realpathSync(c.workRoot), fs.realpathSync(job.outputFile))) throw failure('SPEECH_REQUEST');
   if (e.engine !== 'llama-tts') throw failure('SPEECH_NOT_CONFIGURED');

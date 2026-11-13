@@ -42,3 +42,22 @@ export function joinTranscripts(parts) {
   }
   return text;
 }
+
+/** Voiced time in ms: the summed length of the VAD regions [[start, end]] (unpadded). */
+export function speechMs(regions, rate) {
+  return Math.round(regions.reduce((sum, [a, b]) => sum + Math.max(0, b - a), 0) * 1000 / rate);
+}
+
+/** parts: [{start, end, text, overlapsPrevious}] in order (start/end are sample indexes).
+ * Returns [{startMs, endMs, text}], one per chunk that added text; each text is exactly
+ * what that chunk contributed to joinTranscripts(parts), so overlap repeats are dropped. */
+export function transcriptSegments(parts, rate) {
+  const segments = [];
+  let joined = '';
+  parts.forEach((part, i) => {
+    const next = joinTranscripts(parts.slice(0, i + 1)), text = next.slice(joined.length).trim();
+    joined = next;
+    if (text) segments.push({ startMs: Math.round(part.start * 1000 / rate), endMs: Math.round(part.end * 1000 / rate), text });
+  });
+  return segments;
+}
