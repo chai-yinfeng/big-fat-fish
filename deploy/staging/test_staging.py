@@ -223,5 +223,32 @@ class ConsolidationResetTests(unittest.TestCase):
             db.close()
 
 
+class InitiationReplayTests(unittest.TestCase):
+    def test_a_replay_starts_with_no_open_initiation_and_leaves_everything_else(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / 'authority.sqlite'
+            self.assertFalse(sa.reset_initiations(database))  # no database yet
+            db = sqlite3.connect(str(database))
+            db.execute('CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
+            db.executemany('INSERT INTO metadata VALUES(?,?)', [('state', '{}'), ('consolidation', '{}')])
+            db.commit()
+            self.assertFalse(sa.reset_initiations(database))  # a release before initiations left no state
+            db.execute("INSERT INTO metadata VALUES('initiations',?)", ('{"items":[{"id":"MOCK","status":"issued"}],"quiet":{"fromMinute":0,"toMinute":0}}',))
+            db.commit()
+            self.assertTrue(sa.reset_initiations(database))
+            self.assertEqual(db.execute('SELECT key FROM metadata ORDER BY key').fetchall(), [('consolidation',), ('state',)])
+            db.close()
+
+    def test_the_bridge_polls_faster_only_when_the_release_knows_the_setting(self):
+        config = {'onebotPort': sa.ONEBOT_PORT}
+        self.assertEqual(sa.scenario_bridge_config(dict(config), "cfg.onebotPort"), config)
+        self.assertEqual(sa.scenario_bridge_config(dict(config), "cfg.initiationPollMs ?? INITIATION_POLL_MS"), {**config, 'initiationPollMs': 3000})
+        self.assertTrue(1000 <= sa.INITIATION_POLL_MS <= 600000)
+        source = (HERE / 'staging-agent.py').read_text()
+        self.assertIn("edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_source))", source)
+        self.assertIn("reset_initiations(BASE / 'authority-data/authority.sqlite')", source)
+
+
 if __name__ == '__main__':
     unittest.main()

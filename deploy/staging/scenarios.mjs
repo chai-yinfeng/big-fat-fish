@@ -357,6 +357,91 @@ export const STEPS = {
     await run.setPaused(false);
     await run.poll(async () => !(await run.operator('GET', '/qq')).paused, 15000, 'the QQ bridge stayed paused');
   },
+  /** The world is paused (`resume` runs it again). */
+  async pause(run) { await run.setPaused(true); },
+  /** The quiet hours of initiated runs through the operator route (POST /initiative/settings): "none" (so a replay
+   * does the same at any hour), "now" (two hours around the present, Beijing time) or "default" (23:30 to 08:00). */
+  async quietHours(run, _ctx, { window }) {
+    const minute = Math.floor((Date.now() + 8 * 3600000) / 60000) % 1440, clock = value => `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`;
+    const quietHours = window === 'none' ? { from: '00:00', to: '00:00' } : window === 'now' ? { from: clock((minute + 1380) % 1440), to: clock((minute + 60) % 1440) } : window === 'default' ? { from: '23:30', to: '08:00' } : fail(`quietHours: unknown window ${JSON.stringify(window)}`);
+    const set = (await run.operator('POST', '/initiative/settings', { quietHours })).quietHours;
+    if (set.now !== (window === 'now')) fail(`the quiet hours ${set.from}-${set.to} ${set.now ? 'cover' : 'do not cover'} the present`);
+  },
+  /** The operator's "try it on me" (POST /initiative/poke with an empty body: the route takes no target). `expect`:
+   * "waiting" (registered for the bridge to fetch) or the outcome it must be closed with at once. The request is
+   * remembered for `expectInitiation`. */
+  async poke(run, ctx, { expect = 'waiting' } = {}) {
+    const value = await run.operator('POST', '/initiative/poke', {});
+    if (value.already) fail('an earlier initiation is still open');
+    if (value.owner !== true) fail('the poke is not about the owner');
+    const got = value.status === 'closed' ? value.outcome : value.status;
+    if (got !== expect) fail(`the poke is ${got}, expected ${expect}`);
+    ctx.initiation = value.id;
+  },
+  /** How the poked request ended (operator GET /initiative/log): waits until it is closed, then its outcome must be
+   * `outcome`. The list never holds an account number. */
+  async expectInitiation(run, ctx, { outcome, timeoutMs = 60000 }) {
+    if (!ctx.initiation) fail('expectInitiation: no poke in this scenario');
+    const ended = await run.poll(async () => {
+      const log = await run.operator('GET', '/initiative/log');
+      const leaked = [run.data.bot, ...Object.values(run.data.people)].find(account => JSON.stringify(log).includes(account.qq));
+      if (leaked) fail(`the initiation list contains the account number ${leaked.qq}`);
+      const item = log.items.find(entry => entry.id === ctx.initiation);
+      return item?.status === 'closed' ? item : null;
+    }, timeoutMs, 'the initiation never ended');
+    if (ended.outcome !== outcome) fail(`the initiation ended as ${ended.outcome}, expected ${outcome}`);
+  },
+  /** The fake OneBot leaves the next `count` sends without a receipt, as when the platform's answer is lost. */
+  async loseReceipts(run, _ctx, { count }) { await run.onebot('POST', '/lose-receipts', { count }); },
+  /** Sends towards `to` that got no receipt during this scenario (never counted as delivered): exactly `count`. */
+  async expectLostSends(run, _ctx, { to, count }) {
+    const lost = (await run.onebot('GET', '/state')).lost;
+    if (!Array.isArray(lost)) fail('this fake OneBot does not record lost sends');
+    const actual = lost.filter(item => item.user_id === run.qq(to)).length, others = lost.filter(item => item.user_id !== run.qq(to));
+    if (actual !== count || others.length) fail(`${actual} send(s) to ${to} went without a receipt (and ${others.length} to others), expected ${count} (and 0)`);
+  },
+  /** Runs the model was asked for during this scenario whose typed text or event block contains `userText`
+   * (first requests only, tool continuations apart): exactly `count`. */
+  async expectModelCalls(run, ctx, { userText, count }) {
+    const actual = run.modelLog(ctx).filter(entry => entry.stream && !entry.afterTool && entry.userText.includes(userText)).length;
+    if (actual !== count) fail(`the model was asked ${actual} time(s) for ${JSON.stringify(userText)}, expected ${count}`);
+  },
+  /** `noteMessages` remembers how many lines Authority holds of `person`'s private conversation (operator
+   * GET /conversations); `expectMessages` then requires exactly `added` more: what was really said and delivered. */
+  async noteMessages(run, ctx, { person }) {
+    // A reply is recorded a moment after it is delivered: note the count once it has stopped moving.
+    let count = await run.messageCount(person);
+    for (let i = 0; i < 20; i++) { await run.sleep(400); const again = await run.messageCount(person); if (again === count) break; count = again; }
+    (ctx.messages ??= new Map()).set(person, count);
+  },
+  async expectMessages(run, ctx, { person, added, timeoutMs = 15000 }) {
+    const before = ctx.messages?.get(person) ?? fail(`expectMessages: no noted count for ${person}`);
+    let seen;
+    try { await run.poll(async () => (seen = await run.messageCount(person) - before) === added, timeoutMs, 'timeout'); } catch (error) { if (error.message !== 'timeout') throw error; fail(`Authority holds ${seen} more line(s) of ${person}, expected ${added}`); }
+  },
+  /** A run she started herself keeps the request prefix. The chain is: the last request whose typed text contains
+   * `before`, every request of the initiated run (an event block marked as not the person's words stands where a
+   * message would be, after a note saying nobody wrote), the first request whose typed text contains `after`. Each
+   * is the one before it plus new messages, with the same system message; at most `trims` steps may instead have
+   * only lost the oldest messages (a batch trim). No ordinary request carries the note line of an initiated run. */
+  async expectInitiatedPrefix(run, ctx, { before, after, trims = 1 }) {
+    const log = run.modelLog(ctx).filter(entry => entry.stream), EVENT = '[后台事件 · 这不是对方发来的话]', NOTE = '这一条不是对方发来的消息';
+    if (!log.every(entry => Array.isArray(entry.hashes) && entry.hashes.length > 1 && typeof entry.system === 'string' && typeof entry.context === 'string')) fail('the model request log lacks hashes/system/context');
+    const earlier = log.findLast(entry => entry.userText.includes(before)), later = log.find(entry => entry.userText.includes(after)), initiated = log.filter(entry => entry.userText.startsWith(EVENT));
+    if (!earlier || !later || !initiated.length) fail(`the model log lacks ${!earlier ? JSON.stringify(before) : !later ? JSON.stringify(after) : 'an initiated run'}`);
+    if (!initiated.every(entry => entry.context.includes(NOTE))) fail('an initiated run was sent without the note saying nobody wrote');
+    const ordinary = log.find(entry => !entry.userText.startsWith(EVENT) && entry.context.includes(NOTE));
+    if (ordinary) fail(`the ordinary request for ${JSON.stringify(ordinary.userText.slice(0, 40))} carries the note of an initiated run`);
+    const chain = [earlier, ...initiated, later];
+    let cuts = 0;
+    for (let i = 1; i < chain.length; i++) {
+      const what = `request ${i + 1} of the chain (${JSON.stringify(chain[i].userText.slice(0, 40))})`;
+      if (chain[i].system !== chain[0].system) fail(`${what} has another system message`);
+      if (extends_(chain[i].hashes, chain[i - 1].hashes) && chain[i].hashes.length > chain[i - 1].hashes.length) continue;
+      if (!trimmed(chain[i].hashes, chain[i - 1].hashes)) fail(`${what} does not start with the request before it`);
+      if (++cuts > trims) fail(`${what}: the history start moved ${cuts} times in ${chain.length} requests`);
+    }
+  },
   /** Daily cap / tiers through the real operator route (POST /spend/settings). */
   async spendSettings(run, _ctx, settings) { await run.operator('POST', '/spend/settings', settings); },
   async expectSpend(run, _ctx, { tier, timeoutMs = 10000 }) {

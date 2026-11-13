@@ -74,6 +74,19 @@ test('fake NapCat serves the real OneBotClient: token, login, friends, recorded 
   assert.equal((await control('POST', '/message', { user_id: 'abc', nickname: 'x', text: 'y' })).status, 400);
   assert.equal((await control('POST', '/reset', {})).status, 200);
   assert.equal((await control('GET', '/state')).value.sent.length, 0);
+
+  // A lost receipt: the send is refused to the caller, recorded as lost and never as sent; then sends work again.
+  assert.equal((await control('POST', '/lose-receipts', { count: 1 })).status, 200);
+  await assert.rejects(client.call('send_private_msg', { user_id: '999900000011', message: [{ type: 'text', data: { text: 'MOCK-LOST' } }] }), /ONEBOT_REJECTED/);
+  const after = await client.call('send_private_msg', { user_id: '999900000011', message: [{ type: 'text', data: { text: 'MOCK-KEPT' } }] });
+  const lossy = (await control('GET', '/state')).value;
+  assert.deepEqual([lossy.lost.map(item => [item.user_id, item.text]), lossy.sent.map(item => [item.text, item.message_id])], [[['999900000011', 'MOCK-LOST']], [['MOCK-KEPT', after.message_id]]]);
+  for (const count of [-1, 21, '1', 1.5]) assert.equal((await control('POST', '/lose-receipts', { count })).status, 400);
+  // A reset also forgets receipts still to be lost.
+  await control('POST', '/lose-receipts', { count: 3 }); await control('POST', '/reset', {});
+  await client.call('send_private_msg', { user_id: '999900000011', message: [{ type: 'text', data: { text: 'MOCK-AFTER-RESET' } }] });
+  const clean = (await control('GET', '/state')).value;
+  assert.deepEqual([clean.lost, clean.sent.length], [[], 1]);
 });
 
 test('the fake refuses production ports', () => {
