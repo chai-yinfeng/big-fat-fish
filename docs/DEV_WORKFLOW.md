@@ -162,7 +162,7 @@ staging 以 home-agent 上无 sudo 的 `agent` 账号（`ssh home-agent-dev`，�
 用该包的 bootstrap、prepare-memory、prepare-content、QQ prepare 初始化（无模型 Key、
 不登录 QQ）→ start → disable 全部单元（模拟旧版 companion-deploy 留下的未 enable 状态）→
 升级到 to 包（预检、切换、健康检查、enable）→ 冒烟与场景回放（让新版本先用过这个数据根）→
-记下额度账本当天各行（`ledger-before-rollback`）→ 迁移演练（见「数据库迁移」）→ `companion-deploy rollback` 回到 from 包并冒烟（旧版本在新版本用过的
+记下额度账本当天各行（`ledger-before-rollback`；回退后再记下旧包声明了哪些行 `ledger-rows-of-from`，旧包不认识的行不参与 Q3 比较并在结果里点名）→ 迁移演练（见「数据库迁移」）→ `companion-deploy rollback` 回到 from 包并冒烟（旧版本在新版本用过的
 数据根上健康启动、能读能写）→ 再 rollback 一次回到 to 包 → `Q3 ledger-survives-rollback`（账本当天的数字一项不少；跨了北京时间零点则要求那一天成为历史里的一行）→ 删除 from 包 → 重启全部单元 →
 manager 重启代理（确认均已 enable，停掉全部单元但不 disable，daemon-reload 后确认
 default.target 的依赖树覆盖全部单元，再 `systemctl --user start default.target sockets.target`
@@ -208,6 +208,7 @@ H1 `split-long-reply`：约 150 字的多句回复，假 OneBot 按顺序收到 
 H4 `normalized-value-is-stored`：对方说“下个月 5 号去上海”，假模型提交换算后的具体日期，当场入库，出处指向那句原话，另一个人的请求和记忆里没有。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
 Q1 `ledger-counts-every-exit`：聊一轮、看一张图、搜一次，额度账本（operator `/usage`）里聊天、看图、联网各 +1、语音两行不变，各付费行的花费与 `/spend` 同类金额相等、合计等于当日花费；
 Q2 `ledger-records-denials`：把看图上限设成已用次数后再看，网关回 `BUDGET_EXHAUSTED`，账本被拒 +1（原因 `daily_limit`），假模型没有收到这次请求；恢复上限后再看成功。
+P1 `provider-adapter-round-trip`：供应商适配的骨架。发行包里没有任何供应商适配；staging 的 `fake-model.mjs` 给网关注入一个假供应商 `mock`（`fake-provider.mjs`，与假上游在同一个文件，不随发行包发布）。没录 key 时提交被拒（账本记 `not_configured`）；经 operator `/providers/key` 录入 `MOCK-` 开头的假 key 后，异步任务走 提交—轮询—取回，同步任务一次返回，账本 `mock` 行各 +1、花费与 `/spend` 的 `generation` 类相等；把每日上限设成已用次数后再提交回 `BUDGET_EXHAUSTED`。key 留在数据根里，回退到旧包时带着 `providers.json` 启动。
 staging 没有图片运行时（sharp），图进不了 QQ 这条路，所以 Q1/Q2 的看图和搜索由运行器用 `gatewayCall` 直接打到网关的 inference socket（与 content 服务发的请求相同）；本地 TTS/ASR 在 staging 没有模型，上报与计数由单元测试覆盖。每次回放开始时，账本当天文件和上限随开销一起清零（历史不清）。
 M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里有一行 `SCENARIOS n/n passed: ...`，
 任一场景失败则是 `STAGING FAILED`。

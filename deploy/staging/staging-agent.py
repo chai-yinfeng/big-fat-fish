@@ -345,6 +345,8 @@ def scenarios(deployer, only=None):
     model_data = Path(json.loads((BASE / 'operator/model-gateway.json').read_text())['settingsFile']).parent
     for label in ('spend.json', 'spend-settings.json', 'capability-usage.json', 'usage-ledger.json', 'usage-limits.json'):
         (model_data / label).unlink(missing_ok=True)
+    # The mock provider's jobs of earlier replays go with the reservations they held (provider keys stay).
+    (model_data / 'provider-jobs.json').unlink(missing_ok=True)
     reset_consolidation(BASE / 'authority-data/authority.sqlite')
     dispatch = Path(qq_config['stateFile'])
     if dispatch.exists():
@@ -405,13 +407,26 @@ def usage_kept(before, now):
     return numbers and all((now.get(part) or {}).get(name, 0) >= value for part in ('denied', 'units') for name, value in before[part].items())
 
 
-def ledger_survives(before):
+def declared_rows():
+    """The capabilities the running release keeps a usage row for; None when it has no usage ledger at all
+    (such a release never touches the ledger files)."""
+    try:
+        return sorted(usage_rows()[1])
+    except RuntimeError:
+        return None
+
+
+def ledger_survives(before, declared=None):
     """Q3 ledger-survives-rollback: `before` is usage_rows() under the new release, taken before the rollback.
     The old release has since started on this data root (rollback, smoke-from) and the new one again: the day's
-    numbers must still be there. If the Beijing day changed meanwhile, that day must be a history line."""
+    numbers must still be there. If the Beijing day changed meanwhile, that day must be a history line.
+    `declared` (declared_rows() under the old release): a row of a capability the old release does not declare
+    is not compared and is named in the result; that release cannot be made to keep it."""
     if not before:
         raise RuntimeError('no usage rows were noted before the rollback')
     day, rows = before
+    unknown = sorted(name for name in rows if declared is not None and name not in declared)
+    rows = {name: row for name, row in rows.items() if name not in unknown}
     if not any(row['calls'] for row in rows.values()):
         raise RuntimeError('the usage ledger was empty before the rollback: nothing to compare')
     today, now = usage_rows()
@@ -421,7 +436,8 @@ def ledger_survives(before):
     lost = sorted(name for name, row in rows.items() if not usage_kept(row, now.get(name)))
     if lost:
         raise RuntimeError('usage of %s lost across the rollback: %s' % (day, '; '.join('%s %s -> %s' % (name, rows[name], now.get(name)) for name in lost)[:500]))
-    return 'day %s kept across rollback and roll-forward%s: calls %s' % (day, '' if today == day else ' (now a history line)', json.dumps({name: row['calls'] for name, row in rows.items() if row['calls']}, sort_keys=True))
+    return 'day %s kept across rollback and roll-forward%s: calls %s%s' % (day, '' if today == day else ' (now a history line)', json.dumps({name: row['calls'] for name, row in rows.items() if row['calls']}, sort_keys=True),
+                                                                           '; not compared, unknown to the from-release: %s' % ', '.join(unknown) if unknown else '')
 
 
 def migration_drill(deployer, from_name, to_name):
@@ -593,8 +609,10 @@ def lifecycle(from_tarball, to_tarball):
     step('migration-drill (copy)', lambda: migration_drill(deployer, from_name, to_name))
     step('rollback (to from)', lambda: switch_back(from_name))
     step('smoke-from', smoke)
+    declared = []
+    step('ledger-rows-of-from', lambda: declared.append(declared_rows()) or ('no usage ledger in the from-release' if declared[0] is None else 'declares %s' % ', '.join(declared[0])))
     step('roll-forward (rollback again)', lambda: switch_back(to_name))
-    step('Q3 ledger-survives-rollback', lambda: ledger_survives(ledger[0] if ledger else None))
+    step('Q3 ledger-survives-rollback', lambda: ledger_survives(ledger[0] if ledger else None, declared[0] if declared else None))
     step('prune-from', prune)
     step('restart-all', restart)
     step('manager-restart (default.target)', manager_restart)

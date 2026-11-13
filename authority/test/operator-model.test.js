@@ -72,3 +72,42 @@ test('operator proxies the gateway usage ledger: today, history and daily limits
   await alone.start(); t.after(() => alone.close());
   for (const [route, body] of [['/usage'], ['/usage/history'], ['/usage/limits', { limits: { vision: 3 } }]]) assert.equal((await send('op2.sock', route, body, token)).status, 503, route);
 });
+
+test('operator proxies the provider key routes: listed, set and cleared without the key ever coming back', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'world-model-'));
+  const authority = new Authority({ file: path.join(dir, 'world.sqlite'), initialPaused: true });
+  const token = 'operator'.repeat(6), key = 'MOCK-PROVIDER-KEY-not-a-real-key';
+  const hash = value => createHash('sha256').update(value).digest('hex');
+  // A stand-in adapter and the capability its operation is counted under (a release has none).
+  const { CAPABILITIES } = await import('../../capabilities/providers/index.js');
+  const capability = { id: 'mock', title: 'MOCK', meter: { kind: 'paid', source: 'gateway', unit: 'calls', units: [], dailyLimit: 3, spendCategory: 'generation', stopTier: 'restricted', perPerson: false } };
+  const adapter = { id: 'mock', title: 'MOCK provider', hosts: ['provider.mock.invalid'], proxy: false, operations: { 'mock.sketch': { mode: 'sync', estimate: () => 0, submit: () => ({}), submitted: () => ({}) } } };
+  const gateway = createModelGateway({ settingsFile: path.join(dir, 'model.json'), inferenceSocket: path.join(dir, 'infer.sock'), controlSocket: path.join(dir, 'control.sock'), inferenceTokenHash: hash('inference'.repeat(6)), operatorTokenHash: hash(token), worldStatus: () => authority.worldStatus(), fetchImpl: async () => { throw new Error('no provider in this test'); }, providers: [adapter], capabilities: [...CAPABILITIES, capability] });
+  await gateway.start();
+  const operator = createOperatorServer({ authority, socketPath: path.join(dir, 'op.sock'), tokenHash: hash(token), origins: [], modelControl: createModelControlClient(path.join(dir, 'control.sock')) });
+  await operator.start();
+  t.after(async () => { await operator.close(); await gateway.close(); authority.close(); assert.ok(fs.realpathSync(dir).startsWith(fs.realpathSync(os.tmpdir()) + path.sep + 'world-model-')); fs.rmSync(dir, { recursive: true }); });
+  const send = (socket, route, body, bearer = token) => new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: path.join(dir, socket), path: route, method: body ? 'POST' : 'GET', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' } }, res => { let raw = ''; res.on('data', chunk => { raw += chunk; }); res.on('end', () => resolve({ status: res.statusCode, raw, ...JSON.parse(raw) })); }); req.on('error', reject); req.end(body ? JSON.stringify(body) : undefined);
+  });
+  const configured = async () => Object.fromEntries((await send('op.sock', '/providers')).value.providers.map(item => [item.id, item.configured]));
+  assert.deepEqual(await configured(), { deepseek: false, mock: false });
+  assert.equal((await send('op.sock', '/providers', undefined, 'x'.repeat(48))).status, 401);
+  // The answer carries no key, and neither does the listing or the world state.
+  const stored = await send('op.sock', '/providers/key', { provider: 'mock', apiKey: key });
+  assert.deepEqual([stored.status, stored.value, stored.raw.includes('MOCK-PROVIDER')], [200, { provider: 'mock', configured: true }, false]);
+  const listed = await send('op.sock', '/providers');
+  assert.deepEqual([await configured(), listed.raw.includes('MOCK-PROVIDER')], [{ deepseek: false, mock: true }, false]);
+  assert.equal(JSON.stringify(authority.snapshot()).includes('MOCK-PROVIDER'), false);
+  // Unknown fields and providers never store anything; DeepSeek keeps its own route.
+  for (const body of [{ provider: 'mock', apiKey: key, extra: 1 }, { provider: 'other', apiKey: key }, { provider: 'deepseek', apiKey: key }, { provider: 'mock' }]) assert.equal((await send('op.sock', '/providers/key', body)).status, 400, JSON.stringify(Object.keys(body)));
+  assert.equal((await send('op.sock', '/providers/clear', { provider: 'mock', apiKey: key })).status, 400);
+  assert.deepEqual((await send('op.sock', '/providers/clear', { provider: 'mock' })).value, { provider: 'mock', configured: false });
+  assert.deepEqual(await configured(), { deepseek: false, mock: false });
+  // It needs no pause: the same while the world runs.
+  authority.setWorldPaused({ paused: false, expectedRevision: 1 });
+  assert.equal((await send('op.sock', '/providers/key', { provider: 'mock', apiKey: key })).status, 200);
+  const alone = createOperatorServer({ authority, socketPath: path.join(dir, 'op2.sock'), tokenHash: hash(token), origins: [] });
+  await alone.start(); t.after(() => alone.close());
+  for (const [route, body] of [['/providers'], ['/providers/key', { provider: 'mock', apiKey: key }], ['/providers/clear', { provider: 'mock' }]]) assert.equal((await send('op2.sock', route, body)).status, 503, route);
+});

@@ -21,10 +21,13 @@
 // It is logged with `consolidation: true`, its user message as `maintenance`, and an empty `userText`.
 // A web search (the gateway's /v1/web/search) gets one fixed MOCK result and is logged with `search: true`
 // and the query as `userText`. A vision request is a non-streamed chat completion and is answered like one.
+// A release with provider adapters also gets the mock provider (fake-provider.mjs) and its capability row; its
+// upstream requests are logged with `provider: "mock"` and the method and path as `userText`.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { FAKE_CAPABILITY, FAKE_PROVIDER, createFakeProviderUpstream } from './fake-provider.mjs';
 
 export const DEFAULT_REPLY = 'MOCK-REPLY';
 export const DEFAULT_USAGE = Object.freeze({ prompt_tokens: 100, completion_tokens: 20 });
@@ -98,7 +101,10 @@ export function renderReply(plan) {
 
 /** fetch stand-in. Every request is appended to `logFile`; anything but chat completions and web search is refused. */
 export function createFakeUpstream({ scriptFile, logFile }) {
+  const provider = createFakeProviderUpstream(entry => fs.appendFileSync(logFile, JSON.stringify({ at: Date.now(), stream: false, provider: entry.provider, userText: `${entry.method} ${entry.route}` }) + '\n', { mode: 0o600 }));
   return async (url, options = {}) => {
+    const provided = await provider(url, options);
+    if (provided) return provided;
     if (String(url) === 'https://api.deepseek.com/v1/tools/search') {
       const query = String(JSON.parse(options.body)?.query ?? '');
       fs.appendFileSync(logFile, JSON.stringify({ at: Date.now(), stream: false, search: true, userText: query }) + '\n', { mode: 0o600 });
@@ -127,7 +133,10 @@ async function main(argv) {
   const { createModelGateway } = await import(pathToFileURL(path.join(release, 'model-gateway/server.mjs')).href);
   const { AuthorityClient } = await import(pathToFileURL(path.join(release, 'authority/src/client.js')).href);
   const authority = new AuthorityClient(config.authority);
-  const gateway = createModelGateway({ ...config, worldStatus: async () => (await authority.health()).world, fetchImpl: createFakeUpstream({ scriptFile: args.script, logFile: args.log }) });
+  // The mock provider and its usage row, for a release whose gateway takes adapters (an older one ignores both).
+  const declared = await import(pathToFileURL(path.join(release, 'capabilities/providers/index.js')).href).then(module => module.CAPABILITIES, () => null);
+  const mock = declared ? { providers: [FAKE_PROVIDER], capabilities: [...declared, FAKE_CAPABILITY] } : {};
+  const gateway = createModelGateway({ ...config, ...mock, worldStatus: async () => (await authority.health()).world, fetchImpl: createFakeUpstream({ scriptFile: args.script, logFile: args.log }) });
   await gateway.start();
   let stopping = false;
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { if (stopping) return; stopping = true; void gateway.close().catch(() => { process.exitCode = 1; }); });

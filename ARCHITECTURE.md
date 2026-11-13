@@ -31,7 +31,7 @@ companion-conversation QQ delivery adapter → 实际回执
 - `capabilities/media/`：文件引用、ACL、来源派生、感知/合成/附件表达；不解析 OneBot 字段。平台原生表情描述是 opaque 数据，仅所属渠道解释。
 - `capabilities/providers/`：能力声明（注册表）。每个能力一个目录、一份无依赖的数据声明（`manifest.js`：动作、计量方式、凭据位置、产物、运行方式），`index.js` 是唯一入口。目前只有额度账本和控制台额度页读它；模型工具、Authority 的 `/v1/content` 白名单和 content 的分发仍各自写死。
 - `capabilities/speech/`：纯本地文件 ASR/TTS provider，单请求只跑选中引擎。无麦克风、音箱、虚拟声卡、声纹身份或实时直播假设。
-- `model-gateway/`：固定供应商出口、私有 Key、取消与有界预算；不拥有实体/人格/记忆。新增视觉与网页仍经 Authority 作用域授权后使用。
+- `model-gateway/`：固定供应商出口、私有 Key、取消与有界预算；不拥有实体/人格/记忆。所有付费 Key 都只在这里：DeepSeek 之外的供应商各写一个适配模块（`providers/`，本版本一个都没有），Key 在控制台录入、存 `providers.json`，调用统一走 提交/查询/取回 三个动作并计入花费与额度账本。新增视觉与网页仍经 Authority 作用域授权后使用。
 - [console](<console/README.md>)：独立管理页由 operator 同源入口提供；管理世界状态、人格、模型、QQ 绑定、记忆、语音参数与授权参考录音。
 - `plugin/`、`adapter-plugin/`、旧 `voice-runtime/` 等保留源码，未重新发行/启用。根默认 test 指向当前产品，旧检查只在显式 legacy 脚本中。
 

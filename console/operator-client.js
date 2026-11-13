@@ -47,6 +47,16 @@ export function limitsPayload(id, value) {
 }
 const usageNumbers = row => ['used', 'calls', 'ok', 'failed', 'busyMs', 'costYuan'].every(key => Number.isFinite(row?.[key])) && (row.limit === null || Number.isFinite(row.limit))
   && row.denied && typeof row.denied === 'object' && row.units && typeof row.units === 'object';
+/** POST /providers/key: a provider's key as typed (trimmed, printable, no spaces). */
+export function providerKeyPayload(provider, apiKey) {
+  const key = String(apiKey ?? '').trim();
+  if (typeof provider !== 'string' || !provider || !/^[\x21-\x7e]{1,4096}$/.test(key)) throw Object.assign(new Error('invalid_provider_key'), { code: 'invalid_provider_key' });
+  return { provider, apiKey: key };
+}
+/** GET /providers: who holds a key. `managed: 'model'` is DeepSeek, whose key is set with the model form. */
+export function validProviders(value) {
+  return Array.isArray(value?.providers) && value.providers.every(item => typeof item?.id === 'string' && typeof item.title === 'string' && typeof item.configured === 'boolean' && ['model', 'providers'].includes(item.managed));
+}
 /** GET /usage: today's row per capability (model-gateway usage ledger). */
 export function validUsage(value) {
   return value && typeof value.day === 'string' && Array.isArray(value.rows) && value.rows.every(row => typeof row.id === 'string' && typeof row.title === 'string' && ['paid', 'local'].includes(row.kind) && usageNumbers(row)
@@ -95,9 +105,9 @@ export function sourcesQuery({ id } = {}) {
 }
 export async function operatorRequest({ location, token, path, payload, query, fetchImpl = fetch, signal, sameOrigin = false }) {
   if (!token) throw Object.assign(new Error('authorization_required'), { code: 'authorization_required' });
-  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/conversations', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits'].includes(path)) throw new Error('unsupported_operator_path');
-  if (['/model', '/model/test', '/spend/settings', '/usage/limits', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
-  if (['/runtime', '/people', '/conversations', '/spend', '/usage', '/usage/history', '/memory/consolidation', '/memory/sources'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
+  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/conversations', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits', '/providers', '/providers/key', '/providers/clear'].includes(path)) throw new Error('unsupported_operator_path');
+  if (['/model', '/model/test', '/spend/settings', '/usage/limits', '/providers/key', '/providers/clear', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
+  if (['/runtime', '/people', '/conversations', '/spend', '/usage', '/usage/history', '/providers', '/memory/consolidation', '/memory/sources'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
   if (query !== undefined && (!['/memory', '/memory/sources'].includes(path) || payload !== undefined) || path === '/memory/sources' && query === undefined) throw new Error('operator_query_unsupported');
   const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}${query === undefined ? '' : path === '/memory/sources' ? sourcesQuery(query) : memoryQuery(query)}`, {
     method: payload === undefined ? 'GET' : 'POST',

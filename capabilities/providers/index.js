@@ -5,6 +5,11 @@
 //
 // Adding a capability = one directory with a manifest, plus one import line here.
 //
+// A capability served by a paid provider other than DeepSeek chat is reached through a provider adapter
+// (model-gateway/providers/index.mjs). The link is the name: an adapter operation `<capability id>.<action>`
+// is counted and limited by that capability's `meter` here (source 'gateway', a spendCategory), and its
+// credential entry points at `model-data/providers.json`. None is declared yet.
+//
 // Today the declarations are read by the usage ledger (model-gateway/usage-ledger.mjs) and, through
 // it, the console's quota page. The model tools, Authority's /v1/content allowlist and the content
 // service still carry their own action lists.

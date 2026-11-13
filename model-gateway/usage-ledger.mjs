@@ -104,6 +104,15 @@ export function createUsageLedger({ directory, capabilities, defaults = {}, exte
       for (const [unit, value] of Object.entries(entry.units)) row.units[unit] = Math.round(((row.units[unit] ?? 0) + value) * 1000) / 1000;
     }));
   }
+  /** One of today's slots of `id`: refused (and counted as daily_limit) once its daily limit is reached. */
+  const slot = id => serial(async () => {
+    const taken = await update(id, row => {
+      const limit = limitOf(id);
+      if (limit !== null && row.reserved >= limit) { row.denied.daily_limit = (row.denied.daily_limit ?? 0) + 1; return false; }
+      row.reserved++; return true;
+    });
+    if (!taken) throw failure('BUDGET_EXHAUSTED', 'The daily capability budget is exhausted');
+  });
   const view = () => ({
     day: state.day, timezone: 'Asia/Shanghai',
     rows: [...declared.values()].map(({ id, title, meter }) => {
@@ -120,7 +129,9 @@ export function createUsageLedger({ directory, capabilities, defaults = {}, exte
       try {
         const stored = JSON.parse(await readPrivate(stateFile, 262144));
         if (stored?.schema === 1 && typeof stored.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(stored.day) && object(stored.rows)) {
-          state = { schema: 1, day: stored.day, rows: Object.fromEntries(Object.entries(stored.rows).filter(([id]) => declared.has(id)).map(([id, row]) => [id, storedRow(row)]).filter(([, row]) => row)) };
+          // A row of a capability this release does not declare (a newer release counted it before a rollback) is kept
+          // for the day, unseen: its count and daily slots are still there when that release runs again.
+          state = { schema: 1, day: stored.day, rows: Object.fromEntries(Object.entries(stored.rows).map(([id, row]) => [id, storedRow(row)]).filter(([, row]) => row)) };
         }
       } catch {}
       await serial(() => roll().catch(() => {}));
@@ -138,14 +149,12 @@ export function createUsageLedger({ directory, capabilities, defaults = {}, exte
     /** Take one of today's slots of a reported capability with a daily limit; BUDGET_EXHAUSTED when none is left. */
     reserve(id) {
       if (declared.get(id)?.meter.source !== 'reported') return Promise.reject(invalid());
-      return serial(async () => {
-        const taken = await update(id, row => {
-          const limit = limitOf(id);
-          if (limit !== null && row.reserved >= limit) { row.denied.daily_limit = (row.denied.daily_limit ?? 0) + 1; return false; }
-          row.reserved++; return true;
-        });
-        if (!taken) throw failure('BUDGET_EXHAUSTED', 'The daily capability budget is exhausted');
-      });
+      return slot(id);
+    },
+    /** The same slot for a capability the gateway runs at its own exit (a provider adapter's operation). */
+    take(id) {
+      if (declared.get(id)?.meter.source !== 'gateway' || declared.get(id).meter.legacyCounter) return Promise.reject(invalid());
+      return slot(id);
     },
     /** `{ id: integer 0–1000 | null }`; null returns a capability to its default. Only capabilities declared with a daily limit. */
     setLimits(input) {

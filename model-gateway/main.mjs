@@ -3,6 +3,7 @@ import { constants, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { AuthorityClient } from '../authority/src/client.js';
 import { createModelGateway } from './server.mjs';
+import { createProxyFetch } from './proxy-fetch.mjs';
 
 export async function main(args = process.argv.slice(2)) {
   if (args.length !== 2 || args[0] !== '--config') throw new Error('Expected --config');
@@ -16,7 +17,9 @@ export async function main(args = process.argv.slice(2)) {
   const keys = ['settingsFile', 'inferenceSocket', 'controlSocket', 'inferenceTokenHash', 'operatorTokenHash', 'authority', 'usageFile', 'budgets'];
   if (!config || Object.keys(config).some(key => !keys.includes(key)) || !config.authority || Object.keys(config.authority).some(key => !['socketPath', 'tokenFile'].includes(key))) throw new Error('Invalid gateway launch configuration');
   const authority = new AuthorityClient(config.authority);
-  const gateway = createModelGateway({ ...config, worldStatus: async () => (await authority.health()).world });
+  // The host's outbound HTTP proxy for the provider adapters that declare `proxy: true` (not a secret; set in the unit).
+  const proxy = process.env.COMPANION_OUTBOUND_PROXY;
+  const gateway = createModelGateway({ ...config, worldStatus: async () => (await authority.health()).world, ...(proxy ? { proxyFetch: createProxyFetch(proxy) } : {}) });
   await gateway.start();
   let stopping = false;
   const stop = async () => {

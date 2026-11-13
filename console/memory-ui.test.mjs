@@ -154,7 +154,8 @@ test('machine digests are marked as machine text with what they cover; consolida
   assert.ok(!JSON.stringify(render()).includes('999900000011'));
   // Leaving the page drops what was read.
   nodes(render()).find(n => n.type === 'button' && n.children.includes('overview')).props.onClick();
-  assert.deepEqual([states[10], Object.keys(states.at(-1)).length], [null, 0]);
+  // (state 25 is the source lines read for single items)
+  assert.deepEqual([states[10], Object.keys(states[25]).length], [null, 0]);
 });
 
 test('consolidation status and source reads are GET-only; a source read names exactly one item', async () => {

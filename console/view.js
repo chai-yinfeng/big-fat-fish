@@ -1,7 +1,7 @@
 // Shared UI for the standalone browser entry. Styling lives in standalone.css.
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
-import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory } from './operator-client.js';
+import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders } from './operator-client.js';
 import { validRuntime, ttsBackend, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
@@ -124,6 +124,11 @@ export function WorldConsole({ t, standalone = false }) {
   const [quotaOpen, setQuotaOpen] = useState(null);
   const [quotaHistory, setQuotaHistory] = useState(null);
   const [limitDraft, setLimitDraft] = useState({});
+  // Provider keys (appended, same reason): who holds a key, the row whose clearing awaits confirmation, the key inputs.
+  // A typed key lives only in its uncontrolled input until it is sent; it is never state and never read back.
+  const [providers, setProviders] = useState(null);
+  const [providerClear, setProviderClear] = useState(null);
+  const providerInputs = useRef({});
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -141,11 +146,13 @@ export function WorldConsole({ t, standalone = false }) {
     for (const controller of requests.current) controller.abort();
     try { sessionStorage.removeItem(TOKEN_KEY); } catch {}
     if (apiKeyInput.current) apiKeyInput.current.value = '';
+    for (const input of Object.values(providerInputs.current)) if (input) input.value = '';
     if (qqCallerInput.current) qqCallerInput.current.value = '';
     clearAudio(); clearReferenceInputs();
     setToken(''); setInput(''); setData(null); setDraft(null); setQQ(null); setMemory(null); setForgetPreview(null); setRuntimeInfo(null); setSpeechDraft(null); setConfirmRemove(false); setNotice('');
     setPalette(null); setDrawer(false); setPeople(null); setSpendDraft(null); setMemoryFilter('');
     setQuota(null); setQuotaOpen(null); setQuotaHistory(null); setLimitDraft({});
+    setProviders(null); setProviderClear(null);
   }
   async function request(path, payload, credential = token, query) {
     const controller = new AbortController();
@@ -205,17 +212,23 @@ export function WorldConsole({ t, standalone = false }) {
     setQuota({ usage, spend: validSpend(spend) ? spend : null, consolidation: Number.isFinite(batches?.calls) && Number.isFinite(batches?.limits?.perDay) ? batches : null });
     setQuotaHistory(null);
   }
+  // Who holds a key; a gateway that cannot answer leaves the card saying so, the rest of the page still shows.
+  async function loadProviders(credential = token) {
+    const current = generation.current, value = await request('/providers', undefined, credential).catch(caught => { if (caught.code === 'authorization_required') throw caught; return null; });
+    if (!mounted.current || generation.current !== current) return;
+    setProviders(validProviders(value) ? value.providers : null); setProviderClear(null);
+  }
   async function loadRuntime(credential = token) {
     const current = generation.current, value = await request('/runtime', undefined, credential);
     if (!validRuntime(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
     if (!mounted.current || generation.current !== current) return;
     setRuntimeInfo(value); setSpeechDraft(value.speech.status === 'ready' ? { numThreads: value.speech.numThreads, maxTextChars: value.speech.maxTextChars } : null);
   }
-  useEffect(() => { if (token) void run(async () => { await load(token); if (standalone && tab === 'runtime') await loadRuntime(token); }); }, [token]);
+  useEffect(() => { if (token) void run(async () => { await load(token); if (tab === 'runtime') await loadProviders(token); if (standalone && tab === 'runtime') await loadRuntime(token); }); }, [token]);
   useEffect(() => { if (token && tab === 'channels') void run(() => loadQQ(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'people') void run(() => loadPeople(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'quota') void run(() => loadQuota(token)); }, [token, tab]);
-  useEffect(() => { if (standalone && token && tab === 'runtime') void run(() => loadRuntime(token)); }, [tab]);
+  useEffect(() => { if (token && tab === 'runtime') void run(async () => { await loadProviders(token); if (standalone) await loadRuntime(token); }); }, [tab]);
   // Shell effects: theme attribute, toast lifetime, scroll reset, global shortcuts.
   useEffect(() => {
     try {
@@ -245,7 +258,7 @@ export function WorldConsole({ t, standalone = false }) {
     if (key !== 'quota') { setQuotaOpen(null); setQuotaHistory(null); setLimitDraft({}); }
     setTab(key); setDrawer(false);
   }
-  const refreshAll = () => run(async () => { await load(); if (standalone && tab === 'runtime') await loadRuntime(); if (tab === 'quota') await loadQuota(); });
+  const refreshAll = () => run(async () => { await load(); if (tab === 'runtime') await loadProviders(); if (standalone && tab === 'runtime') await loadRuntime(); if (tab === 'quota') await loadQuota(); });
   function field(key, multiline = false) {
     return h('label', { key }, h('span', null, t(key)), h(multiline ? 'textarea' : 'input', {
       name: key, value: draft[key], disabled: busy, rows: multiline ? 3 : undefined, onChange: event => setDraft({ ...draft, [key]: event.target.value }),
@@ -536,6 +549,29 @@ export function WorldConsole({ t, standalone = false }) {
         await load(); setNotice(t(result.ok ? 'modelTestPassed' : 'modelTestFailed'));
       }), { disabled: busy || !model.configured, icon: 'sparkles' })));
   }
+  // Provider keys: one row per provider the gateway really has (DeepSeek, then each adapter). A key can be stored
+  // or cleared, never shown: the listing says only whether one is set.
+  function providerKeys() {
+    const head = cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('lock')), h('h2', null, t('providerKeys.title'))));
+    if (!providers) return h('section', { className: 'bff-card' }, head, text('providerKeys.unavailable'));
+    const state = item => badge(t(item.configured ? 'providerKeys.configured' : 'providerKeys.missing'), item.configured ? 'ok' : 'warn');
+    return h('section', { className: 'bff-card' }, head, text('providerKeys.hint'),
+      ...providers.map(item => item.managed === 'model'
+        ? h('div', { className: 'bff-list-row', key: item.id }, h('strong', null, item.title), state(item), h('span', { className: 'bff-small bff-muted' }, t('providerKeys.modelManaged')))
+        : h('div', { className: 'bff-list-row', key: item.id }, h('strong', null, item.title), state(item),
+          h('form', { style: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-end', justifyContent: 'flex-end' }, onSubmit: event => { event.preventDefault(); void run(async () => {
+            const input = providerInputs.current[item.id], payload = providerKeyPayload(item.id, input?.value);
+            if (input) input.value = '';
+            await request('/providers/key', payload);
+            await loadProviders(); setNotice(t('saved'));
+          }); } },
+          h('label', null, h('span', null, t('providerKeys.key')), h('input', { ref: node => { providerInputs.current[item.id] = node; }, type: 'password', required: true, disabled: busy, autoComplete: 'off', spellCheck: false, autoCapitalize: 'none' })),
+          h('div', { className: 'bff-actions' },
+            h('button', { type: 'submit', disabled: busy }, icon('save'), t(item.configured ? 'providerKeys.replace' : 'providerKeys.save')),
+            item.configured && (providerClear === item.id
+              ? button('providerKeys.clearConfirm', () => run(async () => { await request('/providers/clear', { provider: item.id }); await loadProviders(); setNotice(t('saved')); }), { className: 'bff-danger', icon: 'trash' })
+              : button('providerKeys.clear', () => setProviderClear(item.id), { className: 'bff-ghost', icon: 'trash' })))))));
+  }
   const validMemory = value => value && typeof value.entityId === 'string' && Array.isArray(value.items) && Array.isArray(value.diaries);
   async function loadMemory(filter = memoryFilter) {
     const value = await request('/memory', undefined, token, filter ? { person: filter } : undefined);
@@ -721,7 +757,7 @@ export function WorldConsole({ t, standalone = false }) {
   function runtime() {
     return h(React.Fragment, null,
       standalone ? h('section', { className: 'bff-card' }, h('h2', null, t('runtime')), text('standaloneRuntimeHint')) : h(React.Fragment, null, ...[['runtime', 'runtimeHint'], ['strategy', 'strategyHint']].map(([title, hint]) => h('section', { key: title, className: 'bff-card' }, h('h2', null, t(title)), text(hint)))),
-      standalone && speechSettings(), modelSettings(),
+      standalone && speechSettings(), modelSettings(), providerKeys(),
       h('section', { className: 'bff-card' }, h('h2', null, t('setup')), text(standalone ? 'standaloneSetupHint' : 'setupHint')));
   }
   function skeleton() {

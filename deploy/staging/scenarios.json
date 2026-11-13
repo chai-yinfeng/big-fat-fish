@@ -455,6 +455,30 @@
       "finally": [
         { "usageLimit": { "capability": "vision", "limit": null } }
       ]
+    },
+    {
+      "id": "P1",
+      "title": "provider-adapter-round-trip: the mock provider is refused without a key; with one, a job is submitted, polled and fetched, a sync call answers at once, both land in the usage row and the spend meter, and the daily limit refuses the next",
+      "model": [],
+      "steps": [
+        { "providerKey": { "provider": "mock", "action": "clear" } },
+        { "usageLimit": { "capability": "mock", "limit": 100 } },
+        { "noteUsage": {} },
+        { "providerJob": { "operation": "mock.generate", "prompt": "MOCK-P1-{run}", "expect": "UNCONFIGURED" } },
+        { "expectUsage": { "capability": "mock", "denied": { "not_configured": 1 } } },
+        { "providerKey": { "provider": "mock", "action": "set" } },
+        { "providerJob": { "operation": "mock.generate", "prompt": "MOCK-P1-{run}" } },
+        { "providerJob": { "operation": "mock.sketch", "prompt": "MOCK-P1-{run}" } },
+        { "expectUsage": { "capability": "mock", "used": 2, "calls": 2, "ok": 2, "denied": { "not_configured": 1 } } },
+        { "expectUsageMatchesSpend": {} },
+        { "usageLimit": { "capability": "mock", "limit": "used" } },
+        { "providerJob": { "operation": "mock.sketch", "prompt": "MOCK-P1-{run}", "expect": "BUDGET_EXHAUSTED" } },
+        { "expectUsage": { "capability": "mock", "used": 2, "calls": 2, "ok": 2, "denied": { "not_configured": 1, "daily_limit": 1 } } },
+        { "expectUsageMatchesSpend": {} }
+      ],
+      "finally": [
+        { "usageLimit": { "capability": "mock", "limit": null } }
+      ]
     }
   ]
 }

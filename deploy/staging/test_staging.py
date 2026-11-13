@@ -120,7 +120,7 @@ class LifecycleOrderTests(unittest.TestCase):
     def test_rollback_round_trip_happens_after_the_upgrade_was_used_and_before_the_from_release_is_pruned(self):
         steps = re.findall(r"^    step\('([^']+)'", (HERE / 'staging-agent.py').read_text(), re.M)
         order = ['upgrade (preflight, switch, health)', 'smoke-upgraded', 'scenarios-upgraded', 'ledger-before-rollback', 'migration-drill (copy)', 'rollback (to from)',
-                 'smoke-from', 'roll-forward (rollback again)', 'Q3 ledger-survives-rollback', 'prune-from', 'restart-all', 'manager-restart (default.target)', 'smoke', 'scenarios', 'prod-untouched']
+                 'smoke-from', 'ledger-rows-of-from', 'roll-forward (rollback again)', 'Q3 ledger-survives-rollback', 'prune-from', 'restart-all', 'manager-restart (default.target)', 'smoke', 'scenarios', 'prod-untouched']
         self.assertEqual(steps[steps.index(order[0]):], order)
 
     def test_the_drill_tool_is_uploaded_and_only_ever_given_a_copy(self):
@@ -162,6 +162,22 @@ class LedgerRollbackTests(unittest.TestCase):
             sa.operator = self.answers(self.today('2026-11-13', {'chat': dict(self.IDLE), 'web': dict(self.IDLE)}), {'days': []})
             with self.assertRaisesRegex(RuntimeError, 'lost across the rollback: chat'):
                 sa.ledger_survives(before)
+            # A row of a capability the old release does not declare cannot survive it: left out and named.
+            # (declared None: the old release has no ledger and touches no file, so every row is compared.)
+            newer = ('2026-11-12', {'chat': dict(self.ROW), 'mock': dict(self.ROW)})
+            sa.operator = self.answers(self.today('2026-11-12', {'chat': dict(self.ROW)}))
+            self.assertIn('not compared, unknown to the from-release: mock', sa.ledger_survives(newer, ['chat', 'web']))
+            for declared in (None, ['chat', 'mock']):
+                with self.assertRaisesRegex(RuntimeError, 'lost across the rollback: mock'):
+                    sa.ledger_survives(newer, declared)
+            sa.operator = self.answers(self.today('2026-11-12', {'mock': dict(self.ROW)}))
+            with self.assertRaisesRegex(RuntimeError, 'lost across the rollback: chat'):
+                sa.ledger_survives(newer, ['chat'])
+            self.assertEqual(sa.declared_rows(), ['mock'])
+            sa.operator = self.answers(self.today('2026-11-12', before[1]))
+            self.assertNotIn('not compared', sa.ledger_survives(before, ['chat', 'web']))
+            sa.operator = lambda *_args: (_ for _ in ()).throw(RuntimeError('GET /usage -> 404'))
+            self.assertIsNone(sa.declared_rows())
             # An empty ledger, or none noted, proves nothing.
             with self.assertRaisesRegex(RuntimeError, 'empty before the rollback'):
                 sa.ledger_survives(('2026-11-12', {'chat': dict(self.IDLE)}))
@@ -174,6 +190,8 @@ class LedgerRollbackTests(unittest.TestCase):
         source = (HERE / 'staging-agent.py').read_text()
         self.assertIn("for label in ('spend.json', 'spend-settings.json', 'capability-usage.json', 'usage-ledger.json', 'usage-limits.json'):", source)
         self.assertNotIn("'usage-history.jsonl'", source)
+        self.assertIn("(model_data / 'provider-jobs.json').unlink(missing_ok=True)", source)
+        self.assertNotIn("'providers.json'", source)
 
 
 class ConsolidationResetTests(unittest.TestCase):
