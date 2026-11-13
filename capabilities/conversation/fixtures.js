@@ -59,11 +59,13 @@ export const toolCall = (name, args, reasoning, id = 'call_1') => [...(reasoning
  * an array of SSE chunks, or 'hang' (never answers until the client disconnects). */
 export async function fakeGateway(t, root) {
   const credential = tokenFile(root, 'gateway.token'), socketPath = path.join(root, 'inference.sock');
-  const state = { script: [], bodies: [], aborted: 0 };
+  const state = { script: [], bodies: [], marks: [], aborted: 0 };
   await listen(t, socketPath, async (req, res) => {
     if (req.method !== 'POST' || req.url !== '/v1/chat/completions' || req.headers.authorization !== 'Bearer ' + credential.token) { res.writeHead(401); res.end('{}'); return; }
     const body = await readJson(req);
     state.bodies.push(body);
+    // The request header that marks an initiated run for the gateway (null on an ordinary one).
+    state.marks.push(req.headers['x-companion-run'] ?? null);
     const step = state.script.shift();
     if (!step) { res.writeHead(503, { 'content-type': 'application/json' }); res.end('{"ok":false,"error":{"code":"UNAVAILABLE"}}'); return; }
     if (step === 'hang') { res.on('close', () => { state.aborted++; }); res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(': waiting\n\n'); return; }
