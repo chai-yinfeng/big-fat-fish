@@ -68,10 +68,14 @@ test('the card sits on the channels page after the QQ settings: one button, the 
   // As the owner reads it (zh): a result, and a reason or a short note; a reason this page has no words for shows as its code.
   const zh = h.flattenDictionary(JSON.parse(await readFile(new URL('./locale/zh.json', import.meta.url), 'utf8')));
   assert.deepEqual(rowsOf(card(h, h.render(key => zh[key] || key), zh['initiative.title'])).slice(0, 8), [
-    ['等待 QQ 桥来取', '最多约一分钟'], ['已送达', '—'], ['作废', '安静时段（23:30–08:00）'], ['推迟', '预算到了降级档'],
+    ['等待 QQ 桥来取', '最多约一分钟'], ['已送达', '—'], ['作废', '安静时段'], ['推迟', '预算到了降级档'],
     ['状态不明', '平台没有给回执，不会重发'], ['她选择不说', '没有发出任何消息'], ['作废', 'newer_reason'], ['已送达', '—'],
   ]);
   assert.ok(!JSON.stringify(section).includes('p-0a1b2c'));
+  // The quiet hours in force are shown as Authority reports them.
+  assert.ok(!h.textOf(section).includes('initiative.quiet'));
+  states[INITIATIONS] = { ...states[INITIATIONS], quietHours: { from: '23:30', to: '08:00', timezone: 'Asia/Shanghai', now: false } };
+  assert.ok(h.textOf(card(h, h.render())).includes('initiative.quiet: 23:30–08:00'));
   // Nothing loaded (an Authority that could not answer) or nothing yet: the card says so, the button stays.
   states[INITIATIONS] = null;
   assert.ok(h.textOf(card(h, h.render())).includes('initiative.unavailable'));
@@ -98,7 +102,7 @@ test('the button posts an empty body and reads the list again; the notice tells 
 test('initiative strings exist in both locales for every result and reason Authority and the bridge can produce', async () => {
   for (const locale of ['zh', 'en']) {
     const { initiative, quotaPanel } = JSON.parse(await readFile(new URL(`./locale/${locale}.json`, import.meta.url), 'utf8'));
-    for (const key of ['title', 'hint', 'poke', 'queued', 'already', 'refused', 'unavailable', 'empty']) assert.equal(typeof initiative[key], 'string', `${locale} ${key}`);
+    for (const key of ['title', 'hint', 'quiet', 'poke', 'queued', 'already', 'refused', 'unavailable', 'empty']) assert.equal(typeof initiative[key], 'string', `${locale} ${key}`);
     assert.deepEqual(Object.keys(initiative.columns), ['time', 'result', 'reason'], locale);
     assert.deepEqual(Object.keys(initiative.result), ['waiting', 'issued', 'sent', 'partial', 'unknown', 'failed', 'declined', 'dropped', 'deferred'], locale);
     assert.deepEqual(Object.keys(initiative.reason), ['paused', 'expired', 'target', 'epoch', 'quiet_hours', 'person_spoke', 'stale', 'unsupported', 'budget'], locale);

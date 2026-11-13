@@ -147,6 +147,8 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       } else if (req.url === '/initiative/poke') {
         // "Try it on me": the body is empty, so the request can only ever be about the owner's own conversation.
         value = authority.initiationPoke(object(body, []));
+      } else if (req.url === '/initiative/settings') {
+        value = authority.initiationSettings(object(body, ['quietHours']));
       } else if (req.url === '/spend/settings') {
         object(body, ['dailyCapYuan', 'reducedPercent', 'restrictedPercent']);
         if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });

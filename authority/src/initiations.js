@@ -6,7 +6,8 @@
 // again, whatever became of it.
 // The only source in this release is the operator's "try it on me", and the only conversation a request may
 // name is the owner's own private QQ conversation.
-// Storage (no schema change): everything lives under the metadata key 'initiations'.
+// Storage (no schema change): everything lives under the metadata key 'initiations': the requests and, once the
+// operator has changed them, the quiet hours.
 import { randomUUID } from 'node:crypto';
 import { capability, closed, fail, identifier } from './identity.js';
 import { ConsolidationDomain } from './consolidation.js';
@@ -18,8 +19,8 @@ export const INITIATION = Object.freeze({
   ttlMs: 5 * MINUTE,
   /** A fetched request the bridge never reported on is closed as `unknown` after this (a run takes at most 10 minutes). */
   reportMs: 20 * MINUTE,
-  /** Quiet hours, Beijing wall clock, from 23:30 until 08:00: nothing is initiated. */
-  quietFromMinute: 23 * 60 + 30, quietToMinute: 8 * 60,
+  /** Default quiet hours, Beijing wall clock, from 23:30 until 08:00: nothing is initiated. */
+  quiet: Object.freeze({ fromMinute: 23 * 60 + 30, toMinute: 8 * 60 }),
   /** Closed requests kept for the operator's list. */
   kept: 50,
 });
@@ -28,7 +29,13 @@ export const INITIATION_OUTCOMES = Object.freeze(['sent', 'partial', 'unknown', 
 const DROPPED = /^dropped:[a-z_]{1,32}$/;
 const OWNER = 'person:owner', CAPABILITY = 'qq';
 
-export const quietHours = at => { const minute = Math.floor((at + BEIJING) / MINUTE) % 1440; return minute >= INITIATION.quietFromMinute || minute < INITIATION.quietToMinute; };
+/** Is `at` inside the quiet hours (minutes of the Beijing day; a window may pass midnight; equal ends mean none)? */
+export function quietHours(at, { fromMinute, toMinute } = INITIATION.quiet) {
+  const minute = Math.floor((at + BEIJING) / MINUTE) % 1440;
+  return fromMinute < toMinute ? minute >= fromMinute && minute < toMinute : fromMinute > toMinute && (minute >= fromMinute || minute < toMinute);
+}
+const clock = minute => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+const validMinute = value => Number.isInteger(value) && value >= 0 && value < 1440;
 
 export class InitiationDomain extends ConsolidationDomain {
   #state() {
@@ -41,13 +48,15 @@ export class InitiationDomain extends ConsolidationDomain {
     state.items = state.items.filter(item => !dropped.has(item));
     this.store.db.prepare("INSERT INTO metadata(key,value) VALUES('initiations',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(state));
   }
+  /** The quiet hours in force: the operator's, else the default. */
+  #quiet(state) { return validMinute(state.quiet?.fromMinute) && validMinute(state.quiet.toMinute) ? state.quiet : INITIATION.quiet; }
   #close(item, outcome, now) { item.status = 'closed'; item.outcome = outcome; item.endedAt = now; }
   /** Closes what can no longer go out: a waiting request that is refused now, and a fetched request without a
    * report (its delivery is unknown, and it is never handed out again). */
   #settle(state, world, now) {
     for (const item of state.items) {
       if (item.status === 'issued' && now - item.issuedAt >= INITIATION.reportMs) { this.#close(item, 'unknown', now); item.unreported = true; }
-      else if (item.status === 'waiting') { const refusal = this.#refusal(item, world, now); if (refusal) this.#close(item, refusal, now); }
+      else if (item.status === 'waiting') { const refusal = this.#refusal(item, world, now, this.#quiet(state)); if (refusal) this.#close(item, refusal, now); }
     }
   }
   /** The owner's own private QQ conversation, from the owner's newest QQ binding; null when there is none. */
@@ -60,7 +69,7 @@ export class InitiationDomain extends ConsolidationDomain {
     return stream && stream.personId === OWNER && stream.audience === 'private' ? { streamId, entityId: stream.entityId } : null;
   }
   /** Why a waiting request may not go out now (`dropped:<reason>`), or null. */
-  #refusal(item, world, now) {
+  #refusal(item, world, now, quiet) {
     // Paused now, or paused and resumed since it was registered: nothing is made up for afterwards.
     if (world.paused || world.revision !== item.worldRevision) return 'dropped:paused';
     if (now >= item.expiresAt) return 'dropped:expired';
@@ -68,7 +77,7 @@ export class InitiationDomain extends ConsolidationDomain {
     const target = this.#ownerStream();
     if (item.capabilityId !== CAPABILITY || item.personId !== OWNER || !target || target.streamId !== item.streamId || target.entityId !== item.entityId) return 'dropped:target';
     if (this.streamEpoch(this.entity(item.entityId), item.capabilityId, item.streamId) !== item.memoryEpoch) return 'dropped:epoch';
-    if (quietHours(now)) return 'dropped:quiet_hours';
+    if (quietHours(now, quiet)) return 'dropped:quiet_hours';
     // The person has spoken since: their message gets an ordinary reply instead.
     if (this.store.db.prepare("SELECT 1 FROM observations WHERE capability_id=? AND stream_id=? AND rowid>? AND json_extract(body,'$.role')='user' LIMIT 1").get(item.capabilityId, item.streamId, item.afterRow)) return 'dropped:person_spoke';
     return null;
@@ -93,7 +102,7 @@ export class InitiationDomain extends ConsolidationDomain {
         memoryEpoch: this.streamEpoch(this.entity(target.entityId), CAPABILITY, target.streamId), worldRevision: world.revision,
         afterRow: this.store.db.prepare('SELECT MAX(rowid) AS n FROM observations').get().n ?? 0, createdAt: now, expiresAt: now + INITIATION.ttlMs, status: 'waiting',
       };
-      const refusal = this.#refusal(item, world, now);
+      const refusal = this.#refusal(item, world, now, this.#quiet(state));
       if (refusal) this.#close(item, refusal, now);
       state.items.push(item);
       this.#save(state);
@@ -150,10 +159,23 @@ export class InitiationDomain extends ConsolidationDomain {
       const state = this.#state(), stored = JSON.stringify(state), now = this.now();
       this.#settle(state, this.worldStatus(), now);
       if (JSON.stringify(state) !== stored) this.#save(state);
+      const quiet = this.#quiet(state);
       return {
-        quietHours: { from: '23:30', to: '08:00', timezone: 'Asia/Shanghai', now: quietHours(now) }, deferredAt: state.deferredAt ?? null,
+        quietHours: { from: clock(quiet.fromMinute), to: clock(quiet.toMinute), timezone: 'Asia/Shanghai', now: quietHours(now, quiet) }, deferredAt: state.deferredAt ?? null,
         items: state.items.map(item => this.#view(item)).reverse(),
       };
+    });
+  }
+  /** Operator only: the quiet hours as Beijing wall-clock times `{quietHours:{from:'HH:MM',to:'HH:MM'}}`; equal
+   * ends mean no quiet hours. No console form uses it yet: scenario replay does, to run at any hour. */
+  initiationSettings(input) {
+    closed(input, ['quietHours']); closed(input.quietHours, ['from', 'to']);
+    const minutes = ['from', 'to'].map(key => { const match = typeof input.quietHours[key] === 'string' ? /^([01]\d|2[0-3]):([0-5]\d)$/.exec(input.quietHours[key]) : null; if (!match) fail('VALIDATION_ERROR', 'Quiet hours are HH:MM'); return Number(match[1]) * 60 + Number(match[2]); });
+    return this.store.transaction(() => {
+      const state = this.#state();
+      state.quiet = { fromMinute: minutes[0], toMinute: minutes[1] };
+      this.#save(state);
+      return { quietHours: { from: clock(minutes[0]), to: clock(minutes[1]), timezone: 'Asia/Shanghai', now: quietHours(this.now(), state.quiet) } };
     });
   }
 }

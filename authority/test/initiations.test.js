@@ -119,6 +119,7 @@ test('quiet hours (23:30 to 08:00 Beijing), expiry and the person speaking first
   const { a, clock, say, next, outcomes } = fixture(t);
   const beijing = (hour, minute) => Date.UTC(2027, 0, 15, hour - 8, minute);
   assert.deepEqual([[23, 29], [23, 30], [0, 0], [7, 59], [8, 0], [16, 0]].map(([hour, minute]) => quietHours(beijing(hour, minute))), [false, true, true, true, false, false]);
+  assert.deepEqual(INITIATION.quiet, { fromMinute: 23 * 60 + 30, toMinute: 8 * 60 });
   clock.now = beijing(23, 40);
   assert.equal(a.initiationPoke().outcome, 'dropped:quiet_hours');
   assert.equal(a.initiationLog().quietHours.now, true);
@@ -144,6 +145,25 @@ test('quiet hours (23:30 to 08:00 Beijing), expiry and the person speaking first
   assert.equal(a.streamEpoch(a.entity(DEFAULT_ENTITY_ID), 'qq', stream(OWNER)), 1);
   assert.deepEqual(next(), { initiation: null, reason: 'idle' });
   assert.equal(outcomes()[0], 'dropped:epoch');
+});
+
+test('the quiet hours can be moved or switched off by the operator; the default stays 23:30 to 08:00', t => {
+  const { a, clock, next, outcomes } = fixture(t);
+  const beijing = (hour, minute) => Date.UTC(2027, 0, 15, hour - 8, minute);
+  assert.deepEqual(a.initiationLog().quietHours, { from: '23:30', to: '08:00', timezone: 'Asia/Shanghai', now: false });
+  for (const bad of [{}, { quietHours: {} }, { quietHours: { from: '24:00', to: '08:00' } }, { quietHours: { from: '7:00', to: '08:00' } }, { quietHours: { from: 1410, to: 480 } }, { quietHours: { from: '23:30', to: '08:00', zone: 'UTC' } }, { quietHours: { from: '23:30', to: '08:00' }, target: stream(A) }]) assert.throws(() => a.initiationSettings(bad), { code: 'VALIDATION_ERROR' }, JSON.stringify(bad));
+  // A window that does not pass midnight, around the present (16:00).
+  assert.deepEqual(a.initiationSettings({ quietHours: { from: '15:00', to: '17:00' } }), { quietHours: { from: '15:00', to: '17:00', timezone: 'Asia/Shanghai', now: true } });
+  assert.equal(a.initiationPoke().outcome, 'dropped:quiet_hours');
+  clock.now = beijing(17, 0) + 24 * 3600000;
+  assert.equal(a.initiationPoke().status, 'waiting');
+  a.initiationAck('qq', { id: next().initiation.id, outcome: 'sent' });
+  // Equal ends: no quiet hours, at any time of day.
+  a.initiationSettings({ quietHours: { from: '00:00', to: '00:00' } });
+  clock.now = beijing(3, 0) + 48 * 3600000;
+  assert.deepEqual([a.initiationLog().quietHours.now, a.initiationPoke().status], [false, 'waiting']);
+  assert.equal(next().initiation.kind, 'proactive');
+  assert.deepEqual(outcomes(), ['issued', 'sent', 'dropped:quiet_hours']);
 });
 
 test('the operator list holds labels and times only, is bounded, and an idle poll writes nothing', t => {
@@ -207,6 +227,9 @@ test('transport: the QQ capability fetches and reports with an empty or fixed bo
   assert.equal((await call('api.sock', tokens.qq, 'POST', '/v1/initiations/ack', { id: poked.value.id, outcome: 'sent', streamId: stream(A) })).status, 400);
   assert.equal((await call('api.sock', tokens.maintenance, 'POST', '/v1/initiations/ack', { id: poked.value.id, outcome: 'sent' })).status, 403);
   assert.deepEqual((await call('api.sock', tokens.qq, 'POST', '/v1/initiations/ack', { id: poked.value.id, outcome: 'sent' })).value, { status: 'recorded' });
+  assert.equal((await call('op.sock', tokens.operator, 'POST', '/initiative/settings', { quietHours: { from: '23:30', to: '08:00' }, streamId: stream(A) })).status, 400);
+  assert.deepEqual((await call('op.sock', tokens.operator, 'POST', '/initiative/settings', { quietHours: { from: '22:00', to: '07:30' } })).value.quietHours.from, '22:00');
+  assert.equal((await call('api.sock', tokens.qq, 'POST', '/initiative/settings', { quietHours: { from: '00:00', to: '00:00' } })).status, 404);
   const log = await call('op.sock', tokens.operator, 'GET', '/initiative/log');
   assert.deepEqual([log.status, log.value.items.length, log.value.items[0].outcome], [200, 1, 'sent']);
   for (const account of [SELF, OWNER]) assert.ok(!JSON.stringify(log.value).includes(account));

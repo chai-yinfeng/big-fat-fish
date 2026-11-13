@@ -526,6 +526,7 @@ export function WorldConsole({ t, standalone = false }) {
       cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('sparkles')), h('h2', null, t('initiative.title'))),
         button('refresh', () => run(() => loadInitiations()), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
       text('initiative.hint'),
+      typeof initiations?.quietHours?.from === 'string' && typeof initiations.quietHours.to === 'string' && h('p', { className: 'bff-small bff-muted' }, `${t('initiative.quiet')}: ${initiations.quietHours.from}–${initiations.quietHours.to}`),
       h('div', { className: 'bff-actions' }, button('initiative.poke', () => run(async () => {
         const value = await request('/initiative/poke', {});
         await loadInitiations();
