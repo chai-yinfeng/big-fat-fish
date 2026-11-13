@@ -12,7 +12,7 @@ import { prepareQQ } from '../authority/prepare-qq.mjs';
 import { prepareConversation } from '../authority/prepare-conversation.mjs';
 import { prepareMemory } from '../authority/prepare-memory.mjs';
 import { createFakeOneBot } from './fake-onebot.mjs';
-import { Runner, STEPS, validateScenarios, summaryLine, gatewayCaller } from './scenarios.mjs';
+import { Runner, STEPS, validateScenarios, summaryLine, gatewayCaller, gatewayReader, MOCK_PROVIDER_KEY } from './scenarios.mjs';
 import { planReply } from './fake-model.mjs';
 
 const project = fileURLToPath(new URL('../../', import.meta.url));
@@ -21,7 +21,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -407,7 +407,7 @@ async function stack(t) {
     req.on('error', reject); req.end(body === undefined ? undefined : JSON.stringify(body));
   });
   // Silence windows are shortened here; staging waits the full time.
-  const runner = input => new Runner({ data: input, modelScript: files.script, modelLog: files.log, operator: call(path.join(base, 'ipc/operator/operator.sock'), { authorization: 'Bearer ' + operatorToken }), onebot: call(files.control, {}), gateway: gatewayCaller(path.join(base, 'ipc/model/inference.sock'), fs.readFileSync(path.join(base, 'service-config/inference.token'), 'utf8').trim()), sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 1500))) });
+  const runner = input => new Runner({ data: input, modelScript: files.script, modelLog: files.log, operator: call(path.join(base, 'ipc/operator/operator.sock'), { authorization: 'Bearer ' + operatorToken }), onebot: call(files.control, {}), gateway: gatewayCaller(path.join(base, 'ipc/model/inference.sock'), fs.readFileSync(path.join(base, 'service-config/inference.token'), 'utf8').trim()), gatewayAnswer: gatewayReader(path.join(base, 'ipc/model/inference.sock'), fs.readFileSync(path.join(base, 'service-config/inference.token'), 'utf8').trim()), sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 1500))) });
   return { runner, data, files, fake, base };
 }
 
@@ -450,12 +450,52 @@ test('usage steps: a row must change by exactly what was expected, the ledger mu
   assert.deepEqual(asked, [['/v1/web/search', 'query'], ['/v1/vision/describe', 'imageBase64,mime,question'], ['/v1/vision/describe', 'imageBase64,mime,question']]);
 });
 
+test('provider steps: a key is set or cleared through the operator and must be listed so; a job is submitted, polled and fetched', async () => {
+  const posted = [], asked = [];
+  let configured = false, leak = false, polls = 0, file = { bytes: Buffer.from('\x89PNG\r\n', 'latin1'), type: 'image/png' };
+  const run = new Runner({ data: shipped(), sleep: async () => {},
+    operator: async (method, route, body) => {
+      if (method === 'GET') return { providers: [{ id: 'deepseek', configured: true }, { id: 'mock', configured, ...(leak ? { hint: MOCK_PROVIDER_KEY } : {}) }] };
+      posted.push([route, Object.keys(body).sort().join()]); if (route !== '/providers/noop') configured = route === '/providers/key'; return {};
+    },
+    gatewayAnswer: async (route, body) => {
+      asked.push([route, Object.keys(body).sort().join()]);
+      if (route === '/v1/provider/submit') return body.input.prompt === 'refuse' ? { code: 'UNCONFIGURED' } : { value: { job: 'j1', state: body.operation === 'mock.sketch' ? 'done' : 'pending', outputs: 0 } };
+      if (route === '/v1/provider/status') return { value: { job: 'j1', state: ++polls < 2 ? 'pending' : body.job === 'j1' && polls < 90 ? 'done' : 'failed', outputs: 1 } };
+      return file;
+    } });
+  await STEPS.providerKey(run, {}, { provider: 'mock', action: 'set' });
+  await STEPS.providerKey(run, {}, { provider: 'mock', action: 'clear' });
+  assert.deepEqual(posted, [['/providers/key', 'apiKey,provider'], ['/providers/clear', 'provider']]);
+  assert.match(MOCK_PROVIDER_KEY, /^MOCK-/);
+  await assert.rejects(STEPS.providerKey(run, {}, { provider: 'other', action: 'set' }), /provider other is not listed as configured/);
+  leak = true;
+  await assert.rejects(STEPS.providerKey(run, {}, { provider: 'mock', action: 'set' }), /the provider listing contains the key/);
+  await assert.rejects(STEPS.providerKey(run, {}, { provider: 'mock', action: 'rotate' }), /unknown action/);
+  // Async: submit, two polls, fetch. Sync: submit, fetch.
+  await STEPS.providerJob(run, {}, { operation: 'mock.generate', prompt: 'x' });
+  await STEPS.providerJob(run, {}, { operation: 'mock.sketch', prompt: 'x' });
+  assert.deepEqual(asked.map(([route]) => route.split('/').at(-1)), ['submit', 'status', 'status', 'fetch', 'submit', 'fetch']);
+  assert.deepEqual(asked[0], ['/v1/provider/submit', 'input,operation']);
+  // A refusal must be the expected one; a job must end as expected, within the polls allowed, with a real file.
+  await STEPS.providerJob(run, {}, { operation: 'mock.generate', prompt: 'refuse', expect: 'UNCONFIGURED' });
+  await assert.rejects(STEPS.providerJob(run, {}, { operation: 'mock.generate', prompt: 'refuse' }), /refused mock.generate with UNCONFIGURED, expected done/);
+  await assert.rejects(STEPS.providerJob(run, {}, { operation: 'mock.sketch', prompt: 'x', expect: 'BUDGET_EXHAUSTED' }), /the mock.sketch job is done after 0 polls, expected BUDGET_EXHAUSTED/);
+  polls = 0;
+  await assert.rejects(STEPS.providerJob(run, {}, { operation: 'mock.generate', prompt: 'x', maxPolls: 1 }), /is pending after 1 polls, expected done/);
+  polls = 100;
+  await STEPS.providerJob(run, {}, { operation: 'mock.generate', prompt: 'x', expect: 'failed' });
+  file = { bytes: Buffer.from('<html>'), type: 'text/html' };
+  await assert.rejects(STEPS.providerJob(run, {}, { operation: 'mock.sketch', prompt: 'x' }), /fetching the mock.sketch result gave text\/html, expected a PNG/);
+  await assert.rejects(STEPS.providerJob(new Runner({ data: shipped() }), {}, { operation: 'mock.sketch', prompt: 'x' }), /needs --inference-socket/);
+});
+
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge and memory worker', { timeout: 600000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '21/21 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '22/22 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));

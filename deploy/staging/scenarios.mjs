@@ -4,7 +4,7 @@
 // API of the staged release. No real QQ account, no provider key.
 //   node scenarios.mjs --operator-port 13082 --operator-token-file <file> --onebot-control <socket>
 //        --model-script <file> --model-log <file> --scenarios <scenarios.json> [--only S1,S3]
-//        [--inference-socket <socket> --inference-token-file <file>]   (the staged gateway, for `gatewayCall`)
+//        [--inference-socket <socket> --inference-token-file <file>]   (the staged gateway, for `gatewayCall` and `providerJob`)
 // A scenario is { id, title, model: [rules for fake-model.mjs], steps: [...], finally: [...] };
 // each step is an object with exactly one key naming an entry of STEPS below. `{run}` anywhere in a
 // scenario becomes a token that is new on every replay, so a replay never mistakes the memory an
@@ -14,6 +14,8 @@ import http from 'node:http';
 import { fileURLToPath } from 'node:url';
 
 export const MOCK_MODEL_KEY = 'MOCK-KEY-staging-not-a-real-key';
+// The key of the staging-only mock provider (fake-provider.mjs); its upstream accepts any key starting with MOCK-.
+export const MOCK_PROVIDER_KEY = 'MOCK-PROVIDER-KEY-staging-not-a-real-key';
 const MOCK_NAME = /^MOCK-[A-Z0-9-]{1,24}$/, MOCK_QQ = /^9999\d{8}$/;
 const list = value => Array.isArray(value) ? value : [value];
 const fail = message => { throw new Error(message); };
@@ -369,6 +371,33 @@ export const STEPS = {
     const outcome = await run.gateway(route, body);
     if (outcome !== expect) fail(`the gateway answered ${outcome} to a ${kind} call, expected ${expect}`);
   },
+  /** A provider's key through the real operator routes (POST /providers/key, /providers/clear): `action` "set"
+   * stores the visibly fake key, "clear" removes it. The listing (GET /providers) must then say so. */
+  async providerKey(run, _ctx, { provider, action }) {
+    if (!['set', 'clear'].includes(action)) fail(`providerKey: unknown action ${JSON.stringify(action)}`);
+    await run.operator('POST', action === 'set' ? '/providers/key' : '/providers/clear', { provider, ...(action === 'set' ? { apiKey: MOCK_PROVIDER_KEY } : {}) });
+    const listed = (await run.operator('GET', '/providers')).providers;
+    if (listed.find(item => item.id === provider)?.configured !== (action === 'set')) fail(`provider ${provider} is not listed as ${action === 'set' ? 'configured' : 'not configured'}`);
+    if (JSON.stringify(listed).includes(MOCK_PROVIDER_KEY.slice(0, 12))) fail('the provider listing contains the key');
+  },
+  /** One operation of a provider adapter through the gateway's three actions, the way the content service will
+   * call them: submit, ask until the job has ended (at most `maxPolls` times), fetch its first file (which must be
+   * a PNG). `expect`: "done", "failed", or the code the submit is refused with. */
+  async providerJob(run, _ctx, { operation, prompt, expect = 'done', maxPolls = 5 }) {
+    if (typeof run.gatewayAnswer !== 'function') fail('providerJob needs --inference-socket and --inference-token-file');
+    const submitted = await run.gatewayAnswer('/v1/provider/submit', { operation, input: { prompt } });
+    if (submitted.code) { if (submitted.code !== expect) fail(`the gateway refused ${operation} with ${submitted.code}, expected ${expect}`); return; }
+    let job = submitted.value, polls = 0;
+    for (; job.state === 'pending' && polls < maxPolls; polls++) {
+      const asked = await run.gatewayAnswer('/v1/provider/status', { job: job.job });
+      if (asked.code) fail(`asking about the ${operation} job was refused with ${asked.code}`);
+      job = asked.value;
+    }
+    if (job.state !== expect) fail(`the ${operation} job is ${job.state} after ${polls} polls, expected ${expect}`);
+    if (expect !== 'done') return;
+    const file = await run.gatewayAnswer('/v1/provider/fetch', { job: job.job, output: 0 });
+    if (file.code || file.type !== 'image/png' || file.bytes.subarray(1, 4).toString('latin1') !== 'PNG') fail(`fetching the ${operation} result gave ${file.code ?? file.type}, expected a PNG`);
+  },
   /** `noteUsage` remembers today's usage rows (operator GET /usage); `expectUsage` then requires exactly these changes
    * of one capability's row since: `used`, `calls`, `ok`, `failed` (default 0 each) and `denied` ({ reason: count },
    * default none). The ledger is written after the call it counts, so this waits for it. */
@@ -442,8 +471,9 @@ export const STEPS = {
 export class Runner {
   /** operator(method, route, body) and onebot(method, route, body) resolve to the `value` of an ok envelope. */
   /** gateway(route, body) (optional) posts to the staged gateway's inference socket and resolves to "ok" or the refusal code. */
-  constructor({ data, operator, onebot, gateway, modelScript, modelLog, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), say = () => {} }) {
-    Object.assign(this, { data: validateScenarios(data), operator, onebot, gateway, modelScriptFile: modelScript, modelLogFile: modelLog, sleep, report: say });
+  /** gatewayAnswer(route, body) (optional) does the same and resolves to { value } (a JSON answer), { bytes, type } (a file) or { code }. */
+  constructor({ data, operator, onebot, gateway, gatewayAnswer, modelScript, modelLog, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), say = () => {} }) {
+    Object.assign(this, { data: validateScenarios(data), operator, onebot, gateway, gatewayAnswer, modelScriptFile: modelScript, modelLogFile: modelLog, sleep, report: say });
     this.owner = Object.keys(data.people).find(name => data.people[name].owner);
   }
   qq(name) { return this.data.people[name].qq; }
@@ -558,6 +588,24 @@ export function gatewayCaller(socketPath, token) {
   return (route, body) => request({ socketPath, method: 'POST', path: route, headers: { authorization: 'Bearer ' + token } }, body).then(() => 'ok', error => / -> \d+ (\S+)$/.exec(error.message)?.[1] ?? error.message);
 }
 
+/** `gatewayAnswer` for the Runner: POST to the gateway's inference socket; the JSON value, the bytes of a file, or the refusal code. */
+export function gatewayReader(socketPath, token) {
+  return (route, body) => new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = http.request({ socketPath, method: 'POST', path: route, agent: false, timeout: 20000, headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } }, res => {
+      const chunks = []; res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => {
+        const bytes = Buffer.concat(chunks), type = String(res.headers['content-type'] ?? '').split(';')[0];
+        if (type !== 'application/json') { resolve(res.statusCode === 200 ? { bytes, type } : { code: String(res.statusCode) }); return; }
+        let envelope = null; try { envelope = JSON.parse(bytes.toString('utf8')); } catch {}
+        resolve(res.statusCode === 200 && envelope?.ok === true ? { value: envelope.value } : { code: envelope?.error?.code ?? String(res.statusCode) });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error(`POST ${route} timed out`)));
+    req.on('error', reject); req.end(payload);
+  });
+}
+
 async function main(argv) {
   const args = Object.fromEntries(argv.reduce((pairs, value, index, all) => index % 2 ? pairs : [...pairs, [value.replace(/^--/, ''), all[index + 1]]], []));
   const port = Number(args['operator-port']);
@@ -567,7 +615,7 @@ async function main(argv) {
     data: JSON.parse(fs.readFileSync(args.scenarios, 'utf8')), modelScript: args['model-script'], modelLog: args['model-log'], say: line => console.log(line),
     operator: (method, route, body) => request({ host: '127.0.0.1', port, method, path: route, headers: { authorization: 'Bearer ' + token } }, body),
     onebot: (method, route, body) => request({ socketPath: args['onebot-control'], method, path: route }, body),
-    ...(args['inference-socket'] && args['inference-token-file'] ? { gateway: gatewayCaller(args['inference-socket'], fs.readFileSync(args['inference-token-file'], 'utf8').trim()) } : {}),
+    ...(args['inference-socket'] && args['inference-token-file'] ? { gateway: gatewayCaller(args['inference-socket'], fs.readFileSync(args['inference-token-file'], 'utf8').trim()), gatewayAnswer: gatewayReader(args['inference-socket'], fs.readFileSync(args['inference-token-file'], 'utf8').trim()) } : {}),
   });
   const summary = await runner.run(args.only ? args.only.split(',') : null);
   console.log('SCENARIOS ' + JSON.stringify({ passed: summary.passed, failed: summary.failed, line: summaryLine(summary) }));
