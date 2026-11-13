@@ -66,6 +66,13 @@ export class AuthorityClient {
   }
   /** QQ capability credential: the next run she starts herself, as Authority chose it, or `initiation: null` with a reason. */
   initiationNext() { return this.#request('POST', '/v1/initiations/next', {}); }
+  /** QQ capability credential, as an ordinary turn of this conversation begins: a finished background job of it that
+   * the person was not told about yet, handed out to ride on this turn, or `initiation: null`. */
+  async initiationCarry(value) {
+    closed(value, ['streamId'], ['streamId']);
+    if (!text(value.streamId)) throw fail('INVALID_REQUEST');
+    return this.#request('POST', '/v1/initiations/carry', value);
+  }
   async initiationAck(value) {
     closed(value, ['id', 'outcome'], ['id', 'outcome']);
     if (!text(value.id) || !text(value.outcome, 64)) throw fail('INVALID_REQUEST');

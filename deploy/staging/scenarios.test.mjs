@@ -11,6 +11,7 @@ import { prepareModel } from '../authority/prepare-model.mjs';
 import { prepareQQ } from '../authority/prepare-qq.mjs';
 import { prepareConversation } from '../authority/prepare-conversation.mjs';
 import { prepareMemory } from '../authority/prepare-memory.mjs';
+import { prepareContent } from '../authority/prepare-content.mjs';
 import { createFakeOneBot } from './fake-onebot.mjs';
 import { Runner, STEPS, validateScenarios, summaryLine, gatewayCaller, gatewayReader, MOCK_PROVIDER_KEY } from './scenarios.mjs';
 import { planReply } from './fake-model.mjs';
@@ -21,7 +22,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -356,8 +357,9 @@ test('consolidation steps: a digest must be its owner\'s machine digest of the n
 });
 
 // The real services of this checkout, as processes, on a throwaway data root: Authority, the model
-// gateway behind fake-model.mjs, the conversation executor, the QQ bridge against the fake OneBot, and
-// the memory worker (ticking every second here).
+// gateway behind fake-model.mjs, the content service (no speech models and no image runtime, as in staging:
+// it serves the background jobs and the reply attachments), the conversation executor, the QQ bridge against
+// the fake OneBot, and the memory worker (ticking every second here).
 async function stack(t) {
   const root = path.join(fs.realpathSync(fs.mkdtempSync('/tmp/fscn-')), 'companion-staging'), base = path.join(root, 'companion-world-v1');
   const children = [];
@@ -375,10 +377,10 @@ async function stack(t) {
     operator: { socketPath: path.join(base, 'ipc/operator/operator.sock'), tokenHash: hash(operatorToken), origins: [] },
     credentials: [{ hash: hash(healthToken), role: 'capability', capabilityId: 'health' }], capabilities: [{ id: 'health', policy: 'learning.v1' }], actors: [], streams: [], persona: { name: '大肥鱼' },
   });
-  prepareModel(base); prepareQQ(base); prepareConversation(base); prepareMemory(base);
+  prepareModel(base); prepareQQ(base); prepareConversation(base); prepareMemory(base); prepareContent(base, path.join(root, 'speech-node'));
   const edit = (label, change) => { const file = path.join(base, 'operator', label), value = JSON.parse(fs.readFileSync(file, 'utf8')); change(value); fs.writeFileSync(file, JSON.stringify(value), { mode: 0o600 }); return value; };
   // The prepare scripts write the paths Authority sees inside its production sandbox.
-  edit('authority.json', c => Object.assign(c.operator, { modelSocketPath: path.join(base, 'ipc/model-control/control.sock'), qqSocketPath: path.join(base, 'ipc/qq-control/control.sock') }));
+  edit('authority.json', c => { Object.assign(c.operator, { modelSocketPath: path.join(base, 'ipc/model-control/control.sock'), qqSocketPath: path.join(base, 'ipc/qq-control/control.sock') }); c.content = { socketPath: path.join(base, 'ipc/content/content.sock'), tokenFile: path.join(base, 'authority-content/control.token') }; });
   const onebotPort = await new Promise(resolve => { const probe = net.createServer(); probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
   // The bridge asks for initiated runs every second here (production: every minute).
   edit('qq-bridge.json', c => { c.onebotPort = onebotPort; c.initiationPollMs = 1000; });
@@ -395,6 +397,8 @@ async function stack(t) {
   await ready(path.join(base, 'ipc/operator/operator.sock'));
   start(path.join(project, 'deploy/staging/fake-model.mjs'), '--release', project, '--config', path.join(base, 'operator/model-gateway.json'), '--script', files.script, '--log', files.log);
   await ready(path.join(base, 'ipc/model/inference.sock'));
+  start(path.join(project, 'capabilities/media/main.mjs'), '--config', path.join(base, 'operator/content.json'));
+  await ready(path.join(base, 'ipc/content/content.sock'));
   start(path.join(project, 'capabilities/conversation/main.mjs'), '--config', path.join(base, 'operator/conversation.json'));
   await ready(path.join(base, 'ipc/conversation/execute.sock'));
   start(path.join(project, 'capabilities/qq/main.mjs'), '--config', path.join(base, 'operator/qq-bridge.json'));
@@ -576,12 +580,51 @@ test('provider steps: a key is set or cleared through the operator and must be l
   await assert.rejects(STEPS.providerJob(new Runner({ data: shipped() }), {}, { operation: 'mock.sketch', prompt: 'x' }), /needs --inference-socket/);
 });
 
+test('job steps: the demo job is registered with nothing but its seconds, a job is read from the operator list, and completions are counted since a noted point', async () => {
+  const data = shipped(), owner = data.people['MOCK-OWNER'].qq, posted = [];
+  let answer = { id: 'job:a', capability: 'demo', status: 'queued', failureCode: null }, jobs = [], items = [];
+  const run = new Runner({ data, sleep: async () => {}, operator: async (method, route, body) => { if (method === 'POST') { posted.push([route, body]); return answer; } return route === '/jobs' ? { jobs } : { items }; } });
+  const ctx = {}, listed = (id, status, notice, extra = {}) => ({ id, capability: 'demo', status, failureCode: null, owner: true, person: 'p-0a1b2c', notice, result: status === 'done' ? 'MOCK-RESULT' : null, ...extra });
+  await assert.rejects(STEPS.expectJob(run, ctx, { status: 'done', timeoutMs: 0 }), /no such demo job/);
+  await STEPS.demoJob(run, ctx, {});
+  assert.deepEqual(posted, [['/jobs/demo', { seconds: 2 }]]);
+  answer = { id: 'job:b', capability: 'demo', status: 'rejected', failureCode: 'busy' };
+  await assert.rejects(STEPS.demoJob(run, ctx, {}), /the demo job is busy, expected queued/);
+  await STEPS.demoJob(run, ctx, { seconds: 4, expect: 'busy' });
+  // The job is found by its id; its state and how the telling stands must both match, a closed one by its outcome.
+  await assert.rejects(STEPS.expectJob(run, ctx, { job: 1, status: 'done', timeoutMs: 0 }), /the job is not listed, expected done/);
+  jobs = [listed('job:a', 'done', { state: 'carry', outcome: 'deferred:budget' }), listed('job:b', 'rejected', { state: 'none', outcome: null }, { failureCode: 'busy' })];
+  await STEPS.expectJob(run, ctx, { job: 1, status: 'done', notice: 'carry' });
+  await assert.rejects(STEPS.expectJob(run, ctx, { job: 1, status: 'done', notice: 'sent', timeoutMs: 0 }), /the job is done, telling carry, expected done, telling sent/);
+  await STEPS.expectJob(run, ctx, { status: 'rejected', notice: 'none', code: 'busy' });
+  await assert.rejects(STEPS.expectJob(run, ctx, { status: 'rejected', code: 'daily_limit' }), /the job's reason is busy, expected daily_limit/);
+  jobs = [listed('job:a', 'done', { state: 'closed', outcome: 'carried' }, { result: null })];
+  await assert.rejects(STEPS.expectJob(run, ctx, { job: 1, status: 'done', notice: 'carried' }), /shows no result/);
+  jobs = [listed('job:a', 'done', { state: 'closed', outcome: 'carried' }, { owner: false })];
+  await assert.rejects(STEPS.expectJob(run, ctx, { job: 1, status: 'done' }), /not the owner's/);
+  jobs = [listed('job:a', 'done', { state: 'closed', outcome: 'sent' }, { person: owner })];
+  await assert.rejects(STEPS.expectJob(run, ctx, { job: 1, status: 'done' }), /the job list contains the account number/);
+  // Completions: only the ones since the note, oldest first, each by how it ended; pokes are not counted.
+  const item = (id, kind, status, outcome = null, extra = {}) => ({ id, kind, owner: true, status, outcome, ...extra });
+  await assert.rejects(STEPS.expectCompletions(run, ctx, { outcomes: [] }), /no noted completions/);
+  items = [item('old', 'completion', 'closed', 'sent')];
+  await STEPS.noteCompletions(run, ctx);
+  await STEPS.expectCompletions(run, ctx, { outcomes: [] });
+  items = [item('c2', 'completion', 'closed', 'carried'), item('p1', 'proactive', 'closed', 'sent'), item('c1', 'completion', 'closed', 'deferred:budget'), item('old', 'completion', 'closed', 'sent')];
+  await STEPS.expectCompletions(run, ctx, { outcomes: ['deferred:budget', 'carried'] });
+  await assert.rejects(STEPS.expectCompletions(run, ctx, { outcomes: ['carried'], timeoutMs: 0 }), /the completions since are \["deferred:budget","carried"\], expected \["carried"\]/);
+  items = [item('c3', 'completion', 'issued'), ...items];
+  await assert.rejects(STEPS.expectCompletions(run, ctx, { outcomes: ['deferred:budget', 'carried', 'sent'], timeoutMs: 0 }), /"issued"\]/);
+  items = [item('c3', 'completion', 'closed', 'sent', { owner: false }), ...items.slice(1)];
+  await assert.rejects(STEPS.expectCompletions(run, ctx, { outcomes: ['deferred:budget', 'carried', 'sent'], timeoutMs: 0 }), /not-the-owner/);
+});
+
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge and memory worker', { timeout: 600000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '28/28 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '31/31 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));

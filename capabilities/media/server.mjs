@@ -25,7 +25,7 @@ async function bodyOf(req, limit = 13 * 1024 * 1024) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw failure('CONTENT_REQUEST_INVALID');
   return value;
 }
-export function createContentServer({ socketPath, tokenFile, service, worldStatus, operatorCall }) {
+export function createContentServer({ socketPath, tokenFile, service, worldStatus, operatorCall, jobsCall }) {
   if (!path.isAbsolute(socketPath) || !path.isAbsolute(tokenFile)) throw failure('CONTENT_CONFIG');
   const digest = value => createHash('sha256').update(value).digest();
   const credential = digest(fs.readFileSync(tokenFile, 'utf8').trim()), active = new Set();
@@ -36,7 +36,15 @@ export function createContentServer({ socketPath, tokenFile, service, worldStatu
     try {
       const match = /^Bearer ([A-Za-z0-9_-]{32,256})$/.exec(req.headers.authorization || '');
       if (!match || !timingSafeEqual(credential, digest(match[1]))) { send(401, { ok: false, error: { code: 'CONTENT_AUTH_REQUIRED' } }); return; }
-      if (req.method !== 'POST' || !['/content', '/operator'].includes(req.url) || req.headers['content-type']?.split(';')[0] !== 'application/json') throw failure('CONTENT_REQUEST_INVALID');
+      if (req.method !== 'POST' || !['/content', '/operator', '/jobs'].includes(req.url) || req.headers['content-type']?.split(';')[0] !== 'application/json') throw failure('CONTENT_REQUEST_INVALID');
+      // Background jobs as Authority manages them (jobs.js `control`): this socket's one credential is Authority's.
+      if (req.url === '/jobs') {
+        if (typeof jobsCall !== 'function') throw failure('CONTENT_JOBS_UNAVAILABLE');
+        let value;
+        try { value = await jobsCall(await bodyOf(req, 65536)); }
+        catch (error) { if (error instanceof SyntaxError || ['MEDIA_JOB_REQUEST', 'MEDIA_JOB_UNKNOWN', 'CONTENT_REQUEST_INVALID'].includes(error?.code)) { send(400, { ok: false, error: { code: error instanceof SyntaxError ? 'CONTENT_REQUEST_INVALID' : error.code } }); return; } throw error; }
+        send(200, { ok: true, value }); return;
+      }
       const body = await bodyOf(req, isOperator ? 3 * 1024 * 1024 : 13 * 1024 * 1024);
       if (isOperator) {
         if (typeof operatorCall !== 'function') throw failure('CONTENT_OPERATOR_UNAVAILABLE');

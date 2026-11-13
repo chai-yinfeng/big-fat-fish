@@ -4,7 +4,7 @@ import path from 'node:path';
 
 // Host-only control credential. Neither this socket nor its token is mounted
 // into the model worker; capability content requests still require Core scope.
-function contentRequest({ socketPath, tokenFile }, route, payload, { signal } = {}) {
+function contentRequest({ socketPath, tokenFile }, route, payload, { signal, timeoutMs = 310000 } = {}) {
   if (!path.isAbsolute(socketPath) || !path.isAbsolute(tokenFile)) throw new Error('CONTENT_CONTROL_CONFIG');
   return new Promise((resolve, reject) => {
     const unavailable = () => reject(Object.assign(new Error('Content service unavailable'), { code: 'UNAVAILABLE', statusCode: 503 }));
@@ -31,7 +31,7 @@ function contentRequest({ socketPath, tokenFile }, route, payload, { signal } = 
         } catch { unavailable(); }
       });
     });
-    const timer = setTimeout(() => { req.destroy(); unavailable(); }, 310000);
+    const timer = setTimeout(() => { req.destroy(); unavailable(); }, timeoutMs);
     req.on('close', () => clearTimeout(timer)); req.on('error', unavailable);
     req.end(JSON.stringify(payload));
   });
@@ -41,4 +41,9 @@ export function createContentControlClient(config) {
 }
 export function createContentOperatorClient(config) {
   return (action, input = {}, options = {}) => contentRequest(config, '/operator', { ...input, action }, options);
+}
+/** Background jobs of the content service as Authority manages them (its `/jobs`): what is finished and untold, how a
+ * telling ended, cancelling, the operator's list. Asked on every initiation poll, so it gives up quickly. */
+export function createContentJobsClient(config) {
+  return input => contentRequest(config, '/jobs', input, { timeoutMs: 3000 });
 }

@@ -6,7 +6,7 @@ import { CAPABILITIES } from './index.js';
 import { CATEGORIES } from '../../model-gateway/spend.mjs';
 
 test('the registry lists every declared capability once, as frozen dependency-free data', () => {
-  assert.deepEqual(CAPABILITIES.map(item => item.id), ['chat', 'consolidation', 'vision', 'web', 'speech-tts', 'speech-asr', 'proactive']);
+  assert.deepEqual(CAPABILITIES.map(item => item.id), ['chat', 'consolidation', 'vision', 'web', 'speech-tts', 'speech-asr', 'proactive', 'demo']);
   // One directory per capability, and none that the index forgot.
   const directories = fs.readdirSync(fileURLToPath(new URL('./', import.meta.url)), { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
   assert.deepEqual(directories, CAPABILITIES.map(item => item.id).sort());

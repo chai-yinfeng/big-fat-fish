@@ -31,8 +31,8 @@ const source = value => typeof value === 'string' && value.length > 0 && value.l
 /** Platform-neutral file perception and expression. A generated artifact or an
  * attached reply part is not a delivery receipt and never records an experience. */
 export class MediaService {
-  constructor({ store, speech, vision, search, fetchPage, normalizeImage, workRoot }) {
-    Object.assign(this, { store, speech, vision, search, fetchPage, normalizeImage });
+  constructor({ store, speech, vision, search, fetchPage, normalizeImage, workRoot, jobs }) {
+    Object.assign(this, { store, speech, vision, search, fetchPage, normalizeImage, jobs });
     if (!path.isAbsolute(workRoot)) throw fail('MEDIA_WORK_ROOT');
     fs.mkdirSync(workRoot, { recursive: true, mode: 0o700 });
     if (fs.lstatSync(workRoot).isSymbolicLink()) throw fail('MEDIA_WORK_ROOT');
@@ -108,6 +108,14 @@ export class MediaService {
       if (!row.parts.some(p => p.ref === input.ref)) row.parts.push({ type: artifact.meta.kind, ref: input.ref });
       this.replies.set(key, row);
       return { queued: true, delivered: false, ref: input.ref };
+    }
+    // Background jobs (jobs.js). Registering one is not open to the channel or the model yet: Authority's /v1/content
+    // does not list `jobStart`, only its operator route sends it. `jobResult` is read by the channel for the turn
+    // that tells the person.
+    if (action === 'jobStart' || action === 'jobResult') {
+      if (!this.jobs) throw fail('MEDIA_ACTION_DENIED');
+      if (action === 'jobResult') return this.jobs.read(scope, input.ref);
+      return this.jobs.register(scope, { capability: input.capability, input: input.input, source: { ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...(input.sourceEventId === undefined ? {} : { sourceEventId: input.sourceEventId }) } });
     }
     if (action === 'search') return this.search({ query: input.query, count: 3 });
     if (action === 'fetch') return this.fetchPage({ url: input.url });

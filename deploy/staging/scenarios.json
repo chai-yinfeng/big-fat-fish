@@ -630,6 +630,133 @@
       "finally": [
         { "quietHours": { "window": "default" } }
       ]
+    },
+    {
+      "id": "J1",
+      "title": "job-then-completion-turn: the operator registers the demo job in the owner's conversation; when it is done she starts one turn there and nowhere else; the model is sent the result in an event block marked as machine-made; the job is closed as sent and never told again; the next ordinary request still starts with the one before it",
+      "model": [
+        { "match": "MOCK-J1-{run} 第一句", "reply": "MOCK-REPLY-J1-{run} 第一句的回复" },
+        { "match": "演示任务完成", "reply": "MOCK-DONE-J1-{run} 演示做完了" },
+        { "match": "MOCK-J1-{run} 第二句", "reply": "MOCK-REPLY-J1-{run} 第二句的回复" }
+      ],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-J1-{run} 第一句" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-J1-{run} 第一句的回复" } },
+        { "noteMessages": { "person": "MOCK-OWNER" } },
+        { "noteUsage": {} },
+        { "noteCompletions": {} },
+        { "demoJob": { "seconds": 2 } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-DONE-J1-{run} 演示做完了" } },
+        { "expectJob": { "status": "done", "notice": "sent" } },
+        { "expectCompletions": { "outcomes": ["sent"] } },
+        { "expectSilence": { "to": "*", "afterMs": 8000 } },
+        { "expectSentCount": { "to": "MOCK-OWNER", "contains": "MOCK-DONE-J1-{run}", "count": 1 } },
+        { "expectLostSends": { "to": "MOCK-OWNER", "count": 0 } },
+        { "expectModelCalls": { "userText": "演示任务完成", "count": 1 } },
+        { "expectPrompt": { "userText": "演示任务完成", "contains": "[后台事件 · 这不是对方发来的话]" } },
+        { "expectPrompt": { "userText": "演示任务完成", "contains": "由后台任务生成，不是对方说的话" } },
+        { "expectPrompt": { "userText": "演示任务完成", "contains": "这一条不是对方发来的消息", "in": "context" } },
+        { "expectPrompt": { "userText": "演示任务完成", "absent": "后台事件", "in": "system" } },
+        { "expectMessages": { "person": "MOCK-OWNER", "added": 1 } },
+        { "expectUsage": { "capability": "demo", "used": 1, "calls": 1, "ok": 1 } },
+        { "expectUsage": { "capability": "proactive", "used": 1, "calls": 1, "ok": 1 } },
+        { "expectCompletions": { "outcomes": ["sent"] } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-J1-{run} 第二句" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-J1-{run} 第二句的回复" } },
+        { "expectInitiatedPrefix": { "before": "MOCK-J1-{run} 第一句", "after": "MOCK-J1-{run} 第二句" } },
+        { "expectPrompt": { "userText": "MOCK-J1-{run} 第二句", "contains": "MOCK-DONE-J1-{run} 演示做完了" } },
+        { "expectJob": { "status": "done", "notice": "sent" } }
+      ],
+      "finally": [
+        { "quietHours": { "window": "default" } }
+      ]
+    },
+    {
+      "id": "J2",
+      "title": "person-speaks-first-carries: a finished job she could not start a turn about (the spend tier refused that run, without a model request) rides on the owner's next message as an event block after their words; it is reported carried, and no turn of her own follows",
+      "model": [
+        { "match": "MOCK-J2-{run} 在吗", "reply": "MOCK-CARRY-J2-{run} 在的，顺便说一下演示做完了" },
+        { "match": "MOCK-J2-{run}", "reply": "MOCK-REPLY-J2-{run} 好" },
+        { "match": "演示任务完成", "reply": "MOCK-INIT-J2-{run} 不该出现" }
+      ],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "spendSettings": { "dailyCapYuan": 5, "reducedPercent": 0.0005, "restrictedPercent": 99 } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-J2-{run} 先聊一句" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-J2-{run} 好" } },
+        { "expectSpend": { "tier": "reduced" } },
+        { "noteUsage": {} },
+        { "noteCompletions": {} },
+        { "demoJob": { "seconds": 2 } },
+        { "expectJob": { "status": "done", "notice": "carry" } },
+        { "expectCompletions": { "outcomes": ["deferred:budget"] } },
+        { "expectSilence": { "to": "*", "afterMs": 8000 } },
+        { "expectModelCalls": { "userText": "演示任务完成", "count": 0 } },
+        { "expectUsage": { "capability": "proactive", "denied": { "spend_tier": 1 } } },
+        { "expectCompletions": { "outcomes": ["deferred:budget"] } },
+        { "noteMessages": { "person": "MOCK-OWNER" } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-J2-{run} 在吗" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-CARRY-J2-{run} 在的" } },
+        { "expectJob": { "status": "done", "notice": "carried" } },
+        { "expectCompletions": { "outcomes": ["deferred:budget", "carried"] } },
+        { "expectPrompt": { "userText": "MOCK-J2-{run} 在吗", "contains": "[后台事件 · 这不是对方发来的话] 你之前答应对方去做的事（演示任务）做完了" } },
+        { "expectPrompt": { "userText": "MOCK-J2-{run} 在吗", "contains": "演示任务完成" } },
+        { "expectPrompt": { "userText": "MOCK-J2-{run} 在吗", "contains": "那一段不是对方说的话", "in": "context" } },
+        { "expectPrompt": { "userText": "MOCK-J2-{run} 在吗", "absent": "这一条不是对方发来的消息", "in": "context" } },
+        { "expectPrompt": { "userText": "MOCK-J2-{run} 在吗", "absent": "后台事件", "in": "system" } },
+        { "expectSilence": { "to": "*", "afterMs": 10000 } },
+        { "expectSentCount": { "to": "MOCK-OWNER", "contains": "MOCK-CARRY-J2-{run}", "count": 1 } },
+        { "expectSentCount": { "to": "MOCK-OWNER", "contains": "MOCK-INIT-J2-{run}", "count": 0 } },
+        { "expectModelCalls": { "userText": "演示任务完成", "count": 1 } },
+        { "expectMessages": { "person": "MOCK-OWNER", "added": 2 } },
+        { "expectUsage": { "capability": "proactive", "denied": { "spend_tier": 1 } } },
+        { "expectUsage": { "capability": "demo", "used": 1, "calls": 1, "ok": 1 } },
+        { "expectCompletions": { "outcomes": ["deferred:budget", "carried"] } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-J2-{run} 之后一句" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-J2-{run} 好" } },
+        { "expectPrompt": { "userText": "MOCK-J2-{run} 之后一句", "contains": "MOCK-CARRY-J2-{run} 在的" } },
+        { "expectPrompt": { "userText": "MOCK-J2-{run} 之后一句", "absent": "那一段不是对方说的话", "in": "context" } }
+      ],
+      "finally": [
+        { "spendSettings": { "dailyCapYuan": 5, "reducedPercent": 60, "restrictedPercent": 80 } },
+        { "quietHours": { "window": "default" } }
+      ]
+    },
+    {
+      "id": "J3",
+      "title": "job-quota-and-queue: with the day's limit used up a demo job is refused as daily_limit; with two of the owner's jobs waiting a third is refused as busy; both refusals are in the usage ledger and on the job list; the two accepted jobs run one after the other and each is told once",
+      "model": [
+        { "match": "演示任务完成", "reply": "MOCK-DONE-J3-{run} 做完了" }
+      ],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "noteUsage": {} },
+        { "noteCompletions": {} },
+        { "usageLimit": { "capability": "demo", "limit": "used" } },
+        { "demoJob": { "seconds": 2, "expect": "daily_limit" } },
+        { "expectJob": { "status": "rejected", "notice": "none", "code": "daily_limit" } },
+        { "expectUsage": { "capability": "demo", "denied": { "daily_limit": 1 } } },
+        { "usageLimit": { "capability": "demo", "limit": null } },
+        { "demoJob": { "seconds": 4 } },
+        { "demoJob": { "seconds": 4 } },
+        { "demoJob": { "seconds": 2, "expect": "busy" } },
+        { "expectJob": { "status": "rejected", "notice": "none", "code": "busy" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-DONE-J3-{run} 做完了" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-DONE-J3-{run} 做完了" } },
+        { "expectJob": { "job": 2, "status": "done", "notice": "sent" } },
+        { "expectJob": { "job": 3, "status": "done", "notice": "sent" } },
+        { "expectCompletions": { "outcomes": ["sent", "sent"] } },
+        { "expectSilence": { "to": "*", "afterMs": 8000 } },
+        { "expectSentCount": { "to": "MOCK-OWNER", "contains": "MOCK-DONE-J3-{run}", "count": 2 } },
+        { "expectModelCalls": { "userText": "演示任务完成", "count": 2 } },
+        { "expectUsage": { "capability": "demo", "used": 2, "calls": 2, "ok": 2, "denied": { "daily_limit": 1, "busy": 1 } } },
+        { "expectCompletions": { "outcomes": ["sent", "sent"] } }
+      ],
+      "finally": [
+        { "usageLimit": { "capability": "demo", "limit": null } },
+        { "quietHours": { "window": "default" } }
+      ]
     }
   ]
 }

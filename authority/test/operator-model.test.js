@@ -51,7 +51,7 @@ test('operator proxies the gateway usage ledger: today, history and daily limits
   const call = (route, body, bearer = token) => send('op.sock', route, body, bearer);
   const usage = await call('/usage');
   assert.equal(usage.status, 200);
-  assert.deepEqual([usage.value.day, usage.value.rows.map(row => row.id)], ['2026-11-12', ['chat', 'consolidation', 'vision', 'web', 'speech-tts', 'speech-asr', 'proactive']]);
+  assert.deepEqual([usage.value.day, usage.value.rows.map(row => row.id)], ['2026-11-12', ['chat', 'consolidation', 'vision', 'web', 'speech-tts', 'speech-asr', 'proactive', 'demo']]);
   assert.equal((await call('/usage', undefined, 'x'.repeat(48))).status, 401);
   // A daily limit is changed through the operator route; unknown fields never reach the gateway.
   const changed = await call('/usage/limits', { limits: { vision: 3 } });

@@ -40,7 +40,7 @@ export class ContentClient {
     this.socketPath = socketPath; this.tokenFile = tokenFile;
   }
   call(input, { signal } = {}) {
-    if (!input || typeof input.streamId !== 'string' || !Number.isSafeInteger(input.memoryEpoch) || !['ingest', 'transcribe', 'describe', 'synthesize', 'asset', 'attach', 'pending', 'search', 'fetch'].includes(input.action)) return Promise.reject(fail('CONTENT_REQUEST_INVALID'));
+    if (!input || typeof input.streamId !== 'string' || !Number.isSafeInteger(input.memoryEpoch) || !['ingest', 'transcribe', 'describe', 'synthesize', 'asset', 'attach', 'pending', 'search', 'fetch', 'jobResult'].includes(input.action)) return Promise.reject(fail('CONTENT_REQUEST_INVALID'));
     return unixJson({ socketPath: this.socketPath, tokenFile: this.tokenFile, route: '/v1/content', body: input,
       timeoutMs: ['transcribe', 'synthesize'].includes(input.action) ? 300000 : 90000,
       maxBytes: input.action === 'asset' ? 13 * 1024 * 1024 : 65536, signal });
@@ -50,7 +50,9 @@ export function capabilityGateway({ socketPath, tokenFile }) {
   const call = (route, body) => unixJson({ socketPath, tokenFile, route, body, maxBytes: 65536, timeoutMs: 90000 });
   return { vision: body => call('/v1/vision/describe', body), search: body => call('/v1/web/search', body), fetchPage: body => call('/v1/web/fetch', body),
     // The gateway's usage ledger: how a local run ended (count, units, elapsed time; never text or audio).
-    recordUsage: body => unixJson({ socketPath, tokenFile, route: '/v1/usage/record', body, maxBytes: 4096, timeoutMs: 5000 }) };
+    recordUsage: body => unixJson({ socketPath, tokenFile, route: '/v1/usage/record', body, maxBytes: 4096, timeoutMs: 5000 }),
+    // One of today's slots of a local capability that has a daily limit; CONTENT_BUDGET_EXHAUSTED when none is left.
+    reserveUsage: body => unixJson({ socketPath, tokenFile, route: '/v1/usage/reserve', body, maxBytes: 4096, timeoutMs: 5000 }) };
 }
 /** The local speech runner with every transcription and synthesis reported through `record` (the usage ledger):
  * outcome, elapsed time including the wait for the serial runner, seconds of audio, characters spoken. Reporting

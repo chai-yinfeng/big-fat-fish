@@ -391,6 +391,46 @@ export const STEPS = {
     }, timeoutMs, 'the initiation never ended');
     if (ended.outcome !== outcome) fail(`the initiation ended as ${ended.outcome}, expected ${outcome}`);
   },
+  /** The operator's demonstration job (POST /jobs/demo: the body can only say how many seconds it waits; it is always
+   * registered in the owner's own conversation). `expect`: "queued", or the reason it must be refused with
+   * ("daily_limit", "busy"). The job is remembered for `expectJob`. */
+  async demoJob(run, ctx, { seconds = 2, expect = 'queued' } = {}) {
+    const value = await run.operator('POST', '/jobs/demo', { seconds });
+    const got = value.status === 'rejected' ? value.failureCode : value.status;
+    if (got !== expect) fail(`the demo job is ${got}, expected ${expect}`);
+    (ctx.jobs ??= []).push(value.id);
+  },
+  /** One job of this scenario on the operator's list (GET /jobs; `job`: its number in the order registered, default
+   * the last): waits until its state is `status` and telling the person stands as `notice` ("none", "pending",
+   * "carry", "issued", or how it was closed: "sent", "carried", ...). A finished job shows its result, a refused one
+   * its reason (`code`). The list never holds an account number. */
+  async expectJob(run, ctx, { job, status, notice, code, timeoutMs = 60000 }) {
+    const id = ctx.jobs?.[job === undefined ? ctx.jobs.length - 1 : job - 1] ?? fail('expectJob: no such demo job in this scenario');
+    let seen = null;
+    const told = entry => entry.notice.state === 'closed' ? entry.notice.outcome : entry.notice.state;
+    try {
+      await run.poll(async () => {
+        const listing = await run.operator('GET', '/jobs');
+        const leaked = [run.data.bot, ...Object.values(run.data.people)].find(account => JSON.stringify(listing).includes(account.qq));
+        if (leaked) fail(`the job list contains the account number ${leaked.qq}`);
+        seen = listing.jobs.find(entry => entry.id === id) ?? null;
+        return seen && seen.status === status && (notice === undefined || told(seen) === notice);
+      }, timeoutMs, 'timeout');
+    } catch (error) { if (error.message !== 'timeout') throw error; fail(`the job is ${seen ? `${seen.status}, telling ${told(seen)}` : 'not listed'}, expected ${status}${notice === undefined ? '' : ', telling ' + notice}`); }
+    if (seen.owner !== true) fail('the job is not the owner\'s');
+    if (code !== undefined && seen.failureCode !== code) fail(`the job's reason is ${seen.failureCode}, expected ${code}`);
+    if (status === 'done' && !['dropped'].includes(String(told(seen)).split(':')[0]) && !(typeof seen.result === 'string' && seen.result)) fail('the finished job shows no result');
+  },
+  /** `noteCompletions` remembers the completion requests on the operator's list (GET /initiative/log);
+   * `expectCompletions` then requires exactly these new ones since, oldest first, each closed with the given outcome:
+   * how often she was asked to tell a finished job, and how each telling ended. */
+  async noteCompletions(run, ctx) { ctx.completions = new Set((await run.operator('GET', '/initiative/log')).items.filter(item => item.kind === 'completion').map(item => item.id)); },
+  async expectCompletions(run, ctx, { outcomes, timeoutMs = 60000 }) {
+    if (!ctx.completions) fail('expectCompletions: no noted completions');
+    let seen;
+    const since = async () => (await run.operator('GET', '/initiative/log')).items.filter(item => item.kind === 'completion' && !ctx.completions.has(item.id)).reverse().map(item => item.owner !== true ? 'not-the-owner' : item.status === 'closed' ? item.outcome : item.status);
+    try { await run.poll(async () => JSON.stringify(seen = await since()) === JSON.stringify(outcomes), timeoutMs, 'timeout'); } catch (error) { if (error.message !== 'timeout') throw error; fail(`the completions since are ${JSON.stringify(seen)}, expected ${JSON.stringify(outcomes)}`); }
+  },
   /** The fake OneBot leaves the next `count` sends without a receipt, as when the platform's answer is lost. */
   async loseReceipts(run, _ctx, { count }) { await run.onebot('POST', '/lose-receipts', { count }); },
   /** Sends towards `to` that got no receipt during this scenario (never counted as delivered): exactly `count`. */

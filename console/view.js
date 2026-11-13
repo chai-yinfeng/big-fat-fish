@@ -1,7 +1,7 @@
 // Shared UI for the standalone browser entry. Styling lives in standalone.css.
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
-import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, initiationResult } from './operator-client.js';
+import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, initiationResult, validJobs, jobNotice } from './operator-client.js';
 import { validRuntime, ttsBackend, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
@@ -131,6 +131,8 @@ export function WorldConsole({ t, standalone = false }) {
   const providerInputs = useRef({});
   // Runs she was asked to start herself (appended, same reason): the newest ones and how each ended.
   const [initiations, setInitiations] = useState(null);
+  // Background jobs of the content service (GET /jobs); null until loaded or when it cannot answer.
+  const [jobs, setJobs] = useState(null);
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -155,7 +157,7 @@ export function WorldConsole({ t, standalone = false }) {
     setPalette(null); setDrawer(false); setPeople(null); setSpendDraft(null); setMemoryFilter('');
     setQuota(null); setQuotaOpen(null); setQuotaHistory(null); setLimitDraft({});
     setProviders(null); setProviderClear(null);
-    setInitiations(null);
+    setInitiations(null); setJobs(null);
   }
   async function request(path, payload, credential = token, query) {
     const controller = new AbortController();
@@ -227,6 +229,12 @@ export function WorldConsole({ t, standalone = false }) {
     if (!mounted.current || generation.current !== current) return;
     setInitiations(validInitiations(value) ? value : null);
   }
+  // Background jobs; a content service that cannot answer leaves the card saying so, the rest of the page still shows.
+  async function loadJobs(credential = token) {
+    const current = generation.current, value = await request('/jobs', undefined, credential).catch(caught => { if (caught.code === 'authorization_required') throw caught; return null; });
+    if (!mounted.current || generation.current !== current) return;
+    setJobs(validJobs(value) ? value : null);
+  }
   async function loadRuntime(credential = token) {
     const current = generation.current, value = await request('/runtime', undefined, credential);
     if (!validRuntime(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
@@ -234,7 +242,7 @@ export function WorldConsole({ t, standalone = false }) {
     setRuntimeInfo(value); setSpeechDraft(value.speech.status === 'ready' ? { numThreads: value.speech.numThreads, maxTextChars: value.speech.maxTextChars } : null);
   }
   useEffect(() => { if (token) void run(async () => { await load(token); if (tab === 'runtime') await loadProviders(token); if (standalone && tab === 'runtime') await loadRuntime(token); }); }, [token]);
-  useEffect(() => { if (token && tab === 'channels') void run(async () => { await loadQQ(token); await loadInitiations(token); }); }, [token, tab]);
+  useEffect(() => { if (token && tab === 'channels') void run(async () => { await loadQQ(token); await loadInitiations(token); await loadJobs(token); }); }, [token, tab]);
   useEffect(() => { if (token && tab === 'people') void run(() => loadPeople(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'quota') void run(() => loadQuota(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'runtime') void run(async () => { await loadProviders(token); if (standalone) await loadRuntime(token); }); }, [tab]);
@@ -534,12 +542,39 @@ export function WorldConsole({ t, standalone = false }) {
       }), { className: 'bff-primary', icon: 'sparkles' })),
       !initiations ? text('initiative.unavailable') : !initiations.items.length ? text('initiative.empty') : h('div', { className: 'bff-table' }, h('table', null,
         h('thead', null, h('tr', null, ...['time', 'result', 'reason'].map(key => h('th', { key, scope: 'col' }, t(`initiative.columns.${key}`))))),
-        h('tbody', null, ...initiations.items.slice(0, 10).map(item => {
+        h('tbody', null, ...initiations.items.filter(item => item.kind !== 'completion').slice(0, 10).map(item => {
           const { result, reason } = initiationResult(item);
           return h('tr', { key: item.id }, h('td', { style: { whiteSpace: 'nowrap' } }, time(item.createdAt)),
             h('td', null, badge(named(`initiative.result.${result}`, result), tone(result))),
             h('td', null, reason ? named(`initiative.reason.${reason}`, reason) : named(`initiative.note.${result}`, '—')));
         })))));
+  }
+  // Background jobs: the demonstration job is registered here, in the owner's own QQ conversation (the request names
+  // nobody), and the list shows each job's state, result, why one was refused and how telling the person ended.
+  function jobsCard() {
+    const named = (key, fallback) => { const label = t(key); return label === key ? fallback : label; };
+    const tone = status => status === 'done' ? 'ok' : ['failed', 'expired'].includes(status) ? 'danger' : ['rejected', 'cancelled'].includes(status) ? 'warn' : 'primary';
+    const told = job => { const { state, reason } = jobNotice(job), label = named(`jobs.notice.${state}`, state); return reason ? `${label}（${named(`jobs.reason.${reason}`, reason)}）` : label; };
+    return h('section', { className: 'bff-card' },
+      cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('sparkles')), h('h2', null, t('jobs.title'))),
+        button('refresh', () => run(() => loadJobs()), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
+      text('jobs.hint'),
+      h('div', { className: 'bff-actions' }, button('jobs.demo', () => run(async () => {
+        const value = await request('/jobs/demo', {});
+        await loadJobs();
+        setNotice(value?.status === 'rejected' ? `${t('jobs.refused')}${named(`jobs.code.${value.failureCode}`, value.failureCode ?? '')}` : t('jobs.queued'));
+      }), { className: 'bff-primary', icon: 'sparkles' })),
+      !jobs ? text('jobs.unavailable') : !jobs.jobs.length ? text('jobs.empty') : h('div', { className: 'bff-table' }, h('table', null,
+        h('thead', null, h('tr', null, ...['time', 'job', 'status', 'notice', 'result', 'action'].map(key => h('th', { key, scope: 'col' }, t(`jobs.columns.${key}`))))),
+        h('tbody', null, ...jobs.jobs.slice(0, 10).map(job => h('tr', { key: job.id },
+          h('td', { style: { whiteSpace: 'nowrap' } }, time(job.createdAt)),
+          h('td', null, typeof job.title === 'string' ? job.title : job.capability),
+          h('td', null, badge(named(`jobs.status.${job.status}`, job.status), tone(job.status)),
+            job.status === 'running' && Number.isFinite(job.progress?.percent) ? ` ${job.progress.percent}%` : null,
+            job.failureCode ? h('span', { className: 'bff-small bff-muted' }, ` ${named(`jobs.code.${job.failureCode}`, job.failureCode)}`) : null),
+          h('td', null, told(job)),
+          h('td', null, job.result ?? '—'),
+          h('td', null, ['queued', 'running'].includes(job.status) ? button('jobs.cancel', () => run(async () => { await request('/jobs/cancel', { id: job.id }); await loadJobs(); }), { className: 'bff-ghost bff-sm' }) : null)))))));
   }
   function channels() {
     return h(React.Fragment, null,
@@ -550,6 +585,7 @@ export function WorldConsole({ t, standalone = false }) {
         badge(t(channelStatus(channel)), channelTone(channel), h('span', { className: 'bff-dot' }))))) : text('noChannels'),
       qqSettings(),
       initiationCard(),
+      jobsCard(),
       h('section', { className: 'bff-card' }, h('h2', null, t('channels')), data.bindings.length ? h('div', { className: 'bff-table' }, h('table', null,
         h('thead', null, h('tr', null, ...['source', 'conversation', 'person', 'audience'].map(key => h('th', { key, scope: 'col' }, t(key))))),
         h('tbody', null, ...data.bindings.map((binding, index) => h('tr', { key: binding.sourceId === 'qq' ? `qq:${index}` : `${binding.sourceId}:${binding.conversationId}:${index}` },

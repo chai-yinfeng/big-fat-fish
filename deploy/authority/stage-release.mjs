@@ -75,6 +75,8 @@ function main(argv) {
   if (!published) console.error('WARNING: HEAD is not on origin/main; companion-deploy will refuse this tarball.');
   execFileSync(process.execPath, [path.join(project, 'console/build.mjs'), '--standalone'], { cwd: project, stdio: ['ignore', 'ignore', 'inherit'] });
   clean();
+  // A fresh checkout has no .build yet.
+  fs.mkdirSync(path.join(project, '.build'), { recursive: true });
   const work = fs.mkdtempSync(path.join(project, '.build/stage-'));
   try {
     const built = JSON.parse(execFileSync(process.execPath, [path.join(project, 'deploy/authority/build-release.mjs'), path.join(work, 'release')], { cwd: project, encoding: 'utf8' }).trim().split('\n').pop());

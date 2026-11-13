@@ -16,6 +16,15 @@ export const INITIATION_POLL_MS = 60000;
 const INITIATION_PREFIX = 'qq:init:';
 /** What she is told in place of a message, by kind of initiated run (the executor frames it as a background event). */
 const INITIATION_EVENTS = { proactive: '现在没有人给你发消息。你可以主动找对方说一两句：想到什么、想问什么都行，照你平时的样子，简短一点。' };
+const JOB_REF = /^job:[a-f0-9-]{36}$/;
+/** What she is told when a background job of this conversation ended, from what the content service returned for it
+ * (the result is machine-made text, labelled as such). Throws when that is not a finished job. */
+function completionEvent(result) {
+  const title = typeof result?.title === 'string' && result.title.length <= 40 ? result.title : '后台任务';
+  if (result?.status === 'done' && typeof result.text === 'string' && result.text && result.text.length <= 1200) return `你之前答应对方去做的事（${title}）做完了。下面是结果，由后台任务生成，不是对方说的话：\n${result.text}`;
+  if (['failed', 'expired'].includes(result?.status) && typeof result.failureCode === 'string' && /^[a-z_]{1,32}$/.test(result.failureCode)) return `你之前答应对方去做的事（${title}）没有做成（原因代码：${result.failureCode}）。可以如实告诉对方这次没做成。`;
+  throw new Error('QQ_JOB_RESULT');
+}
 // She chose to say nothing: the mark anywhere in the reply (full-width brackets too) means nothing is sent.
 const DECLINED = new RegExp(`[<＜]\\s*${DECLINE_MARK.slice(1, -1)}\\s*[>＞]`, 'u');
 export const OWNER_BUDGET_NOTICE = '提醒：今天的模型开销已经到达每日上限，大肥鱼今天先不再回复任何人，北京时间零点后自动恢复。可以在控制台查看今日开销或调整上限。';
@@ -164,10 +173,12 @@ export class QQBridge {
     }
   }
   /** A run she starts herself, as Authority handed it out. The person it goes to comes only from the conversation
-   * Authority named, and in this release that must be this bot's private conversation with the owner: neither
-   * this bridge nor the model picks or changes the target. The same request a second time does nothing. */
+   * Authority named: neither this bridge nor the model picks or changes the target. Whom that may be depends on the
+   * kind. `proactive`: this bot's private conversation with the owner, nobody else. `completion` (a background job
+   * ended): this bot's private conversation with the person who registered the job, who must be the owner or still
+   * a friend. The same request a second time does nothing. */
   async initiate(cfg, initiation) {
-    const { id, kind, streamId, memoryEpoch, expiresAt } = initiation ?? {};
+    const { id, kind, streamId, memoryEpoch, expiresAt, jobRef } = initiation ?? {};
     if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) return;
     const requestId = INITIATION_PREFIX + id;
     if (this.state.records[requestId]) return;
@@ -175,8 +186,10 @@ export class QQBridge {
     const end = status => { item.status = status; this.save(); };
     try {
       const target = typeof streamId === 'string' ? /^qq:([1-9]\d{0,19}):private:([1-9]\d{0,19})$/.exec(streamId) : null;
-      if (!Object.hasOwn(INITIATION_EVENTS, kind)) return end('dropped:unsupported');
-      if (!target || target[1] !== this.selfId || target[1] !== cfg.expectedSelfId || target[2] !== cfg.allowedCallerUID || !Number.isSafeInteger(memoryEpoch) || memoryEpoch < 0) return end('dropped:target');
+      const completion = kind === 'completion';
+      if (!completion && !Object.hasOwn(INITIATION_EVENTS, kind)) return end('dropped:unsupported');
+      if (!target || target[1] !== this.selfId || target[1] !== cfg.expectedSelfId || !Number.isSafeInteger(memoryEpoch) || memoryEpoch < 0) return end('dropped:target');
+      if (completion ? typeof jobRef !== 'string' || !JOB_REF.test(jobRef) || !this.media || target[2] !== cfg.allowedCallerUID && !await this.isFriend(target[2]) : target[2] !== cfg.allowedCallerUID) return end('dropped:target');
       if (!(this.clock() < expiresAt)) return end('dropped:expired');
       const world = (await this.authority.health()).world, scope = await this.authority.context({ streamId, query: '', budgetChars: 1 });
       if (world.paused) return end('dropped:paused');
@@ -185,20 +198,23 @@ export class QQBridge {
       // Checked right before queueing, so a message that arrives later waits behind this run instead.
       if (this.streams.get(streamId)?.queued) return end('dropped:person_spoke');
       Object.assign(item, { memoryEpoch, entityId: scope.entityId, worldRevision: world.revision }); this.save();
-      await this.enqueue(streamId, () => this.initiated({ cfg, kind, requestId, item, streamId, userId: target[2] }));
+      await this.enqueue(streamId, () => this.initiated({ cfg, kind, requestId, item, streamId, userId: target[2], ...(completion ? { jobRef } : {}) }));
     } catch { if (['queued', 'processing'].includes(item.status)) end('failed'); }
   }
   /** The initiated run itself, in its conversation's queue: a turn with no message of the person. Her reply is split
    * and sent like any reply, each message with its own receipt; the first that fails or is unknown ends it, and
    * nothing is sent twice. Only delivered messages are observed as hers. */
-  async initiated({ cfg, kind, requestId, item, streamId, userId }) {
+  async initiated({ cfg, kind, requestId, item, streamId, userId, jobRef }) {
     const scope = { streamId, memoryEpoch: item.memoryEpoch }, stream = { streamId, text: '' };
     const end = status => { item.status = status; this.save(); };
     let sending = false;
     try {
       if (!await this.current(cfg, stream, item)) return end('dropped:stale');
       item.status = 'processing'; this.save();
-      const text = await executeConversation(this.executor, { scope, requestId, input: { text: INITIATION_EVENTS[kind], initiated: true } });
+      // A finished job's result is read from the content service inside this conversation's own scope; Authority never
+      // carries the text, and a job of another conversation cannot be read here.
+      const event = jobRef ? completionEvent(await this.media.call(scope, 'jobResult', { ref: jobRef })) : INITIATION_EVENTS[kind];
+      const text = await executeConversation(this.executor, { scope, requestId, input: { text: event, initiated: true } });
       if (DECLINED.test(text)) return end('declined');
       for (const [index, piece] of splitReply(text).entries()) {
         if (index) await this.sleep(SPLIT_GAP_MS);
@@ -219,9 +235,25 @@ export class QQBridge {
       end(sending ? 'unknown' : item.receipts?.length ? 'partial' : error?.code === 'BUDGET_EXHAUSTED' ? 'deferred:budget' : error?.code === 'WORLD_PAUSED' ? 'dropped:paused' : 'failed');
     }
   }
+  /** As an ordinary turn begins: a finished background job of this conversation the person was not told about yet.
+   * Authority hands it out for this turn (so she starts no turn about it); its result becomes an event block after
+   * the person's message. Whatever goes wrong here, the turn itself goes on without it. */
+  async carry(scope) {
+    if (!this.media || typeof this.authority.initiationCarry !== 'function') return null;
+    try {
+      const { initiation } = await this.authority.initiationCarry({ streamId: scope.streamId });
+      const key = typeof initiation?.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(initiation.id) ? INITIATION_PREFIX + initiation.id : null;
+      if (!key || this.state.records[key]) return null;
+      const item = this.state.records[key] = { status: 'processing' }; this.carrying = true; this.save();
+      try {
+        if (initiation.kind !== 'completion' || initiation.streamId !== scope.streamId || initiation.memoryEpoch !== scope.memoryEpoch || typeof initiation.jobRef !== 'string' || !JOB_REF.test(initiation.jobRef)) { item.status = 'dropped:target'; this.save(); return null; }
+        return { item, event: completionEvent(await this.media.call(scope, 'jobResult', { ref: initiation.jobRef })) };
+      } catch { item.status = 'failed'; this.save(); return null; }
+    } catch { return null; }
+  }
   async process({ cfg, message, requestId, item, userId = cfg.allowedCallerUID }) {
     const observation = message.observation, scope = { streamId: observation.streamId, memoryEpoch: item.memoryEpoch };
-    let sending = false, prepared;
+    let sending = false, prepared, carry = null;
     try {
       if (!await this.current(cfg, observation, item)) { item.status = 'paused'; this.save(); return; }
       item.status = 'processing'; this.save();
@@ -233,8 +265,11 @@ export class QQBridge {
       if (!await this.current(cfg, observation, item)) { item.status = 'paused'; this.save(); return; }
       // The executor derives its session from this scope. Only the original
       // observation is memory evidence; ASR/OCR/vision stay execution context.
-      const input = { text: prepared.executionText, queryText: prepared.queryText, mediaRefs: prepared.mediaRefs, evidence: [{ ref: observed.observationId, eventId: observation.eventId, role: observation.role }] };
+      carry = await this.carry(scope);
+      const input = { text: prepared.executionText, queryText: prepared.queryText, mediaRefs: prepared.mediaRefs, evidence: [{ ref: observed.observationId, eventId: observation.eventId, role: observation.role }], ...(carry ? { event: carry.event } : {}) };
       const text = await executeConversation(this.executor, { scope, requestId, input, timeoutMs: this.media && (prepared.mediaRefs.length || /音频|语音|转写|识别|qwen/i.test(prepared.queryText)) ? 420000 : 120000 });
+      // She has the result now, in a stored turn: it counts as told, whatever becomes of sending the reply.
+      if (carry) { carry.item.status = 'carried'; this.save(); }
       if (!await this.current(cfg, observation, item)) { item.status = 'paused'; this.save(); return; }
       const planned = this.media ? await this.media.plan({ scope, requestId, sourceEventId: observation.eventId, text, voiceRequested: prepared.voiceRequested, voiceProfile: prepared.voiceProfile }) : [{ type: 'text', text }];
       // A long text reply goes out as a few short messages. Each is its own send with its own receipt, so the
@@ -269,6 +304,11 @@ export class QQBridge {
           await this.delivered(observation, item, { messageId, type: 'text', text }); item.status = 'failed_notified'; this.save();
         } catch { item.status = 'unknown'; this.save(); }
       }
+    } finally {
+      // The turn ended before she had the carried result: reported as failed, so it rides on a later message.
+      if (carry?.item.status === 'processing') { carry.item.status = 'failed'; this.save(); }
+      // What became of a hand-out for this turn is reported now rather than on the next poll (an open one holds others back).
+      if (this.carrying) { this.carrying = false; await this.reportInitiations().catch(() => {}); }
     }
   }
 }

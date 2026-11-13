@@ -1,7 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { DEFAULT_PERSONA } from '../../core/src/persona.js';
 
 function object(value, fields) {
@@ -16,7 +16,7 @@ async function json(req, limit = 98304) {
 }
 
 /** Human control plane. Its socket/token are never mounted to the model worker. */
-export function createOperatorServer({ authority, socketPath, tokenHash, origins, modelControl, qqControl, contentOperator, assetsDir, onResume = () => {} }) {
+export function createOperatorServer({ authority, socketPath, tokenHash, origins, modelControl, qqControl, contentOperator, contentControl, contentJobs, assetsDir, onResume = () => {} }) {
   if (!path.isAbsolute(socketPath) || !/^[a-f0-9]{64}$/.test(tokenHash) || !Array.isArray(origins)) throw new Error('Invalid operator configuration');
   const expected = Buffer.from(tokenHash, 'hex');
   async function overview(authorization) {
@@ -90,6 +90,11 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       if (req.method === 'GET' && req.url === '/conversations') { respond(200, { ok: true, value: authority.listConversations() }); return; }
       // Read-only: the newest runs she was asked to start herself and how each ended (labels and times, no text).
       if (req.method === 'GET' && req.url === '/initiative/log') { respond(200, { ok: true, value: authority.initiationLog() }); return; }
+      // Read-only: the content service's background jobs (state, times, result, why one was refused), people as opaque labels.
+      if (req.method === 'GET' && req.url === '/jobs') {
+        if (!contentJobs) throw Object.assign(new Error('Content runtime unavailable'), { statusCode: 503 });
+        respond(200, { ok: true, value: authority.jobList(await contentJobs({ action: 'list' })) }); return;
+      }
       if (req.method === 'GET' && req.url === '/spend') {
         if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
         respond(200, { ok: true, value: await modelControl('/spend', undefined, req.headers.authorization) }); return;
@@ -147,6 +152,17 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       } else if (req.url === '/initiative/poke') {
         // "Try it on me": the body is empty, so the request can only ever be about the owner's own conversation.
         value = authority.initiationPoke(object(body, []));
+      } else if (req.url === '/jobs/demo') {
+        // The demonstration job, registered in the owner's own conversation: the body can name nobody (only how long it waits).
+        object(body, ['seconds']);
+        if (body.seconds !== undefined && !(Number.isInteger(body.seconds) && body.seconds >= 1 && body.seconds <= 120)) throw Object.assign(new Error('Invalid demo job'), { statusCode: 400, code: 'INVALID_REQUEST' });
+        if (!contentControl) throw Object.assign(new Error('Content runtime unavailable'), { statusCode: 503 });
+        value = await contentControl(authority.ownerContentScope(), { action: 'jobStart', capability: 'demo', input: body.seconds === undefined ? {} : { seconds: body.seconds }, requestId: 'operator:' + randomUUID() });
+      } else if (req.url === '/jobs/cancel') {
+        object(body, ['id']);
+        if (typeof body.id !== 'string' || !/^job:[a-f0-9-]{36}$/.test(body.id)) throw Object.assign(new Error('Invalid job'), { statusCode: 400, code: 'INVALID_REQUEST' });
+        if (!contentJobs) throw Object.assign(new Error('Content runtime unavailable'), { statusCode: 503 });
+        value = await contentJobs({ action: 'cancel', id: body.id });
       } else if (req.url === '/initiative/settings') {
         value = authority.initiationSettings(object(body, ['quietHours']));
       } else if (req.url === '/spend/settings') {
