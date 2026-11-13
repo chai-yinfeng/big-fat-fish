@@ -9,7 +9,8 @@ import { StringDecoder } from 'node:string_decoder';
 const MICROS = 1_000_000;
 const BEIJING_MS = 8 * 3600000; // Asia/Shanghai has no DST; independent of the host TZ.
 // `generation`: what a provider adapter makes (model-gateway/providers.mjs: pictures, video, converted voice).
-export const CATEGORIES = Object.freeze(['conversation', 'maintenance', 'vision', 'web', 'generation']);
+// `proactive`: the chat completions of a run she starts herself (an initiated run).
+export const CATEGORIES = Object.freeze(['conversation', 'maintenance', 'vision', 'web', 'generation', 'proactive']);
 export const DEFAULT_SPEND_SETTINGS = Object.freeze({ dailyCapYuan: 5, reducedPercent: 60, restrictedPercent: 80 });
 const days = (first, count) => Array.from({ length: count }, (_, i) => new Date(Date.parse(first + 'T00:00:00Z') + i * 86400000).toISOString().slice(0, 10));
 /** Chinese statutory holidays (the days off) from the State Council General Office notices.

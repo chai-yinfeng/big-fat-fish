@@ -209,6 +209,7 @@ H4 `normalized-value-is-stored`：对方说“下个月 5 号去上海”，假�
 Q1 `ledger-counts-every-exit`：聊一轮、看一张图、搜一次，额度账本（operator `/usage`）里聊天、看图、联网各 +1、语音两行不变，各付费行的花费与 `/spend` 同类金额相等、合计等于当日花费；
 Q2 `ledger-records-denials`：把看图上限设成已用次数后再看，网关回 `BUDGET_EXHAUSTED`，账本被拒 +1（原因 `daily_limit`），假模型没有收到这次请求；恢复上限后再看成功。
 P1 `provider-adapter-round-trip`：供应商适配的骨架。发行包里没有任何供应商适配；staging 的 `fake-model.mjs` 给网关注入一个假供应商 `mock`（`fake-provider.mjs`，与假上游在同一个文件，不随发行包发布）。没录 key 时提交被拒（账本记 `not_configured`）；经 operator `/providers/key` 录入 `MOCK-` 开头的假 key 后，异步任务走 提交—轮询—取回，同步任务一次返回，账本 `mock` 行各 +1、花费与 `/spend` 的 `generation` 类相等；把每日上限设成已用次数后再提交回 `BUDGET_EXHAUSTED`。key 留在数据根里，回退到旧包时带着 `providers.json` 启动。
+R1–R6 是“她先开口的回合”（设计稿里的 P1–P5，改用 R 是因为 P1 已被供应商骨架占用；R6 为新增）：R1 `poke-reaches-owner-only`：经 operator `/initiative/poke`（空请求体）后只有主人收到她的一条消息，其他人静默；假模型收到的是标明“这不是对方发来的话”的事件块，附注里说明没有人发消息；Authority 只多一条她的原话；账本“主动开口”行 +1；之后主人再说一句，请求仍以上一次请求为前缀。R2 `initiation-stops-at-reduced`：开销到“降级”档后 poke 没有模型请求、没有发送，结果 `deferred:budget`，账本记 `spend_tier`，普通回复照常。R3 `unknown-is-not-resent`：假 OneBot 丢掉一次发送回执（`POST /lose-receipts`），结果 `unknown`，之后几轮轮询既不重发也不再问模型，Authority 没有多出任何一条；再 poke 一次是新的请求，正常送达。R4 `paused-drops-not-queues`：暂停时 poke 当场记为 `dropped:paused`，恢复后没有模型请求和发送。R5 `declined-sends-nothing`：假模型回 `<不说>`，0 条发送，结果 `declined`，之后的对话仍以它为前缀。R6 `quiet-hours-drop`：把安静时段设到当前时刻后 poke 当场记为 `dropped:quiet_hours`，移开后同样的 poke 送达。回放时 QQ 桥每 3 秒取一次（`qq-bridge.json` 的 `initiationPollMs`，生产缺省 60 秒）；R 场景开头经 operator `/initiative/settings` 关掉安静时段、结尾恢复默认，所以任何时刻回放结果相同；每次回放前 staging agent 在 Authority 停着的时候删掉 `initiations` 状态（`reset_initiations`）。“对方先开口则作废”有时序竞争，不在 staging 回放，由 `authority/test/initiations.test.js` 与 `capabilities/qq/test/initiation.test.js` 覆盖。
 staging 没有图片运行时（sharp），图进不了 QQ 这条路，所以 Q1/Q2 的看图和搜索由运行器用 `gatewayCall` 直接打到网关的 inference socket（与 content 服务发的请求相同）；本地 TTS/ASR 在 staging 没有模型，上报与计数由单元测试覆盖。每次回放开始时，账本当天文件和上限随开销一起清零（历史不清）。
 M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里有一行 `SCENARIOS n/n passed: ...`，
 任一场景失败则是 `STAGING FAILED`。
@@ -222,7 +223,9 @@ M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里�
   `expectDigest`、`expectNoDigest`、`expectExtracted`、`expectProvenance`、`expectConsolidationInput`、`expectNoChatContains`、
   `expectConsolidation`、`noteExtracted`、`expectRejected`、`forget`、`resume`、
   `expectSplitReply`、`expectBeijingTime`、`expectToolResult`、
-  `gatewayCall`、`noteUsage`、`expectUsage`、`expectUsageMatchesSpend`、`usageLimit`
+  `gatewayCall`、`noteUsage`、`expectUsage`、`expectUsageMatchesSpend`、`usageLimit`、
+  `pause`、`quietHours`、`poke`、`expectInitiation`、`loseReceipts`、`expectLostSends`、`expectModelCalls`、
+  `noteMessages`、`expectMessages`、`expectInitiatedPrefix`
   （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。带 `consolidate` 的规则只应答记忆 worker 的整合请求
   （按该批对话里出现的 `match` 选规则，没有规则时回一段固定的合法摘要），不应答聊天；整合请求在请求日志里单独标记，
   `userText` 为空，所以按用户原文匹配的步骤看不到它。`forget` 里清理任务由运行器自己确认（staging 的 memory 单元连不到

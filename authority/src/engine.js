@@ -4,7 +4,8 @@ import { capability, canonical, closed, contextScope, enumeration, fail, identif
 import { POLICIES, validatePayload, review } from './policies.js';
 import { normalizePersona, validatePersonaPatch } from '../../core/src/persona.js';
 import { renderContextParts, renderProfile, RETRIEVED_ITEMS, DEFAULT_CONTEXT_CHARS, personaBudget, personaContextText, opaquePerson, opaqueStream } from './context.js';
-import { ConsolidationDomain, BACKGROUND_PROPOSAL } from './consolidation.js';
+import { BACKGROUND_PROPOSAL } from './consolidation.js';
+import { InitiationDomain } from './initiations.js';
 export {
   DEFAULT_ENTITY_ID
 }
@@ -14,7 +15,7 @@ export const MAX_ADMITTED_PEOPLE = 40;
 export const TRACE_LIMIT = 400;
 /** Most memory IDs one context() call may exclude. */
 export const MAX_CONTEXT_EXCLUDE = 256;
-export class Authority extends ConsolidationDomain {
+export class Authority extends InitiationDomain {
   constructor(options){
     super();
     closed(options,['file','clock','persona','initialPaused','migrations'],['file']);

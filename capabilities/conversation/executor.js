@@ -1,4 +1,7 @@
 export const DEFAULT_EXECUTION_TIMEOUT_MS = 120000;
+/** Her whole reply to a run she was asked to start herself (`input.initiated`) when she chooses to say nothing:
+ * the channel then sends nothing. */
+export const DECLINE_MARK = '<不说>';
 
 /** Text execution port: the backend owns sessions (derived from scope) and its model/tool loop. */
 export async function executeConversation(executor, { scope, requestId, input, timeoutMs = DEFAULT_EXECUTION_TIMEOUT_MS }) {

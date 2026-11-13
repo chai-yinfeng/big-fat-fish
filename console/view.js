@@ -1,7 +1,7 @@
 // Shared UI for the standalone browser entry. Styling lives in standalone.css.
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
-import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders } from './operator-client.js';
+import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, initiationResult } from './operator-client.js';
 import { validRuntime, ttsBackend, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
@@ -129,6 +129,8 @@ export function WorldConsole({ t, standalone = false }) {
   const [providers, setProviders] = useState(null);
   const [providerClear, setProviderClear] = useState(null);
   const providerInputs = useRef({});
+  // Runs she was asked to start herself (appended, same reason): the newest ones and how each ended.
+  const [initiations, setInitiations] = useState(null);
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -153,6 +155,7 @@ export function WorldConsole({ t, standalone = false }) {
     setPalette(null); setDrawer(false); setPeople(null); setSpendDraft(null); setMemoryFilter('');
     setQuota(null); setQuotaOpen(null); setQuotaHistory(null); setLimitDraft({});
     setProviders(null); setProviderClear(null);
+    setInitiations(null);
   }
   async function request(path, payload, credential = token, query) {
     const controller = new AbortController();
@@ -218,6 +221,12 @@ export function WorldConsole({ t, standalone = false }) {
     if (!mounted.current || generation.current !== current) return;
     setProviders(validProviders(value) ? value.providers : null); setProviderClear(null);
   }
+  // The newest initiated runs; an Authority that cannot answer leaves the card saying so, the rest of the page still shows.
+  async function loadInitiations(credential = token) {
+    const current = generation.current, value = await request('/initiative/log', undefined, credential).catch(caught => { if (caught.code === 'authorization_required') throw caught; return null; });
+    if (!mounted.current || generation.current !== current) return;
+    setInitiations(validInitiations(value) ? value : null);
+  }
   async function loadRuntime(credential = token) {
     const current = generation.current, value = await request('/runtime', undefined, credential);
     if (!validRuntime(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
@@ -225,7 +234,7 @@ export function WorldConsole({ t, standalone = false }) {
     setRuntimeInfo(value); setSpeechDraft(value.speech.status === 'ready' ? { numThreads: value.speech.numThreads, maxTextChars: value.speech.maxTextChars } : null);
   }
   useEffect(() => { if (token) void run(async () => { await load(token); if (tab === 'runtime') await loadProviders(token); if (standalone && tab === 'runtime') await loadRuntime(token); }); }, [token]);
-  useEffect(() => { if (token && tab === 'channels') void run(() => loadQQ(token)); }, [token, tab]);
+  useEffect(() => { if (token && tab === 'channels') void run(async () => { await loadQQ(token); await loadInitiations(token); }); }, [token, tab]);
   useEffect(() => { if (token && tab === 'people') void run(() => loadPeople(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'quota') void run(() => loadQuota(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'runtime') void run(async () => { await loadProviders(token); if (standalone) await loadRuntime(token); }); }, [tab]);
@@ -508,6 +517,30 @@ export function WorldConsole({ t, standalone = false }) {
         text('qqCallerHint'), text('qqCallerPrivacy'),
         h('button', { type: 'submit', disabled: gated }, t('qqSave')))));
   }
+  // "Try it on me": one run she starts herself, in the owner's own QQ conversation only, and how the newest ones ended.
+  // The request carries nothing: who it goes to is decided by Authority, never by this page.
+  function initiationCard() {
+    const named = (key, fallback) => { const label = t(key); return label === key ? fallback : label; };
+    const tone = result => result === 'sent' ? 'ok' : ['unknown', 'failed', 'partial'].includes(result) ? 'danger' : ['dropped', 'deferred', 'declined'].includes(result) ? 'warn' : 'primary';
+    return h('section', { className: 'bff-card' },
+      cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('sparkles')), h('h2', null, t('initiative.title'))),
+        button('refresh', () => run(() => loadInitiations()), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
+      text('initiative.hint'),
+      typeof initiations?.quietHours?.from === 'string' && typeof initiations.quietHours.to === 'string' && h('p', { className: 'bff-small bff-muted' }, `${t('initiative.quiet')}: ${initiations.quietHours.from}–${initiations.quietHours.to}`),
+      h('div', { className: 'bff-actions' }, button('initiative.poke', () => run(async () => {
+        const value = await request('/initiative/poke', {});
+        await loadInitiations();
+        setNotice(t(value?.already ? 'initiative.already' : value?.status === 'closed' ? 'initiative.refused' : 'initiative.queued'));
+      }), { className: 'bff-primary', icon: 'sparkles' })),
+      !initiations ? text('initiative.unavailable') : !initiations.items.length ? text('initiative.empty') : h('div', { className: 'bff-table' }, h('table', null,
+        h('thead', null, h('tr', null, ...['time', 'result', 'reason'].map(key => h('th', { key, scope: 'col' }, t(`initiative.columns.${key}`))))),
+        h('tbody', null, ...initiations.items.slice(0, 10).map(item => {
+          const { result, reason } = initiationResult(item);
+          return h('tr', { key: item.id }, h('td', { style: { whiteSpace: 'nowrap' } }, time(item.createdAt)),
+            h('td', null, badge(named(`initiative.result.${result}`, result), tone(result))),
+            h('td', null, reason ? named(`initiative.reason.${reason}`, reason) : named(`initiative.note.${result}`, '—')));
+        })))));
+  }
   function channels() {
     return h(React.Fragment, null,
       data.channels.length ? h('section', { className: 'bff-card' }, ...data.channels.map(channel => h('div', { className: 'bff-list-row', key: channel.id },
@@ -516,6 +549,7 @@ export function WorldConsole({ t, standalone = false }) {
           h('p', { className: 'bff-small bff-muted' }, `${t(channel.enabled ? 'enabled' : 'disabled')} · ${t('boundStreams')}: ${channel.boundStreams}`)),
         badge(t(channelStatus(channel)), channelTone(channel), h('span', { className: 'bff-dot' }))))) : text('noChannels'),
       qqSettings(),
+      initiationCard(),
       h('section', { className: 'bff-card' }, h('h2', null, t('channels')), data.bindings.length ? h('div', { className: 'bff-table' }, h('table', null,
         h('thead', null, h('tr', null, ...['source', 'conversation', 'person', 'audience'].map(key => h('th', { key, scope: 'col' }, t(key))))),
         h('tbody', null, ...data.bindings.map((binding, index) => h('tr', { key: binding.sourceId === 'qq' ? `qq:${index}` : `${binding.sourceId}:${binding.conversationId}:${index}` },

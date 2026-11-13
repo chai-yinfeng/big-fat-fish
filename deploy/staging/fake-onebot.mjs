@@ -3,10 +3,11 @@
 // Unix control socket for the scenario runner. Never part of a release or a production unit.
 //   node fake-onebot.mjs --port 13001 --token-file <file> --control <socket> --self <bot QQ>
 // Control (HTTP on the Unix socket):
-//   GET  /state                       -> { selfId, clients, friends, sent }
+//   GET  /state                       -> { selfId, clients, friends, sent, lost }
 //   POST /friends { friends: [{ user_id, nickname }] }   (also emits a friend_add notice)
 //   POST /message { user_id, nickname, text, sub_type? } -> { message_id }  (private message event)
-//   POST /reset                       -> forgets recorded send_private_msg calls
+//   POST /lose-receipts { count }     -> the next `count` send_private_msg calls get no receipt (recorded in `lost`, never in `sent`)
+//   POST /reset                       -> forgets recorded send_private_msg calls and pending lost receipts
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -55,8 +56,8 @@ export function createFrameParser(limit = 16 * 1024 * 1024) {
 export function createFakeOneBot({ port, token, controlSocket, selfId, nickname = 'MOCK-BOT' }) {
   if (!Number.isInteger(port) || port < 1024 || port > 65535 || [3001, 3082, 6099].includes(port)) throw new Error('FAKE_ONEBOT_PORT');
   if (typeof token !== 'string' || !token || !qq(selfId) || !path.isAbsolute(controlSocket)) throw new Error('FAKE_ONEBOT_CONFIG');
-  const clients = new Set(), sent = [];
-  let friends = [], nextMessageId = Math.floor(Date.now() / 1000) % 1000000 * 1000;
+  const clients = new Set(), sent = [], lost = [];
+  let losing = 0, friends = [], nextMessageId = Math.floor(Date.now() / 1000) % 1000000 * 1000;
   const broadcast = event => { const frame = encodeFrame(JSON.stringify(event)); for (const socket of clients) socket.write(frame); };
   const envelope = () => ({ time: Math.floor(Date.now() / 1000), self_id: Number(selfId) });
 
@@ -65,8 +66,10 @@ export function createFakeOneBot({ port, token, controlSocket, selfId, nickname 
     if (name === 'get_login_info') return ok({ user_id: Number(selfId), nickname });
     if (name === 'get_friend_list') return ok(friends.map(friend => ({ user_id: Number(friend.user_id), nickname: friend.nickname, remark: '' })));
     if (name === 'send_private_msg' && qq(params.user_id) && Array.isArray(params.message)) {
-      const message_id = ++nextMessageId;
       const text = params.message.filter(segment => segment?.type === 'text').map(segment => String(segment.data?.text ?? '')).join('');
+      // The platform's answer is lost: the caller cannot tell whether the message went out.
+      if (losing > 0) { losing--; lost.push({ user_id: String(params.user_id), text, at: Date.now() }); return { status: 'failed', retcode: 1200, data: null, echo }; }
+      const message_id = ++nextMessageId;
       sent.push({ message_id, user_id: String(params.user_id), text, types: params.message.map(segment => segment?.type), at: Date.now() });
       return ok({ message_id });
     }
@@ -100,11 +103,15 @@ export function createFakeOneBot({ port, token, controlSocket, selfId, nickname 
   const control = http.createServer(async (req, res) => {
     const send = (status, value) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
     try {
-      if (req.method === 'GET' && req.url === '/state') { send(200, { ok: true, value: { selfId: String(selfId), clients: clients.size, friends, sent } }); return; }
+      if (req.method === 'GET' && req.url === '/state') { send(200, { ok: true, value: { selfId: String(selfId), clients: clients.size, friends, sent, lost } }); return; }
       if (req.method !== 'POST') { send(404, { ok: false }); return; }
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
-      if (req.url === '/reset') { sent.length = 0; send(200, { ok: true, value: {} }); return; }
+      if (req.url === '/reset') { sent.length = 0; lost.length = 0; losing = 0; send(200, { ok: true, value: {} }); return; }
+      if (req.url === '/lose-receipts') {
+        if (!Number.isInteger(body.count) || body.count < 0 || body.count > 20) throw new Error('LOSE');
+        losing = body.count; send(200, { ok: true, value: { losing } }); return;
+      }
       if (req.url === '/friends') {
         if (!Array.isArray(body.friends) || body.friends.some(friend => !qq(friend?.user_id) || typeof friend.nickname !== 'string')) throw new Error('FRIENDS');
         friends = body.friends.map(friend => ({ user_id: String(friend.user_id), nickname: friend.nickname }));
@@ -124,7 +131,7 @@ export function createFakeOneBot({ port, token, controlSocket, selfId, nickname 
   });
 
   return {
-    sent, clients,
+    sent, lost, clients,
     async start() {
       fs.mkdirSync(path.dirname(controlSocket), { recursive: true, mode: 0o700 });
       fs.rmSync(controlSocket, { force: true });

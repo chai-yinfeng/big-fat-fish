@@ -57,6 +57,18 @@ export function providerKeyPayload(provider, apiKey) {
 export function validProviders(value) {
   return Array.isArray(value?.providers) && value.providers.every(item => typeof item?.id === 'string' && typeof item.title === 'string' && typeof item.configured === 'boolean' && ['model', 'providers'].includes(item.managed));
 }
+/** GET /initiative/log: the newest runs she was asked to start herself, newest first. */
+export function validInitiations(value) {
+  return Array.isArray(value?.items) && value.items.every(item => typeof item?.id === 'string' && ['waiting', 'issued', 'closed'].includes(item.status)
+    && (item.outcome === null || typeof item.outcome === 'string') && Number.isFinite(item.createdAt));
+}
+/** How one of them stands, as two label keys: `result` (waiting, issued, sent, partial, unknown, failed, declined,
+ * dropped, deferred) and, for a dropped or deferred one, the `reason` it was not sent. */
+export function initiationResult(item) {
+  if (item.status !== 'closed') return { result: item.status, reason: null };
+  const [result, reason] = String(item.outcome).split(':');
+  return { result, reason: ['dropped', 'deferred'].includes(result) && /^[a-z_]{1,32}$/.test(reason ?? '') ? reason : null };
+}
 /** GET /usage: today's row per capability (model-gateway usage ledger). */
 export function validUsage(value) {
   return value && typeof value.day === 'string' && Array.isArray(value.rows) && value.rows.every(row => typeof row.id === 'string' && typeof row.title === 'string' && ['paid', 'local'].includes(row.kind) && usageNumbers(row)
@@ -105,9 +117,9 @@ export function sourcesQuery({ id } = {}) {
 }
 export async function operatorRequest({ location, token, path, payload, query, fetchImpl = fetch, signal, sameOrigin = false }) {
   if (!token) throw Object.assign(new Error('authorization_required'), { code: 'authorization_required' });
-  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/conversations', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits', '/providers', '/providers/key', '/providers/clear'].includes(path)) throw new Error('unsupported_operator_path');
-  if (['/model', '/model/test', '/spend/settings', '/usage/limits', '/providers/key', '/providers/clear', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
-  if (['/runtime', '/people', '/conversations', '/spend', '/usage', '/usage/history', '/providers', '/memory/consolidation', '/memory/sources'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
+  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/conversations', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits', '/providers', '/providers/key', '/providers/clear', '/initiative/log', '/initiative/poke'].includes(path)) throw new Error('unsupported_operator_path');
+  if (['/model', '/model/test', '/spend/settings', '/usage/limits', '/providers/key', '/providers/clear', '/initiative/poke', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
+  if (['/runtime', '/people', '/conversations', '/spend', '/usage', '/usage/history', '/providers', '/initiative/log', '/memory/consolidation', '/memory/sources'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
   if (query !== undefined && (!['/memory', '/memory/sources'].includes(path) || payload !== undefined) || path === '/memory/sources' && query === undefined) throw new Error('operator_query_unsupported');
   const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}${query === undefined ? '' : path === '/memory/sources' ? sourcesQuery(query) : memoryQuery(query)}`, {
     method: payload === undefined ? 'GET' : 'POST',

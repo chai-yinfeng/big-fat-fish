@@ -88,6 +88,8 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         respond(200, { ok: true, value: { ...authority.listPeople(), qq } }); return;
       }
       if (req.method === 'GET' && req.url === '/conversations') { respond(200, { ok: true, value: authority.listConversations() }); return; }
+      // Read-only: the newest runs she was asked to start herself and how each ended (labels and times, no text).
+      if (req.method === 'GET' && req.url === '/initiative/log') { respond(200, { ok: true, value: authority.initiationLog() }); return; }
       if (req.method === 'GET' && req.url === '/spend') {
         if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
         respond(200, { ok: true, value: await modelControl('/spend', undefined, req.headers.authorization) }); return;
@@ -142,6 +144,11 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         value = authority.setWorldPaused(body);
         if (!value.paused) onResume();
         else if (modelControl) await modelControl('/cancel', {}, req.headers.authorization);
+      } else if (req.url === '/initiative/poke') {
+        // "Try it on me": the body is empty, so the request can only ever be about the owner's own conversation.
+        value = authority.initiationPoke(object(body, []));
+      } else if (req.url === '/initiative/settings') {
+        value = authority.initiationSettings(object(body, ['quietHours']));
       } else if (req.url === '/spend/settings') {
         object(body, ['dailyCapYuan', 'reducedPercent', 'restrictedPercent']);
         if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });

@@ -479,6 +479,157 @@
       "finally": [
         { "usageLimit": { "capability": "mock", "limit": null } }
       ]
+    },
+    {
+      "id": "R1",
+      "title": "poke-reaches-owner-only: the operator's poke makes her speak first in the owner's private chat and nowhere else; the model is sent an event block marked as not the owner's words; only her delivered line is recorded; it is proactive spend; the next ordinary request still starts with the one before it",
+      "model": [{ "match": "MOCK-R1-{run} 第一句", "reply": "MOCK-REPLY-R1-{run} 第一句的回复" }, { "match": "后台事件", "reply": "MOCK-INIT-R1-{run} 在忙吗" }, { "match": "MOCK-R1-{run} 第二句", "reply": "MOCK-REPLY-R1-{run} 第二句的回复" }],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "noteUsage": {} },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-R1-{run} 第一句" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-R1-{run} 第一句的回复" } },
+        { "noteMessages": { "person": "MOCK-OWNER" } },
+        { "poke": {} },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-INIT-R1-{run} 在忙吗" } },
+        { "expectInitiation": { "outcome": "sent" } },
+        { "expectSilence": { "to": "*", "afterMs": 6000 } },
+        { "expectSentCount": { "to": "MOCK-OWNER", "contains": "MOCK-INIT-R1-{run}", "count": 1 } },
+        { "expectLostSends": { "to": "MOCK-OWNER", "count": 0 } },
+        { "expectModelCalls": { "userText": "后台事件", "count": 1 } },
+        { "expectPrompt": { "userText": "后台事件", "contains": "[后台事件 · 这不是对方发来的话]" } },
+        { "expectPrompt": { "userText": "后台事件", "contains": "这一条不是对方发来的消息", "in": "context" } },
+        { "expectPrompt": { "userText": "后台事件", "absent": "后台事件", "in": "system" } },
+        { "expectMessages": { "person": "MOCK-OWNER", "added": 1 } },
+        { "expectUsage": { "capability": "proactive", "used": 1, "calls": 1, "ok": 1 } },
+        { "expectUsage": { "capability": "chat", "used": 1, "calls": 1, "ok": 1 } },
+        { "expectUsageMatchesSpend": {} },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-R1-{run} 第二句" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-R1-{run} 第二句的回复" } },
+        { "expectInitiatedPrefix": { "before": "MOCK-R1-{run} 第一句", "after": "MOCK-R1-{run} 第二句" } },
+        { "expectPrompt": { "userText": "MOCK-R1-{run} 第二句", "contains": "MOCK-INIT-R1-{run} 在忙吗" } }
+      ],
+      "finally": [
+        { "quietHours": { "window": "default" } }
+      ]
+    },
+    {
+      "id": "R2",
+      "title": "initiation-stops-at-reduced: at the reduced spend tier a poke reaches no model and sends nothing, is recorded as deferred:budget and counted as a spend_tier refusal; an ordinary reply still goes out",
+      "model": [{ "match": "MOCK-R2-{run}", "reply": "MOCK-REPLY-R2-{run} 好" }, { "match": "后台事件", "reply": "MOCK-INIT-R2-{run} 不该出现" }],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "spendSettings": { "dailyCapYuan": 5, "reducedPercent": 0.0005, "restrictedPercent": 99 } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-R2-{run} 先聊一句" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-R2-{run} 好" } },
+        { "expectSpend": { "tier": "reduced" } },
+        { "noteUsage": {} },
+        { "poke": {} },
+        { "expectInitiation": { "outcome": "deferred:budget" } },
+        { "expectSilence": { "to": "*", "afterMs": 6000 } },
+        { "expectModelCalls": { "userText": "后台事件", "count": 0 } },
+        { "expectLostSends": { "to": "MOCK-OWNER", "count": 0 } },
+        { "expectUsage": { "capability": "proactive", "denied": { "spend_tier": 1 } } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-R2-{run} 普通回复照常" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-R2-{run} 好" } },
+        { "expectSentCount": { "to": "MOCK-OWNER", "count": 2 } }
+      ],
+      "finally": [
+        { "spendSettings": { "dailyCapYuan": 5, "reducedPercent": 60, "restrictedPercent": 80 } },
+        { "quietHours": { "window": "default" } }
+      ]
+    },
+    {
+      "id": "R3",
+      "title": "unknown-is-not-resent: her message gets no platform receipt; the request ends as unknown, nothing is sent or generated again on later polls, nothing is recorded as said; a new poke afterwards is a new request",
+      "model": [{ "match": "后台事件", "reply": "MOCK-INIT-R3-{run} 这条的回执会丢" }],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "noteMessages": { "person": "MOCK-OWNER" } },
+        { "loseReceipts": { "count": 1 } },
+        { "poke": {} },
+        { "expectInitiation": { "outcome": "unknown" } },
+        { "expectSilence": { "to": "*", "afterMs": 9000 } },
+        { "expectLostSends": { "to": "MOCK-OWNER", "count": 1 } },
+        { "expectSentCount": { "to": "MOCK-OWNER", "count": 0 } },
+        { "expectModelCalls": { "userText": "后台事件", "count": 1 } },
+        { "expectMessages": { "person": "MOCK-OWNER", "added": 0 } },
+        { "poke": {} },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-INIT-R3-{run}" } },
+        { "expectInitiation": { "outcome": "sent" } },
+        { "expectLostSends": { "to": "MOCK-OWNER", "count": 1 } },
+        { "expectSentCount": { "to": "MOCK-OWNER", "count": 1 } },
+        { "expectModelCalls": { "userText": "后台事件", "count": 2 } },
+        { "expectMessages": { "person": "MOCK-OWNER", "added": 1 } }
+      ],
+      "finally": [
+        { "loseReceipts": { "count": 0 } },
+        { "quietHours": { "window": "default" } }
+      ]
+    },
+    {
+      "id": "R4",
+      "title": "paused-drops-not-queues: a poke while the world is paused is closed at once as dropped:paused; after the world resumes nothing is generated or sent",
+      "model": [{ "match": "后台事件", "reply": "MOCK-INIT-R4-{run} 不该出现" }],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "pause": {} },
+        { "poke": { "expect": "dropped:paused" } },
+        { "expectInitiation": { "outcome": "dropped:paused" } },
+        { "resume": {} },
+        { "expectSilence": { "to": "*", "afterMs": 9000 } },
+        { "expectModelCalls": { "userText": "后台事件", "count": 0 } },
+        { "expectLostSends": { "to": "MOCK-OWNER", "count": 0 } }
+      ],
+      "finally": [
+        { "resume": {} },
+        { "quietHours": { "window": "default" } }
+      ]
+    },
+    {
+      "id": "R5",
+      "title": "declined-sends-nothing: she answers the event with the decline mark; nothing is sent, the request ends as declined, and the conversation goes on from it",
+      "model": [{ "match": "MOCK-R5-{run}", "reply": "MOCK-REPLY-R5-{run} 好" }, { "match": "后台事件", "reply": "<不说>" }],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-R5-{run} 之前的一句" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-R5-{run} 好" } },
+        { "noteMessages": { "person": "MOCK-OWNER" } },
+        { "poke": {} },
+        { "expectInitiation": { "outcome": "declined" } },
+        { "expectSilence": { "to": "*", "afterMs": 6000 } },
+        { "expectModelCalls": { "userText": "后台事件", "count": 1 } },
+        { "expectLostSends": { "to": "MOCK-OWNER", "count": 0 } },
+        { "expectMessages": { "person": "MOCK-OWNER", "added": 0 } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-R5-{run} 之后的一句" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-R5-{run} 好" } },
+        { "expectInitiatedPrefix": { "before": "MOCK-R5-{run} 之前的一句", "after": "MOCK-R5-{run} 之后的一句" } },
+        { "expectSentCount": { "to": "MOCK-OWNER", "count": 2 } }
+      ],
+      "finally": [
+        { "quietHours": { "window": "default" } }
+      ]
+    },
+    {
+      "id": "R6",
+      "title": "quiet-hours-drop: in the quiet hours a poke is closed at once as dropped:quiet_hours, reaches no model and sends nothing; with the hours moved away the same poke goes out",
+      "model": [{ "match": "后台事件", "reply": "MOCK-INIT-R6-{run} 安静时段之外" }],
+      "steps": [
+        { "quietHours": { "window": "now" } },
+        { "poke": { "expect": "dropped:quiet_hours" } },
+        { "expectInitiation": { "outcome": "dropped:quiet_hours" } },
+        { "expectSilence": { "to": "*", "afterMs": 6000 } },
+        { "expectModelCalls": { "userText": "后台事件", "count": 0 } },
+        { "expectLostSends": { "to": "MOCK-OWNER", "count": 0 } },
+        { "quietHours": { "window": "none" } },
+        { "poke": {} },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-INIT-R6-{run} 安静时段之外" } },
+        { "expectInitiation": { "outcome": "sent" } },
+        { "expectSentCount": { "to": "MOCK-OWNER", "count": 1 } }
+      ],
+      "finally": [
+        { "quietHours": { "window": "default" } }
+      ]
     }
   ]
 }

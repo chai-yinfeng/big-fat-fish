@@ -64,6 +64,13 @@ export class AuthorityClient {
     if (typeof value.uid !== 'string' || !/^[1-9]\d{0,19}$/.test(value.uid)) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/people/admit', value);
   }
+  /** QQ capability credential: the next run she starts herself, as Authority chose it, or `initiation: null` with a reason. */
+  initiationNext() { return this.#request('POST', '/v1/initiations/next', {}); }
+  async initiationAck(value) {
+    closed(value, ['id', 'outcome'], ['id', 'outcome']);
+    if (!text(value.id) || !text(value.outcome, 64)) throw fail('INVALID_REQUEST');
+    return this.#request('POST', '/v1/initiations/ack', value);
+  }
   async maintenanceBatch(value = {}) {
     closed(value, ['afterRevision', 'limit', 'mode'], []);
     const batch = await this.#request('POST', '/v1/maintenance/batch', value);

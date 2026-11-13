@@ -86,3 +86,38 @@ test('a gateway refusal at the daily cap surfaces as BUDGET_EXHAUSTED without an
   await assert.rejects(executor.execute({ scope: { streamId: 'qq:1:private:2', memoryEpoch: 0 }, requestId: 'r-1', input: { text: '你好' }, timeoutMs: 10000 }), { code: 'BUDGET_EXHAUSTED' });
   assert.equal(upstream, 0);
 });
+
+test('through the real model gateway: an initiated run is proactive spend, refused from the reduced tier with no provider call while a reply still goes through', async t => {
+  const root = tempRoot(t);
+  const authority = await fakeAuthority(t, root);
+  const inference = tokenFile(root, 'inference.token'), operator = 'operator-token-for-test-only-0000000000';
+  let upstream = 0;
+  fs.mkdirSync(path.join(root, 'model'), { mode: 0o700 });
+  fs.writeFileSync(path.join(root, 'model/settings.json'), JSON.stringify({ model: 'deepseek-flash', apiKey: 'synthetic-key-not-a-real-secret' }), { mode: 0o600 });
+  const gateway = createModelGateway({
+    settingsFile: path.join(root, 'model/settings.json'), inferenceSocket: path.join(root, 'model/infer.sock'), controlSocket: path.join(root, 'model/control.sock'),
+    inferenceTokenHash: sha(inference.token), operatorTokenHash: sha(operator), worldStatus: async () => ({ paused: false }),
+    fetchImpl: async () => { upstream++; return new Response(reply('好的').map(value => `data: ${JSON.stringify(value)}\n\n`).join('') + 'data: [DONE]\n\n'); },
+  });
+  await gateway.start(); t.after(() => gateway.close());
+  const control = (route, body) => new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: path.join(root, 'model/control.sock'), path: route, method: body ? 'POST' : 'GET', headers: { authorization: 'Bearer ' + operator, 'content-type': 'application/json' } }, res => { let raw = ''; res.on('data', chunk => { raw += chunk; }); res.on('end', () => resolve(JSON.parse(raw).value)); });
+    req.on('error', reject); req.end(body ? JSON.stringify(body) : undefined);
+  });
+  const { model, streamFn } = createGatewayStream({ socketPath: path.join(root, 'model/infer.sock'), tokenFile: inference.file });
+  const executor = createConversationExecutor({ authority: new AuthorityClient(authority.config), store: new SessionStore(path.join(root, 'sessions')), model, streamFn });
+  const run = (requestId, input) => executor.execute({ scope: { streamId: 'qq:1:private:2', memoryEpoch: 0 }, requestId, input, timeoutMs: 10000 });
+  assert.equal(await run('qq:init:1', { text: 'MOCK-EVENT', initiated: true }), '好的');
+  let spend = await control('/spend');
+  assert.ok(spend.byTier.proactive > 0);
+  assert.deepEqual([spend.byTier.conversation, upstream], [0, 1]);
+  // Any spend at all is now past the reduced tier of a tiny cap.
+  await control('/spend/settings', { dailyCapYuan: 1000, reducedPercent: 0.0000001, restrictedPercent: 99 });
+  assert.equal((await control('/spend')).tier, 'reduced');
+  await assert.rejects(run('qq:init:2', { text: 'MOCK-EVENT', initiated: true }), { code: 'BUDGET_EXHAUSTED' });
+  assert.equal(upstream, 1);
+  assert.equal(await run('r-1', { text: '你好' }), '好的');
+  spend = await control('/spend');
+  assert.ok(spend.byTier.conversation > 0);
+  assert.equal(upstream, 2);
+});

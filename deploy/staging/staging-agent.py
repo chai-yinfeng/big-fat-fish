@@ -46,6 +46,7 @@ UNITS_DIR = Path.home() / '.config/systemd/user'  # where the agent's user manag
 NODE_CACHE = Path.home() / '.cache/companion-staging'  # outside ROOT: survives --reset
 PREFIX = 'companion-staging-'
 OPERATOR_PORT, ONEBOT_PORT = 13082, 13001
+INITIATION_POLL_MS = 3000  # scenario replay: how often the QQ bridge asks for an initiated run (production: 60 s)
 PROD_PORTS = (3001, 3082, 6099)
 UNIX_ONLY = ('memory', 'qq')  # their old code dials 127.0.0.1:3082 / :3001
 PROXY = 'http://127.0.0.1:7890'
@@ -321,6 +322,29 @@ def reset_consolidation(database):
         db.close()
 
 
+def reset_initiations(database):
+    """Deterministic reruns of the initiation scenarios, while Authority is stopped: no request of an earlier
+    replay is still open (one that was out when its replay died would hold the next ones back for minutes) and
+    the quiet hours are the default again. Returns whether there was anything to remove."""
+    if not Path(database).exists():
+        return False
+    db = sqlite3.connect(str(database))
+    try:
+        removed = db.execute("DELETE FROM metadata WHERE key='initiations'").rowcount > 0
+        db.commit()
+        return removed
+    finally:
+        db.close()
+
+
+def scenario_bridge_config(config, bridge_source):
+    """qq-bridge.json for scenario replay: a release whose bridge fetches initiated runs asks every few seconds
+    (production: every minute), so those scenarios do not wait minutes. Other releases are left alone. Idempotent."""
+    if 'initiationPollMs' in bridge_source:
+        config['initiationPollMs'] = INITIATION_POLL_MS
+    return config
+
+
 def stop_fake_onebot():
     subprocess.run(['pkill', '-U', str(os.getuid()), '-f', FAKE_ONEBOT], capture_output=True, timeout=20)
 
@@ -331,11 +355,13 @@ def scenarios(deployer, only=None):
     release = ROOT / 'src/companion/current'
     qq_config = json.loads((BASE / 'operator/qq-bridge.json').read_text())
     # The QQ unit loses its Unix-socket-only restriction below: it must dial the staging port, never NapCat's.
-    if qq_config.get('onebotPort') != ONEBOT_PORT or 'onebotPort' not in (release / 'capabilities/qq/main.mjs').read_text():
+    bridge_source = (release / 'capabilities/qq/main.mjs').read_text()
+    if qq_config.get('onebotPort') != ONEBOT_PORT or 'onebotPort' not in bridge_source:
         raise RuntimeError('this release cannot be pointed at the fake OneBot port %d' % ONEBOT_PORT)
     names = deployer.installed_units()
     stop_fake_onebot()
     deployer.stop_all(names)
+    edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_source))
     for name in (PREFIX + 'model.service', PREFIX + 'qq.service'):
         path = deployer.config.units / name
         path.write_text(scenario_unit(name, path.read_text()))
@@ -348,6 +374,7 @@ def scenarios(deployer, only=None):
     # The mock provider's jobs of earlier replays go with the reservations they held (provider keys stay).
     (model_data / 'provider-jobs.json').unlink(missing_ok=True)
     reset_consolidation(BASE / 'authority-data/authority.sqlite')
+    reset_initiations(BASE / 'authority-data/authority.sqlite')
     dispatch = Path(qq_config['stateFile'])
     if dispatch.exists():
         state = json.loads(dispatch.read_text())

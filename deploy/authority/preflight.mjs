@@ -59,6 +59,8 @@ const CHECKS = [
   { label: 'qq-bridge.json', required: true, check: file => {
     const c = readPrivate(file, { owner: true });
     if (!plain(c) || !plain(c.authority) || !plain(c.conversation) || !absolute(c.controlSocket) || !absolute(c.onebotTokenFile) || !/^[a-f0-9]{64}$/.test(c.operatorTokenHash) || !port(c.onebotPort)) throw fail('CONFIG_INVALID');
+    // Optional timing (staging shortens it); the bridge refuses to start on a value out of range.
+    if (c.initiationPollMs !== undefined && !(Number.isInteger(c.initiationPollMs) && c.initiationPollMs >= 1000 && c.initiationPollMs <= 600000)) throw fail('CONFIG_INVALID');
     return c;
   } },
   // capabilities/memory/main.mjs; a legacy purgeModule is ignored by the worker.
