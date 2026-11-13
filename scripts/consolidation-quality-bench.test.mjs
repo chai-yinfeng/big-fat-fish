@@ -48,8 +48,10 @@ test('one consolidation call per case through the real gateway and Authority; th
   const text = JSON.stringify(result) + formatResult(result);
   assert.ok(!text.includes(MOCK_KEY));
   assert.match(formatResult(result), /== daily \(MOCK-A; 20 lines/);
-  // The settings file that held the key is gone; the cap is the bench's own.
-  assert.deepEqual(fs.readdirSync(f.stateDir).sort(), ['capability-usage.json', 'model-pricing.json', 'spend-settings.json', 'spend.json'].filter(name => fs.existsSync(path.join(f.stateDir, name))));
+  // The settings file that held the key is gone; the cap is the bench's own. What stays is the gateway's own
+  // counting (the usage ledger since it exists), and none of it holds the key.
+  assert.deepEqual(fs.readdirSync(f.stateDir).sort(), ['capability-usage.json', 'model-pricing.json', 'spend-settings.json', 'spend.json', 'usage-ledger.json'].filter(name => fs.existsSync(path.join(f.stateDir, name))));
+  for (const name of fs.readdirSync(f.stateDir)) assert.ok(!fs.readFileSync(path.join(f.stateDir, name), 'utf8').includes(MOCK_KEY), name);
   assert.ok(!fs.existsSync(path.join(f.stateDir, 'model-settings.json')));
   assert.equal(JSON.parse(fs.readFileSync(path.join(f.stateDir, 'spend-settings.json'), 'utf8')).dailyCapYuan, 1);
   await assert.rejects(runQuality({ ...f, only: ['nope'], fetchImpl }), /Invalid bench options/);
