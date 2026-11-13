@@ -12,6 +12,7 @@ await speech.synthesize({ text: '你好。', outputFile: '/speech-work/new-outpu
 ```
 
 - `transcribe` returns `{text,model,durationMs,derived:true}`. The result is machine transcription, not a verified literal user statement. `durationMs` is audio duration, not processing time. Input must already be **mono PCM16 RIFF WAV**, 8–48kHz (sherpa's native OfflineStream resamples to 16kHz), at most `maxAudioSeconds` (1–600, prepared default 120), 16MiB file ceiling; longer audio fails with `SPEECH_AUDIO_LIMIT` (there is no second ASR engine to fall back to). Audio over 30 s needs the VAD model (see *Long audio*); without it the limit stays 30 s. QQ AMR/SILK/Opus decoding belongs to the media boundary.
+- `transcribe({inputFile, segments:true})` (optional, for later video transcription; nothing calls it yet and it is not a model-facing parameter) returns the same four fields plus `segments: [{startMs,endMs,text}]` and `speechMs`; see *Timed segments*. Without `segments` (or with `false`) the job sent to the worker and the result are byte-for-byte what they were before the option existed. It needs the VAD model at any length (`SPEECH_NOT_CONFIGURED` otherwise); a non-boolean value is `SPEECH_REQUEST`.
 - `synthesize` returns `{model,durationMs,sampleRate,mime:'audio/wav'}` only after a valid, nonempty WAV exists. The output path must be new and below `workRoot`. Sending this file and recording a successful QQ receipt are separate operations.
 - `language` (default `auto`) is validated but Qwen3-ASR uses its own language identification.
 - Error codes: missing config/runtime/weights `SPEECH_NOT_CONFIGURED`; schema-1 config `SPEECH_CONFIG_SCHEMA`; disabled engine `SPEECH_MODEL_DISABLED`; unknown voice id `SPEECH_VOICE_UNKNOWN`; no default voice or a reference failing its checks `SPEECH_REFERENCE_REQUIRED`. `status()` reports `longAudio` (`vadPresent`, `singlePassSeconds`, effective `maxAudioSeconds`, `timeoutMs`, and a `SPEECH_VAD_NOT_INSTALLED` hint when the VAD is missing), component presence, enabled state, a matching operator CPU-benchmark record (`verified:true` only refers to that bounded synthetic benchmark), `defaultVoice` and the voice list (id, engine, usage scope, audition flag).
@@ -43,6 +44,13 @@ Audio ≤30 s is decoded in one pass exactly as before. Longer audio (when `mode
 `models.vad` is optional: `{ id: 'silero-vad-v5.1.2', engine: 'sherpa-silero-vad', file }` (`enabled:false` turns it off). Configs prepared before it simply lack it; `install-speech --models vad` adds it and raises the old default `maxAudioSeconds` 30 to 120 (an operator-chosen value is kept). No schema change.
 
 Measured with the product worker on home-agent (8 threads, Silero VAD + Qwen3-ASR int8, TTS-built clips, wall time including child start and model load): 35 s → 165/165 chars, 7.9 s; 40.8 s → 191/191 chars, 9.1 s; 69.3 s → 330/330 chars, 13.5 s; CER 0 against the source sentences.
+
+### Timed segments (`segments:true`)
+
+- `speechMs`: the summed length of the Silero VAD speech regions (unpadded), i.e. how much of the clip the VAD calls voiced. The caller decides what "too little speech" means.
+- `segments`: one entry per decoded chunk that produced text, in order, times in ms from the start of the input. A chunk is the unit above (VAD regions grouped up to 25 s, 0.2 s padding), so the times are chunk bounds, not word or sentence timestamps; the sherpa Qwen3-ASR result has none. `text` is exactly what that chunk contributed to the top-level `text` (repeat across a hard-split overlap already dropped), so the segment texts joined give `text` again (a space is inserted only between two ASCII word characters); a hard-split window's `startMs` lies 1 s before the previous `endMs`. Chunks with no text are left out.
+- Audio ≤30 s is still decoded in one pass with the same `text`; the VAD runs only to measure `speechMs`, and `segments` is one entry covering the whole clip (`0`–`durationMs`), or `[]` when the text is empty.
+- The runner accepts up to 96 KiB of worker output for such a request (32 KiB otherwise), since the text appears twice.
 
 ## TTS backend (Vulkan iGPU with CPU fallback)
 
@@ -104,8 +112,9 @@ After installation, register a voice in the console, audition it, and optionally
 
 - `llama-tts.test.js` covers the backend args, the `auto` fallback with a fake native run (Vulkan fails → CPU, then straight to CPU), the Vulkan probe, a config without `device` meaning `auto`, and the real worker against a fake CPU-only `llama-tts`.
 - `runner.test.js` uses a fake child: path boundaries/symlink escape, serialized jobs, the ASR length cap with/without the VAD, voice resolution, schema refusal, reference manifest checks, sanitized failure/recovery. The installer is checked via pure helpers (`cmakeFor`, `hfUrl`, `ggufUrl`, `proxyEnv`, `localArchive`) and a prepared-manifest plan fixture.
-- `chunks.test.js` covers chunk planning (grouping, hard split with overlap) and joining.
-- Not covered by tests: real model loading, intelligibility, latency, `--apply`, and the ModelScope/proxy download path on the host.
+- `chunks.test.js` covers chunk planning (grouping, hard split with overlap), joining, and timed segments / `speechMs`.
+- `segments.test.js` runs the real worker against a fake sherpa module (fake VAD and recognizer): the output without `segments` is pinned to literals recorded from the worker before the option existed; with it, the segment times, `speechMs`, the one-pass short path, the VAD requirement and refusal of a malformed worker answer.
+- Not covered by tests: `segments` with the real VAD and Qwen3-ASR (chunk times against real speech), real model loading, intelligibility, latency, `--apply`, and the ModelScope/proxy download path on the host.
 
 ## Source evidence
 
