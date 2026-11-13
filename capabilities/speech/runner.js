@@ -35,6 +35,8 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
       if (info.format !== 1 || info.bits !== 16) throw failure('SPEECH_AUDIO_FORMAT');
       // Over 30 s needs the VAD model; status().longAudio says whether it is installed.
       if (info.durationMs > asrLimitSeconds(c) * 1000) throw failure('SPEECH_AUDIO_LIMIT');
+      // Timed output needs the VAD at any length (it measures speechMs).
+      if (job.segments && !vadPresent(c)) throw failure('SPEECH_NOT_CONFIGURED');
     } else {
       if (typeof job.text !== 'string' || !job.text.trim() || [...job.text].length > c.maxTextChars) throw failure('SPEECH_REQUEST');
       if (e.engine === 'llama-tts') trustedReference(c, profile);
@@ -63,7 +65,7 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
         const timer = setTimeout(() => { timedOut = true; kill(); }, c.timeoutMs);
         const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); };
         child.stdout.setEncoding('utf8');
-        child.stdout.on('data', chunk => { output += chunk; if (Buffer.byteLength(output) > 32768) { overflow = true; output = ''; kill(); } });
+        child.stdout.on('data', chunk => { output += chunk; if (Buffer.byteLength(output) > (job.segments ? 98304 : 32768)) { overflow = true; output = ''; kill(); } });
         child.on('error', () => { cleanup(); reject(failure('SPEECH_WORKER_FAILED')); });
         child.on('close', code => {
           cleanup();
@@ -81,7 +83,11 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
       if (result?.model !== e.id || result.complete !== true) throw failure('SPEECH_WORKER_FAILED');
       if (job.kind === 'asr') {
         if (typeof result.text !== 'string' || result.text.length > 12000 || !Number.isFinite(result.durationMs)) throw failure('SPEECH_WORKER_FAILED');
-        return { text: result.text, model: result.model, durationMs: result.durationMs, derived: true };
+        const value = { text: result.text, model: result.model, durationMs: result.durationMs, derived: true };
+        if (!job.segments) return value;
+        const ms = n => Number.isSafeInteger(n) && n >= 0;
+        if (!Array.isArray(result.segments) || !result.segments.every(s => ms(s?.startMs) && ms(s.endMs) && s.startMs <= s.endMs && typeof s.text === 'string' && s.text !== '') || !ms(result.speechMs)) throw failure('SPEECH_WORKER_FAILED');
+        return { ...value, segments: result.segments.map(s => ({ startMs: s.startMs, endMs: s.endMs, text: s.text })), speechMs: result.speechMs };
       }
       const info = wavInfo(job.outputFile);
       if (info.durationMs !== result.durationMs || info.sampleRate !== result.sampleRate) throw failure('SPEECH_WORKER_FAILED');
@@ -108,9 +114,10 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
     return { device, backend: device === 'cpu' || fallback ? 'cpu' : 'vulkan', fallback, observed: false };
   }
   return {
-    transcribe({ inputFile, language = 'auto', signal }) {
-      if (!['auto', 'zh', 'en', 'yue', 'ja', 'ko'].includes(language)) return Promise.reject(failure('SPEECH_REQUEST'));
-      return enqueue({ kind: 'asr', inputFile, quality: 'default', language }, signal);
+    /** segments:true adds `segments` and `speechMs` (needs the VAD); omitted/false changes nothing. */
+    transcribe({ inputFile, language = 'auto', segments, signal }) {
+      if (!['auto', 'zh', 'en', 'yue', 'ja', 'ko'].includes(language) || segments !== undefined && typeof segments !== 'boolean') return Promise.reject(failure('SPEECH_REQUEST'));
+      return enqueue({ kind: 'asr', inputFile, quality: 'default', language, ...(segments ? { segments: true } : {}) }, signal);
     },
     /** voiceProfile is an operator-registered voice id (omitted -> defaultVoice). */
     synthesize({ text, outputFile, voiceProfile, signal }) { return enqueue({ kind: 'tts', text, outputFile, voiceProfile }, signal); },
