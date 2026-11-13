@@ -115,13 +115,14 @@ TZ) in three private files next to the settings file: `spend.json` (state),
   characters at the miss price plus max output) and settles to the reported usage;
   no usage charges the reservation; a provider error releases it; a reservation
   held across a restart is charged.
-- Tiers (defaults 60/80/100 of a ¥5 cap): ≥reduced stops proactive work (none yet),
+- Tiers (defaults 60/80/100 of a ¥5 cap): ≥reduced refuses the chat completions of a run she starts herself (category `proactive`: a
+  `/v1/chat/completions` request with the header `x-companion-run: initiated`, set only by the conversation executor),
   ≥restricted refuses `/v1/memory/completions`, vision and web, ≥100% refuses every
   call with 429 `BUDGET_EXHAUSTED` before contacting the provider. A vision/web call
   refused by the spend tier answers 429 `SPEND_RESTRICTED` (the daily call count stays
   `BUDGET_EXHAUSTED`); QQ then stays silent instead of sending the attachment notice. The cap includes
   the owner's own chats.
-- Control socket: `GET /spend` → `{day,timezone,spentYuan,reservedYuan,capYuan,percent,tier,thresholds,byTier:{conversation,maintenance,vision,web,generation},calls,unreportedUsage,window,pricing,tokens:{requests,cacheHit,cacheMiss,output,reasoning}}`
+- Control socket: `GET /spend` → `{day,timezone,spentYuan,reservedYuan,capYuan,percent,tier,thresholds,byTier:{conversation,maintenance,vision,web,generation,proactive},calls,unreportedUsage,window,pricing,tokens:{requests,cacheHit,cacheMiss,output,reasoning}}`
   (`tokens`: the day's reported chat/maintenance usage, observation only);
   `POST /spend/settings {dailyCapYuan?,reducedPercent?,restrictedPercent?}` validates
   0.01 ≤ cap ≤ 1000 and 0 < reduced < restricted < 100, persists atomically and
