@@ -63,7 +63,7 @@ test('meter rolls over at Beijing midnight and charges reservations that never r
   handle = await meter.reserve('maintenance', () => 30000);
   await meter.settle(handle, null); // no usage reported: the reservation is charged
   assert.equal(meter.status().spentYuan, 0.13); assert.equal(meter.status().unreportedUsage, 1);
-  assert.deepEqual(meter.status().byTier, { conversation: 0.1, maintenance: 0.03, vision: 0, web: 0, generation: 0 });
+  assert.deepEqual(meter.status().byTier, { conversation: 0.1, maintenance: 0.03, vision: 0, web: 0, generation: 0, proactive: 0 });
   // A reservation still in flight at midnight is carried into the new day.
   handle = await meter.reserve('conversation', () => 20000);
   now = Date.parse('2026-11-09T02:00:00Z'); // Monday 10:00 in Beijing: new day, peak

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { createUsageLedger, DENIAL_REASONS } from './usage-ledger.mjs';
-import { createModelGateway } from './server.mjs';
+import { createModelGateway, INITIATED_HEADER } from './server.mjs';
 import { CAPABILITIES } from '../capabilities/providers/index.js';
 import { capabilityGateway, meteredSpeech } from '../capabilities/media/client.js';
 
@@ -26,7 +26,7 @@ test('ledger: one row per declared capability; outcomes, denials by reason, unit
   const open = async () => { const ledger = createUsageLedger({ directory, capabilities: CAPABILITIES, defaults: { vision: 12, web: 20 }, external: () => counters, clock: () => Date.parse('2026-11-12T04:00:00Z') }); await ledger.start(); return ledger; };
   let ledger = await open();
   let status = await ledger.status();
-  assert.deepEqual([status.day, status.timezone, status.rows.map(row => row.id)], ['2026-11-12', 'Asia/Shanghai', ['chat', 'consolidation', 'vision', 'web', 'speech-tts', 'speech-asr']]);
+  assert.deepEqual([status.day, status.timezone, status.rows.map(row => row.id)], ['2026-11-12', 'Asia/Shanghai', ['chat', 'consolidation', 'vision', 'web', 'speech-tts', 'speech-asr', 'proactive']]);
   assert.deepEqual(rowsOf(status).chat, { id: 'chat', title: '聊天', kind: 'paid', unit: 'requests', used: 0, limit: null, calls: 0, ok: 0, failed: 0, denied: {}, units: {}, busyMs: 0, limitDefault: null, costYuan: 0, spendCategory: 'conversation', stopTier: 'exhausted' });
   await ledger.record('chat', { outcome: 'ok', busyMs: 1200, costMicros: 2500 });
   await ledger.record('chat', { outcome: 'failed', busyMs: 300 });
@@ -190,7 +190,7 @@ test('gateway: every exit lands in its row, and the rows add up to what the spen
   for (const call of [f.chat, f.chat, f.memory, f.vision, f.search]) assert.equal((await call()).status, 200);
   const rows = await f.usage(seen => seen.web.ok === 1 && seen.chat.ok === 2);
   assert.deepEqual(Object.fromEntries(Object.entries(rows).map(([id, row]) => [id, [row.used, row.limit, row.calls, row.ok, row.failed, row.denied]])), {
-    chat: [2, null, 2, 2, 0, {}], consolidation: [1, null, 1, 1, 0, {}], vision: [1, 12, 1, 1, 0, {}], web: [1, 20, 1, 1, 0, {}], 'speech-tts': [0, null, 0, 0, 0, {}], 'speech-asr': [0, null, 0, 0, 0, {}],
+    chat: [2, null, 2, 2, 0, {}], consolidation: [1, null, 1, 1, 0, {}], vision: [1, 12, 1, 1, 0, {}], web: [1, 20, 1, 1, 0, {}], 'speech-tts': [0, null, 0, 0, 0, {}], 'speech-asr': [0, null, 0, 0, 0, {}], proactive: [0, null, 0, 0, 0, {}],
   });
   const spend = (await f.control('/spend')).json().value;
   for (const row of Object.values(rows)) if (row.spendCategory) assert.equal(row.costYuan, spend.byTier[row.spendCategory], row.id);
@@ -303,4 +303,38 @@ test('gateway: a ledger that cannot be written never fails or delays a model cal
   // The gateway also starts on such a directory, and on a data root the previous release wrote (no ledger files at all).
   await f.restart();
   assert.equal((await f.chat()).status, 200);
+});
+
+test('gateway: a run she starts herself is proactive work, with its own row and spend category, stopped at the reduced tier while chat goes on', async t => {
+  const f = await gateway(t), body = { model: 'deepseek', messages: [{ role: 'user', content: 'MOCK synthetic test' }], stream: true };
+  // What the conversation executor sends for an initiated run: the same chat completion, marked by a request header.
+  const initiated = (route = '/v1/chat/completions', payload = body) => new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: f.directory + '/infer.sock', path: route, method: 'POST', agent: false, headers: { authorization: `Bearer ${infer}`, 'content-type': 'application/json', [INITIATED_HEADER]: 'initiated' } }, res => {
+      const chunks = []; res.on('data', chunk => chunks.push(chunk)); res.on('error', reject);
+      res.on('end', () => resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString() }));
+    });
+    req.on('error', reject); req.end(JSON.stringify(payload));
+  });
+  assert.equal((await initiated()).status, 200);
+  let rows = await f.usage(seen => seen.proactive.ok === 1), spend = (await f.control('/spend')).json().value;
+  assert.deepEqual([rows.proactive.calls, rows.proactive.units, rows.proactive.spendCategory, rows.proactive.stopTier, rows.chat.calls], [1, { inputTokens: 1000, outputTokens: 100 }, 'proactive', 'reduced', 0]);
+  assert.ok(rows.proactive.costYuan > 0);
+  assert.deepEqual([spend.byTier.proactive, spend.byTier.conversation, spend.spentYuan], [rows.proactive.costYuan, 0, rows.proactive.costYuan]);
+  // The provider is sent exactly what a chat turn is sent; the mark never leaves the gateway.
+  assert.equal((await f.chat()).status, 200);
+  assert.deepEqual(f.calls[0].body, f.calls[1].body);
+  assert.deepEqual([f.calls[0].body.thinking, f.calls[0].body.reasoning_effort], [{ type: 'enabled' }, 'high']);
+  // From the reduced tier on, an initiated run is refused before the provider is contacted; an ordinary reply is not.
+  assert.equal((await f.control('/spend/settings', { dailyCapYuan: 0.01, reducedPercent: 10, restrictedPercent: 90 })).status, 200);
+  assert.equal((await f.control('/spend')).json().value.tier, 'reduced');
+  const refused = await initiated();
+  assert.deepEqual([refused.status, JSON.parse(refused.text).error.code, f.calls.length], [429, 'BUDGET_EXHAUSTED', 2]);
+  assert.equal((await f.chat()).status, 200);
+  rows = await f.usage(seen => seen.proactive.denied.spend_tier === 1 && seen.chat.ok === 2);
+  assert.deepEqual([rows.proactive.calls, rows.proactive.denied, rows.chat.calls, rows.chat.denied, f.calls.length], [1, { spend_tier: 1 }, 2, {}, 3]);
+  // Only a chat completion can be marked: a maintenance completion with the header is still maintenance.
+  await f.control('/spend/settings', { dailyCapYuan: 5, reducedPercent: 60, restrictedPercent: 80 });
+  assert.equal((await initiated('/v1/memory/completions', { model: 'deepseek', messages: [{ role: 'user', content: 'MOCK synthetic material' }], stream: false })).status, 200);
+  rows = await f.usage(seen => seen.consolidation.ok === 1);
+  assert.deepEqual([rows.consolidation.calls, rows.proactive.calls], [1, 1]);
 });
