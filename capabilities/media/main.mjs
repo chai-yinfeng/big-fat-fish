@@ -9,9 +9,11 @@ import { MediaService } from './service.js';
 import { createContentServer } from './server.mjs';
 import { capabilityGateway, meteredSpeech } from './client.js';
 import { createContentOperator } from './operator.js';
+import { createJobs } from './jobs.js';
+import { createDemoRunner } from './demo-job.js';
 
 process.umask(0o077);
-let server, timer;
+let server, timer, jobs;
 try {
   if (process.argv.length !== 4 || process.argv[2] !== '--config' || !path.isAbsolute(process.argv[3])) throw Error('CONFIG');
   const file = process.argv[3], stat = fs.lstatSync(file);
@@ -27,18 +29,24 @@ try {
     const image = await sharp(data, { limitInputPixels: 40000000, animated: false, page: 0, pages: 1 }).rotate().resize(512, 512, { fit: 'inside', withoutEnlargement: true }).flatten({ background: '#ffffff' }).jpeg({ quality: 85 }).toBuffer();
     return { data: image, mime: 'image/jpeg' };
   };
-  const service = new MediaService({ store, speech, ...gateway, normalizeImage, workRoot: cfg.workRoot });
   const worldStatus = async () => (await authority.health()).world;
+  // Background jobs keep their records beside the media files (no new configuration key: the previous release
+  // reads this same content.json and ignores the file).
+  jobs = createJobs({ file: path.join(cfg.store.root, 'jobs.json'), runners: { demo: createDemoRunner() }, worldStatus, usage: { reserve: capability => gateway.reserveUsage({ capability }), record: gateway.recordUsage } });
+  const media = new MediaService({ store, speech, ...gateway, normalizeImage, workRoot: cfg.workRoot, jobs });
+  // Every request somebody is waiting for goes through the gate, so a yielding background job lets it go first.
+  const service = { call: (scope, input) => jobs.gate.timely(() => media.call(scope, input)) };
   const operator = createContentOperator({ speechConfigFile: cfg.speechConfigFile, worldStatus, speechFactory: () => speech });
-  server = createContentServer({ ...cfg.control, service, worldStatus, operatorCall: (input, options) => operator.call(input, options) });
+  server = createContentServer({ ...cfg.control, service, worldStatus, operatorCall: (input, options) => input?.action === 'test' ? jobs.gate.timely(() => operator.call(input, options)) : operator.call(input, options), jobsCall: input => jobs.control(input) });
   await server.start();
-  store.expire(); timer = setInterval(() => { try { store.expire(); } catch { process.stderr.write('Media retention requires operator inspection.\n'); } }, 3600000);
+  jobs.start();
+  store.expire(); timer = setInterval(() => { try { store.expire(); jobs.sweep(); } catch { process.stderr.write('Media retention requires operator inspection.\n'); } }, 3600000);
   let stopping = false;
-  const stop = async () => { if (stopping) return; stopping = true; clearInterval(timer); await server.close(); };
+  const stop = async () => { if (stopping) return; stopping = true; clearInterval(timer); await jobs.close(); await server.close(); };
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { void stop(); });
   process.stdout.write('Companion content service ready; file speech has no audio-device dependency.\n');
 } catch {
-  clearInterval(timer); if (server) await server.close().catch(() => {});
+  clearInterval(timer); await jobs?.close().catch(() => {}); if (server) await server.close().catch(() => {});
   process.stderr.write('Companion content service could not start; inspect private configuration and runtime components.\n');
   process.exitCode = 1;
 }
