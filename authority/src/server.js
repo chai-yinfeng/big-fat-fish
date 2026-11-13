@@ -18,6 +18,7 @@ const SCHEMAS = {
   '/v1/people/admit': ['uid'],
   '/v1/initiations/next': [],
   '/v1/initiations/ack': ['id', 'outcome'],
+  '/v1/initiations/carry': ['streamId'],
   '/v1/maintenance/batch': ['afterRevision', 'limit', 'mode'],
   '/v1/maintenance/diary': ['taskId', 'kind', 'text', 'sourceIds'],
   '/v1/maintenance/consolidation/next': [],
@@ -86,7 +87,7 @@ async function recoverSocket(socketPath) {
 }
 
 /** Unix-only transport. The caller supplies the already-exclusive authority. */
-export function createAuthorityServer({ authority, socketPath, credentials, contentControl, maxBodyBytes = 32768, socketMode = 0o600, batchSize = 32, onFatal = () => {} }) {
+export function createAuthorityServer({ authority, socketPath, credentials, contentControl, contentJobs, maxBodyBytes = 32768, socketMode = 0o600, batchSize = 32, onFatal = () => {} }) {
   if (!path.isAbsolute(socketPath) || !Array.isArray(credentials) || credentials.length === 0) throw new Error('Explicit socket and credentials are required');
   if (!Number.isInteger(maxBodyBytes) || maxBodyBytes < 1024 || maxBodyBytes > 65536) throw new Error('Invalid protocol body limit');
   if (![0o600, 0o660].includes(socketMode)) throw new Error('Socket mode must be private or explicitly group-scoped');
@@ -98,6 +99,15 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
     return { ...record, bytes: Buffer.from(record.hash, 'hex') };
   });
   let closed = false, scheduled = false, unhealthy = false;
+  // Finished background jobs nobody was told about, as the content service lists them. Authority asks with its own
+  // control credential; the content service never calls here. Unreachable means none this round.
+  const untoldJobs = async grant => {
+    if (!contentJobs || grant.capabilityId !== 'qq') return [];
+    try { const value = await contentJobs({ action: 'pending' }); return Array.isArray(value?.jobs) ? value.jobs : []; } catch { return []; }
+  };
+  // What Authority decided about those jobs goes back before the caller hears of it. A report that fails is made
+  // again when the job is next listed; Authority's own record already forbids a second telling.
+  const reportJobs = async () => { for (const notice of authority.drainJobNotices()) { try { await contentJobs?.({ action: 'notice', ...notice }); } catch {} } };
   function schedule() {
     if (closed || scheduled || unhealthy) return;
     scheduled = true;
@@ -132,7 +142,7 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
         if (grant.role !== 'capability' || req.method !== 'POST') throw failure('FORBIDDEN');
         if (!contentControl) throw failure('UNAVAILABLE');
         const body = await bodyOf(req, ['action', 'streamId', 'memoryEpoch', 'sourceEventId', 'requestId', 'kind', 'data', 'ref', 'quality', 'voiceProfile', 'question', 'text', 'query', 'url'], 13 * 1024 * 1024);
-        if (!['ingest', 'transcribe', 'describe', 'synthesize', 'asset', 'attach', 'pending', 'search', 'fetch'].includes(body.action)) throw failure('INVALID_REQUEST');
+        if (!['ingest', 'transcribe', 'describe', 'synthesize', 'asset', 'attach', 'pending', 'search', 'fetch', 'jobResult'].includes(body.action)) throw failure('INVALID_REQUEST');
         if (['ingest', 'synthesize'].includes(body.action) && typeof body.sourceEventId !== 'string') throw failure('INVALID_REQUEST');
         const scopeInput = { streamId: body.streamId, memoryEpoch: body.memoryEpoch, ...(body.sourceEventId === undefined ? {} : { sourceEventId: body.sourceEventId }) };
         const scope = authority.contentScope(grant.capabilityId, scopeInput);
@@ -163,8 +173,9 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
         else if (route === '/v1/memory/read') value = authority.memoryRead(grant.capabilityId, body);
         else if (route === '/v1/memory/recall') value = authority.memoryRecall(grant.capabilityId, body);
         else if (route === '/v1/people/admit') value = authority.admitPerson(grant.capabilityId, body);
-        else if (route === '/v1/initiations/next') value = authority.initiationNext(grant.capabilityId, body);
-        else if (route === '/v1/initiations/ack') value = authority.initiationAck(grant.capabilityId, body);
+        else if (route === '/v1/initiations/next') { value = authority.initiationNext(grant.capabilityId, body, await untoldJobs(grant)); await reportJobs(); }
+        else if (route === '/v1/initiations/carry') { value = authority.initiationCarry(grant.capabilityId, body, await untoldJobs(grant)); await reportJobs(); }
+        else if (route === '/v1/initiations/ack') { value = authority.initiationAck(grant.capabilityId, body); await reportJobs(); }
         else if (route === '/v1/admin/capabilities') value = authority.registerCapability(body);
         else if (route === '/v1/admin/actors') value = authority.bindActor(body);
         else if (route === '/v1/admin/streams') value = authority.bindStream(body);
