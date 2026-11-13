@@ -8,7 +8,8 @@ import { StringDecoder } from 'node:string_decoder';
 // Money is kept in integer micro-yuan (1 CNY = 1e6) to avoid float drift.
 const MICROS = 1_000_000;
 const BEIJING_MS = 8 * 3600000; // Asia/Shanghai has no DST; independent of the host TZ.
-export const CATEGORIES = Object.freeze(['conversation', 'maintenance', 'vision', 'web']);
+// `generation`: what a provider adapter makes (model-gateway/providers.mjs: pictures, video, converted voice).
+export const CATEGORIES = Object.freeze(['conversation', 'maintenance', 'vision', 'web', 'generation']);
 export const DEFAULT_SPEND_SETTINGS = Object.freeze({ dailyCapYuan: 5, reducedPercent: 60, restrictedPercent: 80 });
 const days = (first, count) => Array.from({ length: count }, (_, i) => new Date(Date.parse(first + 'T00:00:00Z') + i * 86400000).toISOString().slice(0, 10));
 /** Chinese statutory holidays (the days off) from the State Council General Office notices.
@@ -144,7 +145,7 @@ const budgetError = () => Object.assign(new Error('The daily capability budget i
 /**
  * Daily spend meter (Beijing day). Reserve an estimate before a provider call, settle
  * after it (unreported usage charges the reservation). Tiers: ≥reduced% stops proactive
- * work, ≥restricted% stops maintenance/vision/web, ≥100% refuses everything.
+ * work, ≥restricted% stops maintenance/vision/web/generation, ≥100% refuses everything.
  * It also adds up the day's reported chat token usage (measurement only: never used for the cap).
  */
 export function createSpendMeter({ stateFile, settingsFile, pricingFile, clock = Date.now }) {
@@ -167,7 +168,7 @@ export function createSpendMeter({ stateFile, settingsFile, pricingFile, clock =
   }
   const ORDER = ['normal', 'reduced', 'restricted', 'exhausted'];
   // The first tier at which each kind of work is refused.
-  const STOP = { proactive: 'reduced', maintenance: 'restricted', vision: 'restricted', web: 'restricted', conversation: 'exhausted' };
+  const STOP = { proactive: 'reduced', maintenance: 'restricted', vision: 'restricted', web: 'restricted', generation: 'restricted', conversation: 'exhausted' };
   async function loadPricing() {
     // A price file written before the holiday data existed (offPeakDates: []) still gets the built-in holidays.
     const withHolidays = value => ({ ...value, peak: { ...value.peak, offPeakDates: [...new Set([...(value.peak.offPeakDates || []), ...HOLIDAYS])] } });

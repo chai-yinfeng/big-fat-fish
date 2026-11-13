@@ -121,7 +121,7 @@ TZ) in three private files next to the settings file: `spend.json` (state),
   refused by the spend tier answers 429 `SPEND_RESTRICTED` (the daily call count stays
   `BUDGET_EXHAUSTED`); QQ then stays silent instead of sending the attachment notice. The cap includes
   the owner's own chats.
-- Control socket: `GET /spend` → `{day,timezone,spentYuan,reservedYuan,capYuan,percent,tier,thresholds,byTier:{conversation,maintenance,vision,web},calls,unreportedUsage,window,pricing,tokens:{requests,cacheHit,cacheMiss,output,reasoning}}`
+- Control socket: `GET /spend` → `{day,timezone,spentYuan,reservedYuan,capYuan,percent,tier,thresholds,byTier:{conversation,maintenance,vision,web,generation},calls,unreportedUsage,window,pricing,tokens:{requests,cacheHit,cacheMiss,output,reasoning}}`
   (`tokens`: the day's reported chat/maintenance usage, observation only);
   `POST /spend/settings {dailyCapYuan?,reducedPercent?,restrictedPercent?}` validates
   0.01 ≤ cap ≤ 1000 and 0 < reduced < restricted < 100, persists atomically and
@@ -141,7 +141,8 @@ and a ledger that cannot be written never fails or delays one.
   `settle` charged. `capability-usage.json` is unchanged too and still holds the vision/web
   daily counts (an older release refuses to start on a file with unknown fields); the ledger
   reads `visionCalls` / `webCalls` from it as the rows' `used`. Consolidation's batch limits stay
-  in Authority (`GET /memory/consolidation`).
+  in Authority (`GET /memory/consolidation`). A row of a capability this release does not declare
+  (counted by a newer release before a rollback) is kept in today's file, unseen.
 - A row: `used` (what counts against `limit`), `limit` / `limitDefault` (null: none), `calls`,
   `ok`, `failed`, `denied` by reason (`daily_limit`, `spend_tier`, `paused`, `quiet_hours`,
   `cooldown`, `not_configured`, `busy`, `blocked`), `units` (chat and consolidation: reported
@@ -158,6 +159,62 @@ and a ledger that cannot be written never fails or delays one.
   the capabilities used that day; `POST /usage/limits {limits:{id:0–1000|null}}` for a
   capability declared with a daily limit (vision, web), applied to the next call; `null`
   returns to the default. After a rollback the older release enforces its own 12/20.
+
+## Provider adapters
+
+Every paid key lives in the gateway. Besides the DeepSeek key (`settings.json`, unchanged) the gateway
+keeps one key per provider adapter and reaches each adapter's operations through three actions. This
+release ships no adapter (`providers/index.mjs` exports an empty list), so nothing can be submitted;
+adding a provider is one module there plus one import line. The shape of an adapter is documented in
+that file. It only describes HTTP exchanges; the gateway owns the key, the network, the money and the
+ledger.
+
+- Files next to `settings.json`: `providers.json` (`{schema:1,keys:{<provider>:<key>}}`, 0600, written
+  atomically like the settings; a key of a provider this release does not know is kept) and
+  `provider-jobs.json` (async jobs: ids, operation, provider, state; no key, input or result). No
+  earlier release reads either. An unreadable `providers.json` does not stop the gateway: no adapter
+  has a key and none can be stored until the file is fixed; it is never overwritten.
+- Control socket: `GET /providers` → `{providers:[{id,title,configured,operations:[{name,mode}],managed}]}`:
+  DeepSeek first (`managed:'model'`, its key is set with `POST /model` as before), then each adapter
+  (`managed:'providers'`). Only whether a key is set; never a key, its length or a fragment.
+  `POST /providers/key {provider,apiKey}` stores an adapter's key and `POST /providers/clear {provider}`
+  removes it → `{provider,configured}`. Both apply to the next call and need no pause. `deepseek` and
+  unknown providers answer 400.
+- An operation is named `<capability id>.<action>` (`image.generate`). The capability declaration
+  (`capabilities/providers`) gives its ledger row, daily limit (`POST /usage/limits` changes it), spend
+  category (`generation`, refused from the restricted tier on) and units. An adapter whose operation
+  names no gateway-counted capability stops the gateway from being built. `mode` is `sync` (the submit
+  exchange answers with the result: OpenAI, MiniMax and Seedream pictures) or `async` (it answers with a
+  task that is polled: Seedance video, Replicate predictions).
+- Inference socket (the `inference.token` holders):
+  - `POST /v1/provider/submit {operation,input}` → `{job,operation,state,outputs}`; `state` is `done` for
+    a sync operation, `pending` for an async one. `input` is the adapter's own bounded JSON (body ≤ 3 MiB).
+    The first adapter that offers the operation and has a key takes it. Refusals, each counted in the
+    ledger row: 409 `WORLD_PAUSED` (`paused`), 503 `UNCONFIGURED` (`not_configured`), 429 `SPEND_RESTRICTED`
+    (`spend_tier`), 429 `BUDGET_EXHAUSTED` (`daily_limit`), 503 `UNAVAILABLE` with 64 jobs open (`busy`).
+  - `POST /v1/provider/status {job}` → the same shape. While the job is pending this asks the provider
+    once; the caller sets the pace, the gateway runs no timer. 404 for an unknown job.
+  - `POST /v1/provider/fetch {job,output}` → the bytes of result file `output` (0-based) of a finished job,
+    with its media type: a URL result is downloaded from one of the adapter's declared hosts at that
+    moment and streamed (≤ 64 MiB), a base64 result was kept in memory. Nothing is stored on disk.
+- Money: the adapter's estimate is reserved before the submit and a daily slot of the capability is
+  taken (it stays taken when the provider fails). A finished job is settled to the cost the adapter
+  derived from the provider's answer, or to the estimate; a task that failed or a submit the provider
+  refused is released; a request whose outcome is unknown (cut connection, unreadable answer) is charged.
+  The ledger line (`ok`/`failed`, cost, units, elapsed time) is written when the job ends.
+- Restart: an async job is read back and can still be asked about and fetched. Its reservation was
+  charged in full by the spend meter at the restart (as for any reservation), so the later ledger line
+  carries no cost. A sync result not fetched before a restart is gone. A job nobody asks about is
+  dropped after 72 hours (async; charged if still pending) or one hour (sync).
+- Network: an adapter's requests go only to its declared `hosts` (HTTPS, redirects refused). An adapter
+  with `proxy:true` goes through the host's outbound HTTP proxy when the gateway process has
+  `COMPANION_OUTBOUND_PROXY` (e.g. `http://127.0.0.1:7890`; not a secret, set in the unit when the first
+  such adapter ships; `proxy-fetch.mjs`, node:https with an Agent's `proxyEnv`, Node ≥ 24.5). Chat,
+  vision and web keep the global fetch and never use the proxy.
+- `main.mjs` cannot be given an adapter, a capability list or a fetch: only embedding code can
+  (`providers`, `capabilities`, `fetchImpl`, `proxyFetch` of `createModelGateway`). The staging launcher
+  and the tests use that for the mock adapter in `deploy/staging/fake-provider.mjs`, which is not part
+  of a release.
 
 Tests use injected fetch mocks, not real DeepSeek calls. They exercise token
 isolation, paused gates, atomic private settings, SSE/tool/reasoning bytes, model

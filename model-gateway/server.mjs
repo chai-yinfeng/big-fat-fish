@@ -9,6 +9,8 @@ import { pipeline } from 'node:stream/promises';
 import { beijingDay, createSpendMeter, chatEstimate, parseUsage, usageCost, usageTap } from './spend.mjs';
 import { createUsageLedger } from './usage-ledger.mjs';
 import { CAPABILITIES } from '../capabilities/providers/index.js';
+import { createProviders } from './providers.mjs';
+import { PROVIDERS } from './providers/index.mjs';
 
 export const MODELS = Object.freeze(['deepseek-flash', 'deepseek-v4-pro']);
 const ERRORS = {
@@ -132,7 +134,7 @@ function tokenUsage(value) {
 }
 
 /** Private control and inference transports; never returns or logs provider credentials. */
-export function createModelGateway({ settingsFile, inferenceSocket, controlSocket, inferenceTokenHash, operatorTokenHash, worldStatus, usageFile = path.join(path.dirname(settingsFile), 'capability-usage.json'), budgets = { web: 20, vision: 12 }, fetchImpl = fetch, upstream = 'https://api.deepseek.com/chat/completions', clock = Date.now }) {
+export function createModelGateway({ settingsFile, inferenceSocket, controlSocket, inferenceTokenHash, operatorTokenHash, worldStatus, usageFile = path.join(path.dirname(settingsFile), 'capability-usage.json'), budgets = { web: 20, vision: 12 }, fetchImpl = fetch, upstream = 'https://api.deepseek.com/chat/completions', clock = Date.now, providers = PROVIDERS, capabilities = CAPABILITIES, proxyFetch }) {
   const paths = [settingsFile, inferenceSocket, controlSocket, usageFile];
   if (paths.some(value => typeof value !== 'string' || !path.isAbsolute(value)) || new Set(paths).size !== 4 || ![inferenceTokenHash, operatorTokenHash].every(value => /^[a-f0-9]{64}$/.test(value)) || inferenceTokenHash === operatorTokenHash || typeof worldStatus !== 'function' || typeof fetchImpl !== 'function' || new URL(upstream).protocol !== 'https:' || !object(budgets) || Object.keys(budgets).some(key => !['web', 'vision'].includes(key))) throw new Error('Invalid gateway configuration');
   const limits = { web: 20, vision: 12, ...budgets };
@@ -162,7 +164,9 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     usageQueue = operation.catch(() => {}); await operation;
   }
   // Every exit by capability (model-gateway/usage-ledger.mjs). Vision and web keep their daily count in `usage` above.
-  const ledger = createUsageLedger({ directory, capabilities: CAPABILITIES, defaults: limits, clock, external: day => usage.day === day ? { vision: usage.visionCalls, web: usage.webCalls } : {} });
+  const ledger = createUsageLedger({ directory, capabilities, defaults: limits, clock, external: day => usage.day === day ? { vision: usage.visionCalls, web: usage.webCalls } : {} });
+  // Provider adapters (model-gateway/providers/index.mjs): their keys, and submit / status / fetch for what they offer.
+  const exits = createProviders({ directory, adapters: providers, capabilities, spend, ledger, world, fetchImpl, proxyFetch, clock, track(controller) { active.set(controller, 'provider'); return () => active.delete(controller); } });
   const DENIED = { WORLD_PAUSED: 'paused', UNCONFIGURED: 'not_configured', SPEND_RESTRICTED: 'spend_tier' };
   /** Runs one call of capability `id` and notes how it ended. `exhausted`: what BUDGET_EXHAUSTED means for this
    * capability. `run(note)` sets `note.costMicros` once the spend meter has charged, and `note.units` for what the
@@ -281,13 +285,23 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     if (req.method === 'GET' && req.url === '/usage') { send(res, 200, { ok: true, value: await ledger.status() }); return; }
     const history = req.method === 'GET' ? /^\/usage\/history(?:\?days=([1-9]\d?))?$/.exec(req.url) : null;
     if (history) { send(res, 200, { ok: true, value: await ledger.history(history[1] === undefined ? 7 : Number(history[1])) }); return; }
-    if (req.method !== 'POST' || !['/model', '/model/test', '/cancel', '/spend/settings', '/usage/limits'].includes(req.url)) throw failure('NOT_FOUND');
+    // Who holds a key: DeepSeek (set with POST /model) and each provider adapter. Never a key or a part of one.
+    if (req.method === 'GET' && req.url === '/providers') { send(res, 200, { ok: true, value: { providers: [{ id: 'deepseek', title: 'DeepSeek', configured: Boolean(settings.apiKey), operations: [], managed: 'model' }, ...exits.list().map(item => ({ ...item, managed: 'providers' }))] } }); return; }
+    if (req.method !== 'POST' || !['/model', '/model/test', '/cancel', '/spend/settings', '/usage/limits', '/providers/key', '/providers/clear'].includes(req.url)) throw failure('NOT_FOUND');
     const body = await bodyOf(req, 16384);
     if (req.url === '/cancel') { closed(body, []); cancel(); send(res, 200, { ok: true, value: { cancelled: true } }); return; }
     // Cap and tier changes apply to the next reservation; no restart or pause needed.
     if (req.url === '/spend/settings') { closed(body, ['dailyCapYuan', 'reducedPercent', 'restrictedPercent']); await spend.updateSettings(body); send(res, 200, { ok: true, value: spend.status() }); return; }
     // A daily limit applies from the next call on, like the spend settings.
     if (req.url === '/usage/limits') { closed(body, ['limits']); await ledger.setLimits(body.limits); send(res, 200, { ok: true, value: await ledger.status() }); return; }
+    // An adapter's key applies to its next call; unlike the chat model it needs no pause.
+    if (req.url === '/providers/key' || req.url === '/providers/clear') {
+      const clear = req.url === '/providers/clear';
+      closed(body, clear ? ['provider'] : ['provider', 'apiKey']);
+      if (clear) await exits.clearKey(body.provider);
+      else await exits.setKey(body.provider, typeof body.apiKey === 'string' ? body.apiKey.trim() : null);
+      send(res, 200, { ok: true, value: { provider: body.provider, configured: !clear } }); return;
+    }
     const operation = async () => {
       if (closing) throw failure('UNAVAILABLE');
       if (req.url === '/model') {
@@ -396,9 +410,18 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
   async function inference(req, res) {
     if (['/v1/vision/describe', '/v1/web/search', '/v1/web/fetch'].includes(req.url)) { await capability(req, res); return; }
     if (['/v1/usage/reserve', '/v1/usage/record'].includes(req.url)) { await usageReport(req, res); return; }
+    if (['/v1/provider/submit', '/v1/provider/status', '/v1/provider/fetch'].includes(req.url)) { await provider(req, res); return; }
     const maintenance = req.url === '/v1/memory/completions';
     if (req.method !== 'POST' || (!maintenance && req.url !== '/v1/chat/completions')) throw failure('NOT_FOUND');
     await metered(maintenance ? 'consolidation' : 'chat', 'spend_tier', note => completion(req, res, maintenance, note));
+  }
+  /** A provider adapter's operation (model-gateway/providers.mjs): submit it, ask how it is doing, fetch a result file. */
+  async function provider(req, res) {
+    if (req.method !== 'POST') throw failure('NOT_FOUND');
+    const submit = req.url === '/v1/provider/submit', body = await bodyOf(req, submit ? 3 * 1024 * 1024 : 4096);
+    if (submit) { closed(body, ['operation', 'input']); send(res, 200, { ok: true, value: await exits.submit(body, res) }); }
+    else if (req.url === '/v1/provider/status') { closed(body, ['job']); send(res, 200, { ok: true, value: await exits.status(body) }); }
+    else { closed(body, ['job', 'output']); await exits.fetch(body, res); }
   }
   /** What a local capability's own process reports: a slot taken before it runs (reserve), or how a run ended (record). */
   async function usageReport(req, res) {
@@ -473,6 +496,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
           usage = storedUsage;
         } catch (error) { if (error.code !== 'ENOENT') throw error; }
         await ledger.start();
+        await exits.start();
         for (const [server, socket] of [[controlServer, controlSocket], [inferenceServer, inferenceSocket]]) {
           await recoverSocket(socket);
           await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socket, () => { server.off('error', reject); resolve(); }); });
@@ -487,6 +511,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       await Promise.all(handling);
       await controlQueue;
       await usageQueue;
+      await exits.close();
       await ledger.close();
       await spend.close();
     },

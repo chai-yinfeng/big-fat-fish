@@ -99,6 +99,11 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
         respond(200, { ok: true, value: await modelControl(days === null ? '/usage' : `/usage/history?days=${days}`, undefined, req.headers.authorization) }); return;
       }
+      // Which providers hold a key (the model gateway's listing; never a key or a part of one).
+      if (req.method === 'GET' && req.url === '/providers') {
+        if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
+        respond(200, { ok: true, value: await modelControl('/providers', undefined, req.headers.authorization) }); return;
+      }
       if (req.method === 'GET' && req.url === '/qq' && qqControl) { respond(200, { ok: true, value: await qqControl('/qq', undefined, req.headers.authorization) }); return; }
       if (req.method === 'GET' && req.url === '/runtime') {
         if (!contentOperator) throw Object.assign(new Error('Content runtime unavailable'), { statusCode: 503 });
@@ -145,6 +150,10 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         object(body, ['limits']);
         if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
         value = await modelControl('/usage/limits', body, req.headers.authorization);
+      } else if (req.url === '/providers/key' || req.url === '/providers/clear') {
+        object(body, req.url === '/providers/key' ? ['provider', 'apiKey'] : ['provider']);
+        if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
+        value = await modelControl(req.url, body, req.headers.authorization);
       } else if (req.url === '/model' || req.url === '/model/test') {
         object(body, req.url === '/model' ? ['model', 'apiKey'] : []);
         if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
