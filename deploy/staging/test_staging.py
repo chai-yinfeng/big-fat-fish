@@ -248,6 +248,7 @@ class InitiationReplayTests(unittest.TestCase):
         source = (HERE / 'staging-agent.py').read_text()
         self.assertIn("edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_source))", source)
         self.assertIn("reset_initiations(BASE / 'authority-data/authority.sqlite')", source)
+        self.assertIn("(BASE / 'media-data/jobs.json').unlink(missing_ok=True)", source)
 
 
 if __name__ == '__main__':

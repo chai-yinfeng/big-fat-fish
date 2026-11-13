@@ -375,6 +375,8 @@ def scenarios(deployer, only=None):
     (model_data / 'provider-jobs.json').unlink(missing_ok=True)
     reset_consolidation(BASE / 'authority-data/authority.sqlite')
     reset_initiations(BASE / 'authority-data/authority.sqlite')
+    # Background jobs of an earlier replay go with the initiation records that kept them from being told twice.
+    (BASE / 'media-data/jobs.json').unlink(missing_ok=True)
     dispatch = Path(qq_config['stateFile'])
     if dispatch.exists():
         state = json.loads(dispatch.read_text())
