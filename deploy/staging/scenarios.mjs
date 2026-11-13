@@ -4,6 +4,7 @@
 // API of the staged release. No real QQ account, no provider key.
 //   node scenarios.mjs --operator-port 13082 --operator-token-file <file> --onebot-control <socket>
 //        --model-script <file> --model-log <file> --scenarios <scenarios.json> [--only S1,S3]
+//        [--inference-socket <socket> --inference-token-file <file>]   (the staged gateway, for `gatewayCall`)
 // A scenario is { id, title, model: [rules for fake-model.mjs], steps: [...], finally: [...] };
 // each step is an object with exactly one key naming an entry of STEPS below. `{run}` anywhere in a
 // scenario becomes a token that is new on every replay, so a replay never mistakes the memory an
@@ -50,6 +51,10 @@ function requestsOf(run, ctx, userText) {
   return requests;
 }
 
+// A 1x1 PNG: what the content service would send the gateway after shrinking a real picture.
+const MOCK_IMAGE = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+/** Today's usage rows by capability (operator GET /usage). */
+const usageRows = async run => Object.fromEntries((await run.operator('GET', '/usage')).rows.map(row => [row.id, row]));
 const includes = (text, { contains, absent }) => (contains === undefined || text.includes(contains)) && (absent === undefined || !text.includes(absent));
 
 /** Step implementations. `run` is the Runner; `ctx` is per-scenario state. */
@@ -355,6 +360,45 @@ export const STEPS = {
   async expectSpend(run, _ctx, { tier, timeoutMs = 10000 }) {
     await run.poll(async () => (await run.operator('GET', '/spend')).tier === tier, timeoutMs, `spend tier never became ${tier}`);
   },
+  /** One paid call at the gateway's own exit, the way the content service makes it (staging has no image runtime,
+   * so a picture cannot come in through QQ): `kind` "vision" (a 1x1 picture with `text` as the question) or
+   * "search" (`text` as the query). `expect`: "ok", or the gateway's refusal code. */
+  async gatewayCall(run, _ctx, { kind, text, expect = 'ok' }) {
+    if (typeof run.gateway !== 'function') fail('gatewayCall needs --inference-socket and --inference-token-file');
+    const [route, body] = kind === 'vision' ? ['/v1/vision/describe', { imageBase64: MOCK_IMAGE, mime: 'image/png', question: text }] : kind === 'search' ? ['/v1/web/search', { query: text }] : fail(`gatewayCall: unknown kind ${JSON.stringify(kind)}`);
+    const outcome = await run.gateway(route, body);
+    if (outcome !== expect) fail(`the gateway answered ${outcome} to a ${kind} call, expected ${expect}`);
+  },
+  /** `noteUsage` remembers today's usage rows (operator GET /usage); `expectUsage` then requires exactly these changes
+   * of one capability's row since: `used`, `calls`, `ok`, `failed` (default 0 each) and `denied` ({ reason: count },
+   * default none). The ledger is written after the call it counts, so this waits for it. */
+  async noteUsage(run, ctx) { ctx.usage = await usageRows(run); },
+  async expectUsage(run, ctx, { capability, used = 0, calls = 0, ok = 0, failed = 0, denied = {}, timeoutMs = 15000 }) {
+    const before = ctx.usage?.[capability] ?? fail(`expectUsage: no noted usage row for ${capability}`), wanted = JSON.stringify({ used, calls, ok, failed, denied: Object.entries(denied).sort() });
+    let seen;
+    const since = async () => {
+      const now = (await usageRows(run))[capability];
+      return JSON.stringify({ ...Object.fromEntries(['used', 'calls', 'ok', 'failed'].map(key => [key, now[key] - before[key]])), denied: Object.keys(now.denied).map(reason => [reason, now.denied[reason] - (before.denied[reason] ?? 0)]).filter(([, n]) => n).sort() });
+    };
+    try { await run.poll(async () => (seen = await since()) === wanted, timeoutMs, 'timeout'); } catch (error) { if (error.message !== 'timeout') throw error; fail(`usage of ${capability} changed by ${seen}, expected ${wanted}`); }
+  },
+  /** The ledger and the spend meter agree on today's money: every paid row's cost is its spend category's amount
+   * (operator GET /usage against GET /spend), and the rows add up to what was spent. At least `minPaidRows` rows cost something. */
+  async expectUsageMatchesSpend(run, _ctx, { minPaidRows = 1, timeoutMs = 15000 }) {
+    let seen;
+    const micros = value => Math.round(value * 1e6);
+    const agree = async () => {
+      const usage = await run.operator('GET', '/usage'), spend = await run.operator('GET', '/spend'), paid = usage.rows.filter(row => row.spendCategory);
+      seen = { day: [usage.day, spend.day], rows: Object.fromEntries(paid.map(row => [row.id, [row.costYuan, spend.byTier[row.spendCategory]]])), total: [paid.reduce((sum, row) => sum + micros(row.costYuan), 0), micros(spend.spentYuan)] };
+      return usage.day === spend.day && paid.every(row => micros(row.costYuan) === micros(spend.byTier[row.spendCategory])) && seen.total[0] === seen.total[1] && paid.filter(row => row.costYuan > 0).length >= minPaidRows;
+    };
+    try { await run.poll(agree, timeoutMs, 'timeout'); } catch (error) { if (error.message !== 'timeout') throw error; fail(`the usage ledger and the spend meter disagree: ${JSON.stringify(seen)}`); }
+  },
+  /** A capability's daily limit through the real operator route (POST /usage/limits): a number, null (back to its
+   * default), or "used" (what is used so far today, so that the next call is refused). */
+  async usageLimit(run, _ctx, { capability, limit }) {
+    await run.operator('POST', '/usage/limits', { limits: { [capability]: limit === 'used' ? (await usageRows(run))[capability].used : limit } });
+  },
   /** One reply sent as several messages: the not-yet-matched messages delivered to `to`, in the order they
    * were sent, must be `minParts`..`maxParts` messages of at most `maxChars` characters each that together
    * are `text`, apart from white space. */
@@ -397,8 +441,9 @@ export const STEPS = {
 
 export class Runner {
   /** operator(method, route, body) and onebot(method, route, body) resolve to the `value` of an ok envelope. */
-  constructor({ data, operator, onebot, modelScript, modelLog, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), say = () => {} }) {
-    Object.assign(this, { data: validateScenarios(data), operator, onebot, modelScriptFile: modelScript, modelLogFile: modelLog, sleep, report: say });
+  /** gateway(route, body) (optional) posts to the staged gateway's inference socket and resolves to "ok" or the refusal code. */
+  constructor({ data, operator, onebot, gateway, modelScript, modelLog, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), say = () => {} }) {
+    Object.assign(this, { data: validateScenarios(data), operator, onebot, gateway, modelScriptFile: modelScript, modelLogFile: modelLog, sleep, report: say });
     this.owner = Object.keys(data.people).find(name => data.people[name].owner);
   }
   qq(name) { return this.data.people[name].qq; }
@@ -508,6 +553,11 @@ function request(options, body) {
   });
 }
 
+/** `gateway` for the Runner: POST to the gateway's inference socket; "ok", or the error code it refused with. */
+export function gatewayCaller(socketPath, token) {
+  return (route, body) => request({ socketPath, method: 'POST', path: route, headers: { authorization: 'Bearer ' + token } }, body).then(() => 'ok', error => / -> \d+ (\S+)$/.exec(error.message)?.[1] ?? error.message);
+}
+
 async function main(argv) {
   const args = Object.fromEntries(argv.reduce((pairs, value, index, all) => index % 2 ? pairs : [...pairs, [value.replace(/^--/, ''), all[index + 1]]], []));
   const port = Number(args['operator-port']);
@@ -517,6 +567,7 @@ async function main(argv) {
     data: JSON.parse(fs.readFileSync(args.scenarios, 'utf8')), modelScript: args['model-script'], modelLog: args['model-log'], say: line => console.log(line),
     operator: (method, route, body) => request({ host: '127.0.0.1', port, method, path: route, headers: { authorization: 'Bearer ' + token } }, body),
     onebot: (method, route, body) => request({ socketPath: args['onebot-control'], method, path: route }, body),
+    ...(args['inference-socket'] && args['inference-token-file'] ? { gateway: gatewayCaller(args['inference-socket'], fs.readFileSync(args['inference-token-file'], 'utf8').trim()) } : {}),
   });
   const summary = await runner.run(args.only ? args.only.split(',') : null);
   console.log('SCENARIOS ' + JSON.stringify({ passed: summary.passed, failed: summary.failed, line: summaryLine(summary) }));

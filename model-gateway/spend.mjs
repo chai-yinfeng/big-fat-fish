@@ -230,7 +230,8 @@ export function createSpendMeter({ stateFile, settingsFile, pricingFile, clock =
       });
     },
     /** cost: micro-yuan (priced with handle.pricing at handle.at), or null when usage is unknown (charges the reservation). `charge:false` releases.
-     * `usage` (parseUsage's shape) is added to the day's token totals when the call is charged. */
+     * `usage` (parseUsage's shape) is added to the day's token totals when the call is charged.
+     * Resolves to the micro-yuan charged (undefined for a handle that was already settled). */
     settle(handle, cost, { charge = true, usage = null } = {}) {
       return serial(async () => {
         if (!reservations.delete(handle.id)) return;
@@ -243,6 +244,7 @@ export function createSpendMeter({ stateFile, settingsFile, pricingFile, clock =
           ...(charge && usage ? { tokens: { requests: state.tokens.requests + 1, cacheHit: state.tokens.cacheHit + usage.cacheHit, cacheMiss: state.tokens.cacheMiss + usage.cacheMiss, output: state.tokens.output + usage.output, reasoning: state.tokens.reasoning + usage.reasoning } } : {}),
         };
         await writePrivate(stateFile, state);
+        return amount;
       });
     },
     close: () => queue,

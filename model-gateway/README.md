@@ -121,10 +121,43 @@ TZ) in three private files next to the settings file: `spend.json` (state),
   refused by the spend tier answers 429 `SPEND_RESTRICTED` (the daily call count stays
   `BUDGET_EXHAUSTED`); QQ then stays silent instead of sending the attachment notice. The cap includes
   the owner's own chats.
-- Control socket: `GET /spend` → `{day,timezone,spentYuan,reservedYuan,capYuan,percent,tier,thresholds,byTier:{conversation,maintenance,vision,web},calls,unreportedUsage,window,pricing}`;
+- Control socket: `GET /spend` → `{day,timezone,spentYuan,reservedYuan,capYuan,percent,tier,thresholds,byTier:{conversation,maintenance,vision,web},calls,unreportedUsage,window,pricing,tokens:{requests,cacheHit,cacheMiss,output,reasoning}}`
+  (`tokens`: the day's reported chat/maintenance usage, observation only);
   `POST /spend/settings {dailyCapYuan?,reducedPercent?,restrictedPercent?}` validates
   0.01 ≤ cap ≤ 1000 and 0 < reduced < restricted < 100, persists atomically and
   applies to the next reservation without restart or pause.
+
+## Usage ledger
+
+Next to the spend files the gateway keeps a daily usage ledger (`usage-ledger.mjs`, Beijing
+day): one row per declared capability (`capabilities/providers/index.js`: chat, consolidation,
+vision, web, speech-tts, speech-asr). It only observes and shows; it never refuses a model call
+and a ledger that cannot be written never fails or delays one.
+
+- Files: `usage-ledger.json` (today), `usage-history.jsonl` (one line per finished day, the
+  newest 90) and `usage-limits.json` (operator overrides of daily limits). No earlier release
+  reads them, and an unreadable or invalid one is started afresh instead of stopping the gateway.
+- Money stays with the spend meter: `spend.json` is unchanged and each row's cost is what
+  `settle` charged. `capability-usage.json` is unchanged too and still holds the vision/web
+  daily counts (an older release refuses to start on a file with unknown fields); the ledger
+  reads `visionCalls` / `webCalls` from it as the rows' `used`. Consolidation's batch limits stay
+  in Authority (`GET /memory/consolidation`).
+- A row: `used` (what counts against `limit`), `limit` / `limitDefault` (null: none), `calls`,
+  `ok`, `failed`, `denied` by reason (`daily_limit`, `spend_tier`, `paused`, `quiet_hours`,
+  `cooldown`, `not_configured`, `busy`, `blocked`), `units` (chat and consolidation: reported
+  `inputTokens` / `outputTokens`; speech: `chars`, `audioSeconds`), `costYuan`, `busyMs`.
+  Chat and consolidation rows count model requests, not turns or batches. A malformed request
+  is not counted.
+- Inference socket (the `inference.token` holders): `POST /v1/usage/record
+  {capability,outcome:'ok'|'failed'|'denied',reason?,units?,busyMs?}` for a capability its own
+  process runs (today the content service's local TTS/ASR; never a gateway-counted row, never
+  money), and `POST /v1/usage/reserve {capability}` to take a daily slot of such a capability
+  (429 `BUDGET_EXHAUSTED` when none is left, 409 while paused; no declared capability needs it yet).
+- Control socket: `GET /usage` → `{day,timezone,rows:[{id,title,kind,unit,used,limit,limitDefault,calls,ok,failed,denied,units,costYuan,busyMs,spendCategory,stopTier}]}`;
+  `GET /usage/history?days=7` (1–90) → `{timezone,days:[{day,rows:{id:{…}}}]}` newest first, only
+  the capabilities used that day; `POST /usage/limits {limits:{id:0–1000|null}}` for a
+  capability declared with a daily limit (vision, web), applied to the next call; `null`
+  returns to the default. After a rollback the older release enforces its own 12/20.
 
 Tests use injected fetch mocks, not real DeepSeek calls. They exercise token
 isolation, paused gates, atomic private settings, SSE/tool/reasoning bytes, model

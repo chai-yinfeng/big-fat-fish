@@ -55,7 +55,7 @@ test('a rejected proposal says it was not remembered and how to correct it, for 
     assert.equal(result.status, 'rejected'); assert.equal(result.reason, reason); assert.equal(result.remembered, false);
     assert.equal(result.hint, '没有记住。' + hint, reason);
   }
-  assert.deepEqual(Object.keys(REJECTION_HINTS).sort(), ['authored_text_required', 'conversation_policy_kind_denied', 'conversation_role_required', 'observation_already_appraised', 'private_binding_required', 'real_user_required', 'sensitive_retention_denied', 'unconfirmed_identity', 'world_paused']);
+  assert.deepEqual(Object.keys(REJECTION_HINTS).sort(), ['authored_text_required', 'conversation_policy_kind_denied', 'conversation_role_required', 'observation_already_appraised', 'private_binding_required', 'real_user_required', 'sensitive_retention_denied', 'sensitive_source', 'unconfirmed_identity', 'world_paused']);
   assert.match(REJECTION_HINTS.real_user_required, /ref 要选 role 为 user 的那条/);
   // A reason without a hint is passed on as its code; a world paused at submit is rejected at once.
   assert.equal((await tools({ review: () => ({ status: 'rejected', reason: 'unknown_kind' }) }).call({ action: 'propose', ref: 'obs-1', type: 'fact.report', payload: fact })).hint, '没有记住。被拒收（unknown_kind）。');

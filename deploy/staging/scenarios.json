@@ -416,6 +416,45 @@
         { "expectPrompt": { "userText": "别人追问", "absent": "MOCK-H4-{run}" } },
         { "expectMemory": { "person": "MOCK-B", "absent": "MOCK-H4-{run}" } }
       ]
+    },
+    {
+      "id": "Q1",
+      "title": "ledger-counts-every-exit: a chat turn, a picture and a search each land in their usage row, and the rows add up to what the spend meter charged",
+      "model": [
+        { "match": "MOCK-Q1-{run}", "reply": "MOCK-REPLY-Q1 好" }
+      ],
+      "steps": [
+        { "noteUsage": {} },
+        { "say": { "from": "MOCK-A", "text": "MOCK-Q1-{run} 在吗" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-Q1 好" } },
+        { "gatewayCall": { "kind": "vision", "text": "MOCK-Q1-{run} 图里有什么" } },
+        { "gatewayCall": { "kind": "search", "text": "MOCK-Q1-{run} 搜一下" } },
+        { "expectUsage": { "capability": "chat", "used": 1, "calls": 1, "ok": 1 } },
+        { "expectUsage": { "capability": "vision", "used": 1, "calls": 1, "ok": 1 } },
+        { "expectUsage": { "capability": "web", "used": 1, "calls": 1, "ok": 1 } },
+        { "expectUsage": { "capability": "speech-tts" } },
+        { "expectUsage": { "capability": "speech-asr" } },
+        { "expectUsageMatchesSpend": { "minPaidRows": 3 } }
+      ]
+    },
+    {
+      "id": "Q2",
+      "title": "ledger-records-denials: once the day's pictures are used up, the next one is refused, counted as daily_limit, and never reaches the model",
+      "model": [],
+      "steps": [
+        { "noteUsage": {} },
+        { "usageLimit": { "capability": "vision", "limit": "used" } },
+        { "gatewayCall": { "kind": "vision", "text": "MOCK-Q2-{run} 图里有什么", "expect": "BUDGET_EXHAUSTED" } },
+        { "expectUsage": { "capability": "vision", "denied": { "daily_limit": 1 } } },
+        { "expectNoModelCall": { "userText": "MOCK-Q2-{run}" } },
+        { "usageLimit": { "capability": "vision", "limit": null } },
+        { "gatewayCall": { "kind": "vision", "text": "MOCK-Q2-{run} 恢复上限后再看" } },
+        { "expectUsage": { "capability": "vision", "used": 1, "calls": 1, "ok": 1, "denied": { "daily_limit": 1 } } },
+        { "expectUsageMatchesSpend": {} }
+      ],
+      "finally": [
+        { "usageLimit": { "capability": "vision", "limit": null } }
+      ]
     }
   ]
 }

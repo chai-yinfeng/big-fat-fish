@@ -221,12 +221,12 @@ test('a spend-tier refusal of vision/web is SPEND_RESTRICTED; the daily call cou
 test('daily vision/web counts roll over at Beijing midnight; a usage file with a UTC day from an older release still loads', async t => {
   let now = Date.parse('2026-11-09T15:30:00Z'), calls = 0; // 23:30 Monday in Beijing, still the 9th in UTC too
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'fish-model-')), usageFile = path.join(directory, 'capability-usage.json');
-  t.after(async () => { assert.equal(path.dirname(directory), os.tmpdir()); await fs.rm(directory, { recursive: true }); });
   // Written by the previous release at 23:30 Beijing time: day is the UTC date, both counters at their limit.
   await fs.writeFile(usageFile, JSON.stringify({ schema: 1, day: '2026-11-09', webCalls: 1, visionCalls: 1, inputTokens: 5, outputTokens: 7, unreportedUsageResponses: 0 }), { mode: 0o600 });
   await fs.writeFile(path.join(directory, 'settings.json'), JSON.stringify({ model: 'deepseek-flash', apiKey: 'synthetic-key' }), { mode: 0o600 });
   const gateway = createModelGateway({ settingsFile: path.join(directory, 'settings.json'), usageFile, inferenceSocket: path.join(directory, 'infer.sock'), controlSocket: path.join(directory, 'control.sock'), inferenceTokenHash: hash(infer), operatorTokenHash: hash(operator), budgets: { web: 1, vision: 1 }, clock: () => now, worldStatus: async () => ({ paused: false }), fetchImpl: async () => { calls++; return new Response(JSON.stringify({ results: [] })); } });
-  await gateway.start(); t.after(() => gateway.close());
+  // The directory goes only after the gateway has closed: a call is written down after its response.
+  await gateway.start(); t.after(async () => { await gateway.close(); assert.equal(path.dirname(directory), os.tmpdir()); await fs.rm(directory, { recursive: true }); });
   const search = () => request(path.join(directory, 'infer.sock'), '/v1/web/search', { query: 'x' }, infer);
   assert.equal((await search()).status, 429, 'same day in both calendars: the stored count still applies');
   now = Date.parse('2026-11-09T16:00:00Z'); // 00:00 Tuesday in Beijing, 16:00 Monday UTC

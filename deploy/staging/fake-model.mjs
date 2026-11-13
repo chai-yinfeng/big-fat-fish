@@ -19,6 +19,8 @@
 // script can point a quote at the wrong row or misquote it. Without such a rule the answer is a plain
 // valid digest. Rules with `consolidate` never answer a chat, and chat rules never answer a consolidation.
 // It is logged with `consolidation: true`, its user message as `maintenance`, and an empty `userText`.
+// A web search (the gateway's /v1/web/search) gets one fixed MOCK result and is logged with `search: true`
+// and the query as `userText`. A vision request is a non-streamed chat completion and is answered like one.
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -94,9 +96,14 @@ export function renderReply(plan) {
   return chunks.map(value => `data: ${JSON.stringify(value)}\n\n`).join('') + 'data: [DONE]\n\n';
 }
 
-/** fetch stand-in. Every request is appended to `logFile`; anything but chat completions is refused. */
+/** fetch stand-in. Every request is appended to `logFile`; anything but chat completions and web search is refused. */
 export function createFakeUpstream({ scriptFile, logFile }) {
   return async (url, options = {}) => {
+    if (String(url) === 'https://api.deepseek.com/v1/tools/search') {
+      const query = String(JSON.parse(options.body)?.query ?? '');
+      fs.appendFileSync(logFile, JSON.stringify({ at: Date.now(), stream: false, search: true, userText: query }) + '\n', { mode: 0o600 });
+      return new Response(JSON.stringify({ results: [{ title: 'MOCK-SEARCH-RESULT', url: 'https://example.com/mock', snippet: 'MOCK-SEARCH-SNIPPET' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
     if (String(url) !== 'https://api.deepseek.com/chat/completions') return new Response('{}', { status: 503 });
     const body = JSON.parse(options.body);
     let rules = []; try { rules = JSON.parse(fs.readFileSync(scriptFile, 'utf8')); } catch {}

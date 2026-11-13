@@ -11,6 +11,7 @@
 | console | 独立世界控制台（同源 operator 入口） |
 | capabilities/conversation | 执行契约与基于 pi-agent-core 的对话执行器服务（companion-conversation） |
 | capabilities/qq、media、speech、memory | 渠道、受控素材、本地文件语音与记忆维护 |
+| capabilities/providers | 能力声明（注册表）：每个能力一份数据声明，入口 `index.js`；额度账本和控制台额度页读它 |
 | model-gateway | 私有模型出口及预算，不拥有角色记忆 |
 | deploy | 完整发布与运维入口；不可直接修改正式版本目录 |
 
@@ -19,7 +20,7 @@ plugin、preset、adapters、voice-runtime、旧 asr/tts/ui 等是保留的历�
 不是当前发布装配；仅在任务涉及 legacy 时读取或运行。
 
 当前限制：
-- 对话执行器只经私有 model-gateway 访问 DeepSeek；尚未在生产主机上实际部署和真实对话验收。
+- 对话执行器只经私有 model-gateway 访问 DeepSeek。
 - Qwen3-TTS 只用 speaker-file 条件，参考转写不参与合成（不是完整 ICL 克隆）。
 - 合成音色由 operator 上传参考录音登记（可多个、设默认）；使用范围（内部/可公开）目前只记录，未来公开发布渠道才会强制。
 - 多人私聊：机器人的 QQ 好友可各自私聊（最多准入 40 人），彼此记忆隔离；群聊、临时会话与主动消息尚未启用。

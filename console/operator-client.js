@@ -39,6 +39,23 @@ export function validSpend(value) {
     && ['normal', 'reduced', 'restricted', 'exhausted'].includes(value.tier) && Number.isFinite(value.thresholds?.reducedPercent) && Number.isFinite(value.thresholds?.restrictedPercent)
     && value.byTier && typeof value.byTier === 'object';
 }
+/** One capability's daily limit: a whole number of 0–1000, or null to return to its default. */
+export function limitsPayload(id, value) {
+  const limit = value === null ? null : Number(value);
+  if (typeof id !== 'string' || !id || limit !== null && (String(value).trim() === '' || !Number.isSafeInteger(limit) || limit < 0 || limit > 1000)) throw Object.assign(new Error('invalid_usage_limit'), { code: 'invalid_usage_limit' });
+  return { limits: { [id]: limit } };
+}
+const usageNumbers = row => ['used', 'calls', 'ok', 'failed', 'busyMs', 'costYuan'].every(key => Number.isFinite(row?.[key])) && (row.limit === null || Number.isFinite(row.limit))
+  && row.denied && typeof row.denied === 'object' && row.units && typeof row.units === 'object';
+/** GET /usage: today's row per capability (model-gateway usage ledger). */
+export function validUsage(value) {
+  return value && typeof value.day === 'string' && Array.isArray(value.rows) && value.rows.every(row => typeof row.id === 'string' && typeof row.title === 'string' && ['paid', 'local'].includes(row.kind) && usageNumbers(row)
+    && (row.limitDefault === null || Number.isFinite(row.limitDefault)));
+}
+/** GET /usage/history: finished days, newest first; a day lists only the capabilities that were used. */
+export function validUsageHistory(value) {
+  return value && Array.isArray(value.days) && value.days.every(day => typeof day.day === 'string' && day.rows && typeof day.rows === 'object' && Object.values(day.rows).every(usageNumbers));
+}
 export function validPeople(value) {
   return value && Array.isArray(value.people) && value.people.every(p => typeof p.personId === 'string' && typeof p.label === 'string' && typeof p.owner === 'boolean' && Array.isArray(p.actors))
     && Number.isFinite(value.limit) && Number.isFinite(value.admitted);
@@ -78,9 +95,9 @@ export function sourcesQuery({ id } = {}) {
 }
 export async function operatorRequest({ location, token, path, payload, query, fetchImpl = fetch, signal, sameOrigin = false }) {
   if (!token) throw Object.assign(new Error('authorization_required'), { code: 'authorization_required' });
-  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/conversations', '/spend', '/spend/settings'].includes(path)) throw new Error('unsupported_operator_path');
-  if (['/model', '/model/test', '/spend/settings', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
-  if (['/runtime', '/people', '/conversations', '/spend', '/memory/consolidation', '/memory/sources'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
+  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/conversations', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits'].includes(path)) throw new Error('unsupported_operator_path');
+  if (['/model', '/model/test', '/spend/settings', '/usage/limits', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
+  if (['/runtime', '/people', '/conversations', '/spend', '/usage', '/usage/history', '/memory/consolidation', '/memory/sources'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
   if (query !== undefined && (!['/memory', '/memory/sources'].includes(path) || payload !== undefined) || path === '/memory/sources' && query === undefined) throw new Error('operator_query_unsupported');
   const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}${query === undefined ? '' : path === '/memory/sources' ? sourcesQuery(query) : memoryQuery(query)}`, {
     method: payload === undefined ? 'GET' : 'POST',

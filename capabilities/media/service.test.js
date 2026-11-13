@@ -11,7 +11,7 @@ import { ArtifactStore } from './artifacts.js';
 import { MediaService } from './service.js';
 import { createContentServer } from './server.mjs';
 import http from 'node:http';
-import { ContentClient, capabilityGateway } from './client.js';
+import { ContentClient, capabilityGateway, meteredSpeech } from './client.js';
 
 test('real capability and private-control sockets preserve media provenance; pause prevents work', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-content-flow-'));
@@ -70,4 +70,31 @@ test('a spend-tier refusal keeps its code from the gateway through the content s
   // The daily call count (and anything else) still reaches the channel as a plain failure.
   refusal = 'BUDGET_EXHAUSTED';
   await assert.rejects(client.call({ ...scope, action: 'describe', ref: artifact.id }), { code: 'CONTENT_OPERATION_UNAVAILABLE' });
+});
+
+test('local speech is reported to the usage ledger: count, units and time, never text; a ledger that is down changes nothing', async () => {
+  let now = 1000;
+  const reports = [], runner = {
+    status: () => ({ configured: true }),
+    transcribe: async ({ inputFile }) => { now += 900; if (inputFile === 'bad.wav') throw Object.assign(new Error('SPEECH_AUDIO_LIMIT'), { code: 'SPEECH_AUDIO_LIMIT' }); return { text: 'MOCK 转写', model: 'synthetic', durationMs: 6540 }; },
+    synthesize: async () => { now += 5200; return { model: 'synthetic', durationMs: 4210, sampleRate: 24000, mime: 'audio/wav' }; },
+  };
+  const speech = meteredSpeech(runner, async body => { reports.push(body); }, () => now);
+  assert.deepEqual(speech.status(), { configured: true });
+  assert.equal((await speech.transcribe({ inputFile: 'ok.wav' })).text, 'MOCK 转写');
+  await assert.rejects(speech.transcribe({ inputFile: 'bad.wav' }), { code: 'SPEECH_AUDIO_LIMIT' });
+  assert.equal((await speech.synthesize({ text: 'MOCK 你好呀', outputFile: 'out.wav' })).durationMs, 4210);
+  assert.deepEqual(reports, [
+    { capability: 'speech-asr', outcome: 'ok', busyMs: 900, units: { audioSeconds: 6.5 } },
+    { capability: 'speech-asr', outcome: 'failed', busyMs: 900 },
+    { capability: 'speech-tts', outcome: 'ok', busyMs: 5200, units: { chars: 8, audioSeconds: 4.2 } },
+  ]);
+  assert.ok(!JSON.stringify(reports).includes('MOCK'), 'no text leaves the content process');
+  // A ledger that rejects, throws or never answers: speech still returns its result at once.
+  for (const record of [async () => { throw new Error('down'); }, () => { throw new Error('down'); }, () => new Promise(() => {})]) {
+    const unavailable = meteredSpeech(runner, record, () => now);
+    assert.equal((await unavailable.synthesize({ text: 'MOCK', outputFile: 'out.wav' })).durationMs, 4210);
+    assert.equal((await unavailable.transcribe({ inputFile: 'ok.wav' })).text, 'MOCK 转写');
+    await assert.rejects(unavailable.transcribe({ inputFile: 'bad.wav' }), { code: 'SPEECH_AUDIO_LIMIT' });
+  }
 });

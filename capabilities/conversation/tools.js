@@ -33,6 +33,7 @@ export const REJECTION_HINTS = {
   conversation_policy_kind_denied: '聊天里不能用 learning.note；改用 fact.report、experience.remember、appraisal.record 或 self.note。',
   observation_already_appraised: '这条消息已经记过一次评价，不能再记。不用重试。',
   sensitive_retention_denied: '内容涉及密码、证件、健康等敏感信息，按规定不保存。不要重试，也不要说已经记下。',
+  sensitive_source: '引用的那句原话涉及密码、证件、健康等敏感信息，由它得出的内容都不保存。这条不要记，不要换说法或换引文重试，也不要说已经记下。',
   authored_text_required: '证据是附件的转写或描述，不是对方亲手写的文字，不能据此记忆。不要重试。',
   unconfirmed_identity: '对方的身份还没有确认，这条不能记。不要重试。',
   private_binding_required: '只有私聊里的话能记。不要重试。',

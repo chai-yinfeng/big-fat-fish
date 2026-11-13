@@ -92,7 +92,7 @@ test('the real gateway meters the scripted upstream: usage is charged, the cap r
   const script = path.join(root, 'script.json'), log = path.join(root, 'requests.jsonl'), inference = 'inference-token-for-test-only-0000000', operator = 'operator-token-for-test-only-0000000000';
   fs.writeFileSync(script, JSON.stringify(rules));
   const upstream = createFakeUpstream({ scriptFile: script, logFile: log });
-  assert.equal((await upstream('https://api.deepseek.com/v1/tools/search', { body: '{}' })).status, 503);
+  assert.equal((await upstream('https://api.deepseek.com/v1/tools/fetch', { body: '{}' })).status, 503);
   let paused = true;
   const gateway = createModelGateway({ settingsFile: path.join(root, 'model/settings.json'), inferenceSocket: path.join(root, 'model/infer.sock'), controlSocket: path.join(root, 'model/control.sock'), inferenceTokenHash: sha(inference), operatorTokenHash: sha(operator), worldStatus: async () => ({ paused }), fetchImpl: upstream });
   await gateway.start(); t.after(() => gateway.close());
@@ -115,6 +115,12 @@ test('the real gateway meters the scripted upstream: usage is charged, the cap r
   const entries = fs.readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(entries.map(entry => [entry.stream, entry.userText]), [[false, 'Reply OK.'], [true, '你好'], [true, '这个好贵']]);
   assert.ok(!fs.readFileSync(log, 'utf8').includes('MOCK-KEY'));
+  // A web search through the gateway gets the fixed MOCK result, is charged per call and is logged with its query.
+  assert.equal((await post(control, operator, '/spend/settings', { dailyCapYuan: 5 })).status, 200);
+  const found = await post(infer, inference, '/v1/web/search', { query: 'MOCK-搜一下' });
+  assert.deepEqual([found.status, JSON.parse(found.raw).value.results], [200, [{ title: 'MOCK-SEARCH-RESULT', url: 'https://example.com/mock', excerpt: 'MOCK-SEARCH-SNIPPET' }]]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(log, 'utf8').trim().split('\n').at(-1)), { at: JSON.parse(fs.readFileSync(log, 'utf8').trim().split('\n').at(-1)).at, stream: false, search: true, userText: 'MOCK-搜一下' });
+  assert.equal((await spend()).byTier.web, 0.005);
 });
 
 test('the launcher refuses a data root outside companion-staging', () => {

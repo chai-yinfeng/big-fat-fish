@@ -340,9 +340,10 @@ def scenarios(deployer, only=None):
         path = deployer.config.units / name
         path.write_text(scenario_unit(name, path.read_text()))
     deployer.system.systemctl('daemon-reload')
-    # Deterministic reruns: today's spend, the cap, the owner's once-a-day notice and consolidation start fresh.
+    # Deterministic reruns: today's spend, the cap, the owner's once-a-day notice and consolidation start fresh,
+    # and with the spend meter the day's vision/web counts, the usage ledger and its limits (not its history).
     model_data = Path(json.loads((BASE / 'operator/model-gateway.json').read_text())['settingsFile']).parent
-    for label in ('spend.json', 'spend-settings.json'):
+    for label in ('spend.json', 'spend-settings.json', 'capability-usage.json', 'usage-ledger.json', 'usage-limits.json'):
         (model_data / label).unlink(missing_ok=True)
     reset_consolidation(BASE / 'authority-data/authority.sqlite')
     dispatch = Path(qq_config['stateFile'])
@@ -370,7 +371,8 @@ def scenarios(deployer, only=None):
         deployer.enable_all(names)
         command = [str(NODE), str(TOOLS / 'scenarios.mjs'), '--operator-port', str(OPERATOR_PORT), '--operator-token-file', str(BASE / 'operator/console.token'),
                    '--onebot-control', str(control), '--model-script', str(SCENARIO / 'model-script.json'), '--model-log', str(SCENARIO / 'model-requests.jsonl'),
-                   '--scenarios', str(TOOLS / 'scenarios.json')] + (['--only', only] if only else [])
+                   '--scenarios', str(TOOLS / 'scenarios.json'),
+                   '--inference-socket', str(BASE / 'ipc/model/inference.sock'), '--inference-token-file', str(BASE / 'service-config/inference.token')] + (['--only', only] if only else [])
         result = subprocess.run(command, cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=1800)
     finally:
         fake.terminate()
@@ -387,6 +389,39 @@ def scenarios(deployer, only=None):
     if result.returncode or summary['failed']:
         raise RuntimeError(summary['line'])
     return summary['line']
+
+
+def usage_rows():
+    """Today's usage ledger (operator GET /usage): the Beijing day and each capability's counted numbers."""
+    usage = operator('GET', '/usage')
+    return usage['day'], {row['id']: {key: row[key] for key in ('used', 'calls', 'ok', 'failed', 'denied', 'units', 'costYuan', 'busyMs')} for row in usage['rows']}
+
+
+def usage_kept(before, now):
+    """Nothing counted in `before` (one usage row) is missing from `now`; `now` may have counted more."""
+    if not isinstance(now, dict):
+        return False
+    numbers = all(now.get(key, 0) >= before[key] for key in ('used', 'calls', 'ok', 'failed', 'costYuan', 'busyMs'))
+    return numbers and all((now.get(part) or {}).get(name, 0) >= value for part in ('denied', 'units') for name, value in before[part].items())
+
+
+def ledger_survives(before):
+    """Q3 ledger-survives-rollback: `before` is usage_rows() under the new release, taken before the rollback.
+    The old release has since started on this data root (rollback, smoke-from) and the new one again: the day's
+    numbers must still be there. If the Beijing day changed meanwhile, that day must be a history line."""
+    if not before:
+        raise RuntimeError('no usage rows were noted before the rollback')
+    day, rows = before
+    if not any(row['calls'] for row in rows.values()):
+        raise RuntimeError('the usage ledger was empty before the rollback: nothing to compare')
+    today, now = usage_rows()
+    if today != day:
+        now = next((item['rows'] for item in operator('GET', '/usage/history?days=7')['days'] if item['day'] == day), {})
+        rows = {name: row for name, row in rows.items() if row['used'] or row['calls'] or row['denied']}
+    lost = sorted(name for name, row in rows.items() if not usage_kept(row, now.get(name)))
+    if lost:
+        raise RuntimeError('usage of %s lost across the rollback: %s' % (day, '; '.join('%s %s -> %s' % (name, rows[name], now.get(name)) for name in lost)[:500]))
+    return 'day %s kept across rollback and roll-forward%s: calls %s' % (day, '' if today == day else ' (now a history line)', json.dumps({name: row['calls'] for name, row in rows.items() if row['calls']}, sort_keys=True))
 
 
 def migration_drill(deployer, from_name, to_name):
@@ -553,10 +588,13 @@ def lifecycle(from_tarball, to_tarball):
     # (smoke, scenarios), then the old one must run on it again, then the new one after that.
     step('smoke-upgraded', smoke)
     step('scenarios-upgraded', lambda: scenarios(deployer))
+    ledger = []
+    step('ledger-before-rollback', lambda: ledger.append(usage_rows()) or 'day %s: %d capabilities used' % (ledger[0][0], sum(1 for row in ledger[0][1].values() if row['calls'])))
     step('migration-drill (copy)', lambda: migration_drill(deployer, from_name, to_name))
     step('rollback (to from)', lambda: switch_back(from_name))
     step('smoke-from', smoke)
     step('roll-forward (rollback again)', lambda: switch_back(to_name))
+    step('Q3 ledger-survives-rollback', lambda: ledger_survives(ledger[0] if ledger else None))
     step('prune-from', prune)
     step('restart-all', restart)
     step('manager-restart (default.target)', manager_restart)

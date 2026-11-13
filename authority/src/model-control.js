@@ -2,15 +2,16 @@ import http from 'node:http';
 import path from 'node:path';
 
 // This socket is mounted to the human control plane, never to model workers.
-export function createModelControlClient(socketPath, routes = ['/model', '/model/test', '/cancel', '/spend', '/spend/settings']) {
+export function createModelControlClient(socketPath, routes = ['/model', '/model/test', '/cancel', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits']) {
   if (!path.isAbsolute(socketPath)) throw new Error('MODEL_CONTROL_CONFIG');
   return (route, body, authorization) => new Promise((resolve, reject) => {
-    if (!routes.includes(route)) return reject(new Error('MODEL_CONTROL_ROUTE'));
+    // `/usage/history` alone carries a query (`?days=N`, built by the operator server from a checked integer).
+    if (!routes.includes(route.startsWith('/usage/history?') ? '/usage/history' : route)) return reject(new Error('MODEL_CONTROL_ROUTE'));
     const fail = () => reject(Object.assign(new Error('Model service unavailable'), { code: 'MODEL_UNAVAILABLE', statusCode: 503 }));
     const req = http.request({ socketPath, path: route, method: body === undefined ? 'GET' : 'POST', agent: false,
       headers: { authorization, ...(body === undefined ? {} : { 'content-type': 'application/json' }) } }, res => {
       let raw = '', size = 0;
-      res.on('data', chunk => { size += chunk.length; if (size > 16384) { res.destroy(); fail(); } else raw += chunk; });
+      res.on('data', chunk => { size += chunk.length; if (size > (route.startsWith('/usage/history') ? 262144 : 16384)) { res.destroy(); fail(); } else raw += chunk; });
       res.on('error', fail);
       res.on('end', () => {
         try {
