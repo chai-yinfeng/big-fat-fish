@@ -69,6 +69,18 @@ export function initiationResult(item) {
   const [result, reason] = String(item.outcome).split(':');
   return { result, reason: ['dropped', 'deferred'].includes(result) && /^[a-z_]{1,32}$/.test(reason ?? '') ? reason : null };
 }
+/** GET /jobs: the content service's background jobs, newest first (people as opaque labels). */
+export function validJobs(value) {
+  return Array.isArray(value?.jobs) && value.jobs.every(job => typeof job?.id === 'string' && typeof job.status === 'string' && Number.isFinite(job.createdAt)
+    && (job.failureCode === null || typeof job.failureCode === 'string') && (job.result === null || typeof job.result === 'string') && typeof job.notice?.state === 'string');
+}
+/** How telling the person about a finished job stands, as two label keys: `state` (none, pending, carry, issued, or
+ * for a closed one its outcome: sent, partial, unknown, declined, carried, expired, dropped) and a `reason` code. */
+export function jobNotice(job) {
+  const { state, outcome } = job.notice, [head, tail] = String(outcome ?? '').split(':'), reason = /^[a-z_]{1,32}$/.test(tail ?? '') ? tail : null;
+  if (state === 'closed') return { state: /^[a-z_]{1,32}$/.test(head) ? head : 'closed', reason };
+  return { state, reason: state === 'carry' ? reason ?? (/^[a-z_]{1,32}$/.test(head) ? head : null) : null };
+}
 /** GET /usage: today's row per capability (model-gateway usage ledger). */
 export function validUsage(value) {
   return value && typeof value.day === 'string' && Array.isArray(value.rows) && value.rows.every(row => typeof row.id === 'string' && typeof row.title === 'string' && ['paid', 'local'].includes(row.kind) && usageNumbers(row)
@@ -117,9 +129,9 @@ export function sourcesQuery({ id } = {}) {
 }
 export async function operatorRequest({ location, token, path, payload, query, fetchImpl = fetch, signal, sameOrigin = false }) {
   if (!token) throw Object.assign(new Error('authorization_required'), { code: 'authorization_required' });
-  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/conversations', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits', '/providers', '/providers/key', '/providers/clear', '/initiative/log', '/initiative/poke'].includes(path)) throw new Error('unsupported_operator_path');
-  if (['/model', '/model/test', '/spend/settings', '/usage/limits', '/providers/key', '/providers/clear', '/initiative/poke', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
-  if (['/runtime', '/people', '/conversations', '/spend', '/usage', '/usage/history', '/providers', '/initiative/log', '/memory/consolidation', '/memory/sources'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
+  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/conversations', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits', '/providers', '/providers/key', '/providers/clear', '/initiative/log', '/initiative/poke', '/jobs', '/jobs/demo', '/jobs/cancel'].includes(path)) throw new Error('unsupported_operator_path');
+  if (['/model', '/model/test', '/spend/settings', '/usage/limits', '/providers/key', '/providers/clear', '/initiative/poke', '/jobs/demo', '/jobs/cancel', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
+  if (['/runtime', '/people', '/conversations', '/spend', '/usage', '/usage/history', '/providers', '/initiative/log', '/jobs', '/memory/consolidation', '/memory/sources'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
   if (query !== undefined && (!['/memory', '/memory/sources'].includes(path) || payload !== undefined) || path === '/memory/sources' && query === undefined) throw new Error('operator_query_unsupported');
   const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}${query === undefined ? '' : path === '/memory/sources' ? sourcesQuery(query) : memoryQuery(query)}`, {
     method: payload === undefined ? 'GET' : 'POST',
