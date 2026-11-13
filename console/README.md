@@ -42,6 +42,10 @@ UI tests evaluate the shared view through `test-harness.mjs` with an injected fa
 - Reference audio, transcript and rights consent are uncontrolled inputs read only on explicit submit. File bytes are locally checked for mono PCM16 WAV,3–20seconds,≤2MiB, then base64 is sent as content—not a pathname or filename. Inputs clear before the request and in finally; bytes/transcript never enter persistent React state/storage. The server remains the format/permission authority.
 - Test audio is a bounded WAV response turned into a Blob URL. Controls do not autoplay; replacement, leaving the runtime tab, clearing authorization or unmount revoke the URL. No user media is sent to QQ by these controls.
 
+## Provider keys
+
+A card under the model form on the settings page: one row per provider the gateway really has (`GET /providers`): DeepSeek, then each provider adapter; no placeholder rows. A row shows configured / not configured. DeepSeek's key is entered in the model form above (paused world); an adapter's row has an uncontrolled password field (emptied before the request is sent, never state) and a clear button that takes a second click (`POST /providers/key`, `POST /providers/clear`). No saved key or fragment is ever rendered. A release has no adapter, so the card shows DeepSeek alone.
+
 ## Quota page
 
 Read-only apart from one setting. It shows the day's spend (`GET /spend`: amount, tier, the reduced/restricted marks, price window, cache hit rate) and one row per declared capability from the gateway's usage ledger (`GET /usage`): usage against its daily limit, cost, time, refusals and failures, status. The consolidation row adds today's batches from `GET /memory/consolidation`. A row opens to its refusals by reason and its last 7 days (`GET /usage/history`, read once on first open). A row with a daily limit (vision, web) has a number field that posts `POST /usage/limits`; the answer replaces the table. Rows come from the ledger, so a capability declared later appears without a page change; none is shown before it exists.
