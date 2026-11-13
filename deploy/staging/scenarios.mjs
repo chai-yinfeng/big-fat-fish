@@ -365,7 +365,7 @@ export const STEPS = {
     const minute = Math.floor((Date.now() + 8 * 3600000) / 60000) % 1440, clock = value => `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`;
     const quietHours = window === 'none' ? { from: '00:00', to: '00:00' } : window === 'now' ? { from: clock((minute + 1380) % 1440), to: clock((minute + 60) % 1440) } : window === 'default' ? { from: '23:30', to: '08:00' } : fail(`quietHours: unknown window ${JSON.stringify(window)}`);
     const set = (await run.operator('POST', '/initiative/settings', { quietHours })).quietHours;
-    if (set.now !== (window === 'now')) fail(`the quiet hours ${set.from}-${set.to} ${set.now ? 'cover' : 'do not cover'} the present`);
+    if (window !== 'default' && set.now !== (window === 'now')) fail(`the quiet hours ${set.from}-${set.to} ${set.now ? 'cover' : 'do not cover'} the present`);
   },
   /** The operator's "try it on me" (POST /initiative/poke with an empty body: the route takes no target). `expect`:
    * "waiting" (registered for the bridge to fetch) or the outcome it must be closed with at once. The request is

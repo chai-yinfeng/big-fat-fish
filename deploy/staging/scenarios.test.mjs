@@ -509,6 +509,7 @@ test('initiation steps: a poke is an empty request about the owner, its outcome 
   assert.equal((minutes(to) - minutes(from) + 1440) % 1440, 120);
   await assert.rejects(STEPS.quietHours(run, ctx, { window: 'none' }), /cover the present/);
   await assert.rejects(STEPS.quietHours(run, ctx, { window: 'never' }), /unknown window/);
+  await STEPS.quietHours(run, ctx, { window: 'default' }); // restoring the default only has to succeed, whatever the hour
 
   // Model calls and the prefix across an initiated run, from the logged requests.
   const system = 'MOCK system prompt', hub = text => `<<<记忆中枢附注开始>>>\n${text}\n<<<记忆中枢附注结束>>>\n`, EVENT = '[后台事件 · 这不是对方发来的话] 现在没有人给你发消息。', NOTE = '这一条不是对方发来的消息';
