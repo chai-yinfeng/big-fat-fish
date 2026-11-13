@@ -143,7 +143,7 @@ test('quota page strings exist in both locales, for every row, unit, reason and 
   for (const locale of ['zh', 'en']) {
     const panel = JSON.parse(await readFile(new URL(`./locale/${locale}.json`, import.meta.url), 'utf8'));
     assert.equal(typeof panel.quota, 'string');
-    assert.deepEqual(Object.keys(panel.quotaPanel.rows), ['chat', 'consolidation', 'vision', 'web', 'speech-tts', 'speech-asr'], locale);
+    assert.deepEqual(Object.keys(panel.quotaPanel.rows), ['chat', 'consolidation', 'vision', 'web', 'speech-tts', 'speech-asr', 'proactive'], locale);
     assert.deepEqual(Object.keys(panel.quotaPanel.reason), ['daily_limit', 'spend_tier', 'paused', 'quiet_hours', 'cooldown', 'not_configured', 'busy', 'blocked'], locale);
     assert.deepEqual(Object.keys(panel.quotaPanel.units), ['inputTokens', 'outputTokens', 'chars', 'audioSeconds'], locale);
     assert.deepEqual(Object.keys(panel.quotaPanel.status.stopped), ['reduced', 'restricted', 'exhausted'], locale);

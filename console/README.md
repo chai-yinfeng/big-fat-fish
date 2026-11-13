@@ -46,6 +46,10 @@ UI tests evaluate the shared view through `test-harness.mjs` with an injected fa
 
 A card under the model form on the settings page: one row per provider the gateway really has (`GET /providers`): DeepSeek, then each provider adapter; no placeholder rows. A row shows configured / not configured. DeepSeek's key is entered in the model form above (paused world); an adapter's row has an uncontrolled password field (emptied before the request is sent, never state) and a clear button that takes a second click (`POST /providers/key`, `POST /providers/clear`). No saved key or fragment is ever rendered. A release has no adapter, so the card shows DeepSeek alone.
 
+## She speaks first (try once)
+
+A card on the channels page, after the QQ settings: one button, "try it on me" (`POST /initiative/poke` with an empty body: the page cannot name a target; Authority resolves the owner's own private QQ conversation), and a table of the ten newest attempts from `GET /initiative/log` with time, result and reason (waiting, in progress, delivered, partly delivered, unknown, failed, declined, void or deferred with why). The quiet hours in force are shown as Authority reports them. The list is read when the page opens, after a poke and on the card's refresh button; it holds opaque labels only. The card is here because the attempt goes through QQ to the person bound on this page; it moves when a page for initiative exists.
+
 ## Quota page
 
 Read-only apart from one setting. It shows the day's spend (`GET /spend`: amount, tier, the reduced/restricted marks, price window, cache hit rate) and one row per declared capability from the gateway's usage ledger (`GET /usage`): usage against its daily limit, cost, time, refusals and failures, status. The consolidation row adds today's batches from `GET /memory/consolidation`. A row opens to its refusals by reason and its last 7 days (`GET /usage/history`, read once on first open). A row with a daily limit (vision, web) has a number field that posts `POST /usage/limits`; the answer replaces the table. Rows come from the ledger, so a capability declared later appears without a page change; none is shown before it exists.

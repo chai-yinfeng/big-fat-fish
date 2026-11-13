@@ -209,3 +209,13 @@ test('memory worker timings are optional; a value out of range is refused, as th
   w.edit('memory-worker.json', c => { c.tickMs = 10; });
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['memory-worker.json CONFIG_INVALID']);
 });
+
+test('the QQ bridge poll interval for initiated runs is optional; a value out of range is refused, as the bridge would refuse to start', async t => {
+  const w = world(t);
+  w.edit('qq-bridge.json', c => { c.initiationPollMs = 3000; });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), []);
+  for (const bad of [10, 600001, '3000', 1500.5]) {
+    w.edit('qq-bridge.json', c => { c.initiationPollMs = bad; });
+    assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['qq-bridge.json CONFIG_INVALID'], String(bad));
+  }
+});

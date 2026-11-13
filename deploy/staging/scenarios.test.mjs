@@ -21,7 +21,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -380,7 +380,8 @@ async function stack(t) {
   // The prepare scripts write the paths Authority sees inside its production sandbox.
   edit('authority.json', c => Object.assign(c.operator, { modelSocketPath: path.join(base, 'ipc/model-control/control.sock'), qqSocketPath: path.join(base, 'ipc/qq-control/control.sock') }));
   const onebotPort = await new Promise(resolve => { const probe = net.createServer(); probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
-  edit('qq-bridge.json', c => { c.onebotPort = onebotPort; });
+  // The bridge asks for initiated runs every second here (production: every minute).
+  edit('qq-bridge.json', c => { c.onebotPort = onebotPort; c.initiationPollMs = 1000; });
   // The worker's cleanup client gets a port nobody listens on (as in staging, where it cannot reach the operator).
   edit('memory-worker.json', c => Object.assign(c, { operatorPort: onebotPort === 65535 ? 65534 : onebotPort + 1, tickMs: 1000, consolidationDeferMs: 2000 }));
   const data = shipped(), files = { control: path.join(base, 'scenario/onebot.sock'), script: path.join(base, 'scenario/script.json'), log: path.join(base, 'scenario/requests.jsonl') };
@@ -450,6 +451,91 @@ test('usage steps: a row must change by exactly what was expected, the ledger mu
   assert.deepEqual(asked, [['/v1/web/search', 'query'], ['/v1/vision/describe', 'imageBase64,mime,question'], ['/v1/vision/describe', 'imageBase64,mime,question']]);
 });
 
+test('initiation steps: a poke is an empty request about the owner, its outcome is read from the operator list, lost sends and model calls are counted', async t => {
+  const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-init-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const log = path.join(dir, 'requests.jsonl'), posted = [], data = shipped(), owner = data.people['MOCK-OWNER'].qq;
+  let poked = { id: 'i-1', owner: true, status: 'waiting', outcome: null }, items = [], lost = [], messages = 4, quietNow = false;
+  const run = new Runner({ data, modelLog: log, sleep: async () => {},
+    operator: async (method, route, body) => {
+      if (method === 'POST') { posted.push([route, body]); return route === '/initiative/settings' ? { quietHours: { ...body.quietHours, now: quietNow } } : poked; }
+      return route === '/conversations' ? [{ streamId: `qq:${data.bot.qq}:private:${owner}`, messages }] : { items };
+    },
+    onebot: async (method, route, body) => { if (method === 'POST') { posted.push([route, body]); return {}; } return { sent: [], lost }; } });
+  const ctx = { logOffset: 0 };
+  await assert.rejects(STEPS.expectInitiation(run, ctx, { outcome: 'sent', timeoutMs: 0 }), /no poke in this scenario/);
+  await STEPS.poke(run, ctx, {});
+  assert.deepEqual(posted, [['/initiative/poke', {}]]);
+  // Still open: the step waits; closed with another outcome: it fails and says which.
+  items = [{ id: 'i-1', status: 'issued', outcome: null }];
+  await assert.rejects(STEPS.expectInitiation(run, ctx, { outcome: 'sent', timeoutMs: 0 }), /the initiation never ended/);
+  items = [{ id: 'i-0', status: 'closed', outcome: 'sent' }, { id: 'i-1', status: 'closed', outcome: 'unknown' }];
+  await assert.rejects(STEPS.expectInitiation(run, ctx, { outcome: 'sent', timeoutMs: 0 }), /ended as unknown, expected sent/);
+  await STEPS.expectInitiation(run, ctx, { outcome: 'unknown', timeoutMs: 0 });
+  items = [{ id: 'i-1', status: 'closed', outcome: 'unknown', streamId: `qq:${data.bot.qq}:private:${owner}` }];
+  await assert.rejects(STEPS.expectInitiation(run, ctx, { outcome: 'unknown', timeoutMs: 0 }), /contains the account number/);
+  // A poke must be new, about the owner, and stand as expected.
+  poked = { ...poked, already: true }; await assert.rejects(STEPS.poke(run, ctx, {}), /an earlier initiation is still open/);
+  poked = { id: 'i-2', owner: false, status: 'waiting', outcome: null }; await assert.rejects(STEPS.poke(run, ctx, {}), /not about the owner/);
+  poked = { id: 'i-2', owner: true, status: 'closed', outcome: 'dropped:paused' };
+  await assert.rejects(STEPS.poke(run, ctx, {}), /the poke is dropped:paused, expected waiting/);
+  await STEPS.poke(run, ctx, { expect: 'dropped:paused' });
+  await assert.rejects(STEPS.poke(run, ctx, { expect: 'dropped:quiet_hours' }), /the poke is dropped:paused, expected dropped:quiet_hours/);
+  // Sends without a receipt: exactly as many to that person, none to anyone else.
+  await STEPS.expectLostSends(run, ctx, { to: 'MOCK-OWNER', count: 0 });
+  lost = [{ user_id: owner, text: 'MOCK' }];
+  await STEPS.expectLostSends(run, ctx, { to: 'MOCK-OWNER', count: 1 });
+  await assert.rejects(STEPS.expectLostSends(run, ctx, { to: 'MOCK-OWNER', count: 0 }), /1 send\(s\) to MOCK-OWNER went without a receipt/);
+  lost = [...lost, { user_id: data.people['MOCK-A'].qq, text: 'MOCK' }];
+  await assert.rejects(STEPS.expectLostSends(run, ctx, { to: 'MOCK-OWNER', count: 1 }), /and 1 to others/);
+  await STEPS.loseReceipts(run, ctx, { count: 2 });
+  assert.deepEqual(posted.at(-1), ['/lose-receipts', { count: 2 }]);
+  // Lines Authority holds: exactly as many more as expected.
+  await assert.rejects(STEPS.expectMessages(run, ctx, { person: 'MOCK-OWNER', added: 0, timeoutMs: 0 }), /no noted count/);
+  await STEPS.noteMessages(run, ctx, { person: 'MOCK-OWNER' });
+  await STEPS.expectMessages(run, ctx, { person: 'MOCK-OWNER', added: 0, timeoutMs: 0 });
+  messages = 5;
+  await STEPS.expectMessages(run, ctx, { person: 'MOCK-OWNER', added: 1, timeoutMs: 0 });
+  await assert.rejects(STEPS.expectMessages(run, ctx, { person: 'MOCK-OWNER', added: 0, timeoutMs: 0 }), /Authority holds 1 more line\(s\) of MOCK-OWNER, expected 0/);
+  // Quiet hours go through the operator route, and the answer must agree with what was asked for.
+  await STEPS.quietHours(run, ctx, { window: 'none' }); await STEPS.quietHours(run, ctx, { window: 'default' });
+  assert.deepEqual(posted.slice(-2), [['/initiative/settings', { quietHours: { from: '00:00', to: '00:00' } }], ['/initiative/settings', { quietHours: { from: '23:30', to: '08:00' } }]]);
+  await assert.rejects(STEPS.quietHours(run, ctx, { window: 'now' }), /do not cover the present/);
+  quietNow = true; await STEPS.quietHours(run, ctx, { window: 'now' });
+  const { from, to } = posted.at(-1)[1].quietHours, minutes = value => Number(value.slice(0, 2)) * 60 + Number(value.slice(3));
+  assert.equal((minutes(to) - minutes(from) + 1440) % 1440, 120);
+  await assert.rejects(STEPS.quietHours(run, ctx, { window: 'none' }), /cover the present/);
+  await assert.rejects(STEPS.quietHours(run, ctx, { window: 'never' }), /unknown window/);
+
+  // Model calls and the prefix across an initiated run, from the logged requests.
+  const system = 'MOCK system prompt', hub = text => `<<<记忆中枢附注开始>>>\n${text}\n<<<记忆中枢附注结束>>>\n`, EVENT = '[后台事件 · 这不是对方发来的话] 现在没有人给你发消息。', NOTE = '这一条不是对方发来的消息';
+  const user = (text, note = '"无关记忆"') => ({ role: 'user', content: [{ type: 'text', text: hub(note) }, { type: 'text', text }] }), she = text => ({ role: 'assistant', content: text });
+  const entry = messages => { const plan = planReply({ stream: true, messages }); return { stream: true, userText: plan.userText, system: plan.system, context: plan.context, rest: plan.rest, notes: plan.notes, turns: plan.turns, hashes: plan.hashes, afterTool: plan.afterTool }; };
+  const write = (...requests) => fs.writeFileSync(log, requests.map(messages => JSON.stringify(entry(messages))).join('\n') + '\n');
+  const first = [{ role: 'system', content: system }, user('MOCK 第一句')], started = [...first, she('回复一'), user(EVENT, NOTE)], next = [...started, she('在忙吗'), user('MOCK 第二句')];
+  write(first, started, next);
+  await STEPS.expectModelCalls(run, ctx, { userText: '后台事件', count: 1 });
+  await assert.rejects(STEPS.expectModelCalls(run, ctx, { userText: '后台事件', count: 0 }), /the model was asked 1 time\(s\) for "后台事件", expected 0/);
+  await STEPS.expectInitiatedPrefix(run, ctx, { before: 'MOCK 第一句', after: 'MOCK 第二句', trims: 0 });
+  // The run after it rewrote the event block: not a prefix any more.
+  write(first, started, [...started.slice(0, -1), user(EVENT + '改写过', NOTE), she('在忙吗'), user('MOCK 第二句')]);
+  await assert.rejects(STEPS.expectInitiatedPrefix(run, ctx, { before: 'MOCK 第一句', after: 'MOCK 第二句' }), /request 3 of the chain .* does not start with the request before it/);
+  write(first, [{ role: 'system', content: system + ' 另一版' }, ...started.slice(1)], next);
+  await assert.rejects(STEPS.expectInitiatedPrefix(run, ctx, { before: 'MOCK 第一句', after: 'MOCK 第二句' }), /request 2 of the chain .* has another system message/);
+  // The event block without the note that nobody wrote, or that note on an ordinary message.
+  write(first, [...first, she('回复一'), user(EVENT)], [...first, she('回复一'), user(EVENT), she('在忙吗'), user('MOCK 第二句')]);
+  await assert.rejects(STEPS.expectInitiatedPrefix(run, ctx, { before: 'MOCK 第一句', after: 'MOCK 第二句' }), /without the note saying nobody wrote/);
+  write(first, started, [...started, she('在忙吗'), user('MOCK 第二句', NOTE)]);
+  await assert.rejects(STEPS.expectInitiatedPrefix(run, ctx, { before: 'MOCK 第一句', after: 'MOCK 第二句' }), /carries the note of an initiated run/);
+  write(first, [...first, she('回复一'), user('MOCK 第二句')]);
+  await assert.rejects(STEPS.expectInitiatedPrefix(run, ctx, { before: 'MOCK 第一句', after: 'MOCK 第二句' }), /lacks an initiated run/);
+  // A batch trim between two of them is allowed once, when asked for.
+  const old = [{ role: 'system', content: system }, user('MOCK 更早一句'), she('更早的回复'), user('MOCK 更早二句'), she('更早的回复二'), user('MOCK 第一句')];
+  const cut = [{ role: 'system', content: system }, user('MOCK 更早二句'), she('更早的回复二'), user('MOCK 第一句'), she('回复一'), user(EVENT, NOTE)];
+  write(old, cut, [...cut, she('在忙吗'), user('MOCK 第二句')]);
+  await STEPS.expectInitiatedPrefix(run, ctx, { before: 'MOCK 第一句', after: 'MOCK 第二句', trims: 1 });
+  await assert.rejects(STEPS.expectInitiatedPrefix(run, ctx, { before: 'MOCK 第一句', after: 'MOCK 第二句', trims: 0 }), /the history start moved 1 times/);
+});
+
 test('provider steps: a key is set or cleared through the operator and must be listed so; a job is submitted, polled and fetched', async () => {
   const posted = [], asked = [];
   let configured = false, leak = false, polls = 0, file = { bytes: Buffer.from('\x89PNG\r\n', 'latin1'), type: 'image/png' };
@@ -493,9 +579,9 @@ test('provider steps: a key is set or cleared through the operator and must be l
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge and memory worker', { timeout: 600000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '22/22 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '28/28 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));

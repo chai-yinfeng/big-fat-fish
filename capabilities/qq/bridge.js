@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { messageFromOneBot } from './source.js';
 import { qqRequestId } from './worker-route.js';
-import { executeConversation } from '../conversation/executor.js';
+import { executeConversation, DECLINE_MARK } from '../conversation/executor.js';
 import { splitReply, SPLIT_GAP_MS } from './split.js';
 
 const identifier = value => typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value);
@@ -11,6 +11,13 @@ export const CONCURRENCY = 2;
 const STREAM_QUEUE_LIMIT = 10;
 // Beijing calendar day (Asia/Shanghai has no DST), independent of the host TZ.
 export const beijingDay = ms => new Date(ms + 8 * 3600000).toISOString().slice(0, 10);
+/** How often the bridge asks Authority for a run she starts herself (only while connected and logged in). */
+export const INITIATION_POLL_MS = 60000;
+const INITIATION_PREFIX = 'qq:init:';
+/** What she is told in place of a message, by kind of initiated run (the executor frames it as a background event). */
+const INITIATION_EVENTS = { proactive: '现在没有人给你发消息。你可以主动找对方说一两句：想到什么、想问什么都行，照你平时的样子，简短一点。' };
+// She chose to say nothing: the mark anywhere in the reply (full-width brackets too) means nothing is sent.
+const DECLINED = new RegExp(`[<＜]\\s*${DECLINE_MARK.slice(1, -1)}\\s*[>＞]`, 'u');
 export const OWNER_BUDGET_NOTICE = '提醒：今天的模型开销已经到达每日上限，大肥鱼今天先不再回复任何人，北京时间零点后自动恢复。可以在控制台查看今日开销或调整上限。';
 export class QQBridge {
   constructor({ authority, port, onebot, executor, media, settingsFile, stateFile, clock = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
@@ -132,6 +139,85 @@ export class QQBridge {
     item.receipts ||= []; item.receipts.push({ messageId: receipt.messageId, type: receipt.type }); item.messageId = receipt.messageId; this.save();
     try { await this.port.observe({ eventId: 'qq:sent:' + receipt.messageId, streamId: observation.streamId, actorId: 'qq:model', role: 'assistant', text: receipt.text, at: Date.now() }); }
     catch { item.unobserved = true; this.save(); }
+  }
+  /** One round of initiated runs: report what earlier ones came to, ask Authority for the next, run it. A timer
+   * calls this; nothing happens unless QQ is connected, logged in as the configured bot and idle here. */
+  async pollInitiations() {
+    const cfg = this.settings;
+    if (this.initiating || !cfg || !this.connected || this.selfId !== cfg.expectedSelfId) return;
+    this.initiating = true;
+    try {
+      await this.reportInitiations();
+      const { initiation } = await this.authority.initiationNext();
+      if (initiation) { await this.initiate(cfg, initiation); await this.reportInitiations(); }
+    } catch {} finally { this.initiating = false; }
+  }
+  /** Tells Authority how each initiated run ended, once. A run a restart cut off before sending is `failed`, one cut
+   * off while sending is `unknown`: neither is ever run or sent again. */
+  async reportInitiations() {
+    for (const [key, item] of Object.entries(this.state.records)) {
+      if (!key.startsWith(INITIATION_PREFIX) || item.reported || ['queued', 'processing', 'sending'].includes(item.status)) continue;
+      try { await this.authority.initiationAck({ id: key.slice(INITIATION_PREFIX.length), outcome: item.status === 'interrupted' ? 'failed' : item.status }); }
+      // Refused (already settled there): final. Anything else is tried again on the next round.
+      catch (error) { if (error?.status !== 409 && error?.status !== 400) continue; }
+      item.reported = true; this.save();
+    }
+  }
+  /** A run she starts herself, as Authority handed it out. The person it goes to comes only from the conversation
+   * Authority named, and in this release that must be this bot's private conversation with the owner: neither
+   * this bridge nor the model picks or changes the target. The same request a second time does nothing. */
+  async initiate(cfg, initiation) {
+    const { id, kind, streamId, memoryEpoch, expiresAt } = initiation ?? {};
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) return;
+    const requestId = INITIATION_PREFIX + id;
+    if (this.state.records[requestId]) return;
+    const item = this.state.records[requestId] = { status: 'queued' }; this.save();
+    const end = status => { item.status = status; this.save(); };
+    try {
+      const target = typeof streamId === 'string' ? /^qq:([1-9]\d{0,19}):private:([1-9]\d{0,19})$/.exec(streamId) : null;
+      if (!Object.hasOwn(INITIATION_EVENTS, kind)) return end('dropped:unsupported');
+      if (!target || target[1] !== this.selfId || target[1] !== cfg.expectedSelfId || target[2] !== cfg.allowedCallerUID || !Number.isSafeInteger(memoryEpoch) || memoryEpoch < 0) return end('dropped:target');
+      if (!(this.clock() < expiresAt)) return end('dropped:expired');
+      const world = (await this.authority.health()).world, scope = await this.authority.context({ streamId, query: '', budgetChars: 1 });
+      if (world.paused) return end('dropped:paused');
+      if (scope.memoryEpoch !== memoryEpoch || typeof scope.entityId !== 'string') return end('dropped:epoch');
+      // The person spoke first: their message is ahead in this conversation's queue and gets an ordinary reply.
+      // Checked right before queueing, so a message that arrives later waits behind this run instead.
+      if (this.streams.get(streamId)?.queued) return end('dropped:person_spoke');
+      Object.assign(item, { memoryEpoch, entityId: scope.entityId, worldRevision: world.revision }); this.save();
+      await this.enqueue(streamId, () => this.initiated({ cfg, kind, requestId, item, streamId, userId: target[2] }));
+    } catch { if (['queued', 'processing'].includes(item.status)) end('failed'); }
+  }
+  /** The initiated run itself, in its conversation's queue: a turn with no message of the person. Her reply is split
+   * and sent like any reply, each message with its own receipt; the first that fails or is unknown ends it, and
+   * nothing is sent twice. Only delivered messages are observed as hers. */
+  async initiated({ cfg, kind, requestId, item, streamId, userId }) {
+    const scope = { streamId, memoryEpoch: item.memoryEpoch }, stream = { streamId, text: '' };
+    const end = status => { item.status = status; this.save(); };
+    let sending = false;
+    try {
+      if (!await this.current(cfg, stream, item)) return end('dropped:stale');
+      item.status = 'processing'; this.save();
+      const text = await executeConversation(this.executor, { scope, requestId, input: { text: INITIATION_EVENTS[kind], initiated: true } });
+      if (DECLINED.test(text)) return end('declined');
+      for (const [index, piece] of splitReply(text).entries()) {
+        if (index) await this.sleep(SPLIT_GAP_MS);
+        if (!await this.current(cfg, stream, item)) return end(item.receipts?.length ? 'partial' : 'dropped:stale');
+        sending = true; item.status = 'sending'; this.save();
+        let receipt;
+        if (this.media) receipt = await this.media.send({ scope, userId, part: { type: 'text', text: piece } });
+        else {
+          const sent = await this.onebot.call('send_private_msg', { user_id: userId, message: [{ type: 'text', data: { text: piece } }], auto_escape: true });
+          const messageId = String(sent.message_id); if (!/^-?\d{1,20}$/.test(messageId)) throw new Error('INVALID_SEND_RECEIPT');
+          receipt = { messageId, type: 'text', text: piece };
+        }
+        await this.delivered(stream, item, receipt); sending = false;
+      }
+      end('sent');
+    } catch (error) {
+      // The spend tier stops this kind of work first: recorded, no notice to the owner, nothing retried.
+      end(sending ? 'unknown' : item.receipts?.length ? 'partial' : error?.code === 'BUDGET_EXHAUSTED' ? 'deferred:budget' : error?.code === 'WORLD_PAUSED' ? 'dropped:paused' : 'failed');
+    }
   }
   async process({ cfg, message, requestId, item, userId = cfg.allowedCallerUID }) {
     const observation = message.observation, scope = { streamId: observation.streamId, memoryEpoch: item.memoryEpoch };

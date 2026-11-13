@@ -5,6 +5,8 @@ import { createModels, createProvider } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 
 const fail = code => Object.assign(new Error(code), { code });
+/** The gateway's request header for the chat completions of an initiated run (model-gateway/server.mjs INITIATED_HEADER). */
+const INITIATED_HEADER = 'x-companion-run';
 
 /** Fixed gateway model: the gateway rewrites `deepseek` to the configured real
  * model and forces thinking. Compat mirrors DeepSeek's chat-completions rules,
@@ -69,6 +71,11 @@ export function createGatewayStream({ socketPath, tokenFile }) {
     }
     return response;
   };
+  // A run she starts herself: its requests carry a header the gateway counts as proactive work; body bytes are untouched.
+  const marked = inner => (input, init = {}) => { const headers = new Headers(init.headers); headers.set(INITIATED_HEADER, 'initiated'); return inner(input, { ...init, headers }); };
   // No provider retries: a retried completion may be billed twice.
-  return { model, streamFn: (m, context, { gatewayFailure, ...options } = {}) => models.streamSimple(m, context, { ...options, apiKey: token(), fetch: typeof gatewayFailure === 'function' ? observed(gatewayFailure) : fetch, maxRetries: 0 }) };
+  return { model, streamFn: (m, context, { gatewayFailure, initiated, ...options } = {}) => {
+    const reported = typeof gatewayFailure === 'function' ? observed(gatewayFailure) : fetch;
+    return models.streamSimple(m, context, { ...options, apiKey: token(), fetch: initiated === true ? marked(reported) : reported, maxRetries: 0 });
+  } };
 }

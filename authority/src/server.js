@@ -16,6 +16,8 @@ const SCHEMAS = {
   '/v1/memory/read': ['streamId', 'id'],
   '/v1/memory/recall': ['streamId', 'fromAt', 'toAt', 'limit', 'budgetChars'],
   '/v1/people/admit': ['uid'],
+  '/v1/initiations/next': [],
+  '/v1/initiations/ack': ['id', 'outcome'],
   '/v1/maintenance/batch': ['afterRevision', 'limit', 'mode'],
   '/v1/maintenance/diary': ['taskId', 'kind', 'text', 'sourceIds'],
   '/v1/maintenance/consolidation/next': [],
@@ -161,6 +163,8 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
         else if (route === '/v1/memory/read') value = authority.memoryRead(grant.capabilityId, body);
         else if (route === '/v1/memory/recall') value = authority.memoryRecall(grant.capabilityId, body);
         else if (route === '/v1/people/admit') value = authority.admitPerson(grant.capabilityId, body);
+        else if (route === '/v1/initiations/next') value = authority.initiationNext(grant.capabilityId, body);
+        else if (route === '/v1/initiations/ack') value = authority.initiationAck(grant.capabilityId, body);
         else if (route === '/v1/admin/capabilities') value = authority.registerCapability(body);
         else if (route === '/v1/admin/actors') value = authority.bindActor(body);
         else if (route === '/v1/admin/streams') value = authority.bindStream(body);
