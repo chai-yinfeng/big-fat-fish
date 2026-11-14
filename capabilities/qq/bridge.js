@@ -119,7 +119,8 @@ export class QQBridge {
     let message; try { message = messageFromOneBot(event, cfg); } catch { return; }
     if (!message || message.observation.at < this.connectedAt - 1000) return;
     if (!owner && !this.admitted.has(uid)) {
-      try { await this.authority.admitPerson({ uid }); this.admitted.add(uid); } catch { return; }
+      // Authority is told the account and, in QQ's own terms, its actor and its conversation.
+      try { await this.authority.admitPerson({ uid, actorId: message.observation.actorId, streamId: message.observation.streamId }); this.admitted.add(uid); } catch { return; }
     }
     const observation = message.observation, requestId = qqRequestId(observation);
     if (this.state.records[requestId]) return;

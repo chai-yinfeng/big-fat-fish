@@ -6,6 +6,7 @@ import { normalizePersona, validatePersonaPatch } from '../../core/src/persona.j
 import { renderContextParts, renderProfile, RETRIEVED_ITEMS, DEFAULT_CONTEXT_CHARS, personaBudget, personaContextText, opaquePerson, opaqueStream } from './context.js';
 import { BACKGROUND_PROPOSAL } from './consolidation.js';
 import { InitiationDomain } from './initiations.js';
+import { channel } from '../../capabilities/channels/index.js';
 export {
   DEFAULT_ENTITY_ID
 }
@@ -15,6 +16,12 @@ export const MAX_ADMITTED_PEOPLE = 40;
 export const TRACE_LIMIT = 400;
 /** Most memory IDs one context() call may exclude. */
 export const MAX_CONTEXT_EXCLUDE = 256;
+const OWNER = 'person:owner';
+/** An actor or conversation ID as a channel names it: inside the channel's own namespace, plain and bounded. */
+function channelId(capabilityId,value){
+  if(typeof value!=='string'||value.length>128||!value.startsWith(capabilityId+':')||!/^[A-Za-z0-9:._-]+$/.test(value))fail('VALIDATION_ERROR','Invalid channel identifier');
+  return value;
+}
 export class Authority extends InitiationDomain {
   constructor(options){
     super();
@@ -139,27 +146,33 @@ export class Authority extends InitiationDomain {
       };
     });
   }
-  /** QQ-only: admit a bot friend as `person:qq:<uid>` with its own private conversation.
-   * The QQ worker decides friendship (same trust boundary as actor IDs); the bot
-   * account comes from the owner's existing binding, never from the request. */
+  /** A conversation channel: a registered capability with the conversation policy. */
+  conversationChannel(capabilityId){
+    return typeof capabilityId==='string'&&this.store.db.prepare("SELECT 1 FROM capabilities WHERE id=? AND policy='conversation.v1'").get(capabilityId)!==undefined;
+  }
+  /** Only for a channel that declares a friend relation (capabilities/channels): its bridge admits a friend as a
+   * person with a private conversation. The bridge decides friendship and names the account, its actor and its
+   * conversation in the channel's own terms (same trust boundary as actor IDs); Authority only holds them to the
+   * channel's namespace and a bounded shape. A new person gets the name `person:<channel>:<account>`, which is
+   * never read back for meaning. The entity comes from the owner's binding on that channel, never from the request. */
   admitPerson(capabilityId,input){
-    closed(input,['uid']);
-    if(typeof input.uid!=='string'||!/^[1-9]\d{0,19}$/.test(input.uid))fail('VALIDATION_ERROR','Invalid QQ account');
-    const registered=capability(this.store,capabilityId);
-    if(capabilityId!=='qq'||registered.policy!=='conversation.v1')fail('FORBIDDEN','Admission is QQ-only',403);
+    closed(input,['uid','actorId','streamId']);
+    const registered=capability(this.store,capabilityId),declared=channel(capabilityId);
+    if(registered.policy!=='conversation.v1'||!declared?.friends)fail('FORBIDDEN','This channel admits nobody',403);
+    if(typeof input.uid!=='string'||input.uid.length>64||!new RegExp(declared.account,'u').test(input.uid))fail('VALIDATION_ERROR','Invalid account');
+    for(const id of [input.actorId,input.streamId])channelId(capabilityId,id);
     return this.store.transaction(()=>{
-      const owner=this.store.db.prepare("SELECT a.actor_id AS actorId,s.entity_id AS entityId FROM actors a LEFT JOIN streams s ON s.capability_id=a.capability_id AND s.person_id=a.person_id AND s.audience='private' WHERE a.capability_id=? AND a.person_id='person:owner' ORDER BY a.rowid DESC").all(capabilityId)
-        .map(row=>({...row,match:/^qq:([1-9]\d{0,19}):user:[1-9]\d{0,19}$/.exec(row.actorId)})).find(row=>row.match);
+      const owner=this.store.db.prepare("SELECT s.entity_id AS entityId FROM actors a LEFT JOIN streams s ON s.capability_id=a.capability_id AND s.person_id=a.person_id AND s.audience='private' WHERE a.capability_id=? AND a.person_id=? ORDER BY a.rowid DESC,s.rowid DESC").get(capabilityId,OWNER);
       if(!owner)fail('CONFLICT','Bind the owner before admitting people',409);
-      const self=owner.match[1],actorId=`qq:${self}:user:${input.uid}`,streamId=`qq:${self}:private:${input.uid}`,entityId=owner.entityId??DEFAULT_ENTITY_ID;
+      const {actorId,streamId}=input,entityId=owner.entityId??DEFAULT_ENTITY_ID;
       const actor=this.store.db.prepare('SELECT person_id FROM actors WHERE capability_id=? AND actor_id=?').get(capabilityId,actorId),
       stream=this.store.db.prepare('SELECT person_id,audience FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId,streamId);
-      const personId=actor?.person_id??`person:qq:${input.uid}`;
+      const personId=actor?.person_id??`person:${capabilityId}:${input.uid}`;
       if(stream&&(stream.person_id!==personId||stream.audience!=='private'))fail('CONFLICT','Conversation binding conflicts',409);
       if(actor&&stream)return{personId,streamId,admitted:false};
       if(!actor){
-        const count=this.store.db.prepare("SELECT COUNT(DISTINCT person_id) AS n FROM actors WHERE capability_id=? AND person_id LIKE 'person:qq:%'").get(capabilityId).n;
-        if(count>=MAX_ADMITTED_PEOPLE)fail('PEOPLE_LIMIT','Admitted people limit reached',409);
+        // The cap counts people, whatever channels they are on; an account of someone already known adds nobody.
+        if(!this.store.db.prepare('SELECT 1 FROM actors WHERE person_id=? LIMIT 1').get(personId)&&this.#peopleCount()>=MAX_ADMITTED_PEOPLE)fail('PEOPLE_LIMIT','Admitted people limit reached',409);
         this.store.db.prepare('INSERT INTO actors(capability_id,actor_id,person_id) VALUES(?,?,?)').run(capabilityId,actorId,personId);
       }
       if(!stream)this.store.db.prepare('INSERT INTO streams(capability_id,stream_id,person_id,audience,entity_id) VALUES(?,?,?,?,?)').run(capabilityId,streamId,personId,'private',entityId);
@@ -167,16 +180,53 @@ export class Authority extends InitiationDomain {
       return{personId,streamId,admitted:true};
     });
   }
+  /** People other than the owner, each counted once however many accounts and channels they have. */
+  #peopleCount(){
+    return this.store.db.prepare('SELECT COUNT(DISTINCT person_id) AS n FROM actors WHERE person_id<>?').get(OWNER).n;
+  }
+  /** Operator only: one account of a channel, with its private conversation, is the same human as a person
+   * Authority already knows (their QQ account and their account elsewhere, say). From then on that conversation
+   * reads and writes that person's memory; its own dialogue window stays its own. The person must already exist.
+   * An account or conversation that belongs to someone else is only moved with `move: true`, and then both go
+   * together: an account is never two people's. What the account's former person remembered stays with that
+   * former person (memory is not merged). */
+  attachAccount(input){
+    closed(input,['capabilityId','actorId','streamId','personId','move'],['capabilityId','actorId','streamId','personId']);
+    identifier(input.personId);
+    if(input.move!==undefined&&typeof input.move!=='boolean')fail('VALIDATION_ERROR','move must be boolean');
+    const {capabilityId,actorId,streamId,personId}=input;
+    if(!this.conversationChannel(capabilityId))fail('FORBIDDEN','Not a conversation channel',403);
+    for(const id of [actorId,streamId])channelId(capabilityId,id);
+    return this.store.transaction(()=>{
+      const known=this.store.db.prepare("SELECT s.entity_id AS entityId FROM actors a LEFT JOIN streams s ON s.person_id=a.person_id AND s.audience='private' WHERE a.person_id=? ORDER BY s.rowid").get(personId);
+      if(!known)fail('VALIDATION_ERROR','Unknown person');
+      const actor=this.store.db.prepare('SELECT person_id AS personId FROM actors WHERE capability_id=? AND actor_id=?').get(capabilityId,actorId),
+      stream=this.store.db.prepare('SELECT person_id AS personId,audience FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId,streamId);
+      if(stream&&stream.audience!=='private')fail('CONFLICT','Not a private conversation',409);
+      if(actor?.personId===personId&&stream?.personId===personId)return{capabilityId,actorId,streamId,personId,attached:false,movedFrom:null};
+      const from=[actor,stream].find(row=>row&&row.personId!==personId)?.personId??null;
+      if(actor&&stream&&actor.personId!==stream.personId&&actor.personId!==personId&&stream.personId!==personId)fail('CONFLICT','Account and conversation belong to different people',409);
+      if(from!==null&&input.move!==true)fail('CONFLICT','The account belongs to another person; moving it must be explicit',409);
+      // The owner's accounts are bound where the channel is configured; they are never handed to someone else here.
+      if(from===OWNER)fail('CONFLICT','The owner\'s account cannot be moved',409);
+      if(actor)this.store.db.prepare('UPDATE actors SET person_id=? WHERE capability_id=? AND actor_id=?').run(personId,capabilityId,actorId);
+      else this.store.db.prepare('INSERT INTO actors(capability_id,actor_id,person_id) VALUES(?,?,?)').run(capabilityId,actorId,personId);
+      if(stream)this.store.db.prepare('UPDATE streams SET person_id=? WHERE capability_id=? AND stream_id=?').run(personId,capabilityId,streamId);
+      else this.store.db.prepare('INSERT INTO streams(capability_id,stream_id,person_id,audience,entity_id) VALUES(?,?,?,?,?)').run(capabilityId,streamId,personId,'private',known.entityId??DEFAULT_ENTITY_ID);
+      this.adminAudit('person.attach',{capabilityId,actorId,streamId,personId,...(from===null?{}:{movedFrom:from})});
+      return{capabilityId,actorId,streamId,personId,attached:true,movedFrom:from===null?null:opaquePerson(from)};
+    });
+  }
   /** Operator-only listing: people derived from actor bindings (no persons table). */
   listPeople(){
     this.store.check();
     const people=new Map();
     for(const row of this.store.db.prepare('SELECT capability_id AS capabilityId,actor_id AS externalActorId,person_id AS personId FROM actors ORDER BY rowid').all()){
-      if(!people.has(row.personId))people.set(row.personId,{personId:row.personId,label:opaquePerson(row.personId),owner:row.personId==='person:owner',actors:[],conversations:0});
+      if(!people.has(row.personId))people.set(row.personId,{personId:row.personId,label:opaquePerson(row.personId),owner:row.personId===OWNER,actors:[],conversations:0});
       people.get(row.personId).actors.push({capabilityId:row.capabilityId,externalActorId:row.externalActorId});
     }
     for(const row of this.store.db.prepare('SELECT person_id AS personId,COUNT(*) AS n FROM streams GROUP BY person_id').all())if(people.has(row.personId))people.get(row.personId).conversations=row.n;
-    return{people:[...people.values()],limit:MAX_ADMITTED_PEOPLE,admitted:[...people.keys()].filter(id=>id.startsWith('person:qq:')).length};
+    return{people:[...people.values()],limit:MAX_ADMITTED_PEOPLE,admitted:this.#peopleCount()};
   }
   /** Operator-only listing of bound conversations with their activity and memory epoch. */
   listConversations(){
@@ -402,6 +452,8 @@ export class Authority extends InitiationDomain {
     result={
       revision:this.store.get('revision'),
       entityId:e.id,
+      // The channel this conversation is on (the caller's own capability): the executor picks the channel's part of the system message by it.
+      capabilityId,
       memoryEpoch:this.streamEpoch(e,capabilityId,input.streamId),
       personaRevision:e.persona_revision,
       // `text` is the whole context; personaText/memoryText are the same content apart (stable / per-query).

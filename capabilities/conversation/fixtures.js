@@ -33,6 +33,8 @@ async function readJson(req) {
 export async function fakeAuthority(t, root) {
   const credential = tokenFile(root, 'authority.token'), socketPath = path.join(root, 'authority.sock');
   const state = {
+    // The channel Authority says the conversation is on (the capability of the caller's credential); null: it names none.
+    capabilityId: 'qq',
     paused: false, epoch: 0, entityId: 'entity:test', text: '[人格]\n大肥鱼', memory: '', memoryIds: [], profile: '', revision: 3, personaRevision: 2, worldNow: Date.parse('2026-11-01T00:00:00Z'),
     requests: [], search: () => ({ items: [], text: '' }), content: body => ({ ok: true, action: body.action }), receipts: {},
   };
@@ -41,7 +43,7 @@ export async function fakeAuthority(t, root) {
     const send = (status, value) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(status === 200 ? { ok: true, value } : { ok: false, error: { code: 'X', message: 'x' } })); };
     if (req.headers.authorization !== 'Bearer ' + credential.token) { send(401); return; }
     state.requests.push({ route: req.url, body });
-    if (req.url === '/v1/context') send(200, { revision: state.revision, entityId: state.entityId, memoryEpoch: state.epoch, personaRevision: state.personaRevision, text: state.text + (state.memory && '\n\n' + state.memory), personaText: state.text, memoryText: state.memory, memoryIds: state.memoryIds, profileText: state.profile, scope: { audience: 'private' }, world: { paused: state.paused, revision: 1, worldNow: state.worldNow } });
+    if (req.url === '/v1/context') send(200, { revision: state.revision, entityId: state.entityId, ...(state.capabilityId ? { capabilityId: state.capabilityId } : {}), memoryEpoch: state.epoch, personaRevision: state.personaRevision, text: state.text + (state.memory && '\n\n' + state.memory), personaText: state.text, memoryText: state.memory, memoryIds: state.memoryIds, profileText: state.profile, scope: { audience: 'private' }, world: { paused: state.paused, revision: 1, worldNow: state.worldNow } });
     else if (req.url === '/v1/memory/search') send(200, state.search(body));
     else if (req.url === '/v1/proposals') send(200, { proposalId: body.proposalId, status: 'pending' });
     else if (req.url.startsWith('/v1/receipts/')) { const id = decodeURIComponent(req.url.slice(13)); state.receipts[id] ? send(200, state.receipts[id]) : send(404); }

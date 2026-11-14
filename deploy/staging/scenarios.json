@@ -1,5 +1,5 @@
 {
-  "comment": "Scenario replay for staging (deploy/staging/scenarios.mjs). Everyone here is fake: names start with MOCK- and QQ numbers are 12 digits starting with 9999 (no real account has one). Steps are documented in docs/DEV_WORKFLOW.md.",
+  "comment": "Scenario replay for staging (deploy/staging/scenarios.mjs). Everyone here is fake: names start with MOCK- and QQ numbers are 12 digits starting with 9999 (no real account has one). On the second, non-QQ channel (the MOCK-<n> scenarios) a person's account is their MOCK- name; \"channel\": \"mock\" marks a person admitted there rather than on QQ. Steps are documented in docs/DEV_WORKFLOW.md.",
   "bot": { "name": "MOCK-BOT", "qq": "999900000001" },
   "people": {
     "MOCK-OWNER": { "qq": "999900000002", "owner": true, "friend": true },
@@ -11,7 +11,8 @@
     "MOCK-F": { "qq": "999900000016", "friend": true },
     "MOCK-G": { "qq": "999900000017", "friend": true },
     "MOCK-H": { "qq": "999900000018", "friend": true },
-    "MOCK-STRANGER": { "qq": "999900000099", "friend": false }
+    "MOCK-STRANGER": { "qq": "999900000099", "friend": false },
+    "MOCK-M": { "qq": "999900000021", "friend": false, "channel": "mock" }
   },
   "scenarios": [
     {
@@ -928,6 +929,150 @@
         { "say": { "from": "MOCK-A", "text": "MOCK-K10A-{run} 跳个舞" } },
         { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K10A-{run} 跳就跳" } },
         { "expectSilence": { "to": "*", "afterMs": 3000 } }
+      ]
+    },
+    {
+      "id": "MOCK-1",
+      "title": "second-channel-admits-and-talks: on a second channel that is not QQ a friend is admitted as a person of that channel and talks normally; the system message carries that channel's own part and nothing about QQ; what they said there is remembered for them; a non-friend there is ignored; nothing goes out on QQ",
+      "model": [
+        { "match": "MOCK-1-{run} 请记住", "propose": { "type": "fact.report", "payload": { "key": "MOCK-1 口头禅", "value": "海带结-{run}", "quote": "我的口头禅是海带结-{run}" } }, "reply": "MOCK-REPLY-MOCK1-{run} 记下了" },
+        { "match": "MOCK-1-{run} 第二句", "reply": "MOCK-REPLY-MOCK1-{run} 第二句的回复" },
+        { "match": "MOCK-1-{run} 陌生人", "reply": "MOCK-REPLY-MOCK1-{run} 不该出现" }
+      ],
+      "steps": [
+        { "mockFriends": { "people": ["MOCK-OWNER", "MOCK-A", "MOCK-B", "MOCK-M"] } },
+        { "mockAttach": { "from": "MOCK-OWNER", "person": "MOCK-OWNER" } },
+        { "expectChannel": { "id": "mock", "receipts": "unreliable", "friends": true, "expression": { "voice": false, "images": false, "faces": false, "split": false } } },
+        { "expectChannel": { "id": "qq", "receipts": "reliable", "status": "ready" } },
+        { "mockSay": { "from": "MOCK-M", "text": "MOCK-1-{run} 请记住：我的口头禅是海带结-{run}" } },
+        { "mockExpectReply": { "to": "MOCK-M", "contains": "MOCK-REPLY-MOCK1-{run} 记下了" } },
+        { "mockExpectAdmitted": { "person": "MOCK-M", "admitted": true } },
+        { "expectMemory": { "person": "MOCK-M", "contains": "海带结-{run}" } },
+        { "expectProvenance": { "person": "MOCK-M", "contains": "海带结-{run}", "source": "MOCK-1-{run} 请记住" } },
+        { "mockSay": { "from": "MOCK-M", "text": "MOCK-1-{run} 第二句" } },
+        { "mockExpectReply": { "to": "MOCK-M", "contains": "MOCK-REPLY-MOCK1-{run} 第二句的回复" } },
+        { "expectPrompt": { "userText": "MOCK-1-{run} 第二句", "contains": "MOCK-CHANNEL", "in": "system" } },
+        { "expectPrompt": { "userText": "MOCK-1-{run} 第二句", "contains": "海带结-{run}", "in": "system" } },
+        { "expectPrompt": { "userText": "MOCK-1-{run} 第二句", "absent": "[微笑]", "in": "system" } },
+        { "expectPrompt": { "userText": "MOCK-1-{run} 第二句", "absent": "在 QQ 里", "in": "system" } },
+        { "expectPrompt": { "userText": "MOCK-1-{run} 第二句", "contains": "MOCK-REPLY-MOCK1-{run} 记下了" } },
+        { "mockSay": { "from": "MOCK-STRANGER", "text": "MOCK-1-{run} 陌生人在第二渠道说话" } },
+        { "mockExpectSilence": { "to": "*", "afterMs": 3000 } },
+        { "mockExpectAdmitted": { "person": "MOCK-STRANGER", "admitted": false } },
+        { "expectNoModelCall": { "userText": "MOCK-1-{run} 陌生人" } },
+        { "expectSilence": { "to": "*", "afterMs": 0 } }
+      ]
+    },
+    {
+      "id": "MOCK-2",
+      "title": "one-person-two-channels: after the operator attaches a second-channel account to a person known from QQ, what that person said on QQ and was remembered is recalled in their second-channel conversation, whose window holds none of the QQ dialogue (and the QQ window none of the other); another person sees it on neither channel",
+      "model": [
+        { "match": "MOCK-2-{run} 请记住", "propose": { "type": "fact.report", "payload": { "key": "MOCK-2 暗号", "value": "琥珀灯塔-{run}", "quote": "我的暗号是琥珀灯塔-{run}" } }, "reply": "MOCK-REPLY-MOCK2-{run} 记住了" },
+        { "match": "MOCK-2-{run} 我的暗号是什么", "reply": "MOCK-REPLY-MOCK2-{run} 回答" }
+      ],
+      "steps": [
+        { "mockFriends": { "people": ["MOCK-OWNER", "MOCK-A", "MOCK-B", "MOCK-M"] } },
+        { "mockAttach": { "from": "MOCK-OWNER", "person": "MOCK-OWNER" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-2-{run} 请记住：我的暗号是琥珀灯塔-{run}。这句原话只在QQ里说过-{run}" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-MOCK2-{run} 记住了" } },
+        { "expectMemory": { "person": "MOCK-A", "contains": "琥珀灯塔-{run}" } },
+        { "mockAttach": { "from": "MOCK-A", "person": "MOCK-A" } },
+        { "mockAttach": { "from": "MOCK-B", "person": "MOCK-B" } },
+        { "mockExpectAdmitted": { "person": "MOCK-A", "admitted": true } },
+        { "mockSay": { "from": "MOCK-A", "text": "MOCK-2-{run} 我的暗号是什么（MOCK-A 在第二渠道问）" } },
+        { "mockExpectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-MOCK2-{run} 回答" } },
+        { "expectPrompt": { "userText": "（MOCK-A 在第二渠道问）", "contains": "琥珀灯塔-{run}", "in": "system" } },
+        { "expectPrompt": { "userText": "（MOCK-A 在第二渠道问）", "contains": "MOCK-CHANNEL", "in": "system" } },
+        { "expectPrompt": { "userText": "（MOCK-A 在第二渠道问）", "absent": "只在QQ里说过-{run}" } },
+        { "expectPrompt": { "userText": "（MOCK-A 在第二渠道问）", "absent": "MOCK-REPLY-MOCK2-{run} 记住了" } },
+        { "mockSay": { "from": "MOCK-B", "text": "MOCK-2-{run} 我的暗号是什么（MOCK-B 在第二渠道问）" } },
+        { "mockExpectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-MOCK2-{run} 回答" } },
+        { "expectPrompt": { "userText": "（MOCK-B 在第二渠道问）", "absent": "琥珀灯塔-{run}" } },
+        { "say": { "from": "MOCK-B", "text": "MOCK-2-{run} 我的暗号是什么（MOCK-B 在QQ问）" } },
+        { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-MOCK2-{run} 回答" } },
+        { "expectPrompt": { "userText": "（MOCK-B 在QQ问）", "absent": "琥珀灯塔-{run}" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-2-{run} 我的暗号是什么（MOCK-A 在QQ问）" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-MOCK2-{run} 回答" } },
+        { "expectPrompt": { "userText": "（MOCK-A 在QQ问）", "contains": "只在QQ里说过-{run}" } },
+        { "expectPrompt": { "userText": "（MOCK-A 在QQ问）", "absent": "在第二渠道问" } },
+        { "expectMemory": { "person": "MOCK-B", "absent": "琥珀灯塔-{run}" } },
+        { "mockExpectSilence": { "to": "*", "afterMs": 0 } },
+        { "expectSilence": { "to": "*", "afterMs": 0 } }
+      ]
+    },
+    {
+      "id": "MOCK-3",
+      "title": "speaks-first-where-the-owner-last-spoke: the operator's poke goes to the channel the owner last spoke on; the other channel's bridge keeps asking and is handed nothing; when the owner speaks on QQ again the next poke goes to QQ and the second channel gets nothing",
+      "model": [
+        { "match": "MOCK-3-{run} 在第二渠道", "reply": "MOCK-REPLY-MOCK3-{run} 一" },
+        { "match": "后台事件", "reply": "MOCK-INIT-MOCK3-{run} 在忙吗" },
+        { "match": "MOCK-3-{run} 回到QQ", "reply": "MOCK-REPLY-MOCK3-{run} 二" }
+      ],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "mockFriends": { "people": ["MOCK-OWNER", "MOCK-A", "MOCK-B", "MOCK-M"] } },
+        { "mockAttach": { "from": "MOCK-OWNER", "person": "MOCK-OWNER" } },
+        { "mockSay": { "from": "MOCK-OWNER", "text": "MOCK-3-{run} 在第二渠道说话" } },
+        { "mockExpectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-MOCK3-{run} 一" } },
+        { "poke": {} },
+        { "mockExpectReply": { "to": "MOCK-OWNER", "contains": "MOCK-INIT-MOCK3-{run} 在忙吗" } },
+        { "expectInitiation": { "outcome": "sent" } },
+        { "expectSilence": { "to": "*", "afterMs": 6000 } },
+        { "expectModelCalls": { "userText": "后台事件", "count": 1 } },
+        { "expectPrompt": { "userText": "后台事件", "contains": "MOCK-CHANNEL", "in": "system" } },
+        { "expectPrompt": { "userText": "后台事件", "contains": "MOCK-REPLY-MOCK3-{run} 一" } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-3-{run} 回到QQ说话" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-MOCK3-{run} 二" } },
+        { "poke": {} },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-INIT-MOCK3-{run} 在忙吗" } },
+        { "expectInitiation": { "outcome": "sent" } },
+        { "mockExpectSilence": { "to": "*", "afterMs": 6000 } },
+        { "expectModelCalls": { "userText": "后台事件", "count": 2 } },
+        { "mockExpectSentCount": { "to": "MOCK-OWNER", "contains": "MOCK-INIT-MOCK3-{run}", "count": 1 } },
+        { "expectSentCount": { "to": "MOCK-OWNER", "contains": "MOCK-INIT-MOCK3-{run}", "count": 1 } }
+      ],
+      "finally": [
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-BACK-{run} 主人回到 QQ" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY" } },
+        { "quietHours": { "window": "default" } }
+      ]
+    },
+    {
+      "id": "MOCK-4",
+      "title": "unreliable-receipts-not-resent: on a channel whose receipts are not reliable, a reply whose send got no receipt is unknown: it is not sent again, not recorded as said, and the model is not asked again; the next message is answered normally; a run she starts herself that ends the same way is reported as unknown and never repeated",
+      "model": [
+        { "match": "MOCK-4-{run} 第一句", "reply": "MOCK-REPLY-MOCK4-{run} 回执丢了" },
+        { "match": "MOCK-4-{run} 第二句", "reply": "MOCK-REPLY-MOCK4-{run} 第二句的回复" },
+        { "match": "后台事件", "reply": "MOCK-INIT-MOCK4-{run} 也丢了" }
+      ],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "mockFriends": { "people": ["MOCK-OWNER", "MOCK-A", "MOCK-B", "MOCK-M"] } },
+        { "mockAttach": { "from": "MOCK-OWNER", "person": "MOCK-OWNER" } },
+        { "noteMessages": { "person": "MOCK-OWNER", "channel": "mock" } },
+        { "mockLoseReceipts": { "count": 1 } },
+        { "mockSay": { "from": "MOCK-OWNER", "text": "MOCK-4-{run} 第一句" } },
+        { "mockExpectLostSends": { "to": "MOCK-OWNER", "count": 1 } },
+        { "mockExpectSilence": { "to": "*", "afterMs": 6000 } },
+        { "expectModelCalls": { "userText": "MOCK-4-{run} 第一句", "count": 1 } },
+        { "expectMessages": { "person": "MOCK-OWNER", "channel": "mock", "added": 1 } },
+        { "mockSay": { "from": "MOCK-OWNER", "text": "MOCK-4-{run} 第二句" } },
+        { "mockExpectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-MOCK4-{run} 第二句的回复" } },
+        { "mockExpectSentCount": { "to": "MOCK-OWNER", "contains": "回执丢了", "count": 0 } },
+        { "expectMessages": { "person": "MOCK-OWNER", "channel": "mock", "added": 3 } },
+        { "mockLoseReceipts": { "count": 1 } },
+        { "poke": {} },
+        { "expectInitiation": { "outcome": "unknown" } },
+        { "mockExpectLostSends": { "to": "MOCK-OWNER", "count": 2 } },
+        { "mockExpectSilence": { "to": "*", "afterMs": 6000 } },
+        { "expectModelCalls": { "userText": "后台事件", "count": 1 } },
+        { "expectMessages": { "person": "MOCK-OWNER", "channel": "mock", "added": 3 } },
+        { "expectSilence": { "to": "*", "afterMs": 0 } }
+      ],
+      "finally": [
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-BACK-{run} 主人回到 QQ" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY" } },
+        { "quietHours": { "window": "default" } }
       ]
     }
   ]

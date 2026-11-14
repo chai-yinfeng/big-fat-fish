@@ -12,6 +12,8 @@ import { MIGRATIONS } from '../src/migrations.js';
 
 // Visibly fake accounts: 12 digits starting with 9999.
 const SELF = '999900000001', OWNER = '999900000002', A = '999900000011', B = '999900000012';
+// What the QQ bridge sends to admit a friend: the account and, in QQ's own terms, its actor and conversation.
+const admit = uid => ({ uid, actorId: `qq:${SELF}:user:${uid}`, streamId: `qq:${SELF}:private:${uid}` });
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-trace-'));
   const now = 1_800_000_000_000;
@@ -20,7 +22,7 @@ function fixture(t) {
   a.registerCapability({ id: 'qq', policy: 'conversation.v1' });
   a.bindActor({ capabilityId: 'qq', externalActorId: `qq:${SELF}:user:${OWNER}`, personId: 'person:owner' });
   a.bindStream({ capabilityId: 'qq', streamId: `qq:${SELF}:private:${OWNER}`, personId: 'person:owner', audience: 'private' });
-  a.admitPerson('qq', { uid: A }); a.admitPerson('qq', { uid: B });
+  a.admitPerson('qq', admit(A)); a.admitPerson('qq', admit(B));
   let seq = 0;
   // A private message from `uid` that the reviewer accepts as a memory item; returns the item ID.
   function tell(uid, type, payload, text) {
@@ -41,7 +43,7 @@ test('context() records what it injected: entry IDs per block and sizes, for an 
   const other = tell(B, 'fact.report', { key: 'MOCK-代号', value: 'MOCK-蓝鲸队长二号' }, 'MOCK-蓝鲸队长二号');
   assert.deepEqual(a.contextTrace(), { capacity: TRACE_LIMIT, recorded: 0, traces: [] });
   const query = 'MOCK-蓝鲸队长 是谁', context = a.context('qq', { streamId: stream(A), query });
-  assert.deepEqual(Object.keys(context).sort(), ['entityId', 'memoryEpoch', 'memoryIds', 'memoryText', 'personaRevision', 'personaText', 'profileText', 'revision', 'scope', 'text', 'world']);
+  assert.deepEqual(Object.keys(context).sort(), ['capabilityId', 'entityId', 'memoryEpoch', 'memoryIds', 'memoryText', 'personaRevision', 'personaText', 'profileText', 'revision', 'scope', 'text', 'world']);
   assert.deepEqual([...context.memoryIds].sort(), [fact, experience].sort(), 'the response names the entries it rendered');
   const { traces: [trace], recorded } = a.contextTrace();
   assert.equal(recorded, 1);

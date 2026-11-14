@@ -1,6 +1,8 @@
 """Synthetic tests for the staging agent: unit transform, reset guard, companion-deploy reuse. No host access."""
+import hashlib
 import importlib.machinery
 import importlib.util
+import json
 import os
 from pathlib import Path
 import re
@@ -250,8 +252,33 @@ class InitiationReplayTests(unittest.TestCase):
         source = (HERE / 'staging-agent.py').read_text()
         self.assertIn("edit('content.json', lambda c: scenario_content_config(c, content_source, True))", source)
         # Taken out in the `finally` of the replay, before anything else (a rollback) can start an older release.
-        self.assertIn("    finally:\n        fake.terminate()", source)
-        self.assertIn("            fake.kill()\n        edit('content.json', lambda c: scenario_content_config(c, content_source, False))", source)
+        self.assertIn("        stop_fake_channel()\n        edit('content.json', lambda c: scenario_content_config(c, content_source, False))\n    lines = ", source)
+
+    def test_the_second_channel_gets_its_own_credential_executor_and_the_explicit_switch(self):
+        config = {'credentials': [{'hash': 'a' * 64, 'role': 'capability', 'capabilityId': 'qq'}, {'hash': 'old', 'role': 'capability', 'capabilityId': 'mock'}],
+                  'capabilities': [{'id': 'qq', 'policy': 'conversation.v1'}], 'operator': {'origins': []}}
+        once = sa.mock_authority_config(json.loads(json.dumps(config)), 'b' * 64)
+        self.assertEqual(once['credentials'], [config['credentials'][0], {'hash': 'b' * 64, 'role': 'capability', 'capabilityId': 'mock'}])
+        self.assertEqual(once['capabilities'], [{'id': 'qq', 'policy': 'conversation.v1'}, {'id': 'mock', 'policy': 'conversation.v1'}])
+        self.assertIs(once['operator']['allowTestChannels'], True)
+        self.assertEqual(sa.mock_authority_config(json.loads(json.dumps(once)), 'b' * 64), once)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'mock-channel'
+            root.mkdir()
+            (root / 'caller.token').write_text('MOCK-caller-token\n')
+            conversation = {'socketPath': '/base/ipc/conversation/execute.sock', 'callerTokenHash': 'c' * 64, 'sessionsDir': '/base/conversation-data/sessions',
+                            'authority': {'socketPath': '/base/ipc/authority/authority.sock', 'tokenFile': '/base/qq-worker/capability.token'}, 'gateway': {'socketPath': '/g', 'tokenFile': '/t'}}
+            executor = sa.mock_executor_config(conversation, root)
+            # Same keys as the release's executor configuration; nothing of the QQ executor is shared but Authority's and the gateway's sockets.
+            self.assertEqual(sorted(executor), sorted(conversation))
+            self.assertEqual(executor['authority'], {'socketPath': '/base/ipc/authority/authority.sock', 'tokenFile': str(root / 'capability.token')})
+            self.assertEqual(executor['gateway'], conversation['gateway'])
+            self.assertEqual(executor['callerTokenHash'], hashlib.sha256(b'MOCK-caller-token').hexdigest())
+            for key in ('socketPath', 'sessionsDir'):
+                self.assertNotEqual(executor[key], conversation[key])
+        source = (HERE / 'staging-agent.py').read_text()
+        self.assertIn("'--mock-control', str(mock_control)", source)
+        self.assertIn('second_channel = prepare_mock_channel(release)', source)
 
     def test_the_bridge_polls_faster_only_when_the_release_knows_the_setting(self):
         config = {'onebotPort': sa.ONEBOT_PORT}

@@ -12,6 +12,8 @@ import { createOperatorServer } from '../src/operator.js';
 
 // Visibly fake accounts: 12 digits starting with 9999.
 const SELF = '999900000001', OWNER = '999900000002', A = '999900000011', B = '999900000012';
+// What the QQ bridge sends to admit a friend: the account and, in QQ's own terms, its actor and conversation.
+const admit = uid => ({ uid, actorId: `qq:${SELF}:user:${uid}`, streamId: `qq:${SELF}:private:${uid}` });
 const MINUTE = 60000, HOUR = 60 * MINUTE;
 const stream = uid => `qq:${SELF}:private:${uid}`;
 function fixture(t, options = {}) {
@@ -23,7 +25,7 @@ function fixture(t, options = {}) {
   a.registerCapability({ id: 'qq', policy: 'conversation.v1' });
   a.bindActor({ capabilityId: 'qq', externalActorId: `qq:${SELF}:user:${OWNER}`, personId: 'person:owner' });
   a.bindStream({ capabilityId: 'qq', streamId: stream(OWNER), personId: 'person:owner', audience: 'private' });
-  a.admitPerson('qq', { uid: A }); a.admitPerson('qq', { uid: B });
+  a.admitPerson('qq', admit(A)); a.admitPerson('qq', admit(B));
   let seq = 0;
   const say = (uid, text, { she = false } = {}) => a.observe('qq', { eventId: `e-${++seq}`, streamId: stream(uid), actorId: she ? 'qq:model' : `qq:${SELF}:user:${uid}`, role: she ? 'assistant' : 'user', text, at: clock.now }).observationId;
   const stored = () => JSON.parse(a.store.db.prepare("SELECT value FROM metadata WHERE key='initiations'").get().value);
@@ -54,11 +56,14 @@ test('without a bound owner there is nothing to poke; only the QQ conversation c
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-init-'));
   const a = new Authority({ file: path.join(root, 'world.sqlite') });
   t.after(() => { a.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  a.registerCapability({ id: 'qq', policy: 'conversation.v1' }); a.registerCapability({ id: 'native', policy: 'conversation.v1' });
+  a.registerCapability({ id: 'qq', policy: 'conversation.v1' }); a.registerCapability({ id: 'native', policy: 'conversation.v1' }); a.registerCapability({ id: 'reader', policy: 'learning.v1' });
   assert.throws(() => a.initiationPoke(), { code: 'CONFLICT' });
-  assert.throws(() => a.initiationNext('native'), { code: 'FORBIDDEN' });
+  // Any conversation channel may ask (and has nothing of its own to report on); no other capability may.
+  assert.deepEqual(a.initiationNext('native'), { initiation: null, reason: 'idle' });
+  assert.throws(() => a.initiationAck('native', { id: 'x', outcome: 'sent' }), { code: 'CONFLICT' });
+  assert.throws(() => a.initiationNext('reader'), { code: 'FORBIDDEN' });
   assert.throws(() => a.initiationNext('nobody'), { code: 'FORBIDDEN' });
-  assert.throws(() => a.initiationAck('native', { id: 'x', outcome: 'sent' }), { code: 'FORBIDDEN' });
+  assert.throws(() => a.initiationAck('reader', { id: 'x', outcome: 'sent' }), { code: 'FORBIDDEN' });
   assert.deepEqual(a.initiationNext('qq'), { initiation: null, reason: 'idle' });
 });
 

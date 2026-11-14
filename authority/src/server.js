@@ -15,7 +15,7 @@ const SCHEMAS = {
   '/v1/memory/search': ['streamId', 'query', 'limit', 'budgetChars'],
   '/v1/memory/read': ['streamId', 'id'],
   '/v1/memory/recall': ['streamId', 'fromAt', 'toAt', 'limit', 'budgetChars'],
-  '/v1/people/admit': ['uid'],
+  '/v1/people/admit': ['uid', 'actorId', 'streamId'],
   '/v1/initiations/next': [],
   '/v1/initiations/ack': ['id', 'outcome'],
   '/v1/initiations/carry': ['streamId'],
@@ -102,7 +102,8 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
   // Finished background jobs nobody was told about, as the content service lists them. Authority asks with its own
   // control credential; the content service never calls here. Unreachable means none this round.
   const untoldJobs = async grant => {
-    if (!contentJobs || grant.capabilityId !== 'qq') return [];
+    // Any conversation channel may ask; Authority then hands each only the jobs of its own conversations.
+    if (!contentJobs || !authority.conversationChannel(grant.capabilityId)) return [];
     try { const value = await contentJobs({ action: 'pending' }); return Array.isArray(value?.jobs) ? value.jobs : []; } catch { return []; }
   };
   // What Authority decided about those jobs goes back before the caller hears of it. A report that fails is made

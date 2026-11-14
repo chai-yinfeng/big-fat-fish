@@ -60,13 +60,13 @@ export class AuthorityClient {
     return this.#request('POST', '/v1/memory/recall', value);
   }
   async admitPerson(value) {
-    closed(value, ['uid'], ['uid']);
-    if (typeof value.uid !== 'string' || !/^[1-9]\d{0,19}$/.test(value.uid)) throw fail('INVALID_REQUEST');
+    closed(value, ['uid', 'actorId', 'streamId'], ['uid', 'actorId', 'streamId']);
+    if (![value.uid, value.actorId, value.streamId].every(item => typeof item === 'string' && item && item.length <= 128)) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/people/admit', value);
   }
-  /** QQ capability credential: the next run she starts herself, as Authority chose it, or `initiation: null` with a reason. */
+  /** A conversation channel's credential: the next run she starts herself, as Authority chose it, or `initiation: null` with a reason. */
   initiationNext() { return this.#request('POST', '/v1/initiations/next', {}); }
-  /** QQ capability credential, as an ordinary turn of this conversation begins: a finished background job of it that
+  /** A conversation channel's credential, as an ordinary turn of this conversation begins: a finished background job of it that
    * the person was not told about yet, handed out to ride on this turn, or `initiation: null`. */
   async initiationCarry(value) {
     closed(value, ['streamId'], ['streamId']);

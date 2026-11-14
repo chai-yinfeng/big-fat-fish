@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { DEFAULT_PERSONA } from '../../core/src/persona.js';
+import { CHANNELS, channel } from '../../capabilities/channels/index.js';
 
 function object(value, fields) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !fields.includes(key))) throw Object.assign(new Error('Invalid operation'), { statusCode: 400, code: 'INVALID_REQUEST' });
@@ -19,16 +20,28 @@ async function json(req, limit = 98304) {
 export function createOperatorServer({ authority, socketPath, tokenHash, origins, modelControl, qqControl, contentOperator, contentControl, contentJobs, assetsDir, onResume = () => {} }) {
   if (!path.isAbsolute(socketPath) || !/^[a-f0-9]{64}$/.test(tokenHash) || !Array.isArray(origins)) throw new Error('Invalid operator configuration');
   const expected = Buffer.from(tokenHash, 'hex');
+  // Control sockets of channel bridges, by channel id (only the QQ bridge has one).
+  const channelControls = { ...(qqControl ? { qq: qqControl } : {}) };
   async function overview(authorization) {
     const state = authority.snapshot();
     const bindings = state.streams.map(row => ({ sourceId: row.capabilityId, conversationId: row.streamId, entityId: row.entityId, personId: row.personId, audience: row.audience }));
-    const qq = qqControl ? await qqControl('/qq', undefined, authorization).catch(() => null) : undefined;
+    // One row per channel: every declared production channel, and whatever else is registered as a conversation
+    // capability. A channel whose bridge has a control socket here reports its own state; the others only say
+    // whether they are registered.
+    const registered = state.capabilities.filter(row => row.policy === 'conversation.v1').map(row => row.id);
+    const ids = [...new Set([...CHANNELS.filter(item => !item.testOnly).map(item => item.id), ...registered])];
+    const channels = [];
+    for (const id of ids) {
+      const declared = channel(id), control = channelControls[id];
+      const live = control ? await control('/' + id, undefined, authorization).catch(() => null) : undefined;
+      const status = live === null ? 'error' : live ? !live.loggedIn ? 'waiting_login' : !live.configured ? 'not_configured' : live.connected ? 'ready' : 'disconnected' : registered.includes(id) && !control ? 'available' : 'not_configured';
+      channels.push({ id, name: declared?.title ?? id, status, enabled: live ? Boolean(live.configured && live.loggedIn && live.connected) : status === 'available', boundStreams: bindings.filter(row => row.sourceId === id).length,
+        ...(declared ? { expression: declared.expression, friends: declared.friends, receipts: declared.receipts } : {}) });
+    }
     return {
       world: authority.worldStatus(), persona: { revision: state.personaRevision, value: state.persona, default: DEFAULT_PERSONA },
       counts: { facts: state.facts.length, notes: state.notes.length, experiences: state.experiences.length, pending: authority.health().pending },
-      channels: [
-        { id: 'qq', name: 'QQ', status: qq === null ? 'error' : !qq ? 'not_configured' : !qq.loggedIn ? 'waiting_login' : !qq.configured ? 'not_configured' : qq.connected ? 'ready' : 'disconnected', enabled: Boolean(qq?.configured && qq.loggedIn && qq.connected), boundStreams: bindings.filter(row => row.sourceId === 'qq').length },
-      ], bindings, model: modelControl ? await modelControl('/model', undefined, authorization) : { provider: 'deepseek', model: 'deepseek-flash', configured: false, status: 'unconfigured' },
+      channels, bindings, model: modelControl ? await modelControl('/model', undefined, authorization) : { provider: 'deepseek', model: 'deepseek-flash', configured: false, status: 'unconfigured' },
       // Today's spend (Beijing day) from the model gateway; null when unavailable.
       spend: modelControl ? await modelControl('/spend', undefined, authorization).catch(() => null) : null,
     };
@@ -149,6 +162,9 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         value = authority.setWorldPaused(body);
         if (!value.paused) onResume();
         else if (modelControl) await modelControl('/cancel', {}, req.headers.authorization);
+      } else if (req.url === '/people/attach') {
+        // One account of a channel is the same human as a person already known. Only here: no bridge can do this.
+        value = authority.attachAccount(object(body, ['capabilityId', 'actorId', 'streamId', 'personId', 'move']));
       } else if (req.url === '/initiative/poke') {
         // "Try it on me": the body is empty, so the request can only ever be about the owner's own conversation.
         value = authority.initiationPoke(object(body, []));

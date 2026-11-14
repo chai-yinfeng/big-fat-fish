@@ -12,7 +12,9 @@ model key, no provider call.
 
 The scenarios in tools/scenarios.json are replayed against the upgraded release: a fake
 OneBot (tools/fake-onebot.mjs) stands in for NapCat, and the release's own model gateway
-runs with a scripted upstream (tools/fake-model.mjs).
+runs with a scripted upstream (tools/fake-model.mjs). A second, non-QQ channel
+(tools/fake-channel.mjs, the test-only MOCK channel) runs beside QQ with its own Authority
+credential and its own instance of the release's conversation executor.
 
 Both directions are tested. After the upgrade has been smoked and has replayed the
 scenarios, tools/migration-drill.mjs drills a schema migration on a copy of the
@@ -25,6 +27,7 @@ used, and a second rollback rolls forward again before the from-release is prune
   staging-agent.py reset
 """
 import argparse
+import hashlib
 import http.client
 import importlib.machinery
 import importlib.util
@@ -32,6 +35,7 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import socket
 import sqlite3
@@ -55,6 +59,8 @@ NODE = ROOT / '.local/opt/companion/bin/node'
 JOURNAL_LINES = 15
 SCENARIO = ROOT / 'scenario'  # fake OneBot control socket, model script and request log
 FAKE_ONEBOT = 'companion-staging/tools/fake-onebot.mjs'
+FAKE_CHANNEL = 'companion-staging/tools/fake-channel.mjs'  # the second, non-QQ channel of the scenario replay
+MOCK_CHANNEL = BASE / 'mock-channel'  # its credential, its executor's config and sessions
 
 
 def load_companion_deploy(path=TOOLS / 'companion-deploy'):
@@ -360,6 +366,54 @@ def stop_fake_onebot():
     subprocess.run(['pkill', '-U', str(os.getuid()), '-f', FAKE_ONEBOT], capture_output=True, timeout=20)
 
 
+def stop_fake_channel():
+    # The bridge first (it stops its own executor), then an executor a killed bridge left behind.
+    for pattern in (FAKE_CHANNEL, str(MOCK_CHANNEL / 'conversation.json')):
+        subprocess.run(['pkill', '-U', str(os.getuid()), '-f', pattern], capture_output=True, timeout=20)
+
+
+def mock_authority_config(config, token_hash):
+    """authority.json with the test-only MOCK channel: its capability, the one credential for it, and the explicit
+    switch without which Authority refuses a test-only channel (an older release ignores the switch and treats the
+    capability like any other). Idempotent."""
+    config['credentials'] = [row for row in config['credentials'] if row.get('capabilityId') != 'mock'] + [{'hash': token_hash, 'role': 'capability', 'capabilityId': 'mock'}]
+    if not any(row.get('id') == 'mock' for row in config['capabilities']):
+        config['capabilities'].append({'id': 'mock', 'policy': 'conversation.v1'})
+    config['operator']['allowTestChannels'] = True
+    return config
+
+
+def mock_executor_config(conversation, root=None):
+    """The conversation executor of the MOCK channel: the release's executor configuration with its own socket,
+    caller token, sessions and, above all, the MOCK capability credential instead of the QQ one."""
+    root = Path(root or MOCK_CHANNEL)
+    caller = (root / 'caller.token').read_text().strip()
+    return {**conversation, 'socketPath': str(root.parent / 'ipc/mock-channel/execute.sock'), 'callerTokenHash': hashlib.sha256(caller.encode()).hexdigest(),
+            'sessionsDir': str(root / 'sessions'), 'authority': {**conversation['authority'], 'tokenFile': str(root / 'capability.token')}}
+
+
+def prepare_mock_channel(release):
+    """While the units are stopped. Returns False for a release without channel declarations (it has no second
+    channel to replay): nothing is written then."""
+    if not (release / 'capabilities/channels/mock/manifest.js').is_file():
+        return False
+    for directory in (MOCK_CHANNEL, MOCK_CHANNEL / 'sessions', BASE / 'ipc/mock-channel'):
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for name in ('capability.token', 'caller.token'):
+        path = MOCK_CHANNEL / name
+        if not path.exists():
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, 'w') as handle:
+                handle.write(secrets.token_urlsafe(32) + '\n')
+    token_hash = hashlib.sha256((MOCK_CHANNEL / 'capability.token').read_text().strip().encode()).hexdigest()
+    edit('authority.json', lambda c: mock_authority_config(c, token_hash))
+    path = MOCK_CHANNEL / 'conversation.json'
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as handle:
+        handle.write(json.dumps(mock_executor_config(json.loads((BASE / 'operator/conversation.json').read_text()))) + '\n')
+    return True
+
+
 def scenarios(deployer, only=None):
     """Replay tools/scenarios.json against the current release; returns the summary line."""
     data = json.loads((TOOLS / 'scenarios.json').read_text())
@@ -371,7 +425,9 @@ def scenarios(deployer, only=None):
         raise RuntimeError('this release cannot be pointed at the fake OneBot port %d' % ONEBOT_PORT)
     names = deployer.installed_units()
     stop_fake_onebot()
+    stop_fake_channel()
     deployer.stop_all(names)
+    second_channel = prepare_mock_channel(release)
     edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_source))
     content_source = (release / 'capabilities/media/main.mjs').read_text()
     edit('content.json', lambda c: scenario_content_config(c, content_source, True))
@@ -402,7 +458,9 @@ def scenarios(deployer, only=None):
     SCENARIO.mkdir(mode=0o700, exist_ok=True)
     (SCENARIO / 'model-script.json').write_text('[]\n')
     (SCENARIO / 'model-requests.jsonl').write_text('')
-    control = SCENARIO / 'onebot.sock'
+    control, mock_control = SCENARIO / 'onebot.sock', SCENARIO / 'mock.sock'
+    mock_control.unlink(missing_ok=True)
+    mock = None
     env = {'PATH': '/usr/bin:/bin', 'HOME': str(ROOT), 'LANG': 'C.UTF-8'}
     fake = subprocess.Popen([str(NODE), str(TOOLS / 'fake-onebot.mjs'), '--port', str(ONEBOT_PORT), '--token-file', str(BASE / 'qq-runtime/private/onebot.token'),
                              '--control', str(control), '--self', data['bot']['qq']], cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
@@ -417,17 +475,32 @@ def scenarios(deployer, only=None):
         if problems:
             raise RuntimeError('; '.join(problems))
         deployer.enable_all(names)
+        if second_channel:
+            # After the units: the bridge starts its own executor, which needs Authority and the gateway.
+            mock = subprocess.Popen([str(NODE), str(TOOLS / 'fake-channel.mjs'), '--release', str(release), '--control', str(mock_control),
+                                     '--authority-socket', str(BASE / 'ipc/authority/authority.sock'), '--authority-token-file', str(MOCK_CHANNEL / 'capability.token'),
+                                     '--executor-config', str(MOCK_CHANNEL / 'conversation.json'), '--caller-token-file', str(MOCK_CHANNEL / 'caller.token'), '--poll-ms', str(INITIATION_POLL_MS)],
+                                    cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+            deadline = time.time() + 30
+            while not mock_control.is_socket():
+                if mock.poll() is not None or time.time() > deadline:
+                    raise RuntimeError('fake channel did not start: %s' % (mock.stderr.read().strip()[-200:] if mock.poll() is not None else 'timeout'))
+                time.sleep(0.2)
         command = [str(NODE), str(TOOLS / 'scenarios.mjs'), '--operator-port', str(OPERATOR_PORT), '--operator-token-file', str(BASE / 'operator/console.token'),
                    '--onebot-control', str(control), '--model-script', str(SCENARIO / 'model-script.json'), '--model-log', str(SCENARIO / 'model-requests.jsonl'),
                    '--scenarios', str(TOOLS / 'scenarios.json'),
-                   '--inference-socket', str(BASE / 'ipc/model/inference.sock'), '--inference-token-file', str(BASE / 'service-config/inference.token')] + (['--only', only] if only else [])
+                   '--inference-socket', str(BASE / 'ipc/model/inference.sock'), '--inference-token-file', str(BASE / 'service-config/inference.token')] + (['--mock-control', str(mock_control)] if second_channel else []) + (['--only', only] if only else [])
         result = subprocess.run(command, cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=1800)
     finally:
-        fake.terminate()
-        try:
-            fake.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            fake.kill()
+        for process in (fake, mock):
+            if process is None:
+                continue
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        stop_fake_channel()
         edit('content.json', lambda c: scenario_content_config(c, content_source, False))
     lines = (result.stdout + result.stderr).strip().splitlines()
     for line in lines:
@@ -702,6 +775,7 @@ def replay(only=None):
 def reset():
     root = safe_root()
     stop_fake_onebot()
+    stop_fake_channel()
     names = sorted(p.name for p in UNITS_DIR.glob(PREFIX + '*') if re.match(r'^' + PREFIX + r'[A-Za-z0-9-]+\.(service|socket)$', p.name))
     env = {**os.environ, 'XDG_RUNTIME_DIR': os.environ.get('XDG_RUNTIME_DIR', '/run/user/%d' % os.getuid())}
     if names:

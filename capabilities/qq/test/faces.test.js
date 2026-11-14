@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { QQ_FACES, MAX_FACES_PER_MESSAGE, faceText, replySegments, withoutFaceMarkers } from '../faces.js';
 import { splitReply } from '../split.js';
-import { PROMPT_FACE_NAMES } from '../../conversation/agent.js';
+import { channel } from '../../channels/index.js';
+
+const PROMPT_FACE_NAMES = channel('qq').faceNames;
 
 const text = value => ({ type: 'text', data: { text: value } }), face = id => ({ type: 'face', data: { id } });
 

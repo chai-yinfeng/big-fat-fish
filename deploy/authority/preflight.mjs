@@ -36,11 +36,14 @@ async function load(relative) { return import(pathToFileURL(path.join(tree, rela
 // Each check mirrors what that service does at startup (see the named entry point).
 const CHECKS = [
   // authority/src/main.js. Its paths are sandbox paths (/authority/...), not host paths.
-  { label: 'authority.json', required: true, hostPaths: false, check: file => {
+  { label: 'authority.json', required: true, hostPaths: false, check: async file => {
     const c = readPrivate(file, { size: 65536 });
     const fields = ['schemaVersion', 'databasePath', 'socketPath', 'credentials', 'capabilities', 'actors', 'streams', 'persona', 'initialPaused', 'operator', 'content'];
     if (!plain(c) || c.schemaVersion !== 1 || Object.keys(c).some(key => !fields.includes(key)) || !absolute(c.databasePath) || !absolute(c.socketPath) || !['credentials', 'capabilities', 'actors', 'streams'].every(key => Array.isArray(c[key]))) throw fail('CONFIG_INVALID');
     if (!plain(c.operator) || !absolute(c.operator.socketPath) || !/^[a-f0-9]{64}$/.test(c.operator.tokenHash) || !Array.isArray(c.operator.origins)) throw fail('CONFIG_INVALID');
+    // A test-only channel is refused at startup unless the configuration explicitly allows it (staging only).
+    const { channel } = await load('capabilities/channels/index.js');
+    if (c.operator.allowTestChannels !== true && [...c.capabilities, ...c.credentials].some(row => channel(row?.id ?? row?.capabilityId)?.testOnly)) throw fail('TEST_CHANNEL_CONFIGURED');
     return c;
   } },
   // model-gateway/main.mjs
