@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { renderPersona } from '../../core/src/persona.js';
+import { renderPersona } from './persona.js';
 
 const CUT = '…[截断]';
 export const DEFAULT_CONTEXT_CHARS = 4000;

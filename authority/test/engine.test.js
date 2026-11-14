@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 import { Authority } from '../src/engine.js';
-import { DEFAULT_PERSONA, renderPersona } from '../../core/src/persona.js';
+import { DEFAULT_PERSONA, renderPersona } from '../src/persona.js';
 
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'fish-authority-'));

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Store, DEFAULT_ENTITY_ID } from './store.js';
 import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
 import { POLICIES, validatePayload, review } from './policies.js';
-import { normalizePersona, validatePersonaPatch } from '../../core/src/persona.js';
+import { normalizePersona, validatePersonaPatch } from './persona.js';
 import { renderContextParts, renderProfile, RETRIEVED_ITEMS, DEFAULT_CONTEXT_CHARS, personaBudget, personaContextText, opaquePerson, opaqueStream } from './context.js';
 import { BACKGROUND_PROPOSAL } from './consolidation.js';
 import { InitiationDomain } from './initiations.js';

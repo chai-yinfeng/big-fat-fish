@@ -22,8 +22,8 @@ import { createGatewayStream } from '../capabilities/conversation/model.js';
 import { createConversationExecutor } from '../capabilities/conversation/agent.js';
 import { SessionStore } from '../capabilities/conversation/sessions.js';
 import { renderContextParts } from '../authority/src/context.js';
-import { DEFAULT_PERSONA } from '../core/src/persona.js';
-import { tokenize } from '../core/src/util.js';
+import { DEFAULT_PERSONA } from '../authority/src/persona.js';
+import { tokenize } from '../authority/src/util.js';
 
 export const DAILY_CAP_YUAN = 2;
 export const THINKING_LEVELS = Object.freeze(['high', 'low', 'max', 'disabled']);

@@ -2,7 +2,7 @@
 
 Companion for the user's family and friends (about 20 people at most). Start with
 README.md, then load only the relevant section of ARCHITECTURE.md or
-docs/DEV_WORKFLOW.md. Do not scan legacy directories unless the task concerns them.
+docs/DEV_WORKFLOW.md. The DSH-era legacy directories are deleted; use git history if needed.
 
 ## Hard boundaries
 - Authority alone owns persona, world and canonical memory. Console and QQ are

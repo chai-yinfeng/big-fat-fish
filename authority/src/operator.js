@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
-import { DEFAULT_PERSONA } from '../../core/src/persona.js';
+import { DEFAULT_PERSONA } from './persona.js';
 import { CHANNELS, channel } from '../../capabilities/channels/index.js';
 
 function object(value, fields) {

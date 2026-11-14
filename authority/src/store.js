@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { AuthorityError, fail } from './identity.js';
-import { tokenize } from '../../core/src/util.js';
+import { tokenize } from './util.js';
 import { MIGRATIONS, migrate } from './migrations.js';
 export const APPLICATION_ID = 0x42464641;
 export const SCHEMA_VERSION = 2;
