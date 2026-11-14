@@ -18,6 +18,7 @@
 import chat from './chat/manifest.js';
 import consolidation from './consolidation/manifest.js';
 import vision from './vision/manifest.js';
+import sticker from './sticker/manifest.js';
 import web from './web/manifest.js';
 import speechTts from './speech-tts/manifest.js';
 import speechAsr from './speech-asr/manifest.js';
@@ -26,4 +27,4 @@ import demo from './demo/manifest.js';
 
 const frozen = value => { if (value && typeof value === 'object') { Object.values(value).forEach(frozen); Object.freeze(value); } return value; };
 /** Every declared capability, in the order the quota page lists them. */
-export const CAPABILITIES = frozen([chat, consolidation, vision, web, speechTts, speechAsr, proactive, demo]);
+export const CAPABILITIES = frozen([chat, consolidation, vision, sticker, web, speechTts, speechAsr, proactive, demo]);

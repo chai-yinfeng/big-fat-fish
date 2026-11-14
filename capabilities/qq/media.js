@@ -47,9 +47,12 @@ export class QQMedia {
         refs.push({ id: result.ref, kind: 'transcript' }); transcripts.push(result.text);
         descriptions.push(`音频 ${artifact.id} 的机器转写（可能误识别，不是已核对的真人逐字原话；说话者身份未知）：\n${result.text}`);
       } else if (part.kind === 'image') {
-        const result = await this.call(scope, 'describe', { ref: artifact.id });
-        refs.push({ id: result.ref, kind: 'description' });
-        descriptions.push(`${part.sticker ? '表情包' : '图片'} ${artifact.id} 的机器描述${result.framePolicy ? '（仅首帧，不代表完整动画）' : ''}：\n${result.description}`);
+        const result = await this.call(scope, 'describe', { ref: artifact.id, ...(part.sticker ? { sticker: true } : {}), ...(part.stickerName ? { name: part.stickerName } : {}) });
+        if (typeof result.ref === 'string') refs.push({ id: result.ref, kind: 'description' });
+        if (!part.sticker) descriptions.push(`图片 ${artifact.id} 的机器描述${result.framePolicy ? '（仅首帧，不代表完整动画）' : ''}：\n${result.description}`);
+        else if (result.unrecognized) descriptions.push(`表情包 ${artifact.id}：收到一张没见过的表情包，今天没有识别。不要编造它的内容。`);
+        else if (result.kind === 'mall') descriptions.push(`表情包 ${artifact.id}：${result.description}（名字来自平台，不是看图识别）`);
+        else descriptions.push(`表情包 ${artifact.id}：${result.description}（机器描述${result.framePolicy ? '，仅首帧，不代表完整动画' : ''}）`);
       } else descriptions.push(`收到平台内置表情，素材 ${artifact.id}，QQ编号 ${part.native.id}。没有图像识别结果，不要编造表情细节。`);
     }
     const queryText = (message.authoredText || transcripts.join('\n') || descriptions.join('\n')).slice(0, 512);

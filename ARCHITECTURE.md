@@ -50,7 +50,7 @@ channel.deliver(parts) -> sent / failed / unknown receipts
 
 文件路径只存在于可信 Host/provider 接口。模型使用的是绑定 entity/person/stream/audience 的 opaque MediaRef，不能选择路径、QQ号、平台凭据、entity 或 requestId。Authority 在私有 content socket 前后检查当前绑定/epoch/暂停版本，模型不拿到 content-control 凭据。
 
-QQ 收语音：认证消息 → get_record 转 WAV → MediaRef → 本地 ASR → 明确机器转写的执行上下文。QQ 发语音：最终回复文本 → 本地 TTS 文件 → QQ adapter 提交 record → 成功回执才记录已发送；不调用服务器的录音或播放设备。图片与表情也由 adapter 下载/封装，不把容器路径交给业务模型。QQ 自带小表情（OneBot 标准 `face` 段）只在 QQ 桥里换算（`capabilities/qq/faces.js`，116 个编号↔名字）：收到时按原位置写成 `[微笑]` 进文字、不算附件；她回复里表内精确匹配的 `[名字]` 在发送前换成同一条消息里的 `face` 段（每条最多 3 个），语音合成前去掉；记录保留她写的文字。
+QQ 收语音：认证消息 → get_record 转 WAV → MediaRef → 本地 ASR → 明确机器转写的执行上下文。QQ 发语音：最终回复文本 → 本地 TTS 文件 → QQ adapter 提交 record → 成功回执才记录已发送；不调用服务器的录音或播放设备。图片与表情也由 adapter 下载/封装，不把容器路径交给业务模型。QQ 桥把“是不是表情包、商城表情叫什么”归一成两个内部字段（来自 NapCat 专有的 `sub_type`/`emoji_id`/`summary`，没有时按普通图片）；内容服务只认这两个字段和图片哈希，按哈希记“这张图是什么”（`media-data/describe-cache.json`，所有人共用、不记发送者），同一张图只看一次；第一次看一张表情包占账本“表情识别”一行，不占看图的每日次数。QQ 自带小表情（OneBot 标准 `face` 段）只在 QQ 桥里换算（`capabilities/qq/faces.js`，116 个编号↔名字）：收到时按原位置写成 `[微笑]` 进文字、不算附件；她回复里表内精确匹配的 `[名字]` 在发送前换成同一条消息里的 `face` 段（每条最多 3 个），语音合成前去掉；记录保留她写的文字。
 
 默认文字，用户明确要求才合成语音。本地失败不自动上传云。音色是 operator 配置里的注册表（voice id → 授权上传的参考录音、参考语言、usageScope），请求只能给 voice id（缺省用 defaultVoice），不能给路径；usageScope（private=家人朋友内部使用，含群聊；public=可公开发布）目前只记录不强制，留给将来的公开发布渠道（B站/直播）。不从用户 QQ 语音提取音色。
 
@@ -75,7 +75,7 @@ ASR/OCR/视觉描述不是真人逐字输入。只有附件时 Core 原观察保
 - content 用户服务限 2 核/4GiB，不修改全局 GPU/Node/PATH。
 - Flash 视觉默认512缩图/动图首帧；网页仅公网 search/fetch，无登录cookies或点击购买。默认全产品每北京时间日 vision12/web20次，先预留，失败也占。
 - 每日金额上限（model-gateway，按北京时间日）：默认 ¥5，60%/80%/100% 三档（控制台可改）；chat 按流式 usage 计价，区分高峰/闲时；到 100% 网关直接拒绝，QQ 对任何人静默，只给主人每天发一次 QQ 提醒。同一处按日累计上报的 token（命中/未命中输入、输出、其中推理、请求数），控制台概览显示缓存命中率；只用于观察，不参与上限。 她先开口的回合记在 `proactive` 类别，到 60% 档（reduced）就在联系供应商之前被拒，普通回复不受影响；这时不给主人发提醒。
-- 额度账本（model-gateway，按北京时间日）：每种声明过的能力一行（聊天、后台整合、看图、联网、语音合成、语音识别、主动开口），记尝试/成功/失败次数、被拒次数与原因、各自的单位（token、合成字数、音频秒数）、花费和耗时，保留 90 天的每日一行；控制台“额度”页显示，看图/联网的每日上限可在页面上改。账本只观察：钱仍以 `spend.json` 为准，看图/联网的当日次数仍在 `capability-usage.json`（文件结构不变，旧版本可照常启动），整合批次仍在 Authority。本地 TTS/ASR 由 content 服务事后上报，账本不可用不影响发语音。
+- 额度账本（model-gateway，按北京时间日）：每种声明过的能力一行（聊天、后台整合、看图、表情识别、联网、语音合成、语音识别、主动开口），记尝试/成功/失败次数、被拒次数与原因、各自的单位（token、合成字数、音频秒数）、花费和耗时，保留 90 天的每日一行；控制台“额度”页显示，看图/联网的每日上限可在页面上改。账本只观察：钱仍以 `spend.json` 为准，看图/联网的当日次数仍在 `capability-usage.json`（文件结构不变，旧版本可照常启动），整合批次仍在 Authority。本地 TTS/ASR 由 content 服务事后上报，账本不可用不影响发语音。
 - 两个模型工具的 schema 按 4chars/token 估计比旧 memory-only 多约252 tokens（估算，非 provider 实测）。
 
 当前限制：

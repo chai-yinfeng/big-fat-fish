@@ -26,7 +26,7 @@ test('ledger: one row per declared capability; outcomes, denials by reason, unit
   const open = async () => { const ledger = createUsageLedger({ directory, capabilities: CAPABILITIES, defaults: { vision: 12, web: 20 }, external: () => counters, clock: () => Date.parse('2026-11-12T04:00:00Z') }); await ledger.start(); return ledger; };
   let ledger = await open();
   let status = await ledger.status();
-  assert.deepEqual([status.day, status.timezone, status.rows.map(row => row.id)], ['2026-11-12', 'Asia/Shanghai', ['chat', 'consolidation', 'vision', 'web', 'speech-tts', 'speech-asr', 'proactive', 'demo']]);
+  assert.deepEqual([status.day, status.timezone, status.rows.map(row => row.id)], ['2026-11-12', 'Asia/Shanghai', ['chat', 'consolidation', 'vision', 'sticker', 'web', 'speech-tts', 'speech-asr', 'proactive', 'demo']]);
   assert.deepEqual(rowsOf(status).chat, { id: 'chat', title: '聊天', kind: 'paid', unit: 'requests', used: 0, limit: null, calls: 0, ok: 0, failed: 0, denied: {}, units: {}, busyMs: 0, limitDefault: null, costYuan: 0, spendCategory: 'conversation', stopTier: 'exhausted' });
   await ledger.record('chat', { outcome: 'ok', busyMs: 1200, costMicros: 2500 });
   await ledger.record('chat', { outcome: 'failed', busyMs: 300 });
@@ -190,10 +190,13 @@ test('gateway: every exit lands in its row, and the rows add up to what the spen
   for (const call of [f.chat, f.chat, f.memory, f.vision, f.search]) assert.equal((await call()).status, 200);
   const rows = await f.usage(seen => seen.web.ok === 1 && seen.chat.ok === 2);
   assert.deepEqual(Object.fromEntries(Object.entries(rows).map(([id, row]) => [id, [row.used, row.limit, row.calls, row.ok, row.failed, row.denied]])), {
-    chat: [2, null, 2, 2, 0, {}], consolidation: [1, null, 1, 1, 0, {}], vision: [1, 12, 1, 1, 0, {}], web: [1, 20, 1, 1, 0, {}], 'speech-tts': [0, null, 0, 0, 0, {}], 'speech-asr': [0, null, 0, 0, 0, {}], proactive: [0, null, 0, 0, 0, {}], demo: [0, 10, 0, 0, 0, {}],
+    chat: [2, null, 2, 2, 0, {}], consolidation: [1, null, 1, 1, 0, {}], vision: [1, 12, 1, 1, 0, {}], sticker: [0, 20, 0, 0, 0, {}], web: [1, 20, 1, 1, 0, {}], 'speech-tts': [0, null, 0, 0, 0, {}], 'speech-asr': [0, null, 0, 0, 0, {}], proactive: [0, null, 0, 0, 0, {}], demo: [0, 10, 0, 0, 0, {}],
   });
   const spend = (await f.control('/spend')).json().value;
-  for (const row of Object.values(rows)) if (row.spendCategory) assert.equal(row.costYuan, spend.byTier[row.spendCategory], row.id);
+  // The rows of one spend category (vision and sticker share `vision`) add up to what that category was charged.
+  const byCategory = {};
+  for (const row of Object.values(rows)) if (row.spendCategory) byCategory[row.spendCategory] = (byCategory[row.spendCategory] ?? 0) + Math.round(row.costYuan * 1e6);
+  for (const [category, micros] of Object.entries(byCategory)) assert.equal(micros, Math.round(spend.byTier[category] * 1e6), category);
   assert.ok(rows.chat.costYuan > 0 && rows.consolidation.costYuan > 0);
   // Tokens as the provider reported them, per row; together they are the spend meter's totals.
   assert.deepEqual([rows.chat.units, rows.consolidation.units], [{ inputTokens: 2000, outputTokens: 200 }, { inputTokens: 40, outputTokens: 20 }]);
@@ -232,6 +235,26 @@ test('gateway: a refusal is counted by its reason and never reaches the provider
   assert.equal((await f.inference('/v1/web/search', { query: '' })).status, 400);
   rows = await f.usage(seen => seen.web.failed === 1);
   assert.deepEqual([rows.web.calls, rows.web.ok, rows.web.failed, rows.web.costYuan, rows.web.used], [1, 0, 1, 0, 1]);
+});
+
+test('gateway: a first look at a sticker takes a slot of its own row, not one of vision\'s; the money stays in vision', async t => {
+  const f = await gateway(t, { budgets: { vision: 1, web: 20 } });
+  const sticker = () => f.inference('/v1/vision/describe', { imageBase64: PNG, mime: 'image/png', purpose: 'sticker' });
+  assert.equal((await sticker()).status, 200);
+  assert.equal((await f.vision()).status, 200);
+  assert.equal((await sticker()).status, 200, 'vision is used up, the sticker row is not');
+  let rows = await f.usage(seen => seen.sticker.ok === 2 && seen.vision.ok === 1);
+  assert.deepEqual([rows.sticker.used, rows.sticker.limit, rows.sticker.calls, rows.vision.used, rows.vision.calls], [2, 20, 2, 1, 1]);
+  assert.deepEqual([rows.sticker.spendCategory, rows.sticker.costYuan, rows.vision.costYuan, (await f.control('/spend')).json().value.byTier.vision], ['vision', 0.02, 0.01, 0.03]);
+  assert.equal(JSON.parse(await fs.readFile(path.join(f.directory, 'capability-usage.json'), 'utf8')).visionCalls, 1, 'the legacy vision count is not touched');
+  // Its own daily limit: refused, counted once as daily_limit, nothing sent to the provider.
+  assert.equal((await f.control('/usage/limits', { limits: { sticker: 2 } })).status, 200);
+  const calls = f.calls.length, refused = await sticker();
+  assert.deepEqual([refused.status, refused.json().error.code, f.calls.length], [429, 'BUDGET_EXHAUSTED', calls]);
+  rows = await f.usage(seen => seen.sticker.denied.daily_limit === 1);
+  assert.deepEqual([rows.sticker.denied, rows.sticker.calls, rows.vision.denied], [{ daily_limit: 1 }, 2, {}]);
+  // Any other purpose is a malformed request.
+  assert.equal((await f.inference('/v1/vision/describe', { imageBase64: PNG, mime: 'image/png', purpose: 'frame' })).status, 400);
 });
 
 test('gateway: operator reads /usage and history and changes a daily limit; the limit applies to the next call', async t => {

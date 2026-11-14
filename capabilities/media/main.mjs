@@ -25,7 +25,13 @@ try {
   const store = new ArtifactStore(cfg.store), speech = meteredSpeech(createLocalSpeechRunner({ configFile: cfg.speechConfigFile }), gateway.recordUsage);
   let sharp;
   const normalizeImage = async data => {
-    sharp ||= createRequire(import.meta.url)(cfg.sharpModule);
+    try { sharp ||= createRequire(import.meta.url)(cfg.sharpModule); }
+    catch (error) {
+      // No image runtime installed (staging, a fresh host): a PNG already within 512x512 needs no shrinking and goes
+      // as it is; anything else still fails as before. With the runtime installed this is never reached.
+      if (error?.code === 'MODULE_NOT_FOUND' && data.length >= 24 && data.length <= 1048576 && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && data.subarray(12, 16).toString('ascii') === 'IHDR' && data.readUInt32BE(16) <= 512 && data.readUInt32BE(20) <= 512) return { data, mime: 'image/png' };
+      throw error;
+    }
     const image = await sharp(data, { limitInputPixels: 40000000, animated: false, page: 0, pages: 1 }).rotate().resize(512, 512, { fit: 'inside', withoutEnlargement: true }).flatten({ background: '#ffffff' }).jpeg({ quality: 85 }).toBuffer();
     return { data: image, mime: 'image/jpeg' };
   };

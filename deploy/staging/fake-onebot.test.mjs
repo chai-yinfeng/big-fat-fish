@@ -7,7 +7,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { OneBotClient, onebotURL } from '../../capabilities/qq/onebot-client.js';
 import { messageFromOneBot } from '../../capabilities/qq/source.js';
-import { createFakeOneBot, createFrameParser, encodeFrame } from './fake-onebot.mjs';
+import { createFakeOneBot, createFrameParser, encodeFrame, mockPicture } from './fake-onebot.mjs';
 
 const freePort = () => new Promise(resolve => { const probe = net.createServer(); probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
 const until = async probe => { for (let i = 0; i < 200; i++) { if (await probe()) return; await new Promise(resolve => setTimeout(resolve, 25)); } throw new Error('timeout'); };
@@ -83,6 +83,23 @@ test('fake NapCat serves the real OneBotClient: token, login, friends, recorded 
   await client.call('send_private_msg', { user_id: '999900000011', message: [{ type: 'text', data: { text: 'MOCK 好' } }, { type: 'face', data: { id: '14' } }, { type: 'text', data: { text: '呀' } }] });
   const facedSend = (await control('GET', '/state')).value.sent.at(-1);
   assert.deepEqual([facedSend.text, facedSend.types, facedSend.faces], ['MOCK 好呀', ['text', 'face', 'text'], ['14']]);
+  // Pictures: one image segment after the text, with NapCat's sticker fields as asked; get_image gives the made-up bytes
+  // back (the same seed, the same bytes), and the bridge reads the segment as a sticker or a mall sticker by name.
+  const pictured = {};
+  for (const [as, extra] of [['sticker', {}], ['mall', { name: '狗头' }], ['picture', {}]]) {
+    const sent = await control('POST', '/message', { user_id: '999900000011', nickname: 'MOCK-A', text: 'MOCK 图', image: { seed: 'MOCK-SEED', as, ...extra } });
+    await until(() => events.some(item => item.message_id === sent.value.message_id));
+    pictured[as] = events.find(item => item.message_id === sent.value.message_id);
+  }
+  assert.deepEqual(pictured.sticker.message.map(segment => segment.type), ['text', 'image']);
+  assert.deepEqual(Object.values(pictured).map(event => messageFromOneBot(event, { expectedSelfId: '999900000001' }).media.map(({ sticker, stickerName }) => [sticker, stickerName])), [[[true, undefined]], [[true, '狗头']], [[false, undefined]]]);
+  const bytes = Buffer.from((await client.call('get_image', { file: pictured.sticker.message[1].data.file })).base64, 'base64');
+  assert.deepEqual([bytes.subarray(1, 4).toString('latin1'), bytes.readUInt32BE(16), bytes.equals(mockPicture('MOCK-SEED')), mockPicture('MOCK-SEED').equals(mockPicture('MOCK-OTHER'))], ['PNG', 1, true, false]);
+  await assert.rejects(client.call('get_image', { file: 'MOCK-IMG-unknown.png' }), /ONEBOT_REJECTED/);
+  for (const image of [{ seed: '' }, { seed: 'x', as: 'gif' }, { seed: 'x', as: 'mall' }, { seed: 'x', name: '狗头' }, { seed: 'x'.repeat(81) }]) assert.equal((await control('POST', '/message', { user_id: '999900000011', nickname: 'MOCK-A', text: 'y', image })).status, 400, JSON.stringify(image));
+  // A sent picture is recorded with its sub_type, and whether its bytes were inline.
+  await client.call('send_private_msg', { user_id: '999900000011', message: [{ type: 'image', data: { file: 'base64://' + bytes.toString('base64'), sub_type: 1, summary: '[动画表情]' } }] });
+  assert.deepEqual((await control('GET', '/state')).value.sent.at(-1).images, [{ subType: 1, base64: true }]);
   assert.equal((await control('POST', '/reset', {})).status, 200);
   assert.equal((await control('GET', '/state')).value.sent.length, 0);
 

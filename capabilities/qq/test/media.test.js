@@ -148,3 +148,25 @@ test('a voice reply is synthesized without face markers; the recorded reply keep
   assert.equal(f.sent[0].message[0].type, 'record');
   assert.match(f.observed.at(-1).text, /在呢\[微笑\]，\[不存在\]也念/);
 });
+
+test('stickers: read as a sticker, described once by picture, a mall sticker by its name, an unrecognized one said so', async t => {
+  const f = fixture(t), looks = [], vision = f.service.vision; await f.bridge.connection(true);
+  f.service.vision = async body => { looks.push(body.purpose); return vision(body); };
+  const custom = { type: 'image', data: { file: 'trusted-sticker', sub_type: 1, summary: '[动画表情]' } };
+  await f.bridge.receive(f.event(41, [{ type: 'text', data: { text: '哈' } }, custom]));
+  await f.bridge.receive(f.event(42, [{ type: 'text', data: { text: '再来' } }, custom]));
+  assert.deepEqual(looks, ['sticker'], 'the same picture is looked at once, in the sticker row');
+  for (const execution of f.executions) assert.match(execution.input.text, /表情包 media:[a-f0-9-]{36}：一张合成测试表情图（机器描述，仅首帧，不代表完整动画）/);
+  // Another picture (other bytes) for the mall sticker.
+  const onebotCall = f.bridge.onebot.call;
+  f.bridge.onebot.call = async (action, params) => action === 'get_image' && params.file === 'trusted-mall' ? { base64: 'R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7' } : onebotCall(action, params);
+  await f.bridge.receive(f.event(43, [{ type: 'text', data: { text: '狗头' } }, { type: 'image', data: { file: 'trusted-mall', emoji_id: 'MOCK-E', emoji_package_id: 'MOCK-P', summary: '[狗头]' } }]));
+  assert.match(f.executions.at(-1).input.text, /表情包 media:[a-f0-9-]{36}：商城表情「狗头」（名字来自平台，不是看图识别）/);
+  assert.deepEqual(looks, ['sticker']);
+  // The day's sticker looks are used up and the picture is not known.
+  f.service.vision = async () => { throw Object.assign(new Error('CONTENT_BUDGET_EXHAUSTED'), { code: 'CONTENT_BUDGET_EXHAUSTED' }); };
+  f.service.stickers.described = () => null;
+  await f.bridge.receive(f.event(44, [{ type: 'text', data: { text: '这个呢' } }, custom]));
+  assert.match(f.executions.at(-1).input.text, /表情包 media:[a-f0-9-]{36}：收到一张没见过的表情包，今天没有识别。不要编造它的内容。/);
+  assert.equal(f.sent.length, 4, 'every message was answered');
+});

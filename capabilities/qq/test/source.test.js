@@ -49,3 +49,13 @@ test('more than four pictures or voice clips: the first four are taken and the r
   // Two voice clips in one message are still refused.
   assert.throws(() => message([{ type: 'record', data: { file: 'a' } }, { type: 'record', data: { file: 'b' } }]), /INVALID_ONEBOT_MESSAGE/);
 });
+test('stickers: the bridge reads NapCat\'s fields into two of its own (is it a sticker, a mall sticker\'s name); without them a picture is an ordinary image', () => {
+  const kinds = segments => message(segments).media.map(({ sticker, stickerName }) => [sticker, stickerName]);
+  // A sticker of someone's own (sub_type 1, its summary is generic) and a mall sticker (emoji_id, its name in the summary).
+  assert.deepEqual(kinds([{ type: 'image', data: { file: 'a', sub_type: 1, summary: '[动画表情]' } }, { type: 'image', data: { file: 'b', sub_type: '1' } }]), [[true, undefined], [true, undefined]]);
+  assert.deepEqual(kinds([{ type: 'image', data: { file: 'c', emoji_id: 'MOCK-E', emoji_package_id: 'MOCK-P', summary: '[狗头]' } }]), [[true, '狗头']]);
+  // A mall sticker without a usable name is still a sticker; a name is never taken from an ordinary picture.
+  assert.deepEqual(kinds([{ type: 'image', data: { file: 'd', emoji_id: 'MOCK-E', summary: '[动画表情]' } }, { type: 'image', data: { file: 'e', emoji_id: 'MOCK-E', summary: '[' + '长'.repeat(13) + ']' } }, { type: 'image', data: { file: 'f', summary: '[狗头]' } }]), [[true, undefined], [true, undefined], [false, undefined]]);
+  // Only standard fields (another OneBot implementation): an ordinary image.
+  assert.deepEqual(kinds([image(1), { type: 'image', data: { file: 'g', sub_type: 0 } }]), [[false, undefined], [false, undefined]]);
+});

@@ -803,6 +803,69 @@
       "finally": [
         { "quietHours": { "window": "default" } }
       ]
+    },
+    {
+      "id": "K5",
+      "title": "same-sticker-described-once: two people send the same sticker; it is looked at once, in the sticker row, and each is told the same description without anything of the other",
+      "model": [
+        { "match": "这是一张聊天表情包", "reply": "MOCK-DESC-K5-{run} 一只鲸鱼在比耶\n标签：得意、比耶" },
+        { "match": "MOCK-K5A-{run}", "reply": "MOCK-REPLY-K5A-{run} 收到" },
+        { "match": "MOCK-K5B-{run}", "reply": "MOCK-REPLY-K5B-{run} 收到" }
+      ],
+      "steps": [
+        { "noteUsage": {} },
+        { "say": { "from": "MOCK-A", "text": "MOCK-K5A-{run} 看这个", "image": { "seed": "K5-{run}", "as": "sticker" } } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K5A-{run} 收到" } },
+        { "say": { "from": "MOCK-B", "text": "MOCK-K5B-{run} 你看", "image": { "seed": "K5-{run}", "as": "sticker" } } },
+        { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-K5B-{run} 收到" } },
+        { "expectVisionRequests": { "contains": "这是一张聊天表情包", "count": 1 } },
+        { "expectPrompt": { "userText": "MOCK-K5A-{run}", "contains": "MOCK-DESC-K5-{run} 一只鲸鱼在比耶（机器描述）" } },
+        { "expectPrompt": { "userText": "MOCK-K5B-{run}", "contains": "MOCK-DESC-K5-{run} 一只鲸鱼在比耶（机器描述）" } },
+        { "expectPrompt": { "userText": "MOCK-K5B-{run}", "absent": "MOCK-K5A-{run}" } },
+        { "expectPrompt": { "userText": "MOCK-K5A-{run}", "absent": "MOCK-K5B-{run}" } },
+        { "expectPrompt": { "userText": "MOCK-K5B-{run}", "absent": "标签：" } },
+        { "expectUsage": { "capability": "sticker", "used": 1, "calls": 1, "ok": 1 } },
+        { "expectUsage": { "capability": "vision" } }
+      ]
+    },
+    {
+      "id": "K6",
+      "title": "mall-sticker-uses-its-name: a mall sticker is known by the name the platform gives it and is never looked at",
+      "model": [
+        { "match": "MOCK-K6-{run}", "reply": "MOCK-REPLY-K6-{run} 哈" }
+      ],
+      "steps": [
+        { "noteUsage": {} },
+        { "say": { "from": "MOCK-A", "text": "MOCK-K6-{run} 送你", "image": { "seed": "K6-{run}", "as": "mall", "name": "鲸鱼狗头" } } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K6-{run} 哈" } },
+        { "expectVisionRequests": { "contains": "", "count": 0 } },
+        { "expectPrompt": { "userText": "MOCK-K6-{run}", "contains": "：商城表情「鲸鱼狗头」（名字来自平台，不是看图识别）" } },
+        { "expectUsage": { "capability": "sticker" } },
+        { "expectUsage": { "capability": "vision" } }
+      ]
+    },
+    {
+      "id": "K7",
+      "title": "sticker-quota-is-separate: a first look at a sticker counts in its own row, not vision's; with that row used up a new sticker is not looked at and she is told so",
+      "model": [
+        { "match": "MOCK-K7-{run}", "reply": "MOCK-REPLY-K7-{run} 嗯" }
+      ],
+      "steps": [
+        { "noteUsage": {} },
+        { "gatewayCall": { "kind": "sticker", "text": "MOCK-K7-{run} 这是什么表情" } },
+        { "expectUsage": { "capability": "sticker", "used": 1, "calls": 1, "ok": 1 } },
+        { "expectUsage": { "capability": "vision" } },
+        { "usageLimit": { "capability": "sticker", "limit": "used" } },
+        { "say": { "from": "MOCK-C", "text": "MOCK-K7-{run} 这个呢", "image": { "seed": "K7-{run}", "as": "sticker" } } },
+        { "expectReply": { "to": "MOCK-C", "contains": "MOCK-REPLY-K7-{run} 嗯" } },
+        { "expectPrompt": { "userText": "MOCK-K7-{run} 这个呢", "contains": "收到一张没见过的表情包，今天没有识别。不要编造它的内容。" } },
+        { "expectVisionRequests": { "contains": "这是一张聊天表情包", "count": 0 } },
+        { "expectUsage": { "capability": "sticker", "used": 1, "calls": 1, "ok": 1, "denied": { "daily_limit": 1 } } },
+        { "expectUsage": { "capability": "vision" } }
+      ],
+      "finally": [
+        { "usageLimit": { "capability": "sticker", "limit": null } }
+      ]
     }
   ]
 }
