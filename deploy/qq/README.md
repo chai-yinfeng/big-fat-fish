@@ -75,7 +75,7 @@ node --test deploy/qq/*.test.mjs
 ~/.local/opt/companion/bin/node ~/src/companion/current/deploy/qq/configure-recovery.mjs
 ```
 
-它会执行 `docker compose up -d --no-build`，环境变化时可能重新创建容器；上游镜像下架后只有本机仍有该镜像时才可行，**运行前须主人确认**。它仅从已批准的私有设置读取账号，不输出值；保留原 token 和数据卷，配置 Docker ACCOUNT 以及官方 WebUI autoLoginAccount、启用本用户 Linger 与现有用户服务，并保存只含验证元数据的基线。环境改变时 compose up 可能重建容器，不能保证旧登录态仍有效；遇过期只提示用户正常扫码，不无限重试或修改设备信息。
+它只做配置，**不启动、不重建容器**（NapCat 镜像已不可再拉取），结束时提示容器未被触碰。它仅从已批准的私有设置读取账号，不输出值；保留原 token 和数据卷，配置 Docker ACCOUNT（写入私有 env 文件）以及官方 WebUI autoLoginAccount、启用本用户 Linger 与现有用户服务，并保存只含验证元数据的基线。ACCOUNT 变化要等主人手动重启容器后才生效，重启前须主人自己判断风险，不能保证旧登录态仍有效；遇过期只提示用户正常扫码，不无限重试或修改设备信息。
 
 QQ 服务依赖 companion-conversation 执行器服务（systemd Requires）；WebSocket 已连接但 QQ 慢登录时定期串行查询身份，断线迟到结果无效。不开新 supervisor，不补发旧消息，不自动恢复世界生活。
 

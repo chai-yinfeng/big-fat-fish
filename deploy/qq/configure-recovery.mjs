@@ -51,10 +51,14 @@ export async function configureRecovery() {
   }
   // Existing private tokens and login volumes are preserved. The image entrypoint
   // uses ACCOUNT only to select its cached login; no password or QR is synthesized.
-  run('docker', ['compose', '-f', path.join(base, 'qq-runtime/compose.yaml'), 'up', '-d', '--no-build']);
+  // Configuration only: the container is never started or recreated here. NapCat's
+  // upstream image is gone and cannot be pulled again; the owner restarts it by hand.
   return { quickLoginConfigured: true, environmentUpdated: next !== current, userServicesEnabled: true, lingerRequested: true, worldStillPaused: true };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
-  try { process.stdout.write(JSON.stringify(await configureRecovery()) + '\n'); }
-  catch { process.stderr.write('Recovery setup failed; check maintenance pause, user service permissions and Docker. Credentials were not printed.\n'); process.exitCode = 1; }
+  try {
+    process.stdout.write(JSON.stringify(await configureRecovery()) + '\n');
+    process.stderr.write('NapCat container was not touched (its image can no longer be pulled); a changed ACCOUNT applies only after the owner restarts it by hand.\n');
+  }
+  catch { process.stderr.write('Recovery setup failed; check maintenance pause, NapCat WebUI and user service permissions. Credentials were not printed.\n'); process.exitCode = 1; }
 }
