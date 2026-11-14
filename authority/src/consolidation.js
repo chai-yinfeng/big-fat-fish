@@ -12,7 +12,7 @@ import { canonical, closed, enumeration, fail, identifier } from './identity.js'
 import { MemoryDomain } from './memory.js';
 import { SENSITIVE } from './policies.js';
 import { opaquePerson, opaqueStream } from './context.js';
-import { renderPersona } from '../../core/src/persona.js';
+import { renderPersona } from './persona.js';
 
 const HOUR = 3600000, DAY = 24 * HOUR, BEIJING = 8 * HOUR;
 export const CONSOLIDATION = Object.freeze({

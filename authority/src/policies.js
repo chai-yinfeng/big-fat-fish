@@ -1,5 +1,5 @@
 import { closed, enumeration, jsonValue, text } from './identity.js';
-import { validatePersonaPatch } from '../../core/src/persona.js';
+import { validatePersonaPatch } from './persona.js';
 
 export const POLICIES = ['conversation.v1', 'learning.v1'];
 export const APPRAISAL_KINDS = ['gratitude', 'support', 'repair', 'boundary'];

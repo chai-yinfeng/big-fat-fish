@@ -1,8 +1,8 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, text } from './identity.js';
 import { DEFAULT_ENTITY_ID } from './store.js';
-import { normalizePersona, renderPersona } from '../../core/src/persona.js';
-import { tokenize } from '../../core/src/util.js';
+import { normalizePersona, renderPersona } from './persona.js';
+import { tokenize } from './util.js';
 import { memoryContent, opaquePerson } from './context.js';
 import { SENSITIVE } from './policies.js';
 

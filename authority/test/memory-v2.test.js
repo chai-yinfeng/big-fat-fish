@@ -11,7 +11,7 @@ import { createAuthorityServer } from '../src/server.js';
 import { createOperatorServer } from '../src/operator.js';
 import http from 'node:http';
 import { AuthorityClient } from '../src/client.js';
-import { normalizePersona } from '../../core/src/persona.js';
+import { normalizePersona } from '../src/persona.js';
 
 function directory(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-memory-'));

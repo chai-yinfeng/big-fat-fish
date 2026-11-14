@@ -2,7 +2,7 @@
 
 Companion for the user's family and friends (about 20 people at most). Start with
 README.md, then load only the relevant section of ARCHITECTURE.md or
-docs/DEV_WORKFLOW.md. Do not scan legacy directories unless the task concerns them.
+docs/DEV_WORKFLOW.md. The DSH-era legacy directories are deleted; use git history if needed.
 
 ## Hard boundaries
 - Authority alone owns persona, world and canonical memory. Console and QQ are
@@ -17,6 +17,8 @@ docs/DEV_WORKFLOW.md. Do not scan legacy directories unless the task concerns th
   If delivery status is unknown, do not blindly resend.
 - Machine transcripts/captions are derived content: label them as such and never
   present them as the person's own words.
+- NapCat upstream is gone; never rebuild, re-pull or prune the NapCat container or
+  image on home-agent; keep the frozen 4.18.42 image until it fails.
 
 ## Permissions
 - Ask before: bootstrapping/resetting a production data root, resuming a world,
@@ -62,7 +64,8 @@ docs/DEV_WORKFLOW.md. Do not scan legacy directories unless the task concerns th
 
 ## Verification and records
 - Run the affected module first: node --run test:qq, test:speech, test:media,
-  test:memory, test:authority, test:conversation or test:console. Full node --run test is for release,
+  test:memory, test:authority, test:conversation, test:console, test:model, test:git
+  or test:deploy. Full node --run test is for release,
   migration or cross-cutting changes.
 - Batch remote commands and return bounded summaries, not whole logs.
 - Report what really ran and what remains unverified; claim nothing without evidence.
