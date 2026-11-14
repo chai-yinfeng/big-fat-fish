@@ -77,12 +77,18 @@ export const STEPS = {
     await run.onebot('POST', '/message', { user_id: run.qq(from), nickname: from, text, ...(subType ? { sub_type: subType } : {}), ...(faces ? { faces } : {}), ...(image ? { image } : {}) });
   },
   /** The next not-yet-matched message delivered to `to` must arrive and contain `contains` (in its text segments).
-   * `faces`: that same message must carry exactly these QQ face numbers as face segments, in this order. */
-  async expectReply(run, ctx, { to, contains, faces, timeoutMs = 60000 }) {
+   * `faces`: that same message must carry exactly these QQ face numbers as face segments, in this order.
+   * `image`: it must be exactly one picture and nothing else, "sticker" (sent with NapCat's `sub_type: 1`) or "picture". */
+  async expectReply(run, ctx, { to, contains, faces, image, timeoutMs = 60000 }) {
     const message = await run.poll(async () => (await run.sent()).find(item => item.user_id === run.qq(to) && !ctx.matched.has(item.message_id)), timeoutMs, `no message delivered to ${to}`);
     ctx.matched.add(message.message_id);
     if (contains !== undefined && !message.text.includes(contains)) fail(`${to} received ${JSON.stringify(message.text.slice(0, 80))}, expected it to contain ${JSON.stringify(contains)}`);
     if (faces !== undefined && JSON.stringify(message.faces ?? []) !== JSON.stringify(faces)) fail(`${to} received a message with faces ${JSON.stringify(message.faces ?? [])}, expected ${JSON.stringify(faces)}`);
+    if (image !== undefined) {
+      if (!['sticker', 'picture'].includes(image)) fail(`expectReply: unknown image ${JSON.stringify(image)}`);
+      const got = JSON.stringify(message.types ?? []) === '["image"]' && message.images?.length === 1 ? (message.images[0].subType === 1 ? 'sticker' : 'picture') : `${JSON.stringify(message.types ?? [])}`;
+      if (got !== image) fail(`${to} received ${got}, expected one ${image} on its own`);
+    }
   },
   /** Nothing unmatched may have been delivered to `to` (a name, a list or "*"). `observedFrom`: first wait
    * until Authority has recorded the last message said by each of these people, then `afterMs`. */

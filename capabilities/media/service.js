@@ -100,6 +100,25 @@ export class MediaService {
       }
       return { description: known.description, kind: known.kind, cached, ...(model ? { model } : {}), ref: keep(known.description).id, ...derived };
     }
+    // Her own sticker library (stickers.js). Only the owner, in the owner's own private conversation, can add to it:
+    // the bridge asks only there, and the scope Authority bound to this request is checked again here.
+    if (action === 'stickerKeep') {
+      if (scope.personId !== 'person:owner' || scope.audience !== 'private') throw fail('MEDIA_FORBIDDEN');
+      const original = this.store.read(input.ref, scope);
+      if (original.meta.kind !== 'image') throw fail('MEDIA_KIND_REQUIRED');
+      const known = this.stickers.described(original.meta.sha256), tags = known?.tags ?? [];
+      const name = known?.name ?? tags[0] ?? (known ? [...known.description.replace(/\s+/g, '')].slice(0, 12).join('') : '表情包');
+      return this.stickers.keep({ hash: original.meta.sha256, data: original.data, mime: original.meta.mime, kind: known?.kind ?? 'image', name, tags, origin: { entityId: scope.entityId, streamId: scope.streamId, eventId: original.meta.sourceEventId } });
+    }
+    // A library sticker close to her word, as a short-lived picture of this conversation (so it is sent like any
+    // attachment, and forgetting the message it answers removes the copy). None close enough: nothing.
+    if (action === 'stickerPick') {
+      if (typeof input.query !== 'string' || !input.query.trim() || [...input.query].length > 12 || !source(input.sourceEventId)) throw fail('MEDIA_INPUT_INVALID');
+      const picked = this.stickers.pick(input.query.trim());
+      if (!picked) return { found: false };
+      const copy = this.store.put({ scope, sourceEventId: input.sourceEventId, kind: 'image', mime: picked.mime, data: picked.data, ttlMs: Math.min(3600000, this.store.ttlMs) });
+      return { found: true, ref: copy.id, name: picked.name };
+    }
     if (action === 'synthesize') {
       // Only what is said aloud is synthesized: bracketed asides and emoticons are dropped (speech/text.js).
       // A reply with nothing left is refused like an empty one. The caller keeps the full text.

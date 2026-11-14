@@ -206,3 +206,13 @@ test('an initiated run sends her [微笑] as a face in the same message, like an
   assert.deepEqual(f.observations.map(o => o.text), ['MOCK 在忙吗[微笑][不存在]']);
   assert.equal(f.record('mock-face').status, 'sent');
 });
+
+test('an initiated run sends no sticker yet: her [表情:词] is taken out and dropped', async t => {
+  const f = await fixture(t);
+  f.reply = 'MOCK 早呀[表情:开心]';
+  f.offers.push(offer('mock-sticker'));
+  await f.bridge.pollInitiations();
+  assert.deepEqual(f.sends.map(s => s.message), [[{ type: 'text', data: { text: 'MOCK 早呀' } }]]);
+  assert.deepEqual(f.observations.map(o => o.text), ['MOCK 早呀']);
+  assert.equal(f.record('mock-sticker').status, 'sent');
+});

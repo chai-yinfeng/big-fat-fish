@@ -40,7 +40,7 @@ export class ContentClient {
     this.socketPath = socketPath; this.tokenFile = tokenFile;
   }
   call(input, { signal } = {}) {
-    if (!input || typeof input.streamId !== 'string' || !Number.isSafeInteger(input.memoryEpoch) || !['ingest', 'transcribe', 'describe', 'synthesize', 'asset', 'attach', 'pending', 'search', 'fetch', 'jobResult'].includes(input.action)) return Promise.reject(fail('CONTENT_REQUEST_INVALID'));
+    if (!input || typeof input.streamId !== 'string' || !Number.isSafeInteger(input.memoryEpoch) || !['ingest', 'transcribe', 'describe', 'synthesize', 'asset', 'attach', 'pending', 'search', 'fetch', 'jobResult', 'stickerKeep', 'stickerPick'].includes(input.action)) return Promise.reject(fail('CONTENT_REQUEST_INVALID'));
     return unixJson({ socketPath: this.socketPath, tokenFile: this.tokenFile, route: '/v1/content', body: input,
       timeoutMs: ['transcribe', 'synthesize'].includes(input.action) ? 300000 : 90000,
       maxBytes: input.action === 'asset' ? 13 * 1024 * 1024 : 65536, signal });

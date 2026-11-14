@@ -5,6 +5,7 @@ import { qqRequestId } from './worker-route.js';
 import { executeConversation, DECLINE_MARK } from '../conversation/executor.js';
 import { splitReply, SPLIT_GAP_MS } from './split.js';
 import { replySegments } from './faces.js';
+import { takeStickerMarker, asksToKeep, frequencyLine, RECENT_REPLIES, KEEP_WINDOW_MS } from './stickers.js';
 
 const identifier = value => typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value);
 export const FRIEND_REFRESH_MS = 10 * 60 * 1000;
@@ -40,6 +41,9 @@ export class QQBridge {
     this.friends = null; this.friendsAt = 0; this.friendProbe = null; this.admitted = new Set();
     // One serial queue per conversation, at most CONCURRENCY conversations at once.
     this.streams = new Map(); this.active = 0; this.waiting = [];
+    // Per conversation, in memory only (a restart forgets both): whether each of her latest replies carried a sticker
+    // (for the frequency line), and the last picture received (what "收下这个" refers to).
+    this.recentStickers = new Map(); this.lastPicture = new Map();
   }
   write(file, value) {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -215,7 +219,8 @@ export class QQBridge {
       // A finished job's result is read from the content service inside this conversation's own scope; Authority never
       // carries the text, and a job of another conversation cannot be read here.
       const event = jobRef ? completionEvent(await this.media.call(scope, 'jobResult', { ref: jobRef })) : INITIATION_EVENTS[kind];
-      const text = await executeConversation(this.executor, { scope, requestId, input: { text: event, initiated: true } });
+      // A sticker marker is taken out and dropped: a run she starts herself sends no sticker yet.
+      const text = takeStickerMarker(await executeConversation(this.executor, { scope, requestId, input: { text: event, initiated: true } })).text;
       if (DECLINED.test(text)) return end('declined');
       for (const [index, piece] of splitReply(text).entries()) {
         if (index) await this.sleep(SPLIT_GAP_MS);
@@ -252,6 +257,29 @@ export class QQBridge {
       } catch { item.status = 'failed'; this.save(); return null; }
     } catch { return null; }
   }
+  noteSticker(streamId, sent) {
+    const recent = [...(this.recentStickers.get(streamId) ?? []), sent].slice(-RECENT_REPLIES);
+    this.recentStickers.delete(streamId); this.recentStickers.set(streamId, recent);
+    // Bounded: the conversations heard from longest ago are forgotten first.
+    while (this.recentStickers.size > 200) this.recentStickers.delete(this.recentStickers.keys().next().value);
+  }
+  /** Lines added to what the model reads this turn: how often she sent a sticker lately (not on a voice turn) and, when
+   * the owner says 收下这个 in the owner's own conversation, whether the picture went into her library. Anyone else
+   * saying it changes nothing. */
+  async stickerFacts({ cfg, message, scope, userId, prepared }) {
+    const streamId = message.observation.streamId, picture = prepared.mediaRefs.find(ref => ref.kind === 'image');
+    let kept = '';
+    if (userId === cfg.allowedCallerUID && asksToKeep(message.authoredText)) {
+      const last = this.lastPicture.get(streamId), ref = picture?.id ?? (last && this.clock() - last.at <= KEEP_WINDOW_MS ? last.ref : null);
+      if (!ref) kept = '\n[渠道事实：主人让你收下一张图，但最近没有收到图，表情库没有变化。]';
+      else {
+        try { const result = await this.media.keepSticker(scope, ref); kept = `\n[渠道事实：${result.already ? '这张图本来就在你的表情库里' : '已把主人发的那张图收进你的表情库'}（名字：${result.name}）。]`; }
+        catch { kept = '\n[渠道事实：这张图没能收进你的表情库。]'; }
+      }
+    }
+    if (picture) { this.lastPicture.delete(streamId); this.lastPicture.set(streamId, { ref: picture.id, at: this.clock() }); while (this.lastPicture.size > 200) this.lastPicture.delete(this.lastPicture.keys().next().value); }
+    return kept + (prepared.voiceRequested ? '' : frequencyLine(this.recentStickers.get(streamId)));
+  }
   async process({ cfg, message, requestId, item, userId = cfg.allowedCallerUID }) {
     const observation = message.observation, scope = { streamId: observation.streamId, memoryEpoch: item.memoryEpoch };
     let sending = false, prepared, carry = null;
@@ -264,11 +292,13 @@ export class QQBridge {
       if (message.media.length && !this.media) throw new Error('QQ_MEDIA_UNAVAILABLE');
       prepared = this.media ? await this.media.prepare(message, scope) : { executionText: observation.text, queryText: observation.text.slice(0, 512), mediaRefs: [], voiceRequested: false };
       if (!await this.current(cfg, observation, item)) { item.status = 'paused'; this.save(); return; }
+      if (this.media) prepared = { ...prepared, executionText: prepared.executionText + await this.stickerFacts({ cfg, message, scope, userId, prepared }) };
       // The executor derives its session from this scope. Only the original
       // observation is memory evidence; ASR/OCR/vision stay execution context.
       carry = await this.carry(scope);
       const input = { text: prepared.executionText, queryText: prepared.queryText, mediaRefs: prepared.mediaRefs, evidence: [{ ref: observed.observationId, eventId: observation.eventId, role: observation.role }], ...(carry ? { event: carry.event } : {}) };
-      const text = await executeConversation(this.executor, { scope, requestId, input, timeoutMs: this.media && (prepared.mediaRefs.length || /音频|语音|转写|识别|qwen/i.test(prepared.queryText)) ? 420000 : 120000 });
+      // `[表情:词]` never reaches the chat: taken out here, its word picks a sticker below.
+      const { text, word } = takeStickerMarker(await executeConversation(this.executor, { scope, requestId, input, timeoutMs: this.media && (prepared.mediaRefs.length || /音频|语音|转写|识别|qwen/i.test(prepared.queryText)) ? 420000 : 120000 }));
       // She has the result now, in a stored turn: it counts as told, whatever becomes of sending the reply.
       if (carry) { carry.item.status = 'carried'; this.save(); }
       if (!await this.current(cfg, observation, item)) { item.status = 'paused'; this.save(); return; }
@@ -276,7 +306,12 @@ export class QQBridge {
       // A long text reply goes out as a few short messages. Each is its own send with its own receipt, so the
       // loop below stops at the first one that fails or is unknown, and only delivered ones are observed.
       // A voice reply (and its text fallback) is never split.
-      const parts = planned.flatMap(part => part.type === 'text' && !prepared.voiceRequested ? splitReply(part.text).map((piece, index) => ({ type: 'text', text: piece, ...(index ? { follows: true } : {}) })) : [part]);
+      const parts = planned.flatMap(part => part.type === 'text' && !prepared.voiceRequested ? splitReply(part.text).map((piece, index) => ({ type: 'text', text: piece, ...(index ? { follows: true } : {}) })) : [part]).filter(part => part.type !== 'text' || part.text.trim());
+      // A library sticker close to her word goes last, as a message of its own with its own receipt. Not with a voice
+      // reply. Not found, or the content service failing: no sticker, the text goes as it is.
+      const sticker = word && this.media && !prepared.voiceRequested ? await this.media.pickSticker(scope, word, observation.eventId).catch(() => null) : null;
+      if (sticker) parts.push(sticker);
+      if (this.media && !prepared.voiceRequested) this.noteSticker(observation.streamId, Boolean(sticker));
       for (const part of parts) {
         if (part.follows) await this.sleep(SPLIT_GAP_MS);
         if (!await this.current(cfg, observation, item)) { item.status = item.receipts?.length ? 'partial' : 'paused'; this.save(); return; }
