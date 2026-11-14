@@ -12,8 +12,10 @@
 //   prompt      the channel's part of the system message: fixed text from this repository, the same bytes on
 //               every request of that channel (provider prefix cache), at most CHANNEL_PROMPT_CHARS.
 //   turnPolicy  fixed lines the bridge adds to a turn's input (e.g. when the reply will be spoken).
-//   testOnly    never a production channel: Authority's entry point refuses a configuration that registers it
-//               unless COMPANION_TEST_CHANNELS=1 (staging and tests set it; no production unit does).
+//   testOnly    never a production channel: Authority's entry point (and the deploy preflight) refuse a
+//               configuration that registers it unless that configuration also sets operator.allowTestChannels
+//               (the staging tools and the tests do; nothing in a release writes it), and no release contains
+//               a bridge for it.
 //
 // Adding a channel = one directory with a manifest, plus one import line here.
 import qq from './qq/manifest.js';

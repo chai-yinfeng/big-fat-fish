@@ -1,6 +1,7 @@
 // Declaration only (see ../index.js): data, no behaviour.
 // A text-only channel that exists for tests and staging replay (deploy/staging/fake-channel.mjs is its bridge and is
-// not part of a release). It stands for a channel driven from outside: its receipts are not reliable.
+// not part of a release; see `testOnly` in ../index.js). It stands for a channel driven from outside: its receipts
+// are not reliable.
 export default {
   id: 'mock', title: 'MOCK',
   expression: { voice: false, images: false, faces: false, split: false },

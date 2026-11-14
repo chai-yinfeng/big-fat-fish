@@ -216,13 +216,16 @@ test('the production entry point refuses a configuration that registers a test-o
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const config = path.join(root, 'authority.json'), main = fileURLToPath(new URL('../src/main.js', import.meta.url));
   const write = extra => fs.writeFileSync(config, JSON.stringify({ schemaVersion: 1, databasePath: path.join(root, 'w.sqlite'), socketPath: path.join(root, 'a.sock'), credentials: [{ hash: 'a'.repeat(64), role: 'capability', capabilityId: 'qq' }], capabilities: [{ id: 'qq', policy: 'conversation.v1' }], actors: [], streams: [], operator: { socketPath: path.join(root, 'o.sock'), tokenHash: 'b'.repeat(64), origins: [] }, ...extra }), { mode: 0o600 });
-  const start = env => spawnSync(process.execPath, [main, '--config', config], { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8', timeout: 2000, killSignal: 'SIGTERM' });
+  const start = () => spawnSync(process.execPath, [main, '--config', config], { env: { PATH: process.env.PATH }, encoding: 'utf8', timeout: 2000, killSignal: 'SIGTERM' });
   for (const extra of [{ capabilities: [{ id: 'qq', policy: 'conversation.v1' }, { id: 'mock', policy: 'conversation.v1' }] }, { credentials: [{ hash: 'c'.repeat(64), role: 'capability', capabilityId: 'mock' }] }]) {
     write(extra);
-    const refused = start({});
+    const refused = start();
     assert.equal(refused.status, 1); assert.match(refused.stderr, /could not start/); assert.ok(!fs.existsSync(path.join(root, 'w.sqlite')));
   }
-  // With the staging switch the same configuration starts (and is stopped here).
-  const allowed = start({ COMPANION_TEST_CHANNELS: '1' });
+  // With the explicit switch in the private configuration the same registration starts (and is stopped here).
+  const operator = { socketPath: path.join(root, 'o.sock'), tokenHash: 'b'.repeat(64), origins: [] };
+  for (const value of [false, 'true', 1]) { write({ credentials: [{ hash: 'c'.repeat(64), role: 'capability', capabilityId: 'mock' }], operator: { ...operator, allowTestChannels: value } }); assert.equal(start().status, 1); }
+  write({ credentials: [{ hash: 'c'.repeat(64), role: 'capability', capabilityId: 'mock' }], operator: { ...operator, allowTestChannels: true } });
+  const allowed = start();
   assert.match(allowed.stdout, /Companion authority ready/);
 });
