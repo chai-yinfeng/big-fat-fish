@@ -17,7 +17,10 @@ export function explicitSpeechRequested(text) {
 /** QQ-only acquisition/presentation. The speech and media core never interprets
  * OneBot file references, CDN URLs, native face IDs or delivery receipts. */
 export class QQMedia {
-  constructor({ content, onebot, fetchImpl = fetch }) { Object.assign(this, { content, onebot, fetchImpl }); }
+  /** stickerSubType: send her library stickers as NapCat shows stickers (image segment with `sub_type: 1` and a
+   * summary; NapCat-only, known second-hand). Off: an ordinary image segment, shown as a large picture.
+   * faces: send her `[名字]` as small faces; by default what QQ's channel declaration says (`expression.faces`). */
+  constructor({ content, onebot, fetchImpl = fetch, stickerSubType = true, faces = channel('qq').expression.faces }) { Object.assign(this, { content, onebot, fetchImpl, stickerSubType, faces }); }
   call(scope, action, fields = {}) { return this.content.call({ streamId: scope.streamId, memoryEpoch: scope.memoryEpoch, action, ...fields }); }
   async imageBytes(file) {
     const found = await this.onebot.call('get_image', { file });
@@ -48,9 +51,12 @@ export class QQMedia {
         refs.push({ id: result.ref, kind: 'transcript' }); transcripts.push(result.text);
         descriptions.push(`音频 ${artifact.id} 的机器转写（可能误识别，不是已核对的真人逐字原话；说话者身份未知）：\n${result.text}`);
       } else if (part.kind === 'image') {
-        const result = await this.call(scope, 'describe', { ref: artifact.id });
-        refs.push({ id: result.ref, kind: 'description' });
-        descriptions.push(`${part.sticker ? '表情包' : '图片'} ${artifact.id} 的机器描述${result.framePolicy ? '（仅首帧，不代表完整动画）' : ''}：\n${result.description}`);
+        const result = await this.call(scope, 'describe', { ref: artifact.id, ...(part.sticker ? { sticker: true } : {}), ...(part.stickerName ? { name: part.stickerName } : {}) });
+        if (typeof result.ref === 'string') refs.push({ id: result.ref, kind: 'description' });
+        if (!part.sticker) descriptions.push(`图片 ${artifact.id} 的机器描述${result.framePolicy ? '（仅首帧，不代表完整动画）' : ''}：\n${result.description}`);
+        else if (result.unrecognized) descriptions.push(`表情包 ${artifact.id}：收到一张没见过的表情包，今天没有识别。不要编造它的内容。`);
+        else if (result.kind === 'mall') descriptions.push(`表情包 ${artifact.id}：${result.description}（名字来自平台，不是看图识别）`);
+        else descriptions.push(`表情包 ${artifact.id}：${result.description}（机器描述${result.framePolicy ? '，仅首帧，不代表完整动画' : ''}）`);
       } else descriptions.push(`收到平台内置表情，素材 ${artifact.id}，QQ编号 ${part.native.id}。没有图像识别结果，不要编造表情细节。`);
     }
     const queryText = (message.authoredText || transcripts.join('\n') || descriptions.join('\n')).slice(0, 512);
@@ -76,6 +82,13 @@ export class QQMedia {
     for (const p of pending.parts || []) if (['image', 'sticker'].includes(p.type) && typeof p.ref === 'string') parts.push(p);
     return parts;
   }
+  /** Add the owner's picture `ref` to her library (the content service checks it is the owner's own conversation). */
+  keepSticker(scope, ref) { return this.call(scope, 'stickerKeep', { ref }); }
+  /** A part for a library sticker close to `word` (a picture of this conversation), or null when none is close enough. */
+  async pickSticker(scope, word, sourceEventId) {
+    const picked = await this.call(scope, 'stickerPick', { query: word, sourceEventId });
+    return picked?.found === true && typeof picked.ref === 'string' && typeof picked.name === 'string' ? { type: 'image', ref: picked.ref, sticker: true, name: picked.name } : null;
+  }
   async send({ scope, userId, part }) {
     let segment;
     if (part.type !== 'text') {
@@ -84,13 +97,13 @@ export class QQMedia {
         const descriptor = JSON.parse(Buffer.from(asset.data, 'base64').toString('utf8'));
         if (descriptor.type !== 'qq-face' || !/^\d{1,10}$/.test(descriptor.id)) throw fail('QQ_MEDIA_DESCRIPTOR');
         segment = { type: 'face', data: { id: descriptor.id } };
-      } else if (part.type === 'audio' && asset.kind === 'audio' || part.type === 'image' && asset.kind === 'image') segment = { type: part.type === 'audio' ? 'record' : 'image', data: { file: 'base64://' + asset.data } };
+      } else if (part.type === 'audio' && asset.kind === 'audio' || part.type === 'image' && asset.kind === 'image') segment = { type: part.type === 'audio' ? 'record' : 'image', data: { file: 'base64://' + asset.data, ...(part.sticker && this.stickerSubType ? { sub_type: 1, summary: '[动画表情]' } : {}) } };
       else throw fail('QQ_MEDIA_DESCRIPTOR');
     }
-    // A text message carries her `[名字]` face markers as face segments, in the same message.
-    const message = part.type === 'text' ? replySegments(part.text) : [segment];
+    // A text message carries her `[名字]` face markers as face segments, in the same message, when faces are on.
+    const message = part.type === 'text' ? replySegments(part.text, this.faces) : [segment];
     const result = await this.onebot.call('send_private_msg', { user_id: userId, message, auto_escape: true });
     const messageId = receiptId(result.message_id); if (!messageId) throw fail('INVALID_SEND_RECEIPT');
-    return { messageId, type: part.type, text: part.type === 'text' ? part.text : part.type === 'audio' ? `[已发送语音；以下为合成文本而非逐字收听验证]\n${part.text}` : `[已发送${part.type === 'sticker' ? '表情' : '图片'}；素材 ${part.ref}]` };
+    return { messageId, type: part.type, text: part.type === 'text' ? part.text : part.type === 'audio' ? `[已发送语音；以下为合成文本而非逐字收听验证]\n${part.text}` : part.sticker ? `[已发送表情包：${part.name}]` : `[已发送${part.type === 'sticker' ? '表情' : '图片'}；素材 ${part.ref}]` };
   }
 }

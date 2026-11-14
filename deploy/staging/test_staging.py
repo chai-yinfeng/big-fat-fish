@@ -242,6 +242,18 @@ class InitiationReplayTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT key FROM metadata ORDER BY key').fetchall(), [('consolidation',), ('state',)])
             db.close()
 
+    def test_raw_small_pngs_only_while_replaying_and_only_for_a_release_that_knows_the_key(self):
+        config = {'sharpModule': '/x/node_modules/sharp'}
+        knows = "cfg.allowRawSmallPng ?? false"
+        self.assertEqual(sa.scenario_content_config(dict(config), knows, True), {**config, 'allowRawSmallPng': True})
+        self.assertEqual(sa.scenario_content_config(dict(config), "cfg.sharpModule", True), config)
+        self.assertEqual(sa.scenario_content_config({**config, 'allowRawSmallPng': True}, knows, False), config)
+        self.assertEqual(sa.scenario_content_config(dict(config), knows, False), config)
+        source = (HERE / 'staging-agent.py').read_text()
+        self.assertIn("edit('content.json', lambda c: scenario_content_config(c, content_source, True))", source)
+        # Taken out in the `finally` of the replay, before anything else (a rollback) can start an older release.
+        self.assertIn("        stop_fake_channel()\n        edit('content.json', lambda c: scenario_content_config(c, content_source, False))\n    lines = ", source)
+
     def test_the_second_channel_gets_its_own_credential_executor_and_the_explicit_switch(self):
         config = {'credentials': [{'hash': 'a' * 64, 'role': 'capability', 'capabilityId': 'qq'}, {'hash': 'old', 'role': 'capability', 'capabilityId': 'mock'}],
                   'capabilities': [{'id': 'qq', 'policy': 'conversation.v1'}], 'operator': {'origins': []}}
@@ -277,6 +289,8 @@ class InitiationReplayTests(unittest.TestCase):
         self.assertIn("edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_source))", source)
         self.assertIn("reset_initiations(BASE / 'authority-data/authority.sqlite')", source)
         self.assertIn("(BASE / 'media-data/jobs.json').unlink(missing_ok=True)", source)
+        self.assertIn("(BASE / 'media-data/describe-cache.json').unlink(missing_ok=True)", source)
+        self.assertIn("shutil.rmtree(BASE / 'media-data/stickers')", source)
 
 
 if __name__ == '__main__':

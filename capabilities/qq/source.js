@@ -15,6 +15,15 @@ function id(value, signed = false) {
 /** Most pictures and voice clips taken from one message. */
 export const MAX_MEDIA = 4;
 const mediaFile = value => typeof value === 'string' && value.length > 0 && value.length <= 2048 && !value.includes('\0');
+/** Is an image segment a sticker, and what is a mall sticker called: the two internal fields everything after the
+ * bridge relies on (with the picture's hash). Both come from NapCat-only fields, known only second-hand: `emoji_id`
+ * (a mall sticker, `summary` its name in brackets) and `sub_type: 1` (a sticker of someone's own). An implementation
+ * without them gives neither: the picture is an ordinary image, looked at once like any other. */
+function stickerOf(data) {
+  const mall = typeof data.emoji_id === 'string' && data.emoji_id.length > 0;
+  const name = mall && typeof data.summary === 'string' ? data.summary.trim().replace(/^\[(.*)\]$/s, '$1').trim() : '';
+  return { sticker: mall || data.sub_type === 1 || data.sub_type === '1', ...(name && name.length <= 12 && !/[\n\0[\]]/.test(name) && !['动画表情', '图片', '表情'].includes(name) ? { stickerName: name } : {}) };
+}
 export function messageFromOneBot(event, { expectedSelfId }) {
   if (!event || typeof event !== 'object' || event.post_type !== 'message') return null;
   const self = id(event.self_id);
@@ -36,7 +45,7 @@ export function messageFromOneBot(event, { expectedSelfId }) {
       if (segment?.type === 'text' && typeof data?.text === 'string') pieces.push({ text: data.text, line: true });
       else if (segment?.type === 'face' && /^\d{1,10}$/.test(String(data?.id))) pieces.push({ text: faceText(String(data.id)) });
       else if (segment?.type === 'record' && mediaFile(data?.file)) { audio++; if (media.length < MAX_MEDIA) media.push({ kind: 'audio', file: data.file, segmentIndex }); else skippedMedia++; }
-      else if (segment?.type === 'image' && mediaFile(data?.file)) { if (media.length < MAX_MEDIA) media.push({ kind: 'image', file: data.file, segmentIndex, sticker: typeof data.emoji_id === 'string' }); else skippedMedia++; }
+      else if (segment?.type === 'image' && mediaFile(data?.file)) { if (media.length < MAX_MEDIA) media.push({ kind: 'image', file: data.file, segmentIndex, ...stickerOf(data) }); else skippedMedia++; }
     }
     authoredText = pieces.map((piece, index) => (piece.line && pieces[index - 1]?.line ? '\n' : '') + piece.text).join('');
   } else throw new Error('INVALID_ONEBOT_MESSAGE');

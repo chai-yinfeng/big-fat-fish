@@ -775,34 +775,160 @@
     },
     {
       "id": "K2",
-      "title": "face-marker-becomes-face: her [微笑] arrives as a face segment in the same message as her text; a name not in the table stays text",
+      "title": "face-marker-stays-text: small faces are off by default (QQ's channel declaration), so her [微笑] arrives as plain text in her message, with no face segment, like any other bracket",
       "model": [
         { "match": "MOCK-K2-{run}", "reply": "MOCK-REPLY-K2-{run} 好呀[微笑]，这个[不存在]不是表情" }
       ],
       "steps": [
         { "say": { "from": "MOCK-A", "text": "MOCK-K2-{run} 笑一个" } },
-        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K2-{run} 好呀，这个[不存在]不是表情", "faces": ["14"] } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K2-{run} 好呀[微笑]，这个[不存在]不是表情", "faces": [] } },
         { "expectSilence": { "to": "*", "afterMs": 3000 } },
         { "say": { "from": "MOCK-A", "text": "MOCK-K2-{run} 再说一句" } },
-        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K2-{run}", "faces": ["14"] } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K2-{run}", "faces": [] } },
         { "expectPrompt": { "userText": "MOCK-K2-{run} 再说一句", "contains": "MOCK-REPLY-K2-{run} 好呀[微笑]，这个[不存在]不是表情" } }
       ]
     },
     {
       "id": "K4",
-      "title": "initiated-run-sends-faces: when she speaks first, her [微笑] also arrives as a face segment in the same message",
+      "title": "initiated-run-faces-off: when she speaks first, her [微笑] also stays plain text, with no face segment (small faces are off by default)",
       "model": [
         { "match": "后台事件", "reply": "MOCK-INIT-K4-{run} 在忙吗[微笑]" }
       ],
       "steps": [
         { "quietHours": { "window": "none" } },
         { "poke": {} },
-        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-INIT-K4-{run} 在忙吗", "faces": ["14"] } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-INIT-K4-{run} 在忙吗[微笑]", "faces": [] } },
         { "expectInitiation": { "outcome": "sent" } },
         { "expectSilence": { "to": "*", "afterMs": 3000 } }
       ],
       "finally": [
         { "quietHours": { "window": "default" } }
+      ]
+    },
+    {
+      "id": "K5",
+      "title": "same-sticker-described-once: two people send the same sticker; it is looked at once, in the sticker row, and each is told the same description without anything of the other",
+      "model": [
+        { "match": "这是一张聊天表情包", "reply": "MOCK-DESC-K5-{run} 一只鲸鱼在比耶\n标签：得意、比耶" },
+        { "match": "MOCK-K5A-{run}", "reply": "MOCK-REPLY-K5A-{run} 收到" },
+        { "match": "MOCK-K5B-{run}", "reply": "MOCK-REPLY-K5B-{run} 收到" }
+      ],
+      "steps": [
+        { "noteUsage": {} },
+        { "say": { "from": "MOCK-A", "text": "MOCK-K5A-{run} 看这个", "image": { "seed": "K5-{run}", "as": "sticker" } } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K5A-{run} 收到" } },
+        { "say": { "from": "MOCK-B", "text": "MOCK-K5B-{run} 你看", "image": { "seed": "K5-{run}", "as": "sticker" } } },
+        { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-K5B-{run} 收到" } },
+        { "expectVisionRequests": { "contains": "这是一张聊天表情包", "count": 1 } },
+        { "expectPrompt": { "userText": "MOCK-K5A-{run}", "contains": "MOCK-DESC-K5-{run} 一只鲸鱼在比耶（机器描述）" } },
+        { "expectPrompt": { "userText": "MOCK-K5B-{run}", "contains": "MOCK-DESC-K5-{run} 一只鲸鱼在比耶（机器描述）" } },
+        { "expectPrompt": { "userText": "MOCK-K5B-{run}", "absent": "MOCK-K5A-{run}" } },
+        { "expectPrompt": { "userText": "MOCK-K5A-{run}", "absent": "MOCK-K5B-{run}" } },
+        { "expectPrompt": { "userText": "MOCK-K5B-{run}", "absent": "标签：" } },
+        { "expectUsage": { "capability": "sticker", "used": 1, "calls": 1, "ok": 1 } },
+        { "expectUsage": { "capability": "vision" } }
+      ]
+    },
+    {
+      "id": "K6",
+      "title": "mall-sticker-uses-its-name: a mall sticker is known by the name the platform gives it and is never looked at",
+      "model": [
+        { "match": "MOCK-K6-{run}", "reply": "MOCK-REPLY-K6-{run} 哈" }
+      ],
+      "steps": [
+        { "noteUsage": {} },
+        { "say": { "from": "MOCK-A", "text": "MOCK-K6-{run} 送你", "image": { "seed": "K6-{run}", "as": "mall", "name": "鲸鱼狗头" } } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K6-{run} 哈" } },
+        { "expectVisionRequests": { "contains": "", "count": 0 } },
+        { "expectPrompt": { "userText": "MOCK-K6-{run}", "contains": "：商城表情「鲸鱼狗头」（名字来自平台，不是看图识别）" } },
+        { "expectUsage": { "capability": "sticker" } },
+        { "expectUsage": { "capability": "vision" } }
+      ]
+    },
+    {
+      "id": "K7",
+      "title": "sticker-quota-is-separate: a first look at a sticker counts in its own row, not vision's; with that row used up a new sticker is not looked at and she is told so",
+      "model": [
+        { "match": "MOCK-K7-{run}", "reply": "MOCK-REPLY-K7-{run} 嗯" }
+      ],
+      "steps": [
+        { "noteUsage": {} },
+        { "gatewayCall": { "kind": "sticker", "text": "MOCK-K7-{run} 这是什么表情" } },
+        { "expectUsage": { "capability": "sticker", "used": 1, "calls": 1, "ok": 1 } },
+        { "expectUsage": { "capability": "vision" } },
+        { "usageLimit": { "capability": "sticker", "limit": "used" } },
+        { "say": { "from": "MOCK-C", "text": "MOCK-K7-{run} 这个呢", "image": { "seed": "K7-{run}", "as": "sticker" } } },
+        { "expectReply": { "to": "MOCK-C", "contains": "MOCK-REPLY-K7-{run} 嗯" } },
+        { "expectPrompt": { "userText": "MOCK-K7-{run} 这个呢", "contains": "收到一张没见过的表情包，今天没有识别。不要编造它的内容。" } },
+        { "expectVisionRequests": { "contains": "这是一张聊天表情包", "count": 0 } },
+        { "expectUsage": { "capability": "sticker", "used": 1, "calls": 1, "ok": 1, "denied": { "daily_limit": 1 } } },
+        { "expectUsage": { "capability": "vision" } }
+      ],
+      "finally": [
+        { "usageLimit": { "capability": "sticker", "limit": null } }
+      ]
+    },
+    {
+      "id": "K8",
+      "title": "marker-sends-library-sticker: the owner has her keep a mall sticker; her [表情:开心] to someone else arrives after her text as a sticker of its own, the marker never in the chat, the sticker recorded as a line of its own",
+      "model": [
+        { "match": "MOCK-K8-{run} 给你", "reply": "MOCK-REPLY-K8-{run} 收到图" },
+        { "match": "MOCK-K8-{run} 收下这个", "reply": "MOCK-REPLY-K8-{run} 收好啦" },
+        { "match": "MOCK-K8B-{run}", "reply": "MOCK-REPLY-K8B-{run} 太好了[表情:开心]" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-K8-{run} 给你", "image": { "seed": "K8-{run}", "as": "mall", "name": "开心" } } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-K8-{run} 收到图" } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-K8-{run} 收下这个" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-K8-{run} 收好啦" } },
+        { "expectPrompt": { "userText": "MOCK-K8-{run} 收下这个", "contains": "已把主人发的那张图收进你的表情库（名字：开心）" } },
+        { "noteMessages": { "person": "MOCK-A" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-K8B-{run} 我考过了" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K8B-{run} 太好了" } },
+        { "expectReply": { "to": "MOCK-A", "image": "sticker" } },
+        { "expectSentCount": { "to": "MOCK-A", "contains": "[表情", "count": 0 } },
+        { "expectMessages": { "person": "MOCK-A", "added": 3 } },
+        { "expectSilence": { "to": "*", "afterMs": 3000 } }
+      ]
+    },
+    {
+      "id": "K9",
+      "title": "no-match-sends-nothing: her [表情:词] with no library sticker close to it sends her text and nothing else",
+      "model": [
+        { "match": "MOCK-K9-{run}", "reply": "MOCK-REPLY-K9-{run} 好的[表情:犀牛潜水艇]" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-A", "text": "MOCK-K9-{run} 随便聊聊" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K9-{run} 好的" } },
+        { "expectSilence": { "to": "*", "afterMs": 3000 } },
+        { "expectSentCount": { "to": "MOCK-A", "contains": "[表情", "count": 0 } }
+      ]
+    },
+    {
+      "id": "K10",
+      "title": "owner-says-keep-this: 收下这个 from a friend changes nothing; from the owner, after a sticker, it goes into her library under the first tag of its one look, and she can send it",
+      "model": [
+        { "match": "这是一张聊天表情包", "reply": "MOCK-DESC-K10-{run} 一条鲸鱼在跳舞\n标签：鲸鱼跳舞、开舞" },
+        { "match": "MOCK-K10A-{run} 跳", "reply": "MOCK-REPLY-K10A-{run} 跳就跳[表情:乙不该有]" },
+        { "match": "MOCK-K10O-{run} 跳", "reply": "MOCK-REPLY-K10O-{run} 跳就跳[表情:鲸鱼跳舞]" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-A", "text": "MOCK-K10A-{run} 给你", "image": { "seed": "K10A-{run}", "as": "mall", "name": "乙不该有" } } },
+        { "expectReply": { "to": "MOCK-A" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-K10A-{run} 收下这个" } },
+        { "expectReply": { "to": "MOCK-A" } },
+        { "expectPrompt": { "userText": "MOCK-K10A-{run} 收下这个", "absent": "表情库" } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-K10O-{run} 给你", "image": { "seed": "K10O-{run}", "as": "sticker" } } },
+        { "expectReply": { "to": "MOCK-OWNER" } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-K10O-{run} 收下这个" } },
+        { "expectReply": { "to": "MOCK-OWNER" } },
+        { "expectPrompt": { "userText": "MOCK-K10O-{run} 收下这个", "contains": "已把主人发的那张图收进你的表情库（名字：鲸鱼跳舞）" } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-K10O-{run} 跳个舞" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-K10O-{run} 跳就跳" } },
+        { "expectReply": { "to": "MOCK-OWNER", "image": "sticker" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-K10A-{run} 跳个舞" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K10A-{run} 跳就跳" } },
+        { "expectSilence": { "to": "*", "afterMs": 3000 } }
       ]
     },
     {
@@ -816,7 +942,7 @@
       "steps": [
         { "mockFriends": { "people": ["MOCK-OWNER", "MOCK-A", "MOCK-B", "MOCK-M"] } },
         { "mockAttach": { "from": "MOCK-OWNER", "person": "MOCK-OWNER" } },
-        { "expectChannel": { "id": "mock", "receipts": "unreliable", "friends": true, "expression": { "voice": false, "images": false, "faces": false, "split": false } } },
+        { "expectChannel": { "id": "mock", "receipts": "unreliable", "friends": true, "expression": { "voice": false, "images": false, "faces": false, "stickers": false, "split": false } } },
         { "expectChannel": { "id": "qq", "receipts": "reliable", "status": "ready" } },
         { "mockSay": { "from": "MOCK-M", "text": "MOCK-1-{run} 请记住：我的口头禅是海带结-{run}" } },
         { "mockExpectReply": { "to": "MOCK-M", "contains": "MOCK-REPLY-MOCK1-{run} 记下了" } },

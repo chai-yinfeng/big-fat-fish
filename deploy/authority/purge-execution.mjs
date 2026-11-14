@@ -80,7 +80,7 @@ export async function purgeExecution({ base, plan, checkStopped = stopped }) {
     }
     if (changed) writes.push([dispatchFile, state]);
   }
-  let mediaStore, mediaRemoved = 0;
+  let mediaStore, stickers, mediaRemoved = 0, stickersRemoved = 0;
   const speechScratch = [];
   if (layout.media) {
     if (layout.media.root !== 'media-data' || layout.media.workRoot !== 'speech-data' || typeof plan.entityId !== 'string' || !Array.isArray(plan.sourceEvents)) throw fail('EXECUTION_STORAGE_UNVERIFIED');
@@ -89,6 +89,10 @@ export async function purgeExecution({ base, plan, checkStopped = stopped }) {
       const { ArtifactStore } = await import(path.basename(path.dirname(fileURLToPath(import.meta.url))) === 'ops' ? '../capabilities/media/artifacts.js' : '../../capabilities/media/artifacts.js');
       mediaStore = new ArtifactStore({ root: mediaRoot });
       mediaStore.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents, dryRun: true });
+      // Her sticker library: a picture the owner had her keep goes when the message it came from is forgotten.
+      const { createStickers } = await import(path.basename(path.dirname(fileURLToPath(import.meta.url))) === 'ops' ? '../capabilities/media/stickers.js' : '../../capabilities/media/stickers.js');
+      stickers = createStickers({ root: mediaStore.root });
+      stickers.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents, dryRun: true });
     }
     if (fs.existsSync(workRoot)) for (const name of fs.readdirSync(workRoot)) if (/^tts-[a-f0-9-]{36}\.wav$|^speech-job-[A-Za-z0-9]+$/.test(name)) {
       const target = inside(base, path.join(workRoot, name)); if (fs.statSync(target).isDirectory()) noLinks(target); speechScratch.push(target);
@@ -99,8 +103,9 @@ export async function purgeExecution({ base, plan, checkStopped = stopped }) {
   for (const file of sessions) { inside(sessionsRoot, file); fs.unlinkSync(file); }
   for (const [file, value] of writes) { inside(base, file); rewrite(file, value); }
   if (mediaStore) mediaRemoved = mediaStore.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents }).removed;
+  if (stickers) stickersRemoved = stickers.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents }).removed;
   for (const target of speechScratch) { inside(base, target); if (fs.statSync(target).isDirectory()) { noLinks(target); fs.rmSync(target, { recursive: true }); } else fs.unlinkSync(target); }
-  return { sdkPurged: true, localSourcesPurged: true, platform: 'outside-control', executionSessionsRemoved: sessions.length, mediaArtifactsRemoved: mediaRemoved, speechScratchRemoved: speechScratch.length };
+  return { sdkPurged: true, localSourcesPurged: true, platform: 'outside-control', executionSessionsRemoved: sessions.length, mediaArtifactsRemoved: mediaRemoved, stickersRemoved, speechScratchRemoved: speechScratch.length };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {

@@ -536,10 +536,12 @@ test('carried event: a background result rides on a real message of the person, 
 // prompt followed by the fixture persona). Changing either is a deliberate act: every conversation pays one cache miss.
 // The system hash changed twice since, deliberately: the base prompt gained the small-face line, and then everything
 // about one channel (the voice sentence, the small faces) moved out of the base prompt into the channel's own part
-// (capabilities/channels). PINNED_SYSTEM_SHA256 is a QQ conversation: base prompt, QQ part, fixture persona.
+// (capabilities/channels), which then gained the sticker marker sentence and lost the small faces (sending them is off
+// by default). PINNED_SYSTEM_SHA256 is a QQ conversation:
+// base prompt, QQ part, fixture persona.
 // PINNED_NEUTRAL_SYSTEM_SHA256 is the same without any channel part.
 const PINNED_NEUTRAL_SYSTEM_SHA256 = '2d3246158ecafc165c0be974c6ca02ab1bf60a5f7842b96e5b0804731e1eb01c';
-const PINNED_SYSTEM_SHA256 = '94c3b0f0fb1b01fa376a95561dd2350db4a7d47a6d44a5c743b0c9b2c70aa2df', PINNED_TOOLS_SHA256 = '7047ad04c0b28d0565d24b6946884934289eac5a0ebb303670d62e10cc1ae2ba';
+const PINNED_SYSTEM_SHA256 = 'e460174841df0a7c6f65c46cab6b297b889423b12345b96c4b6554da7e7e2f34', PINNED_TOOLS_SHA256 = '7047ad04c0b28d0565d24b6946884934289eac5a0ebb303670d62e10cc1ae2ba';
 test('the cached prefix is pinned: the base prompt and the tool definitions are byte-for-byte what they were before background jobs, in every kind of run', async t => {
   const f = await setup(t);
   f.gateway.state.script.push(reply('一'), reply('二'), reply('三'), reply('四'));
@@ -594,7 +596,8 @@ test('the channel part of the system message: fixed text chosen by the channel A
   // A channel's part is its declaration, byte for byte, and bounded.
   assert.equal(onQQ, [base, channelPrompt('qq'), '[人格]\n大肥鱼'].join('\n\n'));
   assert.equal(onMock, [base, channelPrompt('mock'), '[人格]\n大肥鱼'].join('\n\n'));
-  assert.match(onQQ, /在 QQ 里.*语音.*\[微笑\]/s);
+  // Small faces are off on QQ for now (its declaration): the QQ part offers voice and stickers, no [微笑].
+  assert.match(onQQ, /在 QQ 里.*语音.*\[表情:词\]/s); assert.doesNotMatch(onQQ, /\[微笑\]|小表情/);
   assert.doesNotMatch(onMock, /QQ|\[微笑\]/);
   for (const item of CHANNELS) assert.ok(item.prompt.length > 0 && item.prompt.length <= CHANNEL_PROMPT_CHARS, item.id);
   // Nothing a bridge sends can become system text: the request has no field for it.

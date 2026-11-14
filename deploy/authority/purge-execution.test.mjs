@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { purgeExecution } from './purge-execution.mjs';
 import { ArtifactStore } from '../../capabilities/media/artifacts.js';
+import { createStickers } from '../../capabilities/media/stickers.js';
 import { conversationSessionId } from '../../capabilities/conversation/sessions.js';
 import { qqRequestId } from '../../capabilities/qq/worker-route.js';
 
@@ -35,6 +36,9 @@ test('operator purge removes retired conversation sessions of affected streams o
   const original = media.put({ scope, sourceEventId: 'media-source', kind: 'audio', mime: 'audio/wav', data: Buffer.from('private fixture audio') });
   media.put({ scope, sourceEventId: 'media-source', kind: 'transcript', mime: 'text/plain', data: Buffer.from('private fixture transcript'), parents: [original.id] });
   const retained = media.put({ scope, sourceEventId: 'other-source', kind: 'image', mime: 'image/png', data: Buffer.from('unrelated fixture image') });
+  // Two library stickers the owner had her keep: one from the forgotten message, one from another.
+  const library = createStickers({ root: media.root }), hash = n => String(n).repeat(64);
+  for (const [n, eventId] of [[1, 'media-source'], [2, 'other-source']]) library.keep({ hash: hash(n), data: Buffer.from('fixture sticker ' + n), mime: 'image/png', kind: 'sticker', name: 'MOCK' + n, tags: [], origin: { entityId: 'e', streamId: target, eventId } });
   fs.mkdirSync(path.join(f.base, 'speech-data/reference'), { recursive: true });
   fs.writeFileSync(path.join(f.base, 'speech-data/reference/default.wav'), 'synthetic voice reference');
   const scratch = path.join(f.base, 'speech-data/tts-11111111-1111-1111-1111-111111111111.wav'); fs.writeFileSync(scratch, 'unfinished source speech');
@@ -46,6 +50,9 @@ test('operator purge removes retired conversation sessions of affected streams o
   assert.equal(fs.existsSync(f.sessions.old), false); assert.equal(fs.existsSync(f.sessions.older), false); assert.equal(fs.existsSync(f.sessions.keep), true);
   assert.equal(result.mediaArtifactsRemoved, 2); assert.equal(fs.existsSync(media.directory(original.id)), false);
   assert.equal(media.read(retained.id, scope).data.toString(), 'unrelated fixture image');
+  assert.equal(result.stickersRemoved, 1);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(media.root, 'stickers/index.json'), 'utf8')).entries.map(entry => entry.name), ['MOCK2']);
+  assert.deepEqual(fs.readdirSync(path.join(media.root, 'stickers')).sort(), [hash(2) + '.png', 'index.json']);
   assert.equal(fs.existsSync(scratch), false); assert.equal(fs.existsSync(path.join(f.base, 'speech-data/reference/default.wav')), true);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.base, 'qq-data/dispatch.json'))).records, { [f.forgotten]: { status: 'forgotten' }, keep: { status: 'sent' } });
   assert.equal(fs.readFileSync(path.join(f.base, 'authority-data/keep.json'), 'utf8'), '{"remember":"not selected"}');

@@ -24,7 +24,10 @@ async function main() {
   let bridge;
   const onebot = new OneBotClient({ url: onebotURL(cfg.onebotPort), token: fs.readFileSync(cfg.onebotTokenFile, 'utf8').trim(), onEvent: event => bridge.receive(event), onStatus: connected => { void bridge.connection(connected); } });
   const executor = createConversationClient(cfg.conversation);
-  const media = cfg.contentEnabled ? new QQMedia({ content: new ContentClient(cfg.authority), onebot }) : undefined;
+  // Optional qq-bridge.json `stickerSubType` (default true): false sends her stickers as ordinary pictures, for a OneBot
+  // implementation without NapCat's `sub_type: 1`.
+  if (cfg.stickerSubType !== undefined && typeof cfg.stickerSubType !== 'boolean') throw new Error('QQ_CONFIG');
+  const media = cfg.contentEnabled ? new QQMedia({ content: new ContentClient(cfg.authority), onebot, stickerSubType: cfg.stickerSubType ?? true }) : undefined;
   bridge = new QQBridge({ ...cfg, authority, port, onebot, executor, media });
   const expected = Buffer.from(cfg.operatorTokenHash, 'hex');
   const server = http.createServer(async (req, res) => {

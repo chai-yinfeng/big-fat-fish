@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
 import { AuthorityClient } from '../../authority/src/client.js';
 import { createLocalSpeechRunner } from '../speech/runner.js';
 import { ArtifactStore } from './artifacts.js';
@@ -11,6 +10,7 @@ import { capabilityGateway, meteredSpeech } from './client.js';
 import { createContentOperator } from './operator.js';
 import { createJobs } from './jobs.js';
 import { createDemoRunner } from './demo-job.js';
+import { createNormalizeImage } from './normalize.js';
 
 process.umask(0o077);
 let server, timer, jobs;
@@ -19,16 +19,13 @@ try {
   const file = process.argv[3], stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.size > 16384 || (stat.mode & 0o077) !== 0) throw Error('CONFIG');
   const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
-  if (Object.keys(cfg).some(k => !['store', 'workRoot', 'speechConfigFile', 'authority', 'gateway', 'sharpModule', 'control'].includes(k)) || !path.isAbsolute(cfg.sharpModule)) throw Error('CONFIG');
+  if (Object.keys(cfg).some(k => !['store', 'workRoot', 'speechConfigFile', 'authority', 'gateway', 'sharpModule', 'control', 'allowRawSmallPng'].includes(k)) || !path.isAbsolute(cfg.sharpModule) || cfg.allowRawSmallPng !== undefined && typeof cfg.allowRawSmallPng !== 'boolean') throw Error('CONFIG');
   const authority = new AuthorityClient(cfg.authority), gateway = capabilityGateway(cfg.gateway);
   // Conversation speech and the operator's voice test share this runner, so both are counted.
   const store = new ArtifactStore(cfg.store), speech = meteredSpeech(createLocalSpeechRunner({ configFile: cfg.speechConfigFile }), gateway.recordUsage);
-  let sharp;
-  const normalizeImage = async data => {
-    sharp ||= createRequire(import.meta.url)(cfg.sharpModule);
-    const image = await sharp(data, { limitInputPixels: 40000000, animated: false, page: 0, pages: 1 }).rotate().resize(512, 512, { fit: 'inside', withoutEnlargement: true }).flatten({ background: '#ffffff' }).jpeg({ quality: 85 }).toBuffer();
-    return { data: image, mime: 'image/jpeg' };
-  };
+  // Optional `allowRawSmallPng` (default false): with no image runtime, a small PNG goes to the vision provider as it
+  // is. Only the staging fixtures write it (and take it out again: an older release refuses the key).
+  const normalizeImage = createNormalizeImage({ sharpModule: cfg.sharpModule, allowRawSmallPng: cfg.allowRawSmallPng ?? false });
   const worldStatus = async () => (await authority.health()).world;
   // Background jobs keep their records beside the media files (no new configuration key: the previous release
   // reads this same content.json and ignores the file).

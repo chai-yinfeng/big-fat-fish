@@ -22,7 +22,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'K1', 'K2', 'K4', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -201,6 +201,30 @@ test('say can carry small faces; expectReply can require the face numbers of the
   await STEPS.expectReply(run, ctx, { to: 'MOCK-A', faces: [], timeoutMs: 0 });
   await assert.rejects(STEPS.expectReply(run, { matched: new Set() }, { to: 'MOCK-A', faces: [], timeoutMs: 0 }), /received a message with faces \["14"\], expected \[\]/);
   await assert.rejects(STEPS.expectReply(run, { matched: new Set([1]) }, { to: 'MOCK-A', faces: ['14'], timeoutMs: 0 }), /received a message with faces \[\], expected \["14"\]/);
+  // A picture on its own: a sticker (sub_type 1) or an ordinary picture; anything else is named in the failure.
+  sent = [{ message_id: 3, user_id: qq, text: '', types: ['image'], images: [{ subType: 1, base64: true }] }, { message_id: 4, user_id: qq, text: '', types: ['image'], images: [{ subType: 0, base64: true }] }, { message_id: 5, user_id: qq, text: 'MOCK', types: ['text', 'image'], images: [{ subType: 1, base64: true }] }];
+  await STEPS.expectReply(run, ctx, { to: 'MOCK-A', image: 'sticker', timeoutMs: 0 });
+  await STEPS.expectReply(run, ctx, { to: 'MOCK-A', image: 'picture', timeoutMs: 0 });
+  await assert.rejects(STEPS.expectReply(run, { matched: new Set([4, 5]) }, { to: 'MOCK-A', image: 'picture', timeoutMs: 0 }), /received sticker, expected one picture on its own/);
+  await assert.rejects(STEPS.expectReply(run, { matched: new Set([3, 4]) }, { to: 'MOCK-A', image: 'sticker', timeoutMs: 0 }), /received \["text","image"\], expected one sticker on its own/);
+  await assert.rejects(STEPS.expectReply(run, { matched: new Set([3, 4, 5]) }, { to: 'MOCK-A', image: 'sticker', timeoutMs: 0 }), /no message delivered to MOCK-A/);
+  await assert.rejects(STEPS.expectReply(run, { matched: new Set() }, { to: 'MOCK-A', image: 'gif', timeoutMs: 0 }), /unknown image/);
+});
+
+test('say can carry a made-up picture; expectVisionRequests counts the pictures the model was asked to look at', async t => {
+  const data = shipped(), posted = [];
+  const run = new Runner({ data, sleep: async () => {}, operator: async () => ({ items: [] }), onebot: async (method, route, body) => { posted.push([route, body]); return {}; } });
+  run.messageCount = async () => 0;
+  await STEPS.say(run, { observed: new Map() }, { from: 'MOCK-A', text: 'MOCK 图', image: { seed: 'MOCK-S', as: 'mall', name: '狗头' } });
+  assert.deepEqual(posted.map(([route, body]) => [route, body.text, body.image]), [['/message', 'MOCK 图', { seed: 'MOCK-S', as: 'mall', name: '狗头' }]]);
+  const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-vision-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const log = path.join(dir, 'requests.jsonl');
+  fs.writeFileSync(log, [{ stream: false, userText: '这是一张聊天表情包。MOCK' }, { stream: true, userText: '这是一张聊天表情包 typed by a person' }, { stream: false, consolidation: true, userText: '这是一张聊天表情包' }, { stream: false, search: true, userText: '这是一张聊天表情包' }, { stream: false, provider: 'mock', userText: '这是一张聊天表情包' }, { stream: false, userText: '描述图片内容' }].map(entry => JSON.stringify(entry)).join('\n') + '\n');
+  const reader = new Runner({ data, modelLog: log }), ctx = { logOffset: 0 };
+  await STEPS.expectVisionRequests(reader, ctx, { contains: '这是一张聊天表情包', count: 1 });
+  await STEPS.expectVisionRequests(reader, ctx, { contains: '', count: 2 });
+  await assert.rejects(STEPS.expectVisionRequests(reader, ctx, { contains: '这是一张聊天表情包', count: 0 }), /asked to look at 1 picture\(s\) with "这是一张聊天表情包", expected 0/);
+  await STEPS.expectVisionRequests(reader, { logOffset: 6 }, { contains: '', count: 0 });
 });
 
 test('expectBeijingTime: one Beijing time line that matches the real time of the request, and no UTC timestamp', async t => {
@@ -400,6 +424,8 @@ async function stack(t) {
   const onebotPort = await new Promise(resolve => { const probe = net.createServer(); probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
   // The bridge asks for initiated runs every second here (production: every minute).
   edit('qq-bridge.json', c => { c.onebotPort = onebotPort; c.initiationPollMs = 1000; });
+  // No image runtime here either: the staging-only switch lets the fake OneBot's small PNGs through, as in staging.
+  edit('content.json', c => { c.allowRawSmallPng = true; });
   // The worker's cleanup client gets a port nobody listens on (as in staging, where it cannot reach the operator).
   edit('memory-worker.json', c => Object.assign(c, { operatorPort: onebotPort === 65535 ? 65534 : onebotPort + 1, tickMs: 1000, consolidationDeferMs: 2000 }));
   // The second channel (test-only MOCK): its own capability and credential, and its own conversation executor
@@ -480,6 +506,14 @@ test('usage steps: a row must change by exactly what was expected, the ledger mu
   await assert.rejects(STEPS.gatewayCall(run, ctx, { kind: 'video', text: 'x' }), /unknown kind/);
   await assert.rejects(STEPS.gatewayCall(new Runner({ data: shipped() }), ctx, { kind: 'search', text: 'x' }), /needs --inference-socket/);
   assert.deepEqual(asked, [['/v1/web/search', 'query'], ['/v1/vision/describe', 'imageBase64,mime,question'], ['/v1/vision/describe', 'imageBase64,mime,question']]);
+  // A first look at a sticker is the same picture call, marked with its purpose.
+  await STEPS.gatewayCall(run, ctx, { kind: 'sticker', text: 'MOCK-表情', expect: 'BUDGET_EXHAUSTED' });
+  assert.deepEqual(asked.at(-1), ['/v1/vision/describe', 'imageBase64,mime,purpose,question']);
+  // Two rows of one spend category (vision and sticker) agree with the meter when together they make its amount.
+  usage = { ...usage, rows: [...usage.rows.map(item => item.id === 'vision' ? { ...item, costYuan: 0.03 } : item), row('sticker', { costYuan: 0.01, spendCategory: 'vision' })] };
+  await STEPS.expectUsageMatchesSpend(run, ctx, { minPaidRows: 3 });
+  usage = { ...usage, rows: usage.rows.map(item => item.id === 'sticker' ? { ...item, costYuan: 0.02 } : item) };
+  await assert.rejects(STEPS.expectUsageMatchesSpend(run, ctx, { timeoutMs: 0 }), /disagree/);
 });
 
 test('initiation steps: a poke is an empty request about the owner, its outcome is read from the operator list, lost sends and model calls are counted', async t => {
@@ -650,9 +684,9 @@ test('job steps: the demo job is registered with nothing but its seconds, a job 
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 600000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'K1', 'K2', 'K4', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '38/38 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '44/44 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));

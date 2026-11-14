@@ -135,18 +135,25 @@ export const STEPS = {
     for (const [key, value] of Object.entries(expected)) if (JSON.stringify(listed[key]) !== JSON.stringify(value)) fail(`channel ${id}: ${key} is ${JSON.stringify(listed[key])}, expected ${JSON.stringify(value)}`);
   },
   /** A private message arrives from a person (subType: OneBot sub_type, default "friend"; faces: QQ face numbers,
-   * each a face segment after the text). */
-  async say(run, ctx, { from, text, subType, faces }) {
+   * each a face segment after the text; image: { seed, as: "picture" | "sticker" | "mall", name } one made-up picture after
+   * those, the same bytes for the same seed, as fake-onebot.mjs describes). */
+  async say(run, ctx, { from, text, subType, faces, image }) {
     ctx.observed.set(from, await run.messageCount(from));
-    await run.onebot('POST', '/message', { user_id: run.qq(from), nickname: from, text, ...(subType ? { sub_type: subType } : {}), ...(faces ? { faces } : {}) });
+    await run.onebot('POST', '/message', { user_id: run.qq(from), nickname: from, text, ...(subType ? { sub_type: subType } : {}), ...(faces ? { faces } : {}), ...(image ? { image } : {}) });
   },
   /** The next not-yet-matched message delivered to `to` must arrive and contain `contains` (in its text segments).
-   * `faces`: that same message must carry exactly these QQ face numbers as face segments, in this order. */
-  async expectReply(run, ctx, { to, contains, faces, timeoutMs = 60000 }) {
+   * `faces`: that same message must carry exactly these QQ face numbers as face segments, in this order.
+   * `image`: it must be exactly one picture and nothing else, "sticker" (sent with NapCat's `sub_type: 1`) or "picture". */
+  async expectReply(run, ctx, { to, contains, faces, image, timeoutMs = 60000 }) {
     const message = await run.poll(async () => (await run.sent()).find(item => item.user_id === run.qq(to) && !ctx.matched.has(item.message_id)), timeoutMs, `no message delivered to ${to}`);
     ctx.matched.add(message.message_id);
     if (contains !== undefined && !message.text.includes(contains)) fail(`${to} received ${JSON.stringify(message.text.slice(0, 80))}, expected it to contain ${JSON.stringify(contains)}`);
     if (faces !== undefined && JSON.stringify(message.faces ?? []) !== JSON.stringify(faces)) fail(`${to} received a message with faces ${JSON.stringify(message.faces ?? [])}, expected ${JSON.stringify(faces)}`);
+    if (image !== undefined) {
+      if (!['sticker', 'picture'].includes(image)) fail(`expectReply: unknown image ${JSON.stringify(image)}`);
+      const got = JSON.stringify(message.types ?? []) === '["image"]' && message.images?.length === 1 ? (message.images[0].subType === 1 ? 'sticker' : 'picture') : `${JSON.stringify(message.types ?? [])}`;
+      if (got !== image) fail(`${to} received ${got}, expected one ${image} on its own`);
+    }
   },
   /** Nothing unmatched may have been delivered to `to` (a name, a list or "*"). `observedFrom`: first wait
    * until Authority has recorded the last message said by each of these people, then `afterMs`. */
@@ -181,6 +188,12 @@ export const STEPS = {
     if (!requests.every(entry => [entry.system, entry.context, entry.rest].every(value => typeof value === 'string'))) fail('the model request log lacks system/context/rest');
     const sent = entry => part === 'context' ? entry.context : part === 'system' ? entry.system : [entry.system, entry.context, entry.userText, entry.rest].join('\n');
     if (!requests.every(entry => includes(sent(entry), { contains, absent }))) fail(`the model ${part} for ${JSON.stringify(userText)} ${contains !== undefined ? 'lacks ' + JSON.stringify(contains) : 'contains ' + JSON.stringify(absent)}`);
+  },
+  /** Pictures the model was asked to look at during this scenario (non-streamed requests that are no consolidation,
+   * search or provider call) whose question contains `contains`: exactly `count`. */
+  async expectVisionRequests(run, ctx, { contains, count }) {
+    const actual = run.modelLog(ctx).filter(entry => entry.stream === false && !entry.consolidation && !entry.search && !entry.provider && typeof entry.userText === 'string' && entry.userText.includes(contains)).length;
+    if (actual !== count) fail(`the model was asked to look at ${actual} picture(s) with ${JSON.stringify(contains)}, expected ${count}`);
   },
   async expectNoModelCall(run, ctx, { userText }) {
     if (run.modelLog(ctx).some(entry => entry.userText.includes(userText))) fail(`the model received ${JSON.stringify(userText)}`);
@@ -557,11 +570,11 @@ export const STEPS = {
     await run.poll(async () => (await run.operator('GET', '/spend')).tier === tier, timeoutMs, `spend tier never became ${tier}`);
   },
   /** One paid call at the gateway's own exit, the way the content service makes it (staging has no image runtime,
-   * so a picture cannot come in through QQ): `kind` "vision" (a 1x1 picture with `text` as the question) or
-   * "search" (`text` as the query). `expect`: "ok", or the gateway's refusal code. */
+   * so a picture cannot come in through QQ): `kind` "vision" (a 1x1 picture with `text` as the question), "sticker" (the
+   * same, marked as a first look at a sticker) or "search" (`text` as the query). `expect`: "ok", or the gateway's refusal code. */
   async gatewayCall(run, _ctx, { kind, text, expect = 'ok' }) {
     if (typeof run.gateway !== 'function') fail('gatewayCall needs --inference-socket and --inference-token-file');
-    const [route, body] = kind === 'vision' ? ['/v1/vision/describe', { imageBase64: MOCK_IMAGE, mime: 'image/png', question: text }] : kind === 'search' ? ['/v1/web/search', { query: text }] : fail(`gatewayCall: unknown kind ${JSON.stringify(kind)}`);
+    const [route, body] = ['vision', 'sticker'].includes(kind) ? ['/v1/vision/describe', { imageBase64: MOCK_IMAGE, mime: 'image/png', question: text, ...(kind === 'sticker' ? { purpose: 'sticker' } : {}) }] : kind === 'search' ? ['/v1/web/search', { query: text }] : fail(`gatewayCall: unknown kind ${JSON.stringify(kind)}`);
     const outcome = await run.gateway(route, body);
     if (outcome !== expect) fail(`the gateway answered ${outcome} to a ${kind} call, expected ${expect}`);
   },
@@ -605,15 +618,18 @@ export const STEPS = {
     };
     try { await run.poll(async () => (seen = await since()) === wanted, timeoutMs, 'timeout'); } catch (error) { if (error.message !== 'timeout') throw error; fail(`usage of ${capability} changed by ${seen}, expected ${wanted}`); }
   },
-  /** The ledger and the spend meter agree on today's money: every paid row's cost is its spend category's amount
-   * (operator GET /usage against GET /spend), and the rows add up to what was spent. At least `minPaidRows` rows cost something. */
+  /** The ledger and the spend meter agree on today's money: the paid rows of each spend category add up to that
+   * category's amount (operator GET /usage against GET /spend; vision and sticker share one), and all rows add up to what
+   * was spent. At least `minPaidRows` rows cost something. */
   async expectUsageMatchesSpend(run, _ctx, { minPaidRows = 1, timeoutMs = 15000 }) {
     let seen;
     const micros = value => Math.round(value * 1e6);
     const agree = async () => {
       const usage = await run.operator('GET', '/usage'), spend = await run.operator('GET', '/spend'), paid = usage.rows.filter(row => row.spendCategory);
+      const categories = {};
+      for (const row of paid) categories[row.spendCategory] = (categories[row.spendCategory] ?? 0) + micros(row.costYuan);
       seen = { day: [usage.day, spend.day], rows: Object.fromEntries(paid.map(row => [row.id, [row.costYuan, spend.byTier[row.spendCategory]]])), total: [paid.reduce((sum, row) => sum + micros(row.costYuan), 0), micros(spend.spentYuan)] };
-      return usage.day === spend.day && paid.every(row => micros(row.costYuan) === micros(spend.byTier[row.spendCategory])) && seen.total[0] === seen.total[1] && paid.filter(row => row.costYuan > 0).length >= minPaidRows;
+      return usage.day === spend.day && Object.entries(categories).every(([category, amount]) => amount === micros(spend.byTier[category])) && seen.total[0] === seen.total[1] && paid.filter(row => row.costYuan > 0).length >= minPaidRows;
     };
     try { await run.poll(agree, timeoutMs, 'timeout'); } catch (error) { if (error.message !== 'timeout') throw error; fail(`the usage ledger and the spend meter disagree: ${JSON.stringify(seen)}`); }
   },

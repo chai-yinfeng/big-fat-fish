@@ -9,7 +9,7 @@ import { DECLINE_MARK } from '../../conversation/executor.js';
 // Bot 100, owner 200, a friend 201. Authority hands out what `f.offers` holds, one per poll.
 const OWNER_STREAM = 'qq:100:private:200';
 const offer = (id, extra = {}) => ({ id, kind: 'proactive', streamId: OWNER_STREAM, memoryEpoch: 0, expiresAt: Date.now() + 300000, ...extra });
-async function fixture(t, { stateFile } = {}) {
+async function fixture(t, { stateFile, faces } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-init-'));
   t.after(() => { assert.ok(fs.realpathSync(dir).startsWith(fs.realpathSync(os.tmpdir()) + path.sep + 'qq-init-')); fs.rmSync(dir, { recursive: true }); });
   if (stateFile) fs.writeFileSync(path.join(dir, 'state.json'), JSON.stringify(stateFile));
@@ -27,7 +27,7 @@ async function fixture(t, { stateFile } = {}) {
     return { message_id: 500 + sends.length };
   } };
   const executor = { execute: async request => { runs.push(request); if (typeof f.reply === 'function') return f.reply(request); return f.reply; } };
-  const bridge = new QQBridge({ authority, port: { observe: async value => { observations.push(value); return { observationId: 'observation-' + observations.length }; } }, onebot, executor, settingsFile: path.join(dir, 'settings.json'), stateFile: path.join(dir, 'state.json'), sleep: async () => {} });
+  const bridge = new QQBridge({ authority, port: { observe: async value => { observations.push(value); return { observationId: 'observation-' + observations.length }; } }, onebot, executor, settingsFile: path.join(dir, 'settings.json'), stateFile: path.join(dir, 'state.json'), sleep: async () => {} , ...(faces === undefined ? {} : { faces }) });
   await bridge.connection(true); await bridge.configure({ expectedSelfId: '100', allowedCallerUID: '200' });
   world.paused = false; world.revision++;
   const message = (userId, id) => ({ post_type: 'message', message_type: 'private', sub_type: 'friend', self_id: 100, user_id: userId, sender: { user_id: userId }, message_id: id, time: Math.floor(Date.now() / 1000), message: [{ type: 'text', data: { text: 'Hello' } }] });
@@ -197,12 +197,31 @@ test('a report Authority could not take is made again on a later round, without 
   assert.deepEqual([f.acks.length, f.record('mock-2').reported], [1, true]);
 });
 
-test('an initiated run sends her [微笑] as a face in the same message, like any reply; the record keeps what she wrote', async t => {
-  const f = await fixture(t);
+test('faces on: an initiated run sends her [微笑] as a face in the same message, like any reply; the record keeps what she wrote', async t => {
+  const f = await fixture(t, { faces: true });
   f.reply = 'MOCK 在忙吗[微笑][不存在]';
   f.offers.push(offer('mock-face'));
   await f.bridge.pollInitiations();
   assert.deepEqual(f.sends.map(s => s.message), [[{ type: 'text', data: { text: 'MOCK 在忙吗' } }, { type: 'face', data: { id: '14' } }, { type: 'text', data: { text: '[不存在]' } }]]);
   assert.deepEqual(f.observations.map(o => o.text), ['MOCK 在忙吗[微笑][不存在]']);
   assert.equal(f.record('mock-face').status, 'sent');
+});
+
+test('an initiated run sends no sticker yet: her [表情:词] is taken out and dropped', async t => {
+  const f = await fixture(t);
+  f.reply = 'MOCK 早呀[表情:开心]';
+  f.offers.push(offer('mock-sticker'));
+  await f.bridge.pollInitiations();
+  assert.deepEqual(f.sends.map(s => s.message), [[{ type: 'text', data: { text: 'MOCK 早呀' } }]]);
+  assert.deepEqual(f.observations.map(o => o.text), ['MOCK 早呀']);
+  assert.equal(f.record('mock-sticker').status, 'sent');
+});
+
+test('faces off (QQ\'s declaration by default): an initiated run sends her [微笑] as plain text, no face segment', async t => {
+  const f = await fixture(t);
+  f.reply = 'MOCK 在忙吗[微笑]';
+  f.offers.push(offer('mock-face-off'));
+  await f.bridge.pollInitiations();
+  assert.deepEqual(f.sends.map(s => s.message), [[{ type: 'text', data: { text: 'MOCK 在忙吗[微笑]' } }]]);
+  assert.equal(f.record('mock-face-off').status, 'sent');
 });

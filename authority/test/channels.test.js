@@ -208,7 +208,7 @@ test('over the sockets: a channel credential admits and asks only for itself, th
   assert.deepEqual(asked, ['pending', 'pending']);
   const world = (await call('/world')).body.value;
   assert.deepEqual(world.channels.map(item => [item.id, item.name, item.status, item.boundStreams, item.receipts, item.friends]), [['qq', 'QQ', 'available', 3, 'reliable', true], ['mock', 'MOCK', 'available', 2, 'unreliable', true]]);
-  assert.deepEqual(world.channels[0].expression, { voice: true, images: true, faces: true, split: true });
+  assert.deepEqual(world.channels[0].expression, { voice: true, images: true, faces: false, stickers: true, split: true });
 });
 
 test('the production entry point refuses a configuration that registers a test-only channel', t => {

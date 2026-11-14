@@ -11,7 +11,7 @@ import { QQBridge } from '../bridge.js';
 function wav() {
   const b = Buffer.alloc(44 + 3200); b.write('RIFF'); b.writeUInt32LE(b.length - 8, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(16000, 24); b.writeUInt32LE(32000, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write('data', 36); b.writeUInt32LE(3200, 40); return b;
 }
-function fixture(t) {
+function fixture(t, { faces } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-qq-media-'));
   t.after(() => { assert.equal(path.dirname(root), os.tmpdir()); assert.match(path.basename(root), /^fish-qq-media-/); fs.rmSync(root, { recursive: true }); });
   const store = new ArtifactStore({ root: path.join(root, 'artifacts') }), observed = [], sent = [], executions = [];
@@ -23,7 +23,7 @@ function fixture(t) {
   const onebot = { call: async (action, params) => { if (action === 'get_login_info') return { user_id: '100' }; if (action === 'get_record') return { base64: wav().toString('base64') }; if (action === 'get_image') return { base64: 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' }; if (action === 'send_private_msg') { sent.push(params); return { message_id: nextId++ }; } throw Error('unexpected action'); } };
   const settingsFile = path.join(root, 'settings.json'); fs.writeFileSync(settingsFile, JSON.stringify({ expectedSelfId: '100', allowedCallerUID: '200' }));
   const executor = { execute: async request => { executions.push(request); return '我在。'; } };
-  const bridge = new QQBridge({ authority: { health: async () => ({ world: { paused: false, revision: 1 } }), context: async () => ({ entityId: scope.entityId, memoryEpoch: 0 }) }, port: { observe: async value => { observed.push(value); return { observationId: 'synthetic-observation' }; } }, onebot, executor, media: new QQMedia({ content, onebot }), settingsFile, stateFile: path.join(root, 'dispatch.json') });
+  const bridge = new QQBridge({ authority: { health: async () => ({ world: { paused: false, revision: 1 } }), context: async () => ({ entityId: scope.entityId, memoryEpoch: 0 }) }, port: { observe: async value => { observed.push(value); return { observationId: 'synthetic-observation' }; } }, onebot, executor, media: new QQMedia({ content, onebot, ...(faces === undefined ? {} : { faces }) }), settingsFile, stateFile: path.join(root, 'dispatch.json') });
   const event = (id, message) => ({ post_type: 'message', self_id: 100, user_id: 200, message_id: id, message_type: 'private', sender: { user_id: 200 }, time: Math.floor(Date.now() / 1000), message });
   return { bridge, event, observed, sent, executions, executor, content, store, service, qualities, tts: () => tts };
 }
@@ -115,8 +115,8 @@ test('a voice reply is synthesized without bracketed asides and emoticons; the r
   assert.equal(spoken.at(-1), '好'.repeat(120));
 });
 
-test('small faces: six in one message are answered, read by name and stored as nothing; her [微笑] goes out as a face in the same message', async t => {
-  const f = fixture(t); await f.bridge.connection(true);
+test('small faces: six in one message are answered, read by name and stored as nothing; with faces on her [微笑] goes out as a face in the same message', async t => {
+  const f = fixture(t, { faces: true }); await f.bridge.connection(true);
   f.executor.execute = async request => { f.executions.push(request); return '收到[微笑]，这个[不存在]不是表情'; };
   await f.bridge.receive(f.event(10, [{ type: 'text', data: { text: '哈哈' } }, ...['14', '14', '179', '264', '277', '9999'].map(id => ({ type: 'face', data: { id } }))]));
   assert.equal(f.executions.length, 1);
@@ -147,4 +147,84 @@ test('a voice reply is synthesized without face markers; the recorded reply keep
   assert.deepEqual(spoken, ['在呢，[不存在]也念']);
   assert.equal(f.sent[0].message[0].type, 'record');
   assert.match(f.observed.at(-1).text, /在呢\[微笑\]，\[不存在\]也念/);
+});
+
+test('stickers: read as a sticker, described once by picture, a mall sticker by its name, an unrecognized one said so', async t => {
+  const f = fixture(t), looks = [], vision = f.service.vision; await f.bridge.connection(true);
+  f.service.vision = async body => { looks.push(body.purpose); return vision(body); };
+  const custom = { type: 'image', data: { file: 'trusted-sticker', sub_type: 1, summary: '[动画表情]' } };
+  await f.bridge.receive(f.event(41, [{ type: 'text', data: { text: '哈' } }, custom]));
+  await f.bridge.receive(f.event(42, [{ type: 'text', data: { text: '再来' } }, custom]));
+  assert.deepEqual(looks, ['sticker'], 'the same picture is looked at once, in the sticker row');
+  for (const execution of f.executions) assert.match(execution.input.text, /表情包 media:[a-f0-9-]{36}：一张合成测试表情图（机器描述，仅首帧，不代表完整动画）/);
+  // Another picture (other bytes) for the mall sticker.
+  const onebotCall = f.bridge.onebot.call;
+  f.bridge.onebot.call = async (action, params) => action === 'get_image' && params.file === 'trusted-mall' ? { base64: 'R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAIBRAA7' } : onebotCall(action, params);
+  await f.bridge.receive(f.event(43, [{ type: 'text', data: { text: '狗头' } }, { type: 'image', data: { file: 'trusted-mall', emoji_id: 'MOCK-E', emoji_package_id: 'MOCK-P', summary: '[狗头]' } }]));
+  assert.match(f.executions.at(-1).input.text, /表情包 media:[a-f0-9-]{36}：商城表情「狗头」（名字来自平台，不是看图识别）/);
+  assert.deepEqual(looks, ['sticker']);
+  // The day's sticker looks are used up and the picture is not known.
+  f.service.vision = async () => { throw Object.assign(new Error('CONTENT_BUDGET_EXHAUSTED'), { code: 'CONTENT_BUDGET_EXHAUSTED' }); };
+  f.service.stickers.described = () => null;
+  await f.bridge.receive(f.event(44, [{ type: 'text', data: { text: '这个呢' } }, custom]));
+  assert.match(f.executions.at(-1).input.text, /表情包 media:[a-f0-9-]{36}：收到一张没见过的表情包，今天没有识别。不要编造它的内容。/);
+  assert.equal(f.sent.length, 4, 'every message was answered');
+});
+
+test('her library: the owner says 收下这个 after a picture; her [表情:词] then goes out last, as a message of its own', async t => {
+  const f = fixture(t); await f.bridge.connection(true);
+  const replies = ['好可爱', '收到', '好呀[表情:合成测试表情] 嘿', '在呢[表情:犀牛潜水艇]'];
+  f.executor.execute = async request => { f.executions.push(request); return replies.shift(); };
+  await f.bridge.receive(f.event(51, [{ type: 'image', data: { file: 'trusted-sticker', sub_type: 1 } }]));
+  await f.bridge.receive(f.event(52, [{ type: 'text', data: { text: '收下这个' } }]));
+  assert.match(f.executions[1].input.text, /\[渠道事实：已把主人发的那张图收进你的表情库（名字：一张合成测试表情图）。\]/);
+  await f.bridge.receive(f.event(53, [{ type: 'text', data: { text: '考过了！' } }]));
+  // The marker never reaches the chat; the sticker is the last message, an image marked as a sticker, with its own receipt.
+  assert.deepEqual(f.sent.slice(2).map(p => p.message.map(segment => segment.type === 'text' ? segment.data.text : [segment.type, segment.data.sub_type, segment.data.summary, segment.data.file.startsWith('base64://')])), [['好呀 嘿'], [['image', 1, '[动画表情]', true]]]);
+  assert.deepEqual(f.observed.slice(-2).map(o => o.text), ['好呀 嘿', '[已发送表情包：一张合成测试表情图]']);
+  assert.equal(Object.values(f.bridge.state.records).at(-1).receipts.length, 2);
+  // How often she sent one lately is told as a fact; no close sticker: nothing is sent but her words.
+  await f.bridge.receive(f.event(54, [{ type: 'text', data: { text: '还在吗' } }]));
+  assert.match(f.executions[3].input.text, /\[渠道事实：你最近 3 条回复里发过 1 次表情包。\]$/);
+  assert.deepEqual(f.sent.slice(4).map(p => p.message), [[{ type: 'text', data: { text: '在呢' } }]]);
+  // A voice reply sends no sticker and speaks no marker; the voice turn gets no frequency line.
+  const spoken = [], synthesize = f.service.speech.synthesize;
+  f.service.speech.synthesize = input => { spoken.push(input.text); return synthesize(input); };
+  f.executor.execute = async request => { f.executions.push(request); return '晚安[表情:合成测试表情]'; };
+  await f.bridge.receive(f.event(55, [{ type: 'text', data: { text: '请用语音说晚安' } }]));
+  assert.deepEqual([spoken, f.sent.slice(5).map(p => p.message[0].type)], [['晚安'], ['record']]);
+  assert.doesNotMatch(f.executions[4].input.text, /渠道事实/);
+});
+
+test('收下这个 from anyone but the owner changes nothing; without the sticker switch the picture goes as an ordinary image', async t => {
+  const f = fixture(t), kept = [];
+  const call = f.bridge.onebot.call;
+  f.bridge.onebot.call = async (action, params) => action === 'get_friend_list' ? [{ user_id: 300 }] : call(action, params);
+  await f.bridge.connection(true);
+  f.bridge.authority.admitPerson = async () => ({});
+  const keep = f.bridge.media.keepSticker.bind(f.bridge.media);
+  f.bridge.media.keepSticker = (scope, ref) => { kept.push(ref); return keep(scope, ref); };
+  const friend = (id, message) => ({ ...f.event(id, message), user_id: 300, sender: { user_id: 300 }, sub_type: 'friend' });
+  await f.bridge.receive(friend(61, [{ type: 'text', data: { text: '收下这个' } }, { type: 'image', data: { file: 'trusted-sticker', sub_type: 1 } }]));
+  await f.bridge.receive(friend(62, [{ type: 'text', data: { text: '收下这个' } }]));
+  assert.equal(f.executions.length, 2); assert.deepEqual(kept, []);
+  for (const execution of f.executions) assert.doesNotMatch(execution.input.text, /表情库/);
+  // The owner: with no picture lately she is told nothing changed.
+  await f.bridge.receive(f.event(63, [{ type: 'text', data: { text: '收下这个' } }]));
+  assert.match(f.executions.at(-1).input.text, /最近没有收到图，表情库没有变化/);
+  await f.bridge.receive(f.event(64, [{ type: 'text', data: { text: '收下这张' } }, { type: 'image', data: { file: 'trusted-sticker', sub_type: 1 } }]));
+  assert.equal(kept.length, 1);
+  f.bridge.media.stickerSubType = false;
+  f.executor.execute = async () => '给你[表情:合成测试表情]';
+  await f.bridge.receive(f.event(65, [{ type: 'text', data: { text: '来一张' } }]));
+  assert.deepEqual(f.sent.at(-1).message.map(segment => Object.keys(segment.data).sort()), [['file']]);
+});
+
+test('small faces off (QQ\'s declaration by default): her [微笑] goes out as plain text in her message, no face segment', async t => {
+  const f = fixture(t); await f.bridge.connection(true);
+  assert.equal(f.bridge.media.faces, false);
+  f.executor.execute = async () => '收到[微笑]';
+  await f.bridge.receive(f.event(70, [{ type: 'text', data: { text: '哈哈' } }, { type: 'face', data: { id: '14' } }]));
+  assert.deepEqual(f.sent.map(p => p.message), [[{ type: 'text', data: { text: '收到[微笑]' } }]]);
+  assert.equal(f.observed.at(-1).text, '收到[微笑]');
 });

@@ -142,8 +142,8 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
       if (route === '/v1/content') {
         if (grant.role !== 'capability' || req.method !== 'POST') throw failure('FORBIDDEN');
         if (!contentControl) throw failure('UNAVAILABLE');
-        const body = await bodyOf(req, ['action', 'streamId', 'memoryEpoch', 'sourceEventId', 'requestId', 'kind', 'data', 'ref', 'quality', 'voiceProfile', 'question', 'text', 'query', 'url'], 13 * 1024 * 1024);
-        if (!['ingest', 'transcribe', 'describe', 'synthesize', 'asset', 'attach', 'pending', 'search', 'fetch', 'jobResult'].includes(body.action)) throw failure('INVALID_REQUEST');
+        const body = await bodyOf(req, ['action', 'streamId', 'memoryEpoch', 'sourceEventId', 'requestId', 'kind', 'data', 'ref', 'quality', 'voiceProfile', 'question', 'text', 'query', 'url', 'sticker', 'name'], 13 * 1024 * 1024);
+        if (!['ingest', 'transcribe', 'describe', 'synthesize', 'asset', 'attach', 'pending', 'search', 'fetch', 'jobResult', 'stickerKeep', 'stickerPick'].includes(body.action)) throw failure('INVALID_REQUEST');
         if (['ingest', 'synthesize'].includes(body.action) && typeof body.sourceEventId !== 'string') throw failure('INVALID_REQUEST');
         const scopeInput = { streamId: body.streamId, memoryEpoch: body.memoryEpoch, ...(body.sourceEventId === undefined ? {} : { sourceEventId: body.sourceEventId }) };
         const scope = authority.contentScope(grant.capabilityId, scopeInput);

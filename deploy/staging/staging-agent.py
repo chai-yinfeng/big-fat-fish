@@ -351,6 +351,17 @@ def scenario_bridge_config(config, bridge_source):
     return config
 
 
+def scenario_content_config(config, content_source, replaying):
+    """content.json while scenarios replay: staging has no image runtime, so a release that knows `allowRawSmallPng`
+    lets the fake OneBot's small PNGs go to the scripted vision model as they are. Taken out again after the replay
+    (`replaying` false): production never has it, and an older release refuses the key on a rollback. Idempotent."""
+    if replaying and 'allowRawSmallPng' in content_source:
+        config['allowRawSmallPng'] = True
+    else:
+        config.pop('allowRawSmallPng', None)
+    return config
+
+
 def stop_fake_onebot():
     subprocess.run(['pkill', '-U', str(os.getuid()), '-f', FAKE_ONEBOT], capture_output=True, timeout=20)
 
@@ -418,6 +429,8 @@ def scenarios(deployer, only=None):
     deployer.stop_all(names)
     second_channel = prepare_mock_channel(release)
     edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_source))
+    content_source = (release / 'capabilities/media/main.mjs').read_text()
+    edit('content.json', lambda c: scenario_content_config(c, content_source, True))
     for name in (PREFIX + 'model.service', PREFIX + 'qq.service'):
         path = deployer.config.units / name
         path.write_text(scenario_unit(name, path.read_text()))
@@ -433,6 +446,10 @@ def scenarios(deployer, only=None):
     reset_initiations(BASE / 'authority-data/authority.sqlite')
     # Background jobs of an earlier replay go with the initiation records that kept them from being told twice.
     (BASE / 'media-data/jobs.json').unlink(missing_ok=True)
+    # What earlier replays' pictures were, and the stickers the owner had her keep: every replay starts without them.
+    (BASE / 'media-data/describe-cache.json').unlink(missing_ok=True)
+    if (BASE / 'media-data/stickers').is_dir() and not (BASE / 'media-data/stickers').is_symlink():
+        shutil.rmtree(BASE / 'media-data/stickers')
     dispatch = Path(qq_config['stateFile'])
     if dispatch.exists():
         state = json.loads(dispatch.read_text())
@@ -484,6 +501,7 @@ def scenarios(deployer, only=None):
             except subprocess.TimeoutExpired:
                 process.kill()
         stop_fake_channel()
+        edit('content.json', lambda c: scenario_content_config(c, content_source, False))
     lines = (result.stdout + result.stderr).strip().splitlines()
     for line in lines:
         print('  | ' + line[:600], flush=True)
