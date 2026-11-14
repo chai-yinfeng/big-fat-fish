@@ -25,7 +25,7 @@ icon.svg
 
 No CDN, source maps, dynamic chunks or extra dev server is needed by the standalone bundle. Parent serves `/` and these fixed assets from its existing operator HTTP listener on3082. API paths remain `/world` etc on the same origin; this also works through a different local SSH-forwarded port. HTTP loopback validation remains mandatory, not an arbitrary-origin bearer client.
 
-Parent should serve static assets without secret-bearing URL logging and with script/connect `self`, style `self` plus inline styles (the view sets a few inline style attributes, e.g. progress widths), media `blob:`, and no framing. No service worker is registered. VM gets compiled assets only, never frontend node_modules.
+Parent should serve static assets without secret-bearing URL logging and with script/connect `self`, style `self` plus inline styles (the view sets a few inline style attributes, e.g. progress widths), media `blob:`, and no framing. No service worker is registered. The production host gets compiled assets only, never frontend node_modules.
 
 ## Look and interaction
 
@@ -48,7 +48,7 @@ A card under the model form on the settings page: one row per provider the gatew
 
 ## She speaks first (try once)
 
-A card on the channels page, after the QQ settings: one button, "try it on me" (`POST /initiative/poke` with an empty body: the page cannot name a target; Authority resolves the owner's own private QQ conversation), and a table of the ten newest attempts from `GET /initiative/log` with time, result and reason (waiting, in progress, delivered, partly delivered, unknown, failed, declined, void or deferred with why). The quiet hours in force are shown as Authority reports them. The list is read when the page opens, after a poke and on the card's refresh button; it holds opaque labels only. The card is here because the attempt goes through QQ to the person bound on this page; it moves when a page for initiative exists.
+A card on the channels page, after the QQ settings: one button, "try it on me" (`POST /initiative/poke` with an empty body: the page cannot name a target; Authority resolves the owner's own private conversation on the channel where the owner last spoke), and a table of the ten newest attempts from `GET /initiative/log` with time, result and reason (waiting, in progress, delivered, partly delivered, unknown, failed, declined, void or deferred with why). The quiet hours in force are shown as Authority reports them. The list is read when the page opens, after a poke and on the card's refresh button; it holds opaque labels only. The card is here because the attempt goes to the owner bound on this page through a channel bridge; it moves when a page for initiative exists. The same page has a card for the background-job demonstration (`POST /jobs/demo`, `GET /jobs`, `POST /jobs/cancel`; see `authority/PROTOCOL.md` "Completions").
 
 ## Quota page
 

@@ -16,9 +16,9 @@
 | model-gateway | 私有模型出口及预算，不拥有角色记忆；所有付费供应商的 Key 只在这里（`providers/` 放供应商适配，目前为空） |
 | deploy | 完整发布与运维入口；不可直接修改正式版本目录 |
 
-文字、语音识别、图片描述、授权素材回发与本地 TTS（Qwen3-TTS）已有实现。
-plugin、preset、adapters、voice-runtime、旧 asr/tts/ui 等是保留的历史实现，
-不是当前发布装配；仅在任务涉及 legacy 时读取或运行。
+文字、语音识别、图片描述（表情包按图片只看一次）、授权素材回发、她自己的表情库（只收主人给的）与本地 TTS（Qwen3-TTS）已有实现；QQ 小表情能收，发送默认关闭。
+plugin、adapter-plugin、asr-plugin、tts-plugin、preset、ui、adapters、asr、tts、voice-runtime、experiments
+与 core（除 `persona.js`、`util.js`）是保留的历史实现，不进发行包；仅在任务涉及 legacy 时读取或运行。
 
 当前限制：
 - 对话执行器只经私有 model-gateway 访问 DeepSeek。

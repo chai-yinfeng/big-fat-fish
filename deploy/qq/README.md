@@ -1,5 +1,7 @@
 # 生产主机 QQ 最小运行准备
 
+> **NapCat 上游已下架（2026-11）**：源码仓库、Docker 镜像和文档站都已撤下，固定的 `v4.18.42` 镜像在 Docker Hub 上已不存在。生产上正在运行的容器守着用到失效，镜像另有离线备份（`napcat-backup:v4.18.42`）。**不要 pull、重建、重新创建或 prune 这个容器和镜像**；下文的拉取与启动步骤和官方链接只作历史记录。
+
 只使用官方 NapCat-Docker，不装 NapCat-Desktop，不新建 UI。工具本身不安装 Docker、不 pull、不启动容器、不读取账号。仅支持非 root 的 Linux arm64 或 x64 主机（当前生产主机 home-agent 为 x86_64）；Node 使用现有 companion Node。
 
 ## 准备与启动（生产主机，操作人执行）
@@ -32,18 +34,7 @@ sudo docker info >/dev/null
 
 再次运行只确认已有准备，不覆盖配置、不轮换 token。中断后的不完整目录会拒绝，须操作人私下检查，工具不会自动删除、备份或修复。不要在源码目录生成 runtime。
 
-**以下是后续显式启动步骤，本工具没有执行：**
-
-```sh
-cd "$HOME/.local/share/companion-world-v1/qq-runtime"
-sudo docker compose -f compose.yaml config --quiet
-sudo docker compose -f compose.yaml pull
-sudo docker compose -f compose.yaml up -d
-sudo docker compose -f compose.yaml ps --format json
-curl -fsS -o /dev/null http://127.0.0.1:6099/webui/
-```
-
-home-agent 无法直连 Docker Hub，只能经本机代理 `http://127.0.0.1:7890`；pull 前由操作人自行为 dockerd 配置该代理（本工具不改 Docker 配置）。
+首次启动当时由操作人执行 `docker compose pull` 与 `up -d`。上游镜像下架后这条路已经走不通，也不要在现有主机上重跑；换主机或容器失效时怎么接 QQ 另行决定，不要自行从备份恢复或重建。
 
 仅发布 `127.0.0.1:6099:6099` 和 `127.0.0.1:3001:3001`；不使用 host 网络、privileged 或额外 capabilities。不要开放公网端口；宿主防火墙同样应拒绝外部 6099/3001，旧 Docker 的 localhost publish 不应当作唯一隔离措施。运行 NapCat 是运行第三方代码，不是对容器内插件的硬沙箱；不要安装未知插件。
 
@@ -61,7 +52,7 @@ SSH 使用已有主机别名（默认 `home-agent`）。helper 只占本机 6099
 
 安全日志：上游 WebUI 启动代码会打印 token 和带 token URL，QQ 日志也可能含私人内容；compose 设置 `logging.driver: none`，不持久化 Docker stdout。不要 `docker logs`、不要输出不带 `--quiet` 的 `docker compose config` 或 `docker inspect`（会展开 env）。内部 QQ/NapCat 文件仍属私有运行数据，不承诺第三方永不记录。
 
-## 官方核对（2026-11-01，仅 HTTP 元数据，未拉镜像）
+## 官方核对（2026-11-01，仅 HTTP 元数据，未拉镜像；以下链接已随上游下架失效）
 
 - [稳定 release v4.18.42](https://github.com/NapNeko/NapCatQQ/releases/tag/v4.18.42)：非 prerelease。
 - [Docker Hub release tag](https://hub.docker.com/v2/repositories/mlikiowa/napcat-docker/tags/v4.18.42)：active linux/arm64，597,540,043 B；2026-11-07 复核同一 index `sha256:696e9574…` 另含 active linux/amd64，612,180,984 B；OCI index digest 已固定到 compose。
@@ -74,7 +65,7 @@ SSH 使用已有主机别名（默认 `home-agent`）。helper 只占本机 6099
 node --test deploy/qq/*.test.mjs
 ```
 
-上述初始内容检查不冒充真实运行验收。后续已在旧 VM（myvm，arm64）实际拉取、启动并由用户扫码，QQ 私聊和暂停边界通过；绑定、授权及 Authority 生命周期仍由产品管理面负责。
+上述初始内容检查不冒充真实运行验收。后续曾在旧 VM（myvm，arm64，已退役为旧环境）实际拉取、启动并由用户扫码，QQ 私聊和暂停边界通过；现生产在 home-agent（x86_64）。绑定、授权及 Authority 生命周期仍由产品管理面负责。
 
 ## 开机恢复（0.7.1）
 
@@ -84,7 +75,7 @@ node --test deploy/qq/*.test.mjs
 ~/.local/opt/companion/bin/node ~/src/companion/current/deploy/qq/configure-recovery.mjs
 ```
 
-它仅从已批准的私有设置读取账号，不输出值；保留原 token 和数据卷，配置 Docker ACCOUNT 以及官方 WebUI autoLoginAccount、启用本用户 Linger 与现有用户服务，并保存只含验证元数据的基线。环境改变时 compose up 可能重建容器，不能保证旧登录态仍有效；遇过期只提示用户正常扫码，不无限重试或修改设备信息。
+它会执行 `docker compose up -d --no-build`，环境变化时可能重新创建容器；上游镜像下架后只有本机仍有该镜像时才可行，**运行前须主人确认**。它仅从已批准的私有设置读取账号，不输出值；保留原 token 和数据卷，配置 Docker ACCOUNT 以及官方 WebUI autoLoginAccount、启用本用户 Linger 与现有用户服务，并保存只含验证元数据的基线。环境改变时 compose up 可能重建容器，不能保证旧登录态仍有效；遇过期只提示用户正常扫码，不无限重试或修改设备信息。
 
 QQ 服务依赖 companion-conversation 执行器服务（systemd Requires）；WebSocket 已连接但 QQ 慢登录时定期串行查询身份，断线迟到结果无效。不开新 supervisor，不补发旧消息，不自动恢复世界生活。
 

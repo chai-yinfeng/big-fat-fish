@@ -52,17 +52,18 @@ companion-conversation QQ delivery adapter → 实际回执
 
 ## 实际源码边界
 
-- `authority/`：独立 canonical service、规则审核、实体/人/受众与来源约束。没有 Cordis、DSH Session、QQ SDK 或供应商 SDK 依赖。`context()` 每次有内容返回时在内存里记一条注入追踪（附注各记忆块与常驻档案各有哪些条目 id、各段字符数、人和会话的不透明标签；最近 400 次，不落库，不含正文和账号），只经 operator `GET /memory/trace` 读取。按日期的 recall 返回置顶条目、重要度 ≥0.8 的事实和默认重要度（0.65）及以上的经历。按人整合（`consolidation.js`）：执行器在每回合的 context 请求里报告重放窗口的起点（`windowFromAt`），滚出窗口的原话（以及北京时间 03:00–06:00 时今天之前的原话）由记忆 worker 用 maintenance 凭据一次取一个会话的一批，调一次模型后交回；Authority 校验后在一个事务里写入这个人名下的机器摘要（`memory_items`，`kind='digest'`，带派生来源 `derivedFrom`）、把抽取的事实连同出处（原话的 observation 和一句引文）送进现有审核、推进游标。审核只硬性要求出处：每条记忆必须指向这个人、这个私聊里一条真实存在的观察；value 按她的理解写（相对日期换算成具体日期），引文与原话对不上的照常入库并标记 `evidence.quoteVerbatim:false`，控制台记忆页标出并可查看来源原话。摘要目前只写不读：不进任何对话的检索、档案、read 或 recall，也不能授权公开；忘记它覆盖的任何一句原话会连它一起删除。每会话每天 2 批、全实体每天 24 批，网关花费到“受限”档时暂停且游标不动。
+- `authority/`：独立 canonical service、规则审核、实体/人/受众与来源约束。没有 Cordis、DSH Session、QQ SDK 或供应商 SDK 依赖。`context()` 每次有内容返回时在内存里记一条注入追踪（附注各记忆块与常驻档案各有哪些条目 id、各段字符数、人和会话的不透明标签；最近 400 次，不落库，不含正文和账号），只经 operator `GET /memory/trace` 读取。按日期的 recall 返回置顶条目、重要度 ≥0.8 的事实和默认重要度（0.65）及以上的经历。按人整合（`consolidation.js`）：执行器在每回合的 context 请求里报告重放窗口的起点（`windowFromAt`），滚出窗口的原话（以及北京时间 03:00–06:00 时今天之前的原话）由记忆 worker 用 maintenance 凭据一次取一个会话的一批，调一次模型后交回；Authority 校验后在一个事务里写入这个人名下的机器摘要（`memory_items`，`kind='digest'`，带派生来源 `derivedFrom`）、把抽取的事实连同出处（原话的 observation 和一句引文）送进现有审核、推进游标。审核只硬性要求出处：每条记忆必须指向这个人、这个私聊里一条真实存在的观察；value 按她的理解写（相对日期换算成具体日期），引文与原话对不上的照常入库并标记 `evidence.quoteVerbatim:false`，控制台记忆页标出并可查看来源原话。摘要目前只写不读：不进任何对话的检索、档案、read 或 recall，也不能授权公开；忘记它覆盖的任何一句原话会连它一起删除。每会话每天 2 批、全实体每天 24 批，网关花费到“受限”档时暂停且游标不动。她先开口的请求（`initiations.js`）也由 Authority 登记和挑选：来源是控制台“对我试一次”和内容服务里做完、尚未告知的后台任务；状态存在 `metadata`，不改表结构（见 PROTOCOL.md “Initiations”）。
+- `capabilities/memory/`：记忆 worker，默认每 60 秒一拍，用 maintenance 凭据做三件事：旧的自动私密日记（新增的事实/经历/笔记不分人凑成一批，每 UTC 日最多 4 次调用、关思考，只在控制台可见）、按人整合（见上）、“忘记”之后的清理任务（读 operator 令牌，只能调 `/world` 与 `/memory/cleanup/*` 三个固定路由）。
 - `core/src/persona.js`、`core/src/util.js`：当前 Authority 复用的纯数据逻辑；其它旧 core 不是新服务的第二权威。
-- `capabilities/conversation/`：执行契约（executor.js，duck-typed）、渠道侧 UDS 客户端，以及执行器服务（agent/tools/sessions/window/model/server，main.mjs 入口）。两个受限模型工具 `companion_scope`、`companion_content` 的作用域由执行请求绑定，模型不能指定 entity/person/stream/path/epoch；evidence 只返回本回合 QQ 传入的 observation ref。
+- `capabilities/conversation/`：执行契约（executor.js，duck-typed）、渠道侧 UDS 客户端，以及执行器服务（agent/tools/sessions/window/model/server，main.mjs 入口）。两个受限模型工具 `companion_scope`、`companion_content` 的作用域由执行请求绑定，模型不能指定 entity/person/stream/path/epoch；evidence 只返回本回合渠道桥传入的 observation ref。
 - `capabilities/qq/bridge.js`：QQ 渠道的桥。私聊入口（主人 + 机器人 QQ 好友，好友经 Authority `/v1/people/admit` 准入，桥给出账号和 QQ 自己的 actor/会话标识，新的人被命名为 `person:qq:<uid>`）、每会话串行队列（全局并发 2）、去重、epoch、投递回执；把 scope 与 prepared 输入交给执行器。QQ main 是选择执行 backend（UDS 客户端）的应用装配点。 已连接、已登录时每 60 秒（`qq-bridge.json` 可选 `initiationPollMs`）向 Authority 取一个她先开口的回合（`/v1/initiations/next`，见 PROTOCOL.md；Authority 只把发往 QQ 的请求交给 QQ 桥）：发送目标只从 Authority 给的会话号解析，本版本必须是机器人与主人的私聊，否则丢弃；在该会话自己的队列里跑一个没有用户消息的回合，回复照常拆条、每条等平台回执，失败或状态不明即停、不重发，回复含 `<不说>` 则什么都不发；每个回合的结果只回报一次，重启后“发送中”的记为状态不明。后台任务做完后的 `completion` 回合走同一条路，目标是登记任务的那个人的私聊（主人或仍是好友的人），结果正文由桥在该会话的作用域里向内容服务读取；每个普通回合开始前桥先问 Authority 这个会话有没有待通知的结果（`/v1/initiations/carry`），有就作为事件块附在对方的话后面交给执行器（`input.event`），回报 `carried`，她不再为它另开口。
 - `capabilities/media/`：文件引用、ACL、来源派生、感知/合成/附件表达；不解析 OneBot 字段。平台原生表情描述是 opaque 数据，仅所属渠道解释。后台任务（`jobs.js`）：在 Authority 给出的作用域里登记，记录存 `media-data/jobs.json`（原子写，不进数据库）；一次跑一个，排队上限 8、每人 2 个；阶段时限加总截止时间；可让步的任务每一片开始前等到没有及时请求（走 `/content` 的同步请求和控制台试听）在排队或执行；暂停时放回队列，重启后重排一次。结果留在内容服务，由 Authority 经控制口 `/jobs` 来问、来回报通知结果，内容服务不调 Authority。目前唯一的任务是演示任务（`demo-job.js`，等几秒返回固定文本），只能由控制台登记。
 - `capabilities/channels/`：渠道说明书（见“渠道、身份与记忆的归属”）。`qq` 的声明里有小表情名单（发送默认关闭时为空）、系统提示的 QQ 段和“这次回复会用语音发出”的策略行；`mock` 只用于测试与 staging。
 - `capabilities/providers/`：能力声明（注册表）。每个能力一个目录、一份无依赖的数据声明（`manifest.js`：动作、计量方式、凭据位置、产物、运行方式），`index.js` 是唯一入口。目前只有额度账本和控制台额度页读它；模型工具、Authority 的 `/v1/content` 白名单和 content 的分发仍各自写死。`demo` 是演示用的后台任务，不是模型能调用的能力。
 - `capabilities/speech/`：纯本地文件 ASR/TTS provider，单请求只跑选中引擎。无麦克风、音箱、虚拟声卡、声纹身份或实时直播假设。
 - `model-gateway/`：固定供应商出口、私有 Key、取消与有界预算；不拥有实体/人格/记忆。所有付费 Key 都只在这里：DeepSeek 之外的供应商各写一个适配模块（`providers/`，本版本一个都没有），Key 在控制台录入、存 `providers.json`，调用统一走 提交/查询/取回 三个动作并计入花费与额度账本。新增视觉与网页仍经 Authority 作用域授权后使用。
-- [console](<console/README.md>)：独立管理页由 operator 同源入口提供；管理世界状态、人格、模型、QQ 绑定、记忆、语音参数与授权参考录音。
-- `plugin/`、`adapter-plugin/`、旧 `voice-runtime/` 等保留源码，未重新发行/启用。根默认 test 指向当前产品，旧检查只在显式 legacy 脚本中。
+- [console](<console/README.md>)：独立管理页由 operator 同源入口提供；页面为概览（世界状态、开销）、人格、渠道（QQ 接入与绑定主人、“对我试一次”、后台任务演示）、人与会话（含“认成同一个人”）、记忆、额度、运行与设置（模型、供应商密钥、语音参数与授权参考录音）。
+- 遗留目录 `plugin/`、`adapter-plugin/`、`asr-plugin/`、`tts-plugin/`、`preset/`、`ui/`、`adapters/`、`asr/`、`tts/`、`voice-runtime/`、`experiments/` 以及 `core/` 中除上面两个文件以外的部分，是 DSH 时代的旧实现：不进发行包，现役代码不 import 它们。根默认 test 指向当前产品，旧检查只在显式的 `test:legacy*` 脚本中。
 
 当前限制：
 - Live2D/房间视觉未实施。
@@ -104,7 +105,7 @@ ASR/OCR/视觉描述不是真人逐字输入。只有附件时 Core 原观察保
 - content 用户服务限 2 核/4GiB，不修改全局 GPU/Node/PATH。
 - Flash 视觉默认512缩图/动图首帧；网页仅公网 search/fetch，无登录cookies或点击购买。默认全产品每北京时间日 vision12/web20次，先预留，失败也占。
 - 每日金额上限（model-gateway，按北京时间日）：默认 ¥5，60%/80%/100% 三档（控制台可改）；chat 按流式 usage 计价，区分高峰/闲时；到 100% 网关直接拒绝，QQ 对任何人静默，只给主人每天发一次 QQ 提醒。同一处按日累计上报的 token（命中/未命中输入、输出、其中推理、请求数），控制台概览显示缓存命中率；只用于观察，不参与上限。 她先开口的回合记在 `proactive` 类别，到 60% 档（reduced）就在联系供应商之前被拒，普通回复不受影响；这时不给主人发提醒。
-- 额度账本（model-gateway，按北京时间日）：每种声明过的能力一行（聊天、后台整合、看图、表情识别、联网、语音合成、语音识别、主动开口），记尝试/成功/失败次数、被拒次数与原因、各自的单位（token、合成字数、音频秒数）、花费和耗时，保留 90 天的每日一行；控制台“额度”页显示，看图/联网的每日上限可在页面上改。账本只观察：钱仍以 `spend.json` 为准，看图/联网的当日次数仍在 `capability-usage.json`（文件结构不变，旧版本可照常启动），整合批次仍在 Authority。本地 TTS/ASR 由 content 服务事后上报，账本不可用不影响发语音。
+- 额度账本（model-gateway，按北京时间日）：每种声明过的能力一行（聊天、后台整合、看图、表情识别、联网、语音合成、语音识别、主动开口、演示任务），记尝试/成功/失败次数、被拒次数与原因、各自的单位（token、合成字数、音频秒数）、花费和耗时，保留 90 天的每日一行；控制台“额度”页显示，有每日上限的行（看图 12、联网 20、表情识别 20、演示任务 10）可在页面上改。账本只观察：钱仍以 `spend.json` 为准，看图/联网的当日次数仍在 `capability-usage.json`（文件结构不变，旧版本可照常启动），整合批次仍在 Authority。本地 TTS/ASR 由 content 服务事后上报，账本不可用不影响发语音。
 - 两个模型工具的 schema 按 4chars/token 估计比旧 memory-only 多约252 tokens（估算，非 provider 实测）。
 
 当前限制：

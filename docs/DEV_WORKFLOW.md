@@ -74,9 +74,8 @@ home-agent 网络问题一律先走本机代理 `http://127.0.0.1:7890`（git/cu
 
 生产主机只用于生产。服务以专用用户 companion（uid 由主机分配，不固定；密码锁定、不可登录，
 home 0700）运行，由 root 通过 `systemctl --user -M companion@ ...` 管理。人类和
-Agent 都以 blackmagic 身份 SSH 登录：sudo 需要人类输入密码；旧 VM 上 blackmagic 没有
-docker/lxd 权限，而 home-agent 上它目前在 docker、lxd 组（等价 root），交给 Agent 前须先
-按 AGENTS.md 隔离；blackmagic 属于 adm 组，不用 sudo 就能只读查看 companion 的日志和部署记录
+Agent 都以 blackmagic 身份 SSH 登录：sudo 需要人类输入密码；home-agent 上它目前在 docker、lxd 组（等价 root），
+交给 Agent 前须先隔离（staging 用的是另一个无 sudo 的 `agent` 账号，见下文）；blackmagic 属于 adm 组，不用 sudo 就能只读查看 companion 的日志和部署记录
 （两个部署文件为 root:adm 0640，不含密钥；/var/lib/companion-deploy/state.json
 仍只有 root 可读），查看命令见“发布与回退”第 3 步。
 
@@ -109,7 +108,7 @@ node deploy/qq/open-login.mjs        # NapCat WebUI 扫码登录（默认 home-a
 会话记录：/home/companion/.local/share/companion-world-v1/conversation-data/sessions（每会话一个 JSONL）
 执行器：companion-conversation（UDS ipc/conversation/execute.sock，无 TCP 端口；以 companion 用户运行、无文件系统隔离，网络经 seccomp 只允许 Unix socket，模型只能用两个不访问文件系统的工具）
 3082 独立世界控制台与 operator API（唯一由 companion 单元监听的 TCP 端口）
-NapCat WebUI 6099 / OneBot WS 3001（沿用旧记录，未在新布局下复核）
+NapCat WebUI 6099 / OneBot WS 3001（部署后核查第 3 步用 ss 看它们是否在监听）
 ```
 
 主机入口均只监听回环；执行器、Authority、model-gateway 之间只走 Unix socket。运行中的世界状态
@@ -122,8 +121,9 @@ NapCat WebUI 6099 / OneBot WS 3001（沿用旧记录，未在新布局下复核�
 - QQ：扫码后只在暂停且已登录时绑定本人发送号（须与机器人号不同）。机器人的 QQ 好友都可以各自私聊
   （自动准入，最多 40 人，彼此记忆隔离）；不开群、广播，也不自动加好友。
 - 语音识别在本地，但转写会进入 DeepSeek 对话，不是全本地对话。
-- 额度：“额度”页顶部是当日花费，下面每种能力一行（聊天、后台整合、看图、联网、语音合成、语音识别），
-  可展开看被拒原因和最近 7 天；看图/联网的每日上限在行内改，下一次调用起生效，不需要暂停。
+- 额度：“额度”页顶部是当日花费，下面每种能力一行（聊天、后台整合、看图、表情识别、联网、语音合成、语音识别、
+  主动开口、演示任务），可展开看被拒原因和最近 7 天；有每日上限的行（看图、联网、表情识别、演示任务）在行内改，
+  下一次调用起生效，不需要暂停。
   每日金额上限和三档仍在“世界概览”的开销卡片里改。
 - 音色：暂停后在“音色”中上传参考 WAV 登记（ID、名称、参考语言、使用范围），可设默认、试听、移除。
   使用范围只是记录（“内部”=家人朋友间使用，私聊和群聊都可用；“可公开”=可公开发布）；没有默认音色时语音请求改回文字。
@@ -136,11 +136,11 @@ NapCat WebUI 6099 / OneBot WS 3001（沿用旧记录，未在新布局下复核�
 
 | 内容 | 位置 | 清理方式 |
 | --- | --- | --- |
-| 旧 release | /home/companion/src/companion/authority-*-<sha> | companion-deploy 自动保留最近 3 个及 current/previous；旧 VM 上的 authority-0.10.0、0.9.0 不会自动删除 |
+| 旧 release | /home/companion/src/companion/authority-*-<sha> | companion-deploy 自动保留最近 3 个及 current/previous；不符合 `authority-<版本>-<sha>` 命名的目录不归它管，不会自动删除 |
 | 上传的发布包 | ~blackmagic/releases/*.tar.gz(.sha256) | 手动删除 |
 | unit 快照与 Git 镜像 | /var/lib/companion-deploy/unit-snapshots/、mirror.git | 手动（root）；不要删掉 current/previous 对应的快照 |
 | systemd 日志 | journald | `sudo journalctl --vacuum-size=…` / `--vacuum-time=…` |
-| NapCat 镜像与容器日志 | docker（companion-world-qq） | 人类手动处理；companion-deploy 不碰 |
+| NapCat 镜像与容器日志 | docker（companion-world-qq） | 人类手动处理；companion-deploy 不碰。NapCat 上游与镜像已下架（2026-11），镜像只剩备份：不要 prune、重拉或重建这个容器和镜像 |
 | 世界数据（聊天、记忆、媒体） | /home/companion/.local/share/companion-world-v1 | 从不自动删除；任何清理都须用户明确批准 |
 
 这里只是说明，目前没有自动清理任务。
@@ -182,48 +182,31 @@ send_private_msg），`fake-model.mjs` 启动 release 里真实的 model-gateway
 `deploy/staging/scenarios.json` 注入私聊并断言：假 OneBot 收到的发送记录、operator 的
 `/memory`、`/people`、`/conversations`、`/spend`，以及假模型收到的整个请求体（`expectPrompt`：
 system、记忆中枢附注、用户原文、历史与工具结果全部在内；加 `"in": "context"` 时只看本回合的记忆中枢附注，
-即 Authority 为这一回合检索到的内容；加 `"in": "system"` 时只看 system 消息，即固定说明、人格和对话人的常驻档案）。结束后世界保持暂停。现有场景：S1 两个好友的记忆互不可见，S2 非好友静默且不准入，
-S3 每日上限到顶后所有人静默、主人只收到一次提醒；M1 `trace-matches-prompt`：operator
-`/memory/trace` 记下的注入条目与假模型实际收到的附注一致（每个 id 一行、内容都在，别人的条目不在）；
-M2 `console-filter`：`/memory` 按人筛选只返回该人的条目，并能翻到第 50 条之后（同一个人连说 52 轮）；
-M3 `stable-prefix`：同一人连续四轮（其中一轮带工具往返），每次请求都以上一次请求为前缀，system 里没有
-revision 和时间；M4 `batch-trim`：连说 30 轮，历史起点只移动几次、每次裁掉多个回合；M5 `profile-always-on`：
-置顶事实在与它无关的提问里也在本人的 system 里，另一个人的整个请求里没有；M6 `persona-change-trim`：
-经 operator 改人格后的下一轮最多重放 2 个旧回合，事实仍在；M7 `no-duplicate-injection`：同一条记忆只进窗口里的
-一段附注；M8 `oversized-history-still-replies`：连发三条约 6000 字符的消息，第三条放不下前两轮时只带最近一轮、
-照常得到回复；M9 `rolled-out-digest`：两个人各自聊到原话滚出窗口，各得到自己名下的机器摘要（派生来源含那句原话）和出处指向那句原话的
-后台事实，每次整合请求里只有一个人的对话，摘要正文和“她的感受”不出现在任何聊天请求里，后台事实只进本人的常驻档案；
-M10 `extract-quote-guard`：假模型给出引文不逐字、value 不在引文里、引用她自己的话各一条：前两条入库（引文不逐字的带
-`evidence.quoteVerbatim:false` 标记，出处都指向本人那句原话，归属本人、私有），引用她自己的话仍被拒收（`unconfirmed_identity`），
-摘要和一条逐字事实照常写入；本人追问时这些事实在本人的 system 里，另一个人的整个请求里没有；
-M12 `budget-gates-consolidation`：把开销的“受限”档调到几乎为零后聊到滚出窗口，整合状态显示因开销暂停、该会话当日批次为 0、
-没有任何整合请求发给模型，恢复档位后补上；同一会话当天第 3 批不发放；M13 `forget-cascade-derived`：经 operator 忘记
-一句原话，覆盖它的摘要和从它抽取的事实消失，只有这个人的会话代次加一，另一个人的摘要还在（M11 游标与崩溃重启由
-`authority/test/consolidation.test.js` 覆盖，不在 staging 回放：运行器没有杀进程的手段）。M9 起每个场景用自己的人
-（MOCK-C…MOCK-H），因为每个会话每天只有 2 批；
-H1 `split-long-reply`：约 150 字的多句回复，假 OneBot 按顺序收到 2–4 条、每条不超过 60 字符、
-拼起来等于原文；H2 `beijing-time-in-note`：假模型收到的附注里有一行北京时间、与请求的真实时刻相符，
-附注和 system 里没有带 Z 的 UTC 时间；H3 `propose-rejection-is-actionable`：假模型先提一条聊天里不允许的 learning.note，
-收到的工具结果是 rejected（`conversation_policy_kind_denied`）并说明怎么改，改提 fact.report 后 Authority 里出现该事实；
-H4 `normalized-value-is-stored`：对方说“下个月 5 号去上海”，假模型提交换算后的具体日期，当场入库，出处指向那句原话，另一个人的请求和记忆里没有。场景文本里的 `{run}` 每次回放换成一个新标记（生命周期会回放两次，前一次留下的记忆不会被认错）。
-Q1 `ledger-counts-every-exit`：聊一轮、看一张图、搜一次，额度账本（operator `/usage`）里聊天、看图、联网各 +1、语音两行不变，同一花费类别各付费行之和与 `/spend` 该类金额相等（看图和表情识别共用 `vision`）、合计等于当日花费；
-Q2 `ledger-records-denials`：把看图上限设成已用次数后再看，网关回 `BUDGET_EXHAUSTED`，账本被拒 +1（原因 `daily_limit`），假模型没有收到这次请求；恢复上限后再看成功。
-P1 `provider-adapter-round-trip`：供应商适配的骨架。发行包里没有任何供应商适配；staging 的 `fake-model.mjs` 给网关注入一个假供应商 `mock`（`fake-provider.mjs`，与假上游在同一个文件，不随发行包发布）。没录 key 时提交被拒（账本记 `not_configured`）；经 operator `/providers/key` 录入 `MOCK-` 开头的假 key 后，异步任务走 提交—轮询—取回，同步任务一次返回，账本 `mock` 行各 +1、花费与 `/spend` 的 `generation` 类相等；把每日上限设成已用次数后再提交回 `BUDGET_EXHAUSTED`。key 留在数据根里，回退到旧包时带着 `providers.json` 启动。
-R1–R6 是“她先开口的回合”（设计稿里的 P1–P5，改用 R 是因为 P1 已被供应商骨架占用；R6 为新增）：R1 `poke-reaches-owner-only`：经 operator `/initiative/poke`（空请求体）后只有主人收到她的一条消息，其他人静默；假模型收到的是标明“这不是对方发来的话”的事件块，附注里说明没有人发消息；Authority 只多一条她的原话；账本“主动开口”行 +1；之后主人再说一句，请求仍以上一次请求为前缀。R2 `initiation-stops-at-reduced`：开销到“降级”档后 poke 没有模型请求、没有发送，结果 `deferred:budget`，账本记 `spend_tier`，普通回复照常。R3 `unknown-is-not-resent`：假 OneBot 丢掉一次发送回执（`POST /lose-receipts`），结果 `unknown`，之后几轮轮询既不重发也不再问模型，Authority 没有多出任何一条；再 poke 一次是新的请求，正常送达。R4 `paused-drops-not-queues`：暂停时 poke 当场记为 `dropped:paused`，恢复后没有模型请求和发送。R5 `declined-sends-nothing`：假模型回 `<不说>`，0 条发送，结果 `declined`，之后的对话仍以它为前缀。R6 `quiet-hours-drop`：把安静时段设到当前时刻后 poke 当场记为 `dropped:quiet_hours`，移开后同样的 poke 送达。回放时 QQ 桥每 3 秒取一次（`qq-bridge.json` 的 `initiationPollMs`，生产缺省 60 秒）；R 场景开头经 operator `/initiative/settings` 关掉安静时段、结尾恢复默认，所以任何时刻回放结果相同；每次回放前 staging agent 在 Authority 停着的时候删掉 `initiations` 状态（`reset_initiations`）。“对方先开口则作废”有时序竞争，不在 staging 回放，由 `authority/test/initiations.test.js` 与 `capabilities/qq/test/initiation.test.js` 覆盖。
-J1–J3 是后台任务（演示任务经 operator `/jobs/demo` 登记，请求体只能带秒数，永远登记在主人自己的会话里）：J1 `job-then-completion-turn`：任务完成后只有主人收到她的一条消息，假模型收到的是带结果、标明“由后台任务生成，不是对方说的话”的事件块，任务列表显示完成且通知结果为 `sent`，发起记录多一条 `completion`，账本“演示任务”和“主动开口”各 +1，之后几轮轮询不再有第二条，下一句普通对话仍以上一次请求为前缀。J2 `person-speaks-first-carries`：开销在“降级”档时她为结果开口的那一轮被网关拒绝（没有模型请求，记 `deferred:budget`），任务转为“随下一条消息带上”；主人再说一句，假模型在这句话后面收到同一个事件块、附注里说明那一段不是对方说的话，只回一条，任务通知结果为 `carried`，此后没有多出任何发起或发送。J3 `job-quota-and-queue`：把演示任务的每日上限设成已用次数后登记被拒（`daily_limit`），恢复后连登两个、第三个被拒（`busy`），两次被拒都在账本和任务列表里，两个任务先后完成、各通知一次。“对方抢在她开口之前说话”的时序、重启恢复、超时、取消和“及时请求先于后台任务”由 `capabilities/media/jobs.test.js`、`authority/test/completions.test.js`、`capabilities/qq/test/completion.test.js` 覆盖；staging 没有语音模型，“语音回复抢占后台任务”不回放。每次回放前 staging agent 在服务停着的时候删掉 `media-data/jobs.json`。本机回放栈（`scenarios.test.mjs`）现在也启动内容服务（没有语音模型和图片运行时，与 staging 相同）。
-staging 没有图片运行时（sharp），所以 Q1/Q2 的看图和搜索由运行器用 `gatewayCall` 直接打到网关的 inference socket（与 content 服务发的请求相同）；没有 sharp 时内容服务默认任何图都失败；只有 `content.json` 里显式写了 `allowRawSmallPng: true`，才把不超过 512×512 的 PNG 原样送去看图。这一项只由 staging agent 在回放期间写入、回放结束（`finally`）立刻删掉（旧版本不认这个键，随后的回退会用到同一份配置），本机回放栈（`scenarios.test.mjs`）也写它；生产的配置生成（`deploy/authority/prepare-content.mjs`）不写。假 OneBot 发的图正是这种 1×1 PNG（由种子生成，同一种子同一字节），所以表情包场景的图能走 QQ 这条路。K5–K7 是收到的表情包（设计稿 §K3）：K5 `same-sticker-described-once`：两个人先后发同一张自定义表情，假模型只收到一次看图请求（`expectVisionRequests`），两人的请求里都有同一段机器描述、都没有对方的话，账本“表情识别” +1、“看图”不变；K6 `mall-sticker-uses-its-name`：商城表情没有看图请求，模型读到的是平台给的名字；K7 `sticker-quota-is-separate`：`gatewayCall` 的 `sticker` 只加“表情识别”一行，把它的上限设成已用次数后再发一张新表情，模型读到“今天没有识别”、没有看图请求、账本记 `daily_limit`。图片种子带 `{run}`，所以每次回放都是没见过的图。K8–K10 是她自己的表情库（§K4、K7、K8）：K8 `marker-sends-library-sticker`：主人发一张商城表情再说“收下这个”，模型读到“已收进你的表情库”；之后假模型给另一个人的回复里写 `[表情:开心]`，对方先收到去掉标记的文字、再单独收到一张带 `sub_type: 1` 的图（`expectReply` 的 `image`），Authority 多出三行（对方的话、文字、表情包回执）；K9 `no-match-sends-nothing`：库里没有接近的词，只发文字；K10 `owner-says-keep-this`：朋友说“收下这个”没有任何效果（之后对他写那张图的名字也发不出来），主人发一张自定义表情再说“收下这个”，名字是那次看图给的第一个标签，之后能发。每次回放前 staging agent 在服务停着的时候删掉 `media-data/describe-cache.json` 和 `media-data/stickers/`；本机回放栈的第二遍不清，所以种子仍带 `{run}`、K9 的词与库里任何名字都没有共同的字。本地 TTS/ASR 在 staging 没有模型，上报与计数由单元测试覆盖。每次回放开始时，账本当天文件和上限随开销一起清零（历史不清）。
-MOCK-1…MOCK-4 是第二个渠道（证明身份、记忆、她先开口都不依赖 QQ）：`fake-channel.mjs` 是只存在于 staging 的测试渠道
-MOCK 的桥（纯文字、回执不可靠），用自己的 Authority 凭据（capability `mock`）和它自己启动的一个 release 对话执行器，
-走与 QQ 桥相同的两个入口；staging 在回放前把 `mock` 的 capability、凭据和 `operator.allowTestChannels` 写进 staging 的
-`authority.json`（没有这个开关 Authority 和部署预检都拒绝测试渠道；旧 release 不认识这个字段、照常启动）。步骤带 `mock` 前缀：
-`mockFriends`、`mockSay`、`mockExpectReply`、`mockExpectSilence`、`mockExpectSentCount`、`mockLoseReceipts`、
-`mockExpectLostSends`、`mockAttach`（operator `/people/attach`）、`mockExpectAdmitted`，另有 `expectChannel`；`noteMessages`/
-`expectMessages` 可带 `"channel": "mock"`。MOCK-1 第二渠道上准入一个人并正常对话（system 里是该渠道自己的那段、没有 QQ 的小表情
-说明，非好友静默）；MOCK-2 把第二渠道的账号挂到已有 QQ 的人身上后，QQ 里记住的事在第二渠道能想起，两边的对话窗口互不包含
-对方的原话，另一个人在两个渠道都看不到；MOCK-3 “对我试一次”发到主人最近说话的渠道，另一个渠道的桥取不到；MOCK-4 回执丢失
-时记为状态不明、不重发、不记为她说过的话。涉及主人的 MOCK 场景在 `finally` 里让主人回到 QQ 说一句，之后的回放仍以 QQ 为最近渠道。
-M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里有一行 `SCENARIOS n/n passed: ...`，
-任一场景失败则是 `STAGING FAILED`。
+即 Authority 为这一回合检索到的内容；加 `"in": "system"` 时只看 system 消息，即固定说明、人格和对话人的常驻档案）。结束后世界保持暂停。
+
+现有场景（每个场景的标题和断言以 `deploy/staging/scenarios.json` 为准，这里只列分组和回放装置上的要点）：
+
+| 组 | 场景 | 测什么 |
+| --- | --- | --- |
+| S | S1–S3 | 两个好友的记忆互不可见；非好友静默且不准入；每日上限到顶后所有人静默、主人只收到一次提醒 |
+| M | M1–M10、M12、M13 | 注入追踪与实际附注一致、记忆页筛选翻页、提示前缀稳定、成批裁剪、常驻档案、改人格后裁剪、不重复注入、超长历史仍回复；按人整合（摘要与后台事实、引文不逐字仍入库、开销档位挡住整合、忘记一句原话的派生级联） |
+| H | H1–H4 | 长回复拆条、附注里是北京时间、被拒的提案告诉模型怎么改、换算后的日期当场入库 |
+| Q、P | Q1、Q2、P1 | 额度账本每个出口都记一行且与 `/spend` 对得上、被拒记原因；供应商适配骨架（假供应商 `mock`，提交—轮询—取回） |
+| R | R1–R6 | 她先开口：只到主人、60% 档不调模型、回执丢失不重发、暂停时当场作废、`<不说>` 不发送、安静时段作废 |
+| J | J1–J3 | 后台任务：做完后只有主人收到一条、档位挡住时随下一条消息带上、每日上限与排队上限 |
+| K | K1、K2、K4–K10 | 小表情（多个也照常回复；发送默认关闭时 `[微笑]` 原样当文字，她先开口时也一样）；表情包按哈希只看一次、商城表情用名字、表情识别单独计数；她的表情库（主人“收下这个”、`[表情:词]` 单独一条发送、匹配不到只发文字） |
+| MOCK | MOCK-1–MOCK-4 | 第二个渠道：准入与对话、同一个人两个渠道共用记忆而窗口分开、“对我试一次”发到主人最近说话的渠道、回执不可靠时不重发 |
+
+回放装置要点：
+
+- 场景文本里的 `{run}` 每次回放换成新标记（生命周期会回放两次）。M9 起每个场景用自己的人（MOCK-C…MOCK-H），因为每个会话每天只有 2 批整合。M1 起的场景排在 S3 之后（S3 要求当日开销从零开始）。M11（整合游标与崩溃重启）由 `authority/test/consolidation.test.js` 覆盖，运行器没有杀进程的手段。
+- R 场景：回放时 QQ 桥每 3 秒取一次（`qq-bridge.json` 的 `initiationPollMs`，生产缺省 60 秒）；场景开头经 operator `/initiative/settings` 关掉安静时段、结尾恢复默认，所以任何时刻回放结果相同；回放前 staging agent 在 Authority 停着时删掉 `initiations` 状态（`reset_initiations`）。“对方先开口则作废”有时序竞争，由 `authority/test/initiations.test.js` 与 `capabilities/qq/test/initiation.test.js` 覆盖。
+- J 场景：演示任务经 operator `/jobs/demo` 登记，永远在主人自己的会话里；回放前删掉 `media-data/jobs.json`。时序竞争、重启恢复、超时、取消和“及时请求先于后台任务”由 `capabilities/media/jobs.test.js`、`authority/test/completions.test.js`、`capabilities/qq/test/completion.test.js` 覆盖；staging 没有语音模型，“语音回复抢占后台任务”不回放。
+- K 场景与看图：staging 没有图片运行时（sharp）。Q1/Q2 的看图和搜索由运行器用 `gatewayCall` 直接打到网关的 inference socket；表情包场景要走 QQ 这条路，所以回放期间 staging agent 在 `content.json` 写入 `allowRawSmallPng: true`（不超过 512×512 的 PNG 原样送去看图），回放结束（`finally`）立刻删掉（旧版本不认这个键，随后的回退会用到同一份配置）；生产的配置生成不写它。假 OneBot 发的图是由种子生成的 1×1 PNG，种子带 `{run}`。回放前删掉 `media-data/describe-cache.json` 和 `media-data/stickers/`。
+- MOCK 场景：`fake-channel.mjs` 是只存在于 staging 的测试渠道 MOCK 的桥（纯文字、回执不可靠），用自己的 Authority 凭据（capability `mock`）和它自己启动的一个 release 对话执行器；staging 在回放前把 `mock` 的 capability、凭据和 `operator.allowTestChannels` 写进 staging 的 `authority.json`（没有这个开关 Authority 和部署预检都拒绝测试渠道；旧 release 不认识这个字段、照常启动）。涉及主人的 MOCK 场景在 `finally` 里让主人回到 QQ 说一句，之后的回放仍以 QQ 为最近渠道。
+- 本机回放栈（`scenarios.test.mjs`）也启动内容服务（没有语音模型和图片运行时，与 staging 相同）。本地 TTS/ASR 在 staging 没有模型，上报与计数由单元测试覆盖。每次回放开始时，账本当天文件和上限随开销一起清零（历史不清）。
+
+摘要里有一行 `SCENARIOS n/n passed: ...`，任一场景失败则是 `STAGING FAILED`。
 
 - 新功能开工前先加场景：在 `scenarios.json` 的 `scenarios` 里加一项
   `{ id, title, model, steps, finally }`。`model` 是假模型的规则（最新一条用户消息包含 `match`
@@ -235,9 +218,12 @@ M1 起的场景排在 S3 之后：S3 要求当日开销从零开始。摘要里�
   `expectConsolidation`、`noteExtracted`、`expectRejected`、`forget`、`resume`、
   `expectSplitReply`、`expectBeijingTime`、`expectToolResult`、
   `gatewayCall`、`noteUsage`、`expectUsage`、`expectUsageMatchesSpend`、`usageLimit`、`expectVisionRequests`、
+  `providerKey`、`providerJob`、
   `pause`、`quietHours`、`poke`、`expectInitiation`、`loseReceipts`、`expectLostSends`、`expectModelCalls`、
   `noteMessages`、`expectMessages`、`expectInitiatedPrefix`、
-  `demoJob`、`expectJob`、`noteCompletions`、`expectCompletions`
+  `demoJob`、`expectJob`、`noteCompletions`、`expectCompletions`，
+  第二渠道用 `mockFriends`、`mockSay`、`mockExpectReply`、`mockExpectSilence`、`mockExpectSentCount`、`mockLoseReceipts`、
+  `mockExpectLostSends`、`mockAttach`（operator `/people/attach`）、`mockExpectAdmitted`、`expectChannel`（`noteMessages`/`expectMessages` 可带 `"channel": "mock"`）
   （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。带 `consolidate` 的规则只应答记忆 worker 的整合请求
   （按该批对话里出现的 `match` 选规则，没有规则时回一段固定的合法摘要），不应答聊天；整合请求在请求日志里单独标记，
   `userText` 为空，所以按用户原文匹配的步骤看不到它。`forget` 里清理任务由运行器自己确认（staging 的 memory 单元连不到
@@ -309,8 +295,8 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    有意停服用 `sudo companion-deploy stop`：disable 后 stop，重启机器也保持停止，
    直到 `sudo companion-deploy start`。旧版 companion-deploy 装的单元从未 enable，
    换上新版后第一次 deploy 或 start 健康通过即会 enable。
-   保留最近 3 个部署管理的 release 及 current/previous；旧 VM 上的 authority-0.10.0、
-   authority-0.9.0 从不删除。日志在 /var/log/companion-deploy.log，摘要在
+   保留最近 3 个部署管理的 release 及 current/previous；不符合部署命名的旧目录
+   从不删除。日志在 /var/log/companion-deploy.log，摘要在
    /var/log/companion-deploy.status.json（均 root:adm 0640，Agent 可直接 cat）。
 
    Agent 交给用户的除命令外还要有核对值：提交 sha 与标题、tarball sha256；
@@ -345,8 +331,7 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    current、previous 与最近一次结果可不用 sudo 从 status JSON 读取；单元状态与
    release 目录清单在 companion 的 0700 目录下，只能由用户 sudo 查看。
 
-   旧 VM 上第一次部署前的旧 unit（写死 authority-0.10.0）也会被快照，rollback 可完整
-   恢复它们。再次 rollback 会切回刚才的版本。
+   再次 rollback 会切回刚才的版本。
 
 数据库迁移只有一种：`authority/src/migrations.js` 里登记的加法式迁移，由新版本的 Authority
 启动时自动备份后应用（见下节「数据库迁移」）。authority SCHEMA_VERSION（SQLite user_version）

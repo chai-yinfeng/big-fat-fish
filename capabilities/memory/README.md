@@ -35,7 +35,7 @@ Explicit forgetting is a previewed operator operation while paused. Authority er
 
 The purge descriptor (version 2) admits only the conversation executor's session directory; it deletes the transcripts of every earlier memory epoch of the affected streams (each plan entry carries that stream's own new epoch). Unknown layout refuses cleanup; it never guesses other directories. The worker loads purge-execution from its own release (`ops/`, or `deploy/authority/` in a checkout), never from a path pinned in memory-worker.json, so pruning older releases cannot break startup; a legacy `purgeModule` field is ignored. Startup failures log only a stable code such as `MEMORY_CONFIG`. Opaque QQ dispatch request hashes remain as forgotten tombstones, without the forgotten content. No content backup is manufactured by deletion.
 
-QQ platform records, provider-side records, external exports/backups and SSD forensic recovery are not claimed to be erased. Formal runtime data lives on the VM; migration preserves the existing world rather than rebuilding it from laptop history.
+QQ platform records, provider-side records, external exports/backups and SSD forensic recovery are not claimed to be erased. Formal runtime data lives on the production host (home-agent); migration preserves the existing world rather than rebuilding it from laptop history.
 
 ## Test coverage / current limits
 
