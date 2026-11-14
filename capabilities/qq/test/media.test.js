@@ -11,7 +11,7 @@ import { QQBridge } from '../bridge.js';
 function wav() {
   const b = Buffer.alloc(44 + 3200); b.write('RIFF'); b.writeUInt32LE(b.length - 8, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(16000, 24); b.writeUInt32LE(32000, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write('data', 36); b.writeUInt32LE(3200, 40); return b;
 }
-function fixture(t) {
+function fixture(t, { faces } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-qq-media-'));
   t.after(() => { assert.equal(path.dirname(root), os.tmpdir()); assert.match(path.basename(root), /^fish-qq-media-/); fs.rmSync(root, { recursive: true }); });
   const store = new ArtifactStore({ root: path.join(root, 'artifacts') }), observed = [], sent = [], executions = [];
@@ -23,7 +23,7 @@ function fixture(t) {
   const onebot = { call: async (action, params) => { if (action === 'get_login_info') return { user_id: '100' }; if (action === 'get_record') return { base64: wav().toString('base64') }; if (action === 'get_image') return { base64: 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' }; if (action === 'send_private_msg') { sent.push(params); return { message_id: nextId++ }; } throw Error('unexpected action'); } };
   const settingsFile = path.join(root, 'settings.json'); fs.writeFileSync(settingsFile, JSON.stringify({ expectedSelfId: '100', allowedCallerUID: '200' }));
   const executor = { execute: async request => { executions.push(request); return '我在。'; } };
-  const bridge = new QQBridge({ authority: { health: async () => ({ world: { paused: false, revision: 1 } }), context: async () => ({ entityId: scope.entityId, memoryEpoch: 0 }) }, port: { observe: async value => { observed.push(value); return { observationId: 'synthetic-observation' }; } }, onebot, executor, media: new QQMedia({ content, onebot }), settingsFile, stateFile: path.join(root, 'dispatch.json') });
+  const bridge = new QQBridge({ authority: { health: async () => ({ world: { paused: false, revision: 1 } }), context: async () => ({ entityId: scope.entityId, memoryEpoch: 0 }) }, port: { observe: async value => { observed.push(value); return { observationId: 'synthetic-observation' }; } }, onebot, executor, media: new QQMedia({ content, onebot, ...(faces === undefined ? {} : { faces }) }), settingsFile, stateFile: path.join(root, 'dispatch.json') });
   const event = (id, message) => ({ post_type: 'message', self_id: 100, user_id: 200, message_id: id, message_type: 'private', sender: { user_id: 200 }, time: Math.floor(Date.now() / 1000), message });
   return { bridge, event, observed, sent, executions, executor, content, store, service, qualities, tts: () => tts };
 }
@@ -115,8 +115,8 @@ test('a voice reply is synthesized without bracketed asides and emoticons; the r
   assert.equal(spoken.at(-1), '好'.repeat(120));
 });
 
-test('small faces: six in one message are answered, read by name and stored as nothing; her [微笑] goes out as a face in the same message', async t => {
-  const f = fixture(t); await f.bridge.connection(true);
+test('small faces: six in one message are answered, read by name and stored as nothing; with faces on her [微笑] goes out as a face in the same message', async t => {
+  const f = fixture(t, { faces: true }); await f.bridge.connection(true);
   f.executor.execute = async request => { f.executions.push(request); return '收到[微笑]，这个[不存在]不是表情'; };
   await f.bridge.receive(f.event(10, [{ type: 'text', data: { text: '哈哈' } }, ...['14', '14', '179', '264', '277', '9999'].map(id => ({ type: 'face', data: { id } }))]));
   assert.equal(f.executions.length, 1);
@@ -218,4 +218,13 @@ test('收下这个 from anyone but the owner changes nothing; without the sticke
   f.executor.execute = async () => '给你[表情:合成测试表情]';
   await f.bridge.receive(f.event(65, [{ type: 'text', data: { text: '来一张' } }]));
   assert.deepEqual(f.sent.at(-1).message.map(segment => Object.keys(segment.data).sort()), [['file']]);
+});
+
+test('small faces off (QQ\'s declaration by default): her [微笑] goes out as plain text in her message, no face segment', async t => {
+  const f = fixture(t); await f.bridge.connection(true);
+  assert.equal(f.bridge.media.faces, false);
+  f.executor.execute = async () => '收到[微笑]';
+  await f.bridge.receive(f.event(70, [{ type: 'text', data: { text: '哈哈' } }, { type: 'face', data: { id: '14' } }]));
+  assert.deepEqual(f.sent.map(p => p.message), [[{ type: 'text', data: { text: '收到[微笑]' } }]]);
+  assert.equal(f.observed.at(-1).text, '收到[微笑]');
 });

@@ -5,6 +5,7 @@ import { qqRequestId } from './worker-route.js';
 import { executeConversation, DECLINE_MARK } from '../conversation/executor.js';
 import { splitReply, SPLIT_GAP_MS } from './split.js';
 import { replySegments } from './faces.js';
+import { channel } from '../channels/index.js';
 import { takeStickerMarker, asksToKeep, frequencyLine, RECENT_REPLIES, KEEP_WINDOW_MS } from './stickers.js';
 
 const identifier = value => typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value);
@@ -31,8 +32,10 @@ function completionEvent(result) {
 const DECLINED = new RegExp(`[<＜]\\s*${DECLINE_MARK.slice(1, -1)}\\s*[>＞]`, 'u');
 export const OWNER_BUDGET_NOTICE = '提醒：今天的模型开销已经到达每日上限，大肥鱼今天先不再回复任何人，北京时间零点后自动恢复。可以在控制台查看今日开销或调整上限。';
 export class QQBridge {
-  constructor({ authority, port, onebot, executor, media, settingsFile, stateFile, clock = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
-    Object.assign(this, { authority, port, onebot, executor, media, settingsFile, stateFile, clock, sleep });
+  /** faces: send her `[名字]` as small faces (only where the bridge sends without the content service); by default
+   * what QQ's channel declaration says (`expression.faces`). */
+  constructor({ authority, port, onebot, executor, media, settingsFile, stateFile, clock = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), faces = channel('qq').expression.faces }) {
+    Object.assign(this, { authority, port, onebot, executor, media, settingsFile, stateFile, clock, sleep, faces });
     this.settings = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile, 'utf8')) : null;
     this.state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : { records: {} };
     for (const item of Object.values(this.state.records)) { if (['queued', 'processing'].includes(item.status)) item.status = 'interrupted'; else if (item.status === 'sending') item.status = 'unknown'; }
@@ -230,7 +233,7 @@ export class QQBridge {
         let receipt;
         if (this.media) receipt = await this.media.send({ scope, userId, part: { type: 'text', text: piece } });
         else {
-          const sent = await this.onebot.call('send_private_msg', { user_id: userId, message: replySegments(piece), auto_escape: true });
+          const sent = await this.onebot.call('send_private_msg', { user_id: userId, message: replySegments(piece, this.faces), auto_escape: true });
           const messageId = String(sent.message_id); if (!/^-?\d{1,20}$/.test(messageId)) throw new Error('INVALID_SEND_RECEIPT');
           receipt = { messageId, type: 'text', text: piece };
         }
@@ -320,7 +323,7 @@ export class QQBridge {
         let receipt;
         if (this.media) receipt = await this.media.send({ scope, userId, part });
         else {
-          const sent = await this.onebot.call('send_private_msg', { user_id: userId, message: replySegments(part.text), auto_escape: true });
+          const sent = await this.onebot.call('send_private_msg', { user_id: userId, message: replySegments(part.text, this.faces), auto_escape: true });
           const messageId = String(sent.message_id); if (!/^-?\d{1,20}$/.test(messageId)) throw new Error('INVALID_SEND_RECEIPT');
           receipt = { messageId, type: 'text', text: part.text };
         }

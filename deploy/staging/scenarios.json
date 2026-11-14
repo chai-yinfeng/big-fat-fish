@@ -775,29 +775,29 @@
     },
     {
       "id": "K2",
-      "title": "face-marker-becomes-face: her [微笑] arrives as a face segment in the same message as her text; a name not in the table stays text",
+      "title": "face-marker-stays-text: small faces are off by default (QQ's channel declaration), so her [微笑] arrives as plain text in her message, with no face segment, like any other bracket",
       "model": [
         { "match": "MOCK-K2-{run}", "reply": "MOCK-REPLY-K2-{run} 好呀[微笑]，这个[不存在]不是表情" }
       ],
       "steps": [
         { "say": { "from": "MOCK-A", "text": "MOCK-K2-{run} 笑一个" } },
-        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K2-{run} 好呀，这个[不存在]不是表情", "faces": ["14"] } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K2-{run} 好呀[微笑]，这个[不存在]不是表情", "faces": [] } },
         { "expectSilence": { "to": "*", "afterMs": 3000 } },
         { "say": { "from": "MOCK-A", "text": "MOCK-K2-{run} 再说一句" } },
-        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K2-{run}", "faces": ["14"] } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K2-{run}", "faces": [] } },
         { "expectPrompt": { "userText": "MOCK-K2-{run} 再说一句", "contains": "MOCK-REPLY-K2-{run} 好呀[微笑]，这个[不存在]不是表情" } }
       ]
     },
     {
       "id": "K4",
-      "title": "initiated-run-sends-faces: when she speaks first, her [微笑] also arrives as a face segment in the same message",
+      "title": "initiated-run-faces-off: when she speaks first, her [微笑] also stays plain text, with no face segment (small faces are off by default)",
       "model": [
         { "match": "后台事件", "reply": "MOCK-INIT-K4-{run} 在忙吗[微笑]" }
       ],
       "steps": [
         { "quietHours": { "window": "none" } },
         { "poke": {} },
-        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-INIT-K4-{run} 在忙吗", "faces": ["14"] } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-INIT-K4-{run} 在忙吗[微笑]", "faces": [] } },
         { "expectInitiation": { "outcome": "sent" } },
         { "expectSilence": { "to": "*", "afterMs": 3000 } }
       ],

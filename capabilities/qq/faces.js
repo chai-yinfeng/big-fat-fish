@@ -24,9 +24,11 @@ const MARKER = /\[([^[\]\n]{1,8})\]/g;
 /** What a received face is called in the text the model reads: `[微笑]`, or `[表情]` for a number not in the table. */
 export function faceText(id) { return `[${Object.hasOwn(QQ_FACES, id) ? QQ_FACES[id] : '表情'}]`; }
 
-/** One message of hers as OneBot segments: each `[名字]` of the table (at most MAX_FACES_PER_MESSAGE) becomes a `face`
- * segment where it stands, everything else stays text. */
-export function replySegments(text) {
+/** One message of hers as OneBot segments: with `enabled` (the channel's `expression.faces`, passed by the caller) each
+ * `[名字]` of the table (at most MAX_FACES_PER_MESSAGE) becomes a `face` segment where it stands, everything else stays
+ * text; without it the whole message is text as she wrote it. */
+export function replySegments(text, enabled = true) {
+  if (!enabled) return [{ type: 'text', data: { text } }];
   const segments = []; let from = 0, faces = 0;
   for (const match of text.matchAll(MARKER)) {
     const id = BY_NAME.get(match[1]);

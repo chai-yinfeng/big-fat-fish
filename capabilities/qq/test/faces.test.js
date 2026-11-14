@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { QQ_FACES, MAX_FACES_PER_MESSAGE, faceText, replySegments, withoutFaceMarkers } from '../faces.js';
 import { splitReply } from '../split.js';
 import { channel } from '../../channels/index.js';
+import { FACE_NAMES } from '../../channels/qq/manifest.js';
 
-const PROMPT_FACE_NAMES = channel('qq').faceNames;
+// The names QQ's declaration would offer her when faces are on (they are off for now: faceNames is then empty).
+const PROMPT_FACE_NAMES = FACE_NAMES;
 
 const text = value => ({ type: 'text', data: { text: value } }), face = id => ({ type: 'face', data: { id } });
 
@@ -45,8 +47,15 @@ test('a long reply is split first, then each message gets its faces; a marker is
     const crafted = '一'.repeat(at) + '[微笑]' + '二'.repeat(30);
     for (const piece of splitReply(crafted)) assert.doesNotMatch(piece, /\[[^\]]*$|^[^[]*\]/, `${at}: ${piece}`);
   }
-  const faces = pieces.flatMap(replySegments).filter(segment => segment.type === 'face').map(segment => segment.data.id);
+  const faces = pieces.flatMap(piece => replySegments(piece)).filter(segment => segment.type === 'face').map(segment => segment.data.id);
   assert.deepEqual(faces, ['14', '179', '264']);
+});
+
+test('faces off (the default of QQ\'s declaration): every marker stays text, the message is one text segment', () => {
+  assert.equal(channel('qq').expression.faces, false);
+  assert.deepEqual(channel('qq').faceNames, []);
+  assert.doesNotMatch(channel('qq').prompt, /\[微笑\]|小表情/);
+  for (const value of ['好呀[微笑]明天见', '[doge]', '']) assert.deepEqual(replySegments(value, false), [text(value)]);
 });
 
 test('a reply spoken aloud loses the markers of the table and keeps every other bracket', () => {
