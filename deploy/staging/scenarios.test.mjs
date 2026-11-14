@@ -22,7 +22,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'K1', 'K2', 'K4']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'K1', 'K2', 'K4', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -402,7 +402,15 @@ async function stack(t) {
   edit('qq-bridge.json', c => { c.onebotPort = onebotPort; c.initiationPollMs = 1000; });
   // The worker's cleanup client gets a port nobody listens on (as in staging, where it cannot reach the operator).
   edit('memory-worker.json', c => Object.assign(c, { operatorPort: onebotPort === 65535 ? 65534 : onebotPort + 1, tickMs: 1000, consolidationDeferMs: 2000 }));
-  const data = shipped(), files = { control: path.join(base, 'scenario/onebot.sock'), script: path.join(base, 'scenario/script.json'), log: path.join(base, 'scenario/requests.jsonl') };
+  // The second channel (test-only MOCK): its own capability and credential, and its own conversation executor
+  // holding that credential only. Authority serves a test-only channel only with operator.allowTestChannels.
+  const mockToken = token(), mockCaller = token();
+  for (const dir of ['mock-channel/sessions', 'ipc/mock-channel']) fs.mkdirSync(path.join(base, dir), { recursive: true, mode: 0o700 });
+  write('mock-channel/capability.token', mockToken); write('mock-channel/caller.token', mockCaller);
+  edit('authority.json', c => { c.credentials.push({ hash: hash(mockToken), role: 'capability', capabilityId: 'mock' }); c.capabilities.push({ id: 'mock', policy: 'conversation.v1' }); c.operator.allowTestChannels = true; });
+  const conversation = JSON.parse(fs.readFileSync(path.join(base, 'operator/conversation.json'), 'utf8'));
+  write('mock-channel/conversation.json', { ...conversation, socketPath: path.join(base, 'ipc/mock-channel/execute.sock'), callerTokenHash: hash(mockCaller), sessionsDir: path.join(base, 'mock-channel/sessions'), authority: { ...conversation.authority, tokenFile: path.join(base, 'mock-channel/capability.token') } });
+  const data = shipped(), files = { control: path.join(base, 'scenario/onebot.sock'), mockControl: path.join(base, 'scenario/mock.sock'), script: path.join(base, 'scenario/script.json'), log: path.join(base, 'scenario/requests.jsonl') };
   fs.writeFileSync(files.script, '[]');
   const fake = createFakeOneBot({ port: onebotPort, token: onebotToken, controlSocket: files.control, selfId: data.bot.qq });
   await fake.start(); t.after(() => fake.close());
@@ -420,6 +428,9 @@ async function stack(t) {
   start(path.join(project, 'capabilities/qq/main.mjs'), '--config', path.join(base, 'operator/qq-bridge.json'));
   await ready(path.join(base, 'ipc/qq-control/control.sock'));
   start(path.join(project, 'capabilities/memory/main.mjs'), '--config', path.join(base, 'operator/memory-worker.json'));
+  start(path.join(project, 'deploy/staging/fake-channel.mjs'), '--release', project, '--control', files.mockControl, '--authority-socket', path.join(base, 'ipc/authority/authority.sock'), '--authority-token-file', path.join(base, 'mock-channel/capability.token'),
+    '--executor-config', path.join(base, 'mock-channel/conversation.json'), '--caller-token-file', path.join(base, 'mock-channel/caller.token'), '--poll-ms', '1000');
+  await ready(files.mockControl);
   const call = (socketPath, headers) => (method, route, body) => new Promise((resolve, reject) => {
     const req = http.request({ socketPath, method, path: route, agent: false, headers: { ...headers, ...(body === undefined ? {} : { 'content-type': 'application/json' }) } }, res => {
       let raw = ''; res.setEncoding('utf8'); res.on('data', chunk => { raw += chunk; });
@@ -428,7 +439,7 @@ async function stack(t) {
     req.on('error', reject); req.end(body === undefined ? undefined : JSON.stringify(body));
   });
   // Silence windows are shortened here; staging waits the full time.
-  const runner = input => new Runner({ data: input, modelScript: files.script, modelLog: files.log, operator: call(path.join(base, 'ipc/operator/operator.sock'), { authorization: 'Bearer ' + operatorToken }), onebot: call(files.control, {}), gateway: gatewayCaller(path.join(base, 'ipc/model/inference.sock'), fs.readFileSync(path.join(base, 'service-config/inference.token'), 'utf8').trim()), gatewayAnswer: gatewayReader(path.join(base, 'ipc/model/inference.sock'), fs.readFileSync(path.join(base, 'service-config/inference.token'), 'utf8').trim()), sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 1500))) });
+  const runner = input => new Runner({ data: input, modelScript: files.script, modelLog: files.log, operator: call(path.join(base, 'ipc/operator/operator.sock'), { authorization: 'Bearer ' + operatorToken }), onebot: call(files.control, {}), mock: call(files.mockControl, {}), gateway: gatewayCaller(path.join(base, 'ipc/model/inference.sock'), fs.readFileSync(path.join(base, 'service-config/inference.token'), 'utf8').trim()), gatewayAnswer: gatewayReader(path.join(base, 'ipc/model/inference.sock'), fs.readFileSync(path.join(base, 'service-config/inference.token'), 'utf8').trim()), sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 1500))) });
   return { runner, data, files, fake, base };
 }
 
@@ -636,12 +647,12 @@ test('job steps: the demo job is registered with nothing but its seconds, a job 
   await assert.rejects(STEPS.expectCompletions(run, ctx, { outcomes: ['deferred:budget', 'carried', 'sent'], timeoutMs: 0 }), /not-the-owner/);
 });
 
-test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge and memory worker', { timeout: 600000 }, async t => {
+test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 600000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'K1', 'K2', 'K4'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'K1', 'K2', 'K4', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '34/34 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '38/38 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));

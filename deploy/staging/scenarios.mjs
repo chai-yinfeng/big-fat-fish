@@ -5,6 +5,7 @@
 //   node scenarios.mjs --operator-port 13082 --operator-token-file <file> --onebot-control <socket>
 //        --model-script <file> --model-log <file> --scenarios <scenarios.json> [--only S1,S3]
 //        [--inference-socket <socket> --inference-token-file <file>]   (the staged gateway, for `gatewayCall` and `providerJob`)
+//        [--mock-control <socket>]   (the second, non-QQ channel: fake-channel.mjs, for the `mock*` steps)
 // A scenario is { id, title, model: [rules for fake-model.mjs], steps: [...], finally: [...] };
 // each step is an object with exactly one key naming an entry of STEPS below. `{run}` anywhere in a
 // scenario becomes a token that is new on every replay, so a replay never mistakes the memory an
@@ -68,7 +69,71 @@ async function provenance(run, item, person, { source, verbatim = true }) {
   if (verbatim ? !quoted || item.evidence.quoteVerbatim !== undefined : quoted || item.evidence.quoteVerbatim !== false) fail(`the quote of the memory of ${person} is ${verbatim ? 'not verbatim in its observation, or is marked as not verbatim' : 'not marked as not verbatim'}`);
 }
 
+/** The second channel's names for a person: the account is the person's MOCK- name (fake-channel.mjs). */
+const mockActor = name => `mock:user:${name}`, mockStream = name => `mock:private:${name}`;
+const mock = (run, method, route, body) => typeof run.mock === 'function' ? run.mock(method, route, body) : fail('this replay has no second channel (--mock-control)');
+
 export const STEPS = {
+  /** The second channel (MOCK, not QQ; deploy/staging/fake-channel.mjs). `mockFriends`: who is a friend of the bot
+   * there (only a friend is admitted and answered). `mockSay`: a private message from a person's account there. */
+  async mockFriends(run, _ctx, { people }) {
+    for (const name of people) if (!run.data.people[name]) fail(`mockFriends: unknown person ${name}`);
+    await mock(run, 'POST', '/friends', { friends: people });
+  },
+  async mockSay(run, ctx, { from, text }) {
+    ctx.observed.set('mock:' + from, await run.messageCount(from, 'mock'));
+    await mock(run, 'POST', '/message', { account: from, text });
+  },
+  /** The next not-yet-matched message delivered to `to` on the second channel must arrive and contain `contains`. */
+  async mockExpectReply(run, ctx, { to, contains, timeoutMs = 60000 }) {
+    const message = await run.poll(async () => (await mock(run, 'GET', '/state')).sent.find(item => item.account === to && !ctx.matched.has('mock:' + item.message_id)), timeoutMs, `no message delivered to ${to} on the second channel`);
+    ctx.matched.add('mock:' + message.message_id);
+    if (contains !== undefined && !message.text.includes(contains)) fail(`${to} received ${JSON.stringify(message.text.slice(0, 80))} on the second channel, expected it to contain ${JSON.stringify(contains)}`);
+  },
+  /** Nothing unmatched may have been delivered on the second channel to `to` (a name, a list or "*"). `observedFrom`:
+   * first wait until Authority has recorded the last message each of these people said there, then `afterMs`. */
+  async mockExpectSilence(run, ctx, { to, observedFrom = [], afterMs = 3000 }) {
+    for (const name of list(observedFrom)) await run.poll(async () => await run.messageCount(name, 'mock') > (ctx.observed.get('mock:' + name) ?? -1), 30000, `the message from ${name} never reached Authority`);
+    await run.sleep(afterMs);
+    const extra = (await mock(run, 'GET', '/state')).sent.filter(item => !ctx.matched.has('mock:' + item.message_id) && (to === '*' || list(to).includes(item.account)));
+    if (extra.length) fail(`expected silence on the second channel, but ${extra[0].account} received ${JSON.stringify(extra[0].text.slice(0, 80))}`);
+  },
+  /** Messages delivered to `to` on the second channel during this scenario (optionally those containing `contains`): exactly `count`. */
+  async mockExpectSentCount(run, _ctx, { to, contains, count }) {
+    const actual = (await mock(run, 'GET', '/state')).sent.filter(item => item.account === to && includes(item.text, { contains })).length;
+    if (actual !== count) fail(`${to} received ${actual} message(s) on the second channel, expected ${count}`);
+  },
+  /** The second channel leaves the next `count` sends without a receipt; `mockExpectLostSends` waits until exactly
+   * `count` sends towards `to` went that way during this scenario (and none to anyone else). */
+  async mockLoseReceipts(run, _ctx, { count }) { await mock(run, 'POST', '/lose-receipts', { count }); },
+  async mockExpectLostSends(run, _ctx, { to, count, timeoutMs = 60000 }) {
+    let lost = [];
+    const exact = () => lost.filter(item => item.account === to).length === count && lost.every(item => item.account === to);
+    try { await run.poll(async () => { lost = (await mock(run, 'GET', '/state')).lost; return exact(); }, timeoutMs, 'timeout'); } catch (error) { if (error.message !== 'timeout') throw error; fail(`${lost.filter(item => item.account === to).length} send(s) to ${to} on the second channel went without a receipt (and ${lost.filter(item => item.account !== to).length} to others), expected ${count} (and 0)`); }
+  },
+  /** The operator says `from`'s account on the second channel is the person `person` (POST /people/attach, the route
+   * the console uses; never a move). Afterwards that account and its private conversation are that person's. */
+  async mockAttach(run, _ctx, { from, person }) {
+    const personId = run.personId(person);
+    const value = await run.operator('POST', '/people/attach', { capabilityId: 'mock', actorId: mockActor(from), streamId: mockStream(from), personId });
+    if (value.personId !== personId || value.movedFrom !== null) fail(`attaching ${from} to ${person} answered ${JSON.stringify(value)}`);
+    const listed = (await run.operator('GET', '/people')).people.filter(item => item.actors.some(actor => actor.capabilityId === 'mock' && actor.externalActorId === mockActor(from)));
+    if (listed.length !== 1 || listed[0].personId !== personId) fail(`the account of ${from} on the second channel belongs to ${listed.length} people, expected exactly ${person}`);
+  },
+  /** Admission on the second channel = an actor binding and a private conversation there (operator /people,
+   * /conversations). `as`: the person both must belong to (default: a person of that channel's own). */
+  async mockExpectAdmitted(run, _ctx, { person, admitted, as = person }) {
+    const people = (await run.operator('GET', '/people')).people, conversations = await run.operator('GET', '/conversations');
+    const actor = people.find(item => item.actors.some(binding => binding.capabilityId === 'mock' && binding.externalActorId === mockActor(person)));
+    const stream = conversations.find(item => item.capabilityId === 'mock' && item.streamId === mockStream(person));
+    if (Boolean(actor) !== admitted || Boolean(stream) !== admitted) fail(`${person} on the second channel: actor bound=${Boolean(actor)}, conversation bound=${Boolean(stream)}, expected ${admitted}`);
+    if (admitted && (actor.personId !== run.personId(as) || stream.personId !== run.personId(as))) fail(`${person} on the second channel is not the person ${as}`);
+  },
+  /** A channel as the operator's overview lists it (GET /world `channels`): it must be there, with these values. */
+  async expectChannel(run, _ctx, { id, ...expected }) {
+    const listed = (await run.operator('GET', '/world')).channels.find(item => item.id === id) ?? fail(`the overview lists no channel ${id}`);
+    for (const [key, value] of Object.entries(expected)) if (JSON.stringify(listed[key]) !== JSON.stringify(value)) fail(`channel ${id}: ${key} is ${JSON.stringify(listed[key])}, expected ${JSON.stringify(value)}`);
+  },
   /** A private message arrives from a person (subType: OneBot sub_type, default "friend"; faces: QQ face numbers,
    * each a face segment after the text). */
   async say(run, ctx, { from, text, subType, faces }) {
@@ -450,17 +515,18 @@ export const STEPS = {
     if (actual !== count) fail(`the model was asked ${actual} time(s) for ${JSON.stringify(userText)}, expected ${count}`);
   },
   /** `noteMessages` remembers how many lines Authority holds of `person`'s private conversation (operator
-   * GET /conversations); `expectMessages` then requires exactly `added` more: what was really said and delivered. */
-  async noteMessages(run, ctx, { person }) {
+   * GET /conversations; `channel`: "qq" (default) or "mock"); `expectMessages` then requires exactly `added` more:
+   * what was really said and delivered. */
+  async noteMessages(run, ctx, { person, channel = 'qq' }) {
     // A reply is recorded a moment after it is delivered: note the count once it has stopped moving.
-    let count = await run.messageCount(person);
-    for (let i = 0; i < 20; i++) { await run.sleep(400); const again = await run.messageCount(person); if (again === count) break; count = again; }
-    (ctx.messages ??= new Map()).set(person, count);
+    let count = await run.messageCount(person, channel);
+    for (let i = 0; i < 20; i++) { await run.sleep(400); const again = await run.messageCount(person, channel); if (again === count) break; count = again; }
+    (ctx.messages ??= new Map()).set(`${channel}:${person}`, count);
   },
-  async expectMessages(run, ctx, { person, added, timeoutMs = 15000 }) {
-    const before = ctx.messages?.get(person) ?? fail(`expectMessages: no noted count for ${person}`);
+  async expectMessages(run, ctx, { person, added, channel = 'qq', timeoutMs = 15000 }) {
+    const before = ctx.messages?.get(`${channel}:${person}`) ?? fail(`expectMessages: no noted count for ${person}`);
     let seen;
-    try { await run.poll(async () => (seen = await run.messageCount(person) - before) === added, timeoutMs, 'timeout'); } catch (error) { if (error.message !== 'timeout') throw error; fail(`Authority holds ${seen} more line(s) of ${person}, expected ${added}`); }
+    try { await run.poll(async () => (seen = await run.messageCount(person, channel) - before) === added, timeoutMs, 'timeout'); } catch (error) { if (error.message !== 'timeout') throw error; fail(`Authority holds ${seen} more line(s) of ${person}, expected ${added}`); }
   },
   /** A run she started herself keeps the request prefix. The chain is: the last request whose typed text contains
    * `before`, every request of the initiated run (an event block marked as not the person's words stands where a
@@ -600,13 +666,15 @@ export class Runner {
   /** operator(method, route, body) and onebot(method, route, body) resolve to the `value` of an ok envelope. */
   /** gateway(route, body) (optional) posts to the staged gateway's inference socket and resolves to "ok" or the refusal code. */
   /** gatewayAnswer(route, body) (optional) does the same and resolves to { value } (a JSON answer), { bytes, type } (a file) or { code }. */
-  constructor({ data, operator, onebot, gateway, gatewayAnswer, modelScript, modelLog, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), say = () => {} }) {
-    Object.assign(this, { data: validateScenarios(data), operator, onebot, gateway, gatewayAnswer, modelScriptFile: modelScript, modelLogFile: modelLog, sleep, report: say });
+  /** mock(method, route, body) (optional) is the control socket of the second channel (fake-channel.mjs). */
+  constructor({ data, operator, onebot, mock, gateway, gatewayAnswer, modelScript, modelLog, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), say = () => {} }) {
+    Object.assign(this, { data: validateScenarios(data), operator, onebot, mock, gateway, gatewayAnswer, modelScriptFile: modelScript, modelLogFile: modelLog, sleep, report: say });
     this.owner = Object.keys(data.people).find(name => data.people[name].owner);
   }
   qq(name) { return this.data.people[name].qq; }
   nameOf(qq) { return Object.keys(this.data.people).find(name => this.data.people[name].qq === qq) ?? qq; }
-  personId(name) { return this.data.people[name].owner ? 'person:owner' : 'person:qq:' + this.qq(name); }
+  /** The name Authority gave the person when they were admitted: on QQ, or (`"channel": "mock"`) on the second channel. */
+  personId(name) { return this.data.people[name].owner ? 'person:owner' : this.data.people[name].channel === 'mock' ? 'person:mock:' + name : 'person:qq:' + this.qq(name); }
   /** The opaque label Authority shows for a person (operator /people). */
   async personLabel(name) {
     const person = (await this.operator('GET', '/people')).people.find(item => item.personId === this.personId(name));
@@ -629,8 +697,8 @@ export class Runner {
     return (await this.memoryPages(`person=${label}&`)).flatMap(page => page.items).filter(item => item.kind === 'digest' && item.status === 'active' && typeof item.summary === 'string');
   }
   async sent() { return (await this.onebot('GET', '/state')).sent; }
-  async messageCount(name) {
-    const row = (await this.operator('GET', '/conversations')).find(item => item.streamId === `qq:${this.data.bot.qq}:private:${this.qq(name)}`);
+  async messageCount(name, channel = 'qq') {
+    const row = (await this.operator('GET', '/conversations')).find(item => item.streamId === (channel === 'mock' ? mockStream(name) : `qq:${this.data.bot.qq}:private:${this.qq(name)}`));
     return row ? row.messages : -1;
   }
   logLines() { try { return fs.readFileSync(this.modelLogFile, 'utf8').split('\n').filter(Boolean); } catch (error) { if (error.code === 'ENOENT') return []; throw error; } }
@@ -667,6 +735,7 @@ export class Runner {
     try {
       fs.writeFileSync(this.modelScriptFile, JSON.stringify(scenario.model ?? []) + '\n', { mode: 0o600 });
       await this.onebot('POST', '/reset', {});
+      if (typeof this.mock === 'function') await this.mock('POST', '/reset', {});
       await each(scenario.steps);
     } catch (cause) { error = `step ${done + 1} ${JSON.stringify(scenario.steps[done] ?? null)}: ${cause.message}`; }
     const steps = done;
@@ -743,6 +812,7 @@ async function main(argv) {
     data: JSON.parse(fs.readFileSync(args.scenarios, 'utf8')), modelScript: args['model-script'], modelLog: args['model-log'], say: line => console.log(line),
     operator: (method, route, body) => request({ host: '127.0.0.1', port, method, path: route, headers: { authorization: 'Bearer ' + token } }, body),
     onebot: (method, route, body) => request({ socketPath: args['onebot-control'], method, path: route }, body),
+    ...(args['mock-control'] ? { mock: (method, route, body) => request({ socketPath: args['mock-control'], method, path: route }, body) } : {}),
     ...(args['inference-socket'] && args['inference-token-file'] ? { gateway: gatewayCaller(args['inference-socket'], fs.readFileSync(args['inference-token-file'], 'utf8').trim()), gatewayAnswer: gatewayReader(args['inference-socket'], fs.readFileSync(args['inference-token-file'], 'utf8').trim()) } : {}),
   });
   const summary = await runner.run(args.only ? args.only.split(',') : null);
