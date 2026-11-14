@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- QQ 小表情双向（表情包设计稿 §K2 第一步 S1；不迁移数据库，不新增 OneBot 动作，只用标准 `face` 段，**工具定义未改，`BASE_PROMPT` 加了一句和 40 个名字，上线后提示缓存失效一次**）。①修复：一条消息带 5 个以上小表情会被整条静默丢弃。小表情不再算附件、不再各落一个素材，按原位置写成名字进文字（`[微笑]`，表外编号写 `[表情]`）；图片和语音仍最多处理 4 个，超出的不再丢整条，只处理前 4 个并告诉模型还有几个没处理。②她回复里表内精确匹配的 `[名字]` 在 QQ 桥发送前换成同一条消息里的 `face` 段（先拆条再替换，每条最多 3 个，多的留作文字；表外的原样当文字），普通回复和她先开口的回合都一样；记录保留她写的 `[微笑]`；回执与不重发规则不变。③语音回复合成前由 QQ 桥去掉表内标记（`capabilities/speech` 未改）。编号↔名字表在 `capabilities/qq/faces.js`（QQ 官方机器人文档的 116 个）。场景 K1 `many-faces-still-answered`、K2 `face-marker-becomes-face`、K4 `initiated-run-sends-faces`；T3（语音去标记）staging 没有语音模型，只有单元测试。未验证：真实 QQ 客户端上这些编号的显示效果、真实模型是否会恰当使用。
 - 修复额度账本偶尔把已完整送达的模型调用记成 `failed`（staging J1 第二遍第 21 步，proactive `ok:0 failed:1`）：执行器的 OpenAI 客户端读到 `data: [DONE]` 就关连接，常早于上游流结束，网关把这次挂断当成取消。现在客户端在收到上游 usage（`[DONE]` 前最后一个事件）之后挂断，记为 `ok`；usage 之前挂断仍是 `failed`。chat、proactive、consolidation 同一条路径。计费、响应、对外行为不变（`model-gateway/server.mjs` `call()`）。本机用真实客户端在上游迟 150ms 结束时稳定复现并验证；staging（整段一次返回）的触发时序未在本机复现。
 
 - 修复场景步骤 `quietHours` 在北京时间 23:30–08:00 之间恢复默认安静时段时误报失败（R1–R6、J1–J3 夜里全挂）：`default` 不再断言 `now`，`none`/`now` 不变。只改测试装置（`deploy/staging/scenarios.mjs`），产品行为未改。

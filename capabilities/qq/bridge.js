@@ -4,6 +4,7 @@ import { messageFromOneBot } from './source.js';
 import { qqRequestId } from './worker-route.js';
 import { executeConversation, DECLINE_MARK } from '../conversation/executor.js';
 import { splitReply, SPLIT_GAP_MS } from './split.js';
+import { replySegments } from './faces.js';
 
 const identifier = value => typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value);
 export const FRIEND_REFRESH_MS = 10 * 60 * 1000;
@@ -223,7 +224,7 @@ export class QQBridge {
         let receipt;
         if (this.media) receipt = await this.media.send({ scope, userId, part: { type: 'text', text: piece } });
         else {
-          const sent = await this.onebot.call('send_private_msg', { user_id: userId, message: [{ type: 'text', data: { text: piece } }], auto_escape: true });
+          const sent = await this.onebot.call('send_private_msg', { user_id: userId, message: replySegments(piece), auto_escape: true });
           const messageId = String(sent.message_id); if (!/^-?\d{1,20}$/.test(messageId)) throw new Error('INVALID_SEND_RECEIPT');
           receipt = { messageId, type: 'text', text: piece };
         }
@@ -283,7 +284,7 @@ export class QQBridge {
         let receipt;
         if (this.media) receipt = await this.media.send({ scope, userId, part });
         else {
-          const sent = await this.onebot.call('send_private_msg', { user_id: userId, message: [{ type: 'text', data: { text: part.text } }], auto_escape: true });
+          const sent = await this.onebot.call('send_private_msg', { user_id: userId, message: replySegments(part.text), auto_escape: true });
           const messageId = String(sent.message_id); if (!/^-?\d{1,20}$/.test(messageId)) throw new Error('INVALID_SEND_RECEIPT');
           receipt = { messageId, type: 'text', text: part.text };
         }

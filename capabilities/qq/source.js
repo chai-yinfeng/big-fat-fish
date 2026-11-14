@@ -1,5 +1,7 @@
 // Pure OneBot v11 normalization. Call only after transport authentication.
 // Account attribution comes from the envelope, never attachment text or OCR.
+import { faceText } from './faces.js';
+
 function id(value, signed = false) {
   if (typeof value === 'number') {
     if (!Number.isSafeInteger(value)) throw new Error('INVALID_ONEBOT_ID');
@@ -10,6 +12,8 @@ function id(value, signed = false) {
   if (!signed && BigInt(normalized) <= 0n) throw new Error('INVALID_ONEBOT_ID');
   return normalized;
 }
+/** Most pictures and voice clips taken from one message. */
+export const MAX_MEDIA = 4;
 const mediaFile = value => typeof value === 'string' && value.length > 0 && value.length <= 2048 && !value.includes('\0');
 export function messageFromOneBot(event, { expectedSelfId }) {
   if (!event || typeof event !== 'object' || event.post_type !== 'message') return null;
@@ -21,20 +25,24 @@ export function messageFromOneBot(event, { expectedSelfId }) {
   if (!['private', 'group'].includes(event.message_type)) throw new Error('INVALID_ONEBOT_CHANNEL');
   const group = event.message_type === 'group' ? id(event.group_id) : null, messageId = id(event.message_id, true);
   if (!Number.isSafeInteger(event.time) || event.time < 0 || event.time > Math.floor(Number.MAX_SAFE_INTEGER / 1000)) throw new Error('INVALID_ONEBOT_TIME');
-  const media = []; let authoredText;
+  // Pictures and voice beyond MAX_MEDIA are not fetched; `skippedMedia` counts them, so the model is told.
+  const media = []; let authoredText, skippedMedia = 0, audio = 0;
   if (typeof event.message === 'string') authoredText = event.message; // CQ-looking text remains literal text.
   else if (Array.isArray(event.message) && event.message.length <= 32) {
-    authoredText = event.message.filter(s => s?.type === 'text' && typeof s.data?.text === 'string').map(s => s.data.text).join('\n');
+    // Text segments joined by line breaks; a small face is its name (`[微笑]`) where it stands, not an attachment.
+    const pieces = [];
     for (const [segmentIndex, segment] of event.message.entries()) {
       const data = segment?.data;
-      if (segment?.type === 'record' && mediaFile(data?.file)) media.push({ kind: 'audio', file: data.file, segmentIndex });
-      else if (segment?.type === 'image' && mediaFile(data?.file)) media.push({ kind: 'image', file: data.file, segmentIndex, sticker: typeof data.emoji_id === 'string' });
-      else if (segment?.type === 'face' && /^\d{1,10}$/.test(String(data?.id))) media.push({ kind: 'sticker', native: { type: 'qq-face', id: String(data.id) }, segmentIndex });
+      if (segment?.type === 'text' && typeof data?.text === 'string') pieces.push({ text: data.text, line: true });
+      else if (segment?.type === 'face' && /^\d{1,10}$/.test(String(data?.id))) pieces.push({ text: faceText(String(data.id)) });
+      else if (segment?.type === 'record' && mediaFile(data?.file)) { audio++; if (media.length < MAX_MEDIA) media.push({ kind: 'audio', file: data.file, segmentIndex }); else skippedMedia++; }
+      else if (segment?.type === 'image' && mediaFile(data?.file)) { if (media.length < MAX_MEDIA) media.push({ kind: 'image', file: data.file, segmentIndex, sticker: typeof data.emoji_id === 'string' }); else skippedMedia++; }
     }
+    authoredText = pieces.map((piece, index) => (piece.line && pieces[index - 1]?.line ? '\n' : '') + piece.text).join('');
   } else throw new Error('INVALID_ONEBOT_MESSAGE');
-  if (typeof authoredText !== 'string' || authoredText.length > 16000 || authoredText.includes('\0') || !authoredText && !media.length || media.length > 4 || media.filter(m => m.kind === 'audio').length > 1) throw new Error('INVALID_ONEBOT_MESSAGE');
-  const placeholder = media.length === 1 ? { audio: '[QQ语音消息]', image: '[QQ图片消息]', sticker: '[QQ表情消息]' }[media[0].kind] : '[QQ附件消息]';
+  if (typeof authoredText !== 'string' || authoredText.length > 16000 || authoredText.includes('\0') || !authoredText && !media.length || audio > 1) throw new Error('INVALID_ONEBOT_MESSAGE');
+  const placeholder = media.length === 1 ? { audio: '[QQ语音消息]', image: '[QQ图片消息]' }[media[0].kind] : '[QQ附件消息]';
   const anonymous = event.anonymous != null;
-  return { authoredText, media, observation: { eventId: `onebot:v11:message:${messageId}`, streamId: group ? `qq:${self}:group:${group}` : `qq:${self}:private:${sender}`, actorId: anonymous ? `qq:${self}:anonymous` : `qq:${self}:user:${sender}`, role: anonymous ? 'external' : 'user', text: authoredText || placeholder, at: event.time * 1000, ...(!authoredText.trim() ? { origin: 'attachment' } : {}) } };
+  return { authoredText, media, skippedMedia, observation: { eventId: `onebot:v11:message:${messageId}`, streamId: group ? `qq:${self}:group:${group}` : `qq:${self}:private:${sender}`, actorId: anonymous ? `qq:${self}:anonymous` : `qq:${self}:user:${sender}`, role: anonymous ? 'external' : 'user', text: authoredText || placeholder, at: event.time * 1000, ...(!authoredText.trim() ? { origin: 'attachment' } : {}) } };
 }
 export function observationFromOneBot(event, config) { return messageFromOneBot(event, config)?.observation || null; }
