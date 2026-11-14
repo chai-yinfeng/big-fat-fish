@@ -22,7 +22,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'K1', 'K2', 'K4']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -185,6 +185,22 @@ test('expectSplitReply: 2 to 4 short messages, in order, that add up to the repl
   await assert.rejects(check(['第二句话！', '第一句话。', '第三句话？']), /do not add up to the reply, in order/);
   await assert.rejects(check(['第一句话。', '第二句话！', '第三句话。']), /do not add up to the reply, in order/);
   await assert.rejects(check(['第一句话。', '第二句话！']), /MOCK-A did not receive the whole reply: got 2 message\(s\)/);
+});
+
+test('say can carry small faces; expectReply can require the face numbers of the same message', async () => {
+  const data = shipped(), qq = data.people['MOCK-A'].qq, posted = [];
+  let sent = [];
+  const run = new Runner({ data, sleep: async () => {}, operator: async () => ({ items: [] }), onebot: async (method, route, body) => { if (method === 'POST') { posted.push([route, body]); return {}; } return { sent }; } });
+  run.messageCount = async () => 0;
+  await STEPS.say(run, { observed: new Map() }, { from: 'MOCK-A', text: 'MOCK 看', faces: ['14', '179'] });
+  await STEPS.say(run, { observed: new Map() }, { from: 'MOCK-A', text: 'MOCK 无' });
+  assert.deepEqual(posted.map(([route, body]) => [route, body.text, body.faces]), [['/message', 'MOCK 看', ['14', '179']], ['/message', 'MOCK 无', undefined]]);
+  sent = [{ message_id: 1, user_id: qq, text: 'MOCK 好呀', faces: ['14'] }, { message_id: 2, user_id: qq, text: 'MOCK 无' }];
+  const ctx = { matched: new Set() };
+  await STEPS.expectReply(run, ctx, { to: 'MOCK-A', contains: 'MOCK 好呀', faces: ['14'], timeoutMs: 0 });
+  await STEPS.expectReply(run, ctx, { to: 'MOCK-A', faces: [], timeoutMs: 0 });
+  await assert.rejects(STEPS.expectReply(run, { matched: new Set() }, { to: 'MOCK-A', faces: [], timeoutMs: 0 }), /received a message with faces \["14"\], expected \[\]/);
+  await assert.rejects(STEPS.expectReply(run, { matched: new Set([1]) }, { to: 'MOCK-A', faces: ['14'], timeoutMs: 0 }), /received a message with faces \[\], expected \["14"\]/);
 });
 
 test('expectBeijingTime: one Beijing time line that matches the real time of the request, and no UTC timestamp', async t => {
@@ -623,9 +639,9 @@ test('job steps: the demo job is registered with nothing but its seconds, a job 
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge and memory worker', { timeout: 600000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'K1', 'K2', 'K4'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '31/31 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '34/34 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));
