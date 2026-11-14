@@ -75,7 +75,7 @@ const CHECKS = [
   // capabilities/media/main.mjs
   { label: 'content.json', required: true, check: file => {
     const c = readPrivate(file, { size: 16384 });
-    if (!plain(c) || Object.keys(c).some(k => !['store', 'workRoot', 'speechConfigFile', 'authority', 'gateway', 'sharpModule', 'control'].includes(k)) || !absolute(c.sharpModule)) throw fail('CONFIG_INVALID');
+    if (!plain(c) || Object.keys(c).some(k => !['store', 'workRoot', 'speechConfigFile', 'authority', 'gateway', 'sharpModule', 'control', 'allowRawSmallPng'].includes(k)) || !absolute(c.sharpModule) || c.allowRawSmallPng !== undefined && typeof c.allowRawSmallPng !== 'boolean') throw fail('CONFIG_INVALID');
     return c;
   } },
   // capabilities/speech/config.js loadSpeechConfig; absent until prepare-speech, which the runtime tolerates.

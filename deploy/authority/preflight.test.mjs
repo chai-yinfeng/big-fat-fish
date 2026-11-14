@@ -97,6 +97,14 @@ test('runtime shape, permissions, token files and staging ports are checked like
     'memory-worker.json CONFIG_INVALID', 'content.json CONFIG_PERMISSIONS', 'execution-storage.json EXECUTION_LAYOUT']);
 });
 
+test('content.json may carry the staging-only allowRawSmallPng as a boolean, nothing else', async t => {
+  const w = world(t);
+  w.edit('content.json', c => { c.allowRawSmallPng = true; });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), []);
+  w.edit('content.json', c => { c.allowRawSmallPng = 'yes'; });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['content.json CONFIG_INVALID']);
+});
+
 test('no world yet is not a failure (first install before initialization)', async () => {
   const result = await preflight({ base: path.join(os.tmpdir(), 'fish-preflight-absent-' + process.pid, 'companion-world-v1') });
   assert.deepEqual(result.failures, []);

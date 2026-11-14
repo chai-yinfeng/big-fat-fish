@@ -240,6 +240,19 @@ class InitiationReplayTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT key FROM metadata ORDER BY key').fetchall(), [('consolidation',), ('state',)])
             db.close()
 
+    def test_raw_small_pngs_only_while_replaying_and_only_for_a_release_that_knows_the_key(self):
+        config = {'sharpModule': '/x/node_modules/sharp'}
+        knows = "cfg.allowRawSmallPng ?? false"
+        self.assertEqual(sa.scenario_content_config(dict(config), knows, True), {**config, 'allowRawSmallPng': True})
+        self.assertEqual(sa.scenario_content_config(dict(config), "cfg.sharpModule", True), config)
+        self.assertEqual(sa.scenario_content_config({**config, 'allowRawSmallPng': True}, knows, False), config)
+        self.assertEqual(sa.scenario_content_config(dict(config), knows, False), config)
+        source = (HERE / 'staging-agent.py').read_text()
+        self.assertIn("edit('content.json', lambda c: scenario_content_config(c, content_source, True))", source)
+        # Taken out in the `finally` of the replay, before anything else (a rollback) can start an older release.
+        self.assertIn("    finally:\n        fake.terminate()", source)
+        self.assertIn("            fake.kill()\n        edit('content.json', lambda c: scenario_content_config(c, content_source, False))", source)
+
     def test_the_bridge_polls_faster_only_when_the_release_knows_the_setting(self):
         config = {'onebotPort': sa.ONEBOT_PORT}
         self.assertEqual(sa.scenario_bridge_config(dict(config), "cfg.onebotPort"), config)

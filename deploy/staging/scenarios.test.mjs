@@ -424,6 +424,8 @@ async function stack(t) {
   const onebotPort = await new Promise(resolve => { const probe = net.createServer(); probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
   // The bridge asks for initiated runs every second here (production: every minute).
   edit('qq-bridge.json', c => { c.onebotPort = onebotPort; c.initiationPollMs = 1000; });
+  // No image runtime here either: the staging-only switch lets the fake OneBot's small PNGs through, as in staging.
+  edit('content.json', c => { c.allowRawSmallPng = true; });
   // The worker's cleanup client gets a port nobody listens on (as in staging, where it cannot reach the operator).
   edit('memory-worker.json', c => Object.assign(c, { operatorPort: onebotPort === 65535 ? 65534 : onebotPort + 1, tickMs: 1000, consolidationDeferMs: 2000 }));
   const data = shipped(), files = { control: path.join(base, 'scenario/onebot.sock'), script: path.join(base, 'scenario/script.json'), log: path.join(base, 'scenario/requests.jsonl') };
