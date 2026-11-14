@@ -390,6 +390,10 @@ def scenarios(deployer, only=None):
     reset_initiations(BASE / 'authority-data/authority.sqlite')
     # Background jobs of an earlier replay go with the initiation records that kept them from being told twice.
     (BASE / 'media-data/jobs.json').unlink(missing_ok=True)
+    # What earlier replays' pictures were, and the stickers the owner had her keep: every replay starts without them.
+    (BASE / 'media-data/describe-cache.json').unlink(missing_ok=True)
+    if (BASE / 'media-data/stickers').is_dir() and not (BASE / 'media-data/stickers').is_symlink():
+        shutil.rmtree(BASE / 'media-data/stickers')
     dispatch = Path(qq_config['stateFile'])
     if dispatch.exists():
         state = json.loads(dispatch.read_text())

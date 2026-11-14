@@ -262,6 +262,8 @@ class InitiationReplayTests(unittest.TestCase):
         self.assertIn("edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_source))", source)
         self.assertIn("reset_initiations(BASE / 'authority-data/authority.sqlite')", source)
         self.assertIn("(BASE / 'media-data/jobs.json').unlink(missing_ok=True)", source)
+        self.assertIn("(BASE / 'media-data/describe-cache.json').unlink(missing_ok=True)", source)
+        self.assertIn("shutil.rmtree(BASE / 'media-data/stickers')", source)
 
 
 if __name__ == '__main__':
