@@ -3,7 +3,8 @@
 // capability (policy conversation.v1); its bridge is the adapter that speaks the platform.
 //
 // A declaration is a description, not behaviour:
-//   expression  what a reply can carry there: voice, images, small faces, and whether a long reply is split
+//   expression  what a reply can carry there: voice, images, small faces, stickers of her library, and whether a
+//               long reply is split
 //   friends     the platform has a friend relation, so its bridge may admit a friend as a person; `account` is
 //               then the shape of an account name there (a regular expression source). Only QQ and WeChat-like
 //               channels have it; anything else is null and people are bound by the operator.

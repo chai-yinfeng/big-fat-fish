@@ -2,9 +2,7 @@
  * marker out of the text and asks the content service for a library sticker close to the word, sent as a message of
  * its own after her last text message. */
 
-/** How she is told to use it, for the fixed instructions. NOT wired into the prompt yet: the planner adds it to the
- * channel instructions (capabilities/conversation/agent.js is being changed elsewhere). */
-export const STICKER_PROMPT = '想配一张表情包时，在回复里写 [表情:词]，词是心情或场合（如 开心、无语、晚安），不必是确切名字；有合适的就单独发一张，没有就不发，标记不会出现在聊天里。不要每句都发。';
+// How she is told to use it is part of QQ's channel declaration (capabilities/channels/qq/manifest.js `prompt`).
 /** Safety value, not a style rule: at most this many stickers for one reply; later markers are dropped (logged). */
 export const MAX_STICKERS_PER_REPLY = 1;
 /** How many of her latest replies the frequency line counts. */

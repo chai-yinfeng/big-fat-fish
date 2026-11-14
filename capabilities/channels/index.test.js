@@ -13,7 +13,7 @@ test('the registry lists every declared channel once, as frozen dependency-free 
   for (const item of CHANNELS) {
     assert.deepEqual(Object.keys(item).sort(), ['account', 'expression', 'faceNames', 'friends', 'id', 'prompt', 'receipts', 'testOnly', 'title', 'turnPolicy'], item.id);
     assert.match(item.id, /^[a-z][a-z0-9-]{1,31}$/); assert.ok(item.title.length > 0 && item.title.length <= 12);
-    assert.deepEqual(Object.keys(item.expression).sort(), ['faces', 'images', 'split', 'voice']);
+    assert.deepEqual(Object.keys(item.expression).sort(), ['faces', 'images', 'split', 'stickers', 'voice']);
     assert.ok(Object.values(item.expression).every(value => typeof value === 'boolean') && typeof item.friends === 'boolean' && typeof item.testOnly === 'boolean', item.id);
     assert.ok(['reliable', 'unreliable'].includes(item.receipts), item.id);
     // A channel with friends says what an account name looks like there; one without names none.
@@ -24,6 +24,7 @@ test('the registry lists every declared channel once, as frozen dependency-free 
     // What a channel cannot express, its prompt does not offer.
     if (!item.expression.faces) assert.deepEqual([item.faceNames.length, /\[微笑\]/.test(item.prompt)], [0, false], item.id);
     if (!item.expression.voice) assert.equal(item.turnPolicy.voice, undefined, item.id);
+    if (!item.expression.stickers) assert.doesNotMatch(item.prompt, /\[表情:/, item.id);
   }
 });
 

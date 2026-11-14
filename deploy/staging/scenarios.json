@@ -942,7 +942,7 @@
       "steps": [
         { "mockFriends": { "people": ["MOCK-OWNER", "MOCK-A", "MOCK-B", "MOCK-M"] } },
         { "mockAttach": { "from": "MOCK-OWNER", "person": "MOCK-OWNER" } },
-        { "expectChannel": { "id": "mock", "receipts": "unreliable", "friends": true, "expression": { "voice": false, "images": false, "faces": false, "split": false } } },
+        { "expectChannel": { "id": "mock", "receipts": "unreliable", "friends": true, "expression": { "voice": false, "images": false, "faces": false, "stickers": false, "split": false } } },
         { "expectChannel": { "id": "qq", "receipts": "reliable", "status": "ready" } },
         { "mockSay": { "from": "MOCK-M", "text": "MOCK-1-{run} 请记住：我的口头禅是海带结-{run}" } },
         { "mockExpectReply": { "to": "MOCK-M", "contains": "MOCK-REPLY-MOCK1-{run} 记下了" } },

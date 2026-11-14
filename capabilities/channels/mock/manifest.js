@@ -4,7 +4,7 @@
 // are not reliable.
 export default {
   id: 'mock', title: 'MOCK',
-  expression: { voice: false, images: false, faces: false, split: false },
+  expression: { voice: false, images: false, faces: false, stickers: false, split: false },
   friends: true, account: '^MOCK-[A-Z0-9-]{1,24}$',
   receipts: 'unreliable',
   faceNames: [],
