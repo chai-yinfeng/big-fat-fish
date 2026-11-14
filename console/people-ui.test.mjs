@@ -87,3 +87,46 @@ test('people page lists admitted people and conversations with opaque labels and
   assert.ok(!text.includes('987654321') && !text.includes('123456789'), 'full QQ numbers are not rendered');
   assert.ok(text.includes('peoplePanel.admitted: 1 / 40') && text.includes('peoplePanel.friends: 5'));
 });
+
+test('"the same person": an account of another channel is moved to a known person explicitly, and no account or person ID is ever rendered', async () => {
+  const twoChannels = { ...people, people: [...people.people, { personId: 'person:mock:MOCK-SECOND-ACCOUNT', label: 'p-cccccc', owner: false, actors: [{ capabilityId: 'mock', externalActorId: 'mock:user:MOCK-SECOND-ACCOUNT' }], conversations: 1 }], admitted: 2 };
+  const both = [...conversations, { capabilityId: 'mock', streamId: 'mock:private:MOCK-SECOND-ACCOUNT', personId: 'person:mock:MOCK-SECOND-ACCOUNT', audience: 'private', messages: 1, lastAt: 2, memoryEpoch: 0, label: 'p-cccccc', owner: false }];
+  const states = ['operator-test', '', world, {}, 'people'];
+  states[21] = { ...twoChannels, conversations: both };
+  const { render, nodes, calls } = await harness(states, url => url.endsWith('/people') ? twoChannels : url.endsWith('/conversations') ? both : {});
+  render();
+  const draft = states.findIndex(value => value && typeof value === 'object' && 'confirmed' in value && 'target' in value);
+  assert.ok(draft > 21, 'the draft is the newest state: earlier state indexes did not move');
+  const form = () => nodes(render()).find(node => node.type === 'form' && nodes(node).some(child => child.props.value === '2:0'));
+  const submit = () => form().props.onSubmit({ preventDefault() {} });
+  // The lists: accounts of people other than the owner by label, channel and masked account; nothing raw anywhere.
+  const text = JSON.stringify(render());
+  assert.ok(text.includes('p-cccccc · mock MO' + '*'.repeat(15) + 'NT') && text.includes('peoplePanel.attach.title'));
+  for (const raw of ['987654321', '123456789', 'MOCK-SECOND-ACCOUNT', 'person:qq:', 'person:mock:']) assert.ok(!text.includes(raw), raw);
+  // Nothing is sent until an account, another person and the confirmation are all there.
+  submit(); states[draft] = { account: '2:0', target: 'p-bbbbbb', confirmed: false }; submit();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.filter(call => call.url.endsWith('/people/attach')).length, 0);
+  assert.equal(nodes(form()).find(node => node.type === 'button').props.disabled, true);
+  // The account's own person is not offered as its target.
+  assert.deepEqual(nodes(form()).filter(node => node.type === 'option').map(node => node.props.value).filter(value => value.startsWith('p-')), ['p-aaaaaa', 'p-bbbbbb']);
+  states[draft] = { account: '2:0', target: 'p-bbbbbb', confirmed: true }; submit();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(calls.filter(call => call.url.endsWith('/people/attach')).map(call => [call.method, call.payload]), [['POST', { capabilityId: 'mock', actorId: 'mock:user:MOCK-SECOND-ACCOUNT', streamId: 'mock:private:MOCK-SECOND-ACCOUNT', personId: 'person:qq:987654321', move: true }]]);
+  assert.equal(JSON.stringify(states[draft]), JSON.stringify({ account: '', target: '', confirmed: false }));
+  await assert.rejects(operatorRequest({ location, token: 'operator-test', path: '/people/attach', fetchImpl: async () => ({}) }), /operator_post_required/);
+});
+
+test('channels page: one row per channel the API lists, with what its declaration says it can carry; private conversation IDs are not shown', async () => {
+  const channels = [{ id: 'qq', name: 'QQ', status: 'ready', enabled: true, boundStreams: 2, expression: { voice: true, images: true, faces: true, split: true }, friends: true, receipts: 'reliable' },
+    { id: 'mock', name: 'MOCK', status: 'available', enabled: true, boundStreams: 1, expression: { voice: false, images: false, faces: false, split: false }, friends: true, receipts: 'unreliable' }, { id: 'older', name: 'older', status: 'whatever', enabled: false, boundStreams: 0 }];
+  const bindings = [{ sourceId: 'qq', conversationId: 'qq:100:private:987654321', personId: 'person:owner', audience: 'private' }, { sourceId: 'mock', conversationId: 'mock:private:MOCK-SECOND-ACCOUNT', personId: 'person:owner', audience: 'private' }];
+  const states = ['operator-test', '', { ...world, channels, bindings }, {}, 'channels'];
+  const { render } = await harness(states, () => null);
+  const text = JSON.stringify(render());
+  assert.ok(text.includes('channelFeatures.voice · channelFeatures.images · channelFeatures.faces · channelFeatures.split · channelFeatures.friends · channelFeatures.receipts.reliable'));
+  assert.ok(text.includes('"channelFeatures.friends · channelFeatures.receipts.unreliable"'));
+  assert.ok(text.includes('qqChannelStatus.ready') && text.includes('"available"') && text.includes('"unknown"'));
+  assert.equal(text.split('privateConversation').length - 1, 2);
+  for (const raw of ['987654321', 'MOCK-SECOND-ACCOUNT']) assert.ok(!text.includes(raw), raw);
+});

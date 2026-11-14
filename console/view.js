@@ -133,6 +133,8 @@ export function WorldConsole({ t, standalone = false }) {
   const [initiations, setInitiations] = useState(null);
   // Background jobs of the content service (GET /jobs); null until loaded or when it cannot answer.
   const [jobs, setJobs] = useState(null);
+  // "The same person": which account (an index pair, never an account number) goes to which person (an opaque label).
+  const [attachDraft, setAttachDraft] = useState({ account: '', target: '', confirmed: false });
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -286,7 +288,10 @@ export function WorldConsole({ t, standalone = false }) {
     return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
   }
   const worldBadge = () => data.world.paused ? badge(t('paused'), 'warn', icon('pause')) : badge(t('running'), 'ok', h('span', { className: 'bff-dot pulse' }));
-  const channelStatus = channel => channel.id === 'qq' && ['not_configured', 'waiting_login', 'ready', 'disconnected', 'error'].includes(channel.status) ? `qqChannelStatus.${channel.status}` : channel.status === 'available' ? 'available' : channel.status === 'not_configured' ? 'not_configured' : 'unknown';
+  // The same wording for every channel: what a bridge reports about itself, or only that it is registered.
+  const channelStatus = channel => ['not_configured', 'waiting_login', 'ready', 'disconnected', 'error'].includes(channel.status) ? `qqChannelStatus.${channel.status}` : channel.status === 'available' ? 'available' : 'unknown';
+  // What the channel's declaration says it can carry (capabilities/channels), when the API sends it.
+  const channelFeatures = channel => channel.expression ? [...['voice', 'images', 'faces', 'split'].filter(key => channel.expression[key]).map(key => t(`channelFeatures.${key}`)), channel.friends ? t('channelFeatures.friends') : null, t(`channelFeatures.receipts.${channel.receipts === 'reliable' ? 'reliable' : 'unreliable'}`)].filter(Boolean).join(' · ') : '';
   const channelTone = channel => ['ready', 'available'].includes(channel.status) ? 'ok' : ['disconnected', 'error'].includes(channel.status) ? 'danger' : channel.status === 'waiting_login' ? 'warn' : '';
   function overview() {
     return h(React.Fragment, null,
@@ -414,6 +419,29 @@ export function WorldConsole({ t, standalone = false }) {
             h('td', { style: nowrap }, h('button', { type: 'button', className: 'bff-ghost bff-sm', disabled: busy, 'aria-expanded': quotaOpen === row.id, onClick: () => open(row.id) }, icon(quotaOpen === row.id ? 'up' : 'down'), t(quotaOpen === row.id ? 'quotaPanel.less' : 'quotaPanel.more')))),
           quotaOpen === row.id ? h('tr', { key: `${row.id}:detail` }, h('td', { colSpan: 8 }, detail(row))) : null].filter(Boolean)))))));
   }
+  // "The same person": an account that was admitted as someone new (a second channel of somebody already known) is
+  // moved, with its private conversation, to that person. Options carry indexes and opaque labels, never an account.
+  function attachCard() {
+    const accounts = people.people.flatMap((person, p) => person.owner ? [] : person.actors.map((actor, i) => {
+      const streams = people.conversations.filter(row => row.capabilityId === actor.capabilityId && row.personId === person.personId && row.audience === 'private');
+      // Only an account that is its person's one account with one private conversation on that channel can be moved here.
+      return { key: `${p}:${i}`, person, actor, streamId: person.actors.filter(other => other.capabilityId === actor.capabilityId).length === 1 && streams.length === 1 ? streams[0].streamId : null };
+    }));
+    if (!accounts.length || people.people.length < 2) return null;
+    const chosen = accounts.find(item => item.key === attachDraft.account), targets = people.people.filter(person => person !== chosen?.person), target = targets.find(person => person.label === attachDraft.target);
+    const ready = Boolean(chosen?.streamId && target && attachDraft.confirmed);
+    return h('section', { className: 'bff-card' }, h('h2', null, t('peoplePanel.attach.title')), text('peoplePanel.attach.hint'),
+      h('form', { className: 'bff-stack-sm', onSubmit: event => { event.preventDefault(); if (!ready) return; void run(async () => {
+        await request('/people/attach', { capabilityId: chosen.actor.capabilityId, actorId: chosen.actor.externalActorId, streamId: chosen.streamId, personId: target.personId, move: true });
+        setAttachDraft({ account: '', target: '', confirmed: false }); await loadPeople(); setNotice(t('saved'));
+      }); } },
+        h('label', null, h('span', null, t('peoplePanel.attach.account')), h('select', { value: attachDraft.account, disabled: busy, onChange: event => setAttachDraft({ account: event.target.value, target: '', confirmed: false }) },
+          h('option', { value: '' }, '—'), ...accounts.map(item => h('option', { key: item.key, value: item.key, disabled: !item.streamId }, `${item.person.label} · ${item.actor.capabilityId} ${maskAccount(item.actor.externalActorId)}`)))),
+        h('label', null, h('span', null, t('peoplePanel.attach.target')), h('select', { value: attachDraft.target, disabled: busy || !chosen, onChange: event => setAttachDraft({ ...attachDraft, target: event.target.value, confirmed: false }) },
+          h('option', { value: '' }, '—'), ...targets.map(person => h('option', { key: person.label, value: person.label }, person.owner ? t('peoplePanel.owner') : person.label)))),
+        h('label', { className: 'bff-check' }, h('input', { type: 'checkbox', checked: attachDraft.confirmed, disabled: busy || !chosen || !target, onChange: event => setAttachDraft({ ...attachDraft, confirmed: event.target.checked }) }), h('span', null, t('peoplePanel.attach.confirm'))),
+        h('button', { type: 'submit', disabled: busy || !ready }, t('peoplePanel.attach.save'))));
+  }
   function peoplePage() {
     if (!people) return h('section', { className: 'bff-card' }, text('peoplePanel.pending'));
     const labels = Object.fromEntries(people.people.map(person => [person.personId, person]));
@@ -425,7 +453,8 @@ export function WorldConsole({ t, standalone = false }) {
         people.people.length ? h('div', { className: 'bff-table' }, h('table', null,
           h('thead', null, h('tr', null, ...['peoplePanel.person', 'peoplePanel.account', 'peoplePanel.conversations'].map(key => h('th', { key, scope: 'col' }, t(key))))),
           h('tbody', null, ...people.people.map(person => h('tr', { key: person.label },
-            h('td', null, who(person.personId)), h('td', { className: 'bff-mono' }, person.actors.map(actor => maskAccount(actor.externalActorId)).join(', ')), h('td', { className: 'bff-mono' }, String(person.conversations))))))) : h('div', { className: 'bff-empty' }, icon('people'), h('p', null, t('peoplePanel.empty')))),
+            h('td', null, who(person.personId)), h('td', { className: 'bff-mono' }, person.actors.map(actor => `${actor.capabilityId} ${maskAccount(actor.externalActorId)}`).join(', ')), h('td', { className: 'bff-mono' }, String(person.conversations))))))) : h('div', { className: 'bff-empty' }, icon('people'), h('p', null, t('peoplePanel.empty')))),
+      attachCard(),
       h('section', { className: 'bff-card' }, h('h2', null, t('peoplePanel.conversationsTitle')), text('peoplePanel.conversationsHint'),
         people.conversations.length ? h('div', { className: 'bff-table' }, h('table', null,
           h('thead', null, h('tr', null, ...['peoplePanel.person', 'source', 'audience', 'peoplePanel.messages', 'peoplePanel.lastActive', 'peoplePanel.epoch'].map(key => h('th', { key, scope: 'col' }, t(key))))),
@@ -581,15 +610,17 @@ export function WorldConsole({ t, standalone = false }) {
       data.channels.length ? h('section', { className: 'bff-card' }, ...data.channels.map(channel => h('div', { className: 'bff-list-row', key: channel.id },
         h('span', { className: 'bff-tile' }, icon('channels')),
         h('div', { className: 'bff-grow' }, h('div', { className: 'bff-row' }, h('h2', null, channel.name || channel.id), h('code', { className: 'bff-subtle' }, channel.id)),
-          h('p', { className: 'bff-small bff-muted' }, `${t(channel.enabled ? 'enabled' : 'disabled')} · ${t('boundStreams')}: ${channel.boundStreams}`)),
+          h('p', { className: 'bff-small bff-muted' }, `${t(channel.enabled ? 'enabled' : 'disabled')} · ${t('boundStreams')}: ${channel.boundStreams}`),
+          channelFeatures(channel) ? h('p', { className: 'bff-small bff-muted' }, channelFeatures(channel)) : null),
         badge(t(channelStatus(channel)), channelTone(channel), h('span', { className: 'bff-dot' }))))) : text('noChannels'),
       qqSettings(),
       initiationCard(),
       jobsCard(),
       h('section', { className: 'bff-card' }, h('h2', null, t('channels')), data.bindings.length ? h('div', { className: 'bff-table' }, h('table', null,
         h('thead', null, h('tr', null, ...['source', 'conversation', 'person', 'audience'].map(key => h('th', { key, scope: 'col' }, t(key))))),
-        h('tbody', null, ...data.bindings.map((binding, index) => h('tr', { key: binding.sourceId === 'qq' ? `qq:${index}` : `${binding.sourceId}:${binding.conversationId}:${index}` },
-          ...['sourceId', 'conversationId', 'personId', 'audience'].map(key => h('td', { key, className: key === 'personId' ? 'bff-mono' : '' }, binding.sourceId === 'qq' && key === 'conversationId' ? t('qqPrivateConversation') : String(binding[key] ?? '—')))))))) : text('noBindings')));
+        h('tbody', null, ...data.bindings.map((binding, index) => h('tr', { key: `${binding.sourceId}:${index}` },
+          // A private conversation's ID carries account numbers on any channel: it is not shown.
+          ...['sourceId', 'conversationId', 'personId', 'audience'].map(key => h('td', { key, className: key === 'personId' ? 'bff-mono' : '' }, binding.audience === 'private' && key === 'conversationId' ? t('privateConversation') : String(binding[key] ?? '—')))))))) : text('noBindings')));
   }
   function modelSettings() {
     const model = data.model;

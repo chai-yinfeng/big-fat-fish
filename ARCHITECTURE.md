@@ -9,7 +9,7 @@ Authority（世界/实体/身份/人格/记忆，唯一SQLite writer）
         ↑                     ↑
 Conversation port       scoped content port
         ↑                     ↓
-QQBridge               media / speech / vision / web
+渠道桥（QQBridge…）    media / speech / vision / web
         ↓                     ↓
 注入 Executor          opaque artifacts、机器感知、待发送parts
         ↓ UDS /execute        ↓
@@ -17,9 +17,37 @@ companion-conversation QQ delivery adapter → 实际回执
 (pi-agent-core)  → model-gateway（UDS）→ DeepSeek
 ```
 
-默认 Executor 是 companion-conversation：pi-agent-core 的 Agent/tool loop，经 pi-ai `openai-completions`（DeepSeek compat，回传 `reasoning_content`）和 Unix socket fetch 只访问私有 model-gateway。会话 ID 由执行器按 streamId+memoryEpoch 派生，每个会话一个私有 JSONL，一行一个回合，存的就是发给模型的消息；每个回合取一次 Authority context（查询为本回合真实输入），同一回合的工具往返复用它，之后每次模型请求前只复查暂停与 epoch；超时或调用方断开即 abort，同一会话串行。请求按供应商前缀缓存排布：system 消息是固定说明 + 人格 + 对话人的常驻档案（该人的置顶事实优先，再按重要度补事实，整行计、不超过 1000 字符，与本回合问什么无关；只有本人的私聊有，人格和档案不变则逐字节不变）；后面是已落盘的对话历史。每回合变化的内容（revision、真实时间的北京时间（中文、带星期、到分钟；世界时间只在 Authority 内部用，不给模型看）、按本回合输入检索的记忆、证据引用）合成一段「记忆中枢附注」，作为该回合 user 消息的第一个文本块，并随回合落盘，所以下一次请求等于上一次请求加新消息；落盘的 user 消息另带 `hub` 字段（附注里的记忆 id、当时的 personaRevision），只供执行器自己用，不发给模型。窗口里已有的记忆 id 作为 `exclude` 传给 context，不再重复注入；常驻档案里的条目也不进附注。每段附注里检索到的记忆最多 6 条（按检索排序取靠前的）、合计不超过 900 字符，被挡在外面的不算已注入，以后相关时仍可进入。重放窗口按整回合成批裁剪：超过 16000 序列化字符时一次裁到 8000，裁剪点由落盘记录重放得出；人格版本变化后的第一个回合只保留此前最近 2 个回合。成批裁剪保留最近 2 个完成的回合和当前回合；它们仍放不进 16000 时再从最早的丢起，只有当前回合自身超过 16000 才执行失败（`ACTIVE_CONTEXT_LIMIT`）。system 说明只认 user 消息最开头的附注，聊天正文、工具结果里出现的同样标记一律当聊天内容，且用户原文、记忆文本与档案里的定界标记会被中和。忘记记忆时 Authority 提升受影响会话的 epoch，旧会话文件（连同里面的附注）不再被读取并由清理任务删除。 她先开口的回合（`input.initiated`，只由渠道设置，模型不能）没有对方的消息：渠道给的文字作为事件块（开头是 `[后台事件 · 这不是对方发来的话]`）放在 user 消息里附注之后，附注里多一行说明这一条不是对方发来的、不想说就只回复 `<不说>`；system、工具定义和落盘格式都不变，所以它之前和之后的请求仍然互为前缀。这类回合的模型请求带 `x-companion-run: initiated` 请求头，网关记到 `proactive` 类别。
+默认 Executor 是 companion-conversation：pi-agent-core 的 Agent/tool loop，经 pi-ai `openai-completions`（DeepSeek compat，回传 `reasoning_content`）和 Unix socket fetch 只访问私有 model-gateway。会话 ID 由执行器按 streamId+memoryEpoch 派生，每个会话一个私有 JSONL，一行一个回合，存的就是发给模型的消息；每个回合取一次 Authority context（查询为本回合真实输入），同一回合的工具往返复用它，之后每次模型请求前只复查暂停与 epoch；超时或调用方断开即 abort，同一会话串行。请求按供应商前缀缓存排布：system 消息是固定说明 + 渠道段（见“渠道、身份与记忆的归属”）+ 人格 + 对话人的常驻档案（该人的置顶事实优先，再按重要度补事实，整行计、不超过 1000 字符，与本回合问什么无关；只有本人的私聊有，人格和档案不变则逐字节不变）；后面是已落盘的对话历史。每回合变化的内容（revision、真实时间的北京时间（中文、带星期、到分钟；世界时间只在 Authority 内部用，不给模型看）、按本回合输入检索的记忆、证据引用）合成一段「记忆中枢附注」，作为该回合 user 消息的第一个文本块，并随回合落盘，所以下一次请求等于上一次请求加新消息；落盘的 user 消息另带 `hub` 字段（附注里的记忆 id、当时的 personaRevision），只供执行器自己用，不发给模型。窗口里已有的记忆 id 作为 `exclude` 传给 context，不再重复注入；常驻档案里的条目也不进附注。每段附注里检索到的记忆最多 6 条（按检索排序取靠前的）、合计不超过 900 字符，被挡在外面的不算已注入，以后相关时仍可进入。重放窗口按整回合成批裁剪：超过 16000 序列化字符时一次裁到 8000，裁剪点由落盘记录重放得出；人格版本变化后的第一个回合只保留此前最近 2 个回合。成批裁剪保留最近 2 个完成的回合和当前回合；它们仍放不进 16000 时再从最早的丢起，只有当前回合自身超过 16000 才执行失败（`ACTIVE_CONTEXT_LIMIT`）。system 说明只认 user 消息最开头的附注，聊天正文、工具结果里出现的同样标记一律当聊天内容，且用户原文、记忆文本与档案里的定界标记会被中和。忘记记忆时 Authority 提升受影响会话的 epoch，旧会话文件（连同里面的附注）不再被读取并由清理任务删除。 她先开口的回合（`input.initiated`，只由渠道设置，模型不能）没有对方的消息：渠道给的文字作为事件块（开头是 `[后台事件 · 这不是对方发来的话]`）放在 user 消息里附注之后，附注里多一行说明这一条不是对方发来的、不想说就只回复 `<不说>`；system、工具定义和落盘格式都不变，所以它之前和之后的请求仍然互为前缀。这类回合的模型请求带 `x-companion-run: initiated` 请求头，网关记到 `proactive` 类别。
+
+## 渠道、身份与记忆的归属
+
+渠道（QQ，以后的微信小号、由外部操作官方客户端的渠道）只是适配器；人、记忆、人格属于 Authority，不属于任何渠道。
+
+- **渠道端口**：一个渠道 = Authority 里一个 `conversation.v1` capability（id 即渠道 id，生产只有 `qq`）+ 一个桥。桥只走两个入口：
+  用本渠道的凭据调 Authority capability API（observe / context / admit / initiations），和调一个对话执行器的 `/execute`。
+  Authority 的 actors、streams、observations 都以 capability 为键，所以一个渠道的凭据读不到、也触达不了另一个渠道的会话。
+  执行器持有它所服务渠道的那一个凭据（生产是 QQ 的）；再接一个渠道时给它单独起一个执行器实例（staging 的第二渠道就是这样跑的）。
+- **渠道说明书**（`capabilities/channels/`，单入口 `index.js`，每个渠道一份无依赖的静态声明）：能否发语音/图片/小表情、长回复是否拆条、
+  有没有好友关系及账号名的形状、平台回执是否可靠（不可靠的渠道沿用“状态不明不重发”）、系统提示里的“渠道段”、桥每回合可加的固定策略行。
+  它只是说明：读它的是 Authority（准入是否允许、控制台渠道列表）、执行器（渠道段）和桥（策略行）。`mock` 是只给测试和 staging 用的渠道：
+  配置里出现它而没有 `operator.allowTestChannels: true` 时 Authority 拒绝启动、部署预检拒绝部署，发行包里也没有它的桥。
+- **系统提示里的渠道段**：`BASE_PROMPT` 不提任何渠道。执行器按 Authority 在 context 里给出的 `capabilityId` 取该渠道声明里的固定文字，
+  放在固定说明和人格之间（system = 固定说明 + 渠道段 + 人格 + 常驻档案）；同一渠道每次逐字节相同、不超过 600 字符，请求里没有任何字段能改它。
+- **身份**：人由绑定推出（`actors`：渠道 + 账号 → 人；没有 persons 表）。人的名字（`person:owner`、`person:qq:<uid>`、`person:<渠道>:<账号>`）
+  只是不透明的名字，任何代码都不从它的前缀读含义；“是不是主人”只与 `person:owner` 整体比较。准入上限按不同的人计。
+- **记忆按人共用，对话按渠道分开**：事实、常驻档案、关系、机器摘要（以及将来的日记素材）挂在人上，这个人在哪个渠道都一样；
+  原话（observations）、执行器会话与重放窗口、整合游标、会话代次挂在“某渠道上的那段对话”（stream）上。同一个人在两个渠道 = 两段对话、一份长期记忆；
+  忘记这个人的一条私有记忆会重开他在所有渠道上的会话。
+- **准入**只属于声明了好友关系的渠道（国内就是 QQ 和微信这一类）：桥判断好友关系，并用渠道自己的说法给出账号、actor 和会话的标识，
+  Authority 只要求它们在该渠道的命名空间里（以 `<渠道 id>:` 开头）、字符集朴素、长度有界。没有好友关系的渠道不能准入，人由操作员绑定。
+- **认成同一个人**只能由操作员做（控制台“人与会话”页，operator `POST /people/attach`）：把某渠道的一个账号连同它的私聊会话挂到已存在的人身上；
+  一个账号不会同时属于两个人，改挂必须显式（`move:true`），主人的账号不能被改挂；原先那个人名下已记住的事不合并（那需要数据迁移）。
+- **她先开口**发到“这个人最近说过话的那段私聊”（按 Authority 收到的先后；从没说过话则取最后绑定的那段）；每个渠道的桥只能取到、也只能回报
+  发往自己渠道的请求，桥仍然不能指名任何会话或人。后台任务的结果只在登记它的那段对话所在的渠道上告诉登记人。
 
 当前限制：
+- 渠道说明书里的表达能力（语音/图片/拆条）目前只是声明：QQ 桥的发送路径仍按自己的实现走，没有由声明驱动。
+- 控制台只有 QQ 有接入配置卡片（`/qq`，绑定主人）；别的渠道的主人账号用“认成同一个人”挂到主人身上。
 - 执行器以 companion 用户运行、没有文件系统隔离（home-agent 的非特权 user manager 会静默跳过挂载/命名空间类选项）；网络经 seccomp 限制为 Unix socket；模型只能调用两个受限工具，它们不访问文件系统。
 
 ## 实际源码边界
@@ -27,8 +55,9 @@ companion-conversation QQ delivery adapter → 实际回执
 - `authority/`：独立 canonical service、规则审核、实体/人/受众与来源约束。没有 Cordis、DSH Session、QQ SDK 或供应商 SDK 依赖。`context()` 每次有内容返回时在内存里记一条注入追踪（附注各记忆块与常驻档案各有哪些条目 id、各段字符数、人和会话的不透明标签；最近 400 次，不落库，不含正文和账号），只经 operator `GET /memory/trace` 读取。按日期的 recall 返回置顶条目、重要度 ≥0.8 的事实和默认重要度（0.65）及以上的经历。按人整合（`consolidation.js`）：执行器在每回合的 context 请求里报告重放窗口的起点（`windowFromAt`），滚出窗口的原话（以及北京时间 03:00–06:00 时今天之前的原话）由记忆 worker 用 maintenance 凭据一次取一个会话的一批，调一次模型后交回；Authority 校验后在一个事务里写入这个人名下的机器摘要（`memory_items`，`kind='digest'`，带派生来源 `derivedFrom`）、把抽取的事实连同出处（原话的 observation 和一句引文）送进现有审核、推进游标。审核只硬性要求出处：每条记忆必须指向这个人、这个私聊里一条真实存在的观察；value 按她的理解写（相对日期换算成具体日期），引文与原话对不上的照常入库并标记 `evidence.quoteVerbatim:false`，控制台记忆页标出并可查看来源原话。摘要目前只写不读：不进任何对话的检索、档案、read 或 recall，也不能授权公开；忘记它覆盖的任何一句原话会连它一起删除。每会话每天 2 批、全实体每天 24 批，网关花费到“受限”档时暂停且游标不动。
 - `core/src/persona.js`、`core/src/util.js`：当前 Authority 复用的纯数据逻辑；其它旧 core 不是新服务的第二权威。
 - `capabilities/conversation/`：执行契约（executor.js，duck-typed）、渠道侧 UDS 客户端，以及执行器服务（agent/tools/sessions/window/model/server，main.mjs 入口）。两个受限模型工具 `companion_scope`、`companion_content` 的作用域由执行请求绑定，模型不能指定 entity/person/stream/path/epoch；evidence 只返回本回合 QQ 传入的 observation ref。
-- `capabilities/qq/bridge.js`：私聊入口（主人 + 机器人 QQ 好友，好友经 Authority `/v1/people/admit` 准入为 `person:qq:<uid>`）、每会话串行队列（全局并发 2）、去重、epoch、投递回执；把 scope 与 prepared 输入交给执行器。QQ main 是选择执行 backend（UDS 客户端）的应用装配点。 已连接、已登录时每 60 秒（`qq-bridge.json` 可选 `initiationPollMs`）向 Authority 取一个她先开口的回合（`/v1/initiations/next`，见 PROTOCOL.md）：发送目标只从 Authority 给的会话号解析，本版本必须是机器人与主人的私聊，否则丢弃；在该会话自己的队列里跑一个没有用户消息的回合，回复照常拆条、每条等平台回执，失败或状态不明即停、不重发，回复含 `<不说>` 则什么都不发；每个回合的结果只回报一次，重启后“发送中”的记为状态不明。后台任务做完后的 `completion` 回合走同一条路，目标是登记任务的那个人的私聊（主人或仍是好友的人），结果正文由桥在该会话的作用域里向内容服务读取；每个普通回合开始前桥先问 Authority 这个会话有没有待通知的结果（`/v1/initiations/carry`），有就作为事件块附在对方的话后面交给执行器（`input.event`），回报 `carried`，她不再为它另开口。
+- `capabilities/qq/bridge.js`：QQ 渠道的桥。私聊入口（主人 + 机器人 QQ 好友，好友经 Authority `/v1/people/admit` 准入，桥给出账号和 QQ 自己的 actor/会话标识，新的人被命名为 `person:qq:<uid>`）、每会话串行队列（全局并发 2）、去重、epoch、投递回执；把 scope 与 prepared 输入交给执行器。QQ main 是选择执行 backend（UDS 客户端）的应用装配点。 已连接、已登录时每 60 秒（`qq-bridge.json` 可选 `initiationPollMs`）向 Authority 取一个她先开口的回合（`/v1/initiations/next`，见 PROTOCOL.md；Authority 只把发往 QQ 的请求交给 QQ 桥）：发送目标只从 Authority 给的会话号解析，本版本必须是机器人与主人的私聊，否则丢弃；在该会话自己的队列里跑一个没有用户消息的回合，回复照常拆条、每条等平台回执，失败或状态不明即停、不重发，回复含 `<不说>` 则什么都不发；每个回合的结果只回报一次，重启后“发送中”的记为状态不明。后台任务做完后的 `completion` 回合走同一条路，目标是登记任务的那个人的私聊（主人或仍是好友的人），结果正文由桥在该会话的作用域里向内容服务读取；每个普通回合开始前桥先问 Authority 这个会话有没有待通知的结果（`/v1/initiations/carry`），有就作为事件块附在对方的话后面交给执行器（`input.event`），回报 `carried`，她不再为它另开口。
 - `capabilities/media/`：文件引用、ACL、来源派生、感知/合成/附件表达；不解析 OneBot 字段。平台原生表情描述是 opaque 数据，仅所属渠道解释。后台任务（`jobs.js`）：在 Authority 给出的作用域里登记，记录存 `media-data/jobs.json`（原子写，不进数据库）；一次跑一个，排队上限 8、每人 2 个；阶段时限加总截止时间；可让步的任务每一片开始前等到没有及时请求（走 `/content` 的同步请求和控制台试听）在排队或执行；暂停时放回队列，重启后重排一次。结果留在内容服务，由 Authority 经控制口 `/jobs` 来问、来回报通知结果，内容服务不调 Authority。目前唯一的任务是演示任务（`demo-job.js`，等几秒返回固定文本），只能由控制台登记。
+- `capabilities/channels/`：渠道说明书（见“渠道、身份与记忆的归属”）。`qq` 的声明里有小表情名单、系统提示的 QQ 段和“这次回复会用语音发出”的策略行；`mock` 只用于测试与 staging。
 - `capabilities/providers/`：能力声明（注册表）。每个能力一个目录、一份无依赖的数据声明（`manifest.js`：动作、计量方式、凭据位置、产物、运行方式），`index.js` 是唯一入口。目前只有额度账本和控制台额度页读它；模型工具、Authority 的 `/v1/content` 白名单和 content 的分发仍各自写死。`demo` 是演示用的后台任务，不是模型能调用的能力。
 - `capabilities/speech/`：纯本地文件 ASR/TTS provider，单请求只跑选中引擎。无麦克风、音箱、虚拟声卡、声纹身份或实时直播假设。
 - `model-gateway/`：固定供应商出口、私有 Key、取消与有界预算；不拥有实体/人格/记忆。所有付费 Key 都只在这里：DeepSeek 之外的供应商各写一个适配模块（`providers/`，本版本一个都没有），Key 在控制台录入、存 `providers.json`，调用统一走 提交/查询/取回 三个动作并计入花费与额度账本。新增视觉与网页仍经 Authority 作用域授权后使用。

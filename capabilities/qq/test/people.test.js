@@ -9,9 +9,9 @@ const deferred = () => { let resolve; const promise = new Promise(r => { resolve
 async function fixture(t, { friends = ['300', '400', '500'] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-people-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const world = { paused: true, revision: 1 }, sends = [], admitted = [], executions = [];
+  const world = { paused: true, revision: 1 }, sends = [], admitted = [], admissions = [], executions = [];
   let friendCalls = 0, now = Date.parse('2026-11-08T15:30:00Z'), messageId = 0;
-  const authority = { health: async () => ({ world }), context: async () => ({ entityId: 'entity:big-fat-fish', memoryEpoch: 0, world }), admitPerson: async ({ uid }) => { admitted.push(uid); return { personId: `person:qq:${uid}`, admitted: true }; } };
+  const authority = { health: async () => ({ world }), context: async () => ({ entityId: 'entity:big-fat-fish', memoryEpoch: 0, world }), admitPerson: async request => { admissions.push(request); admitted.push(request.uid); return { personId: `person:qq:${request.uid}`, admitted: true }; } };
   const onebot = { call: async (action, args) => {
     if (action === 'get_login_info') return { user_id: 100 };
     if (action === 'get_friend_list') { friendCalls++; return friends.map(user_id => ({ user_id: Number(user_id), nickname: 'n' })); }
@@ -25,7 +25,7 @@ async function fixture(t, { friends = ['300', '400', '500'] } = {}) {
   world.paused = false; world.revision++;
   let id = 0;
   const event = (uid, extra = {}) => ({ post_type: 'message', message_type: 'private', sub_type: 'friend', self_id: 100, user_id: Number(uid), message_id: ++id, time: Math.floor(Date.now() / 1000), message: [{ type: 'text', data: { text: 'hello ' + id } }], ...extra });
-  return { bridge, sends, admitted, executions, executor, event, friendCalls: () => friendCalls, setNow: value => { now = value; }, friends };
+  return { bridge, sends, admitted, admissions, executions, executor, event, friendCalls: () => friendCalls, setNow: value => { now = value; }, friends };
 }
 
 test('bot friends are admitted and answered in their own conversation; others are ignored silently', async t => {
@@ -102,4 +102,10 @@ test('at the daily cap the sender gets silence and the owner is told once per Be
   await f.bridge.receive(f.event('400'));
   assert.deepEqual(f.sends.map(s => s.user_id), ['200', '200']);
   assert.equal(beijingDay(Date.parse('2026-11-08T16:30:00Z')), '2026-11-09');
+});
+
+test('an admission names the account and, in QQ\'s own terms, the actor and the conversation the message came in', async t => {
+  const f = await fixture(t);
+  await f.bridge.receive(f.event('300'));
+  assert.deepEqual(f.admissions, [{ uid: '300', actorId: 'qq:100:user:300', streamId: 'qq:100:private:300' }]);
 });

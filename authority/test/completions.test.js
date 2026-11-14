@@ -12,6 +12,8 @@ import { createOperatorServer } from '../src/operator.js';
 
 // Visibly fake accounts: 12 digits starting with 9999. A and B are admitted friends, C is nobody.
 const SELF = '999900000001', OWNER = '999900000002', A = '999900000011', B = '999900000012', C = '999900000013';
+// What the QQ bridge sends to admit a friend: the account and, in QQ's own terms, its actor and conversation.
+const admit = uid => ({ uid, actorId: `qq:${SELF}:user:${uid}`, streamId: `qq:${SELF}:private:${uid}` });
 const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 const stream = uid => `qq:${SELF}:private:${uid}`, person = uid => uid === OWNER ? 'person:owner' : `person:qq:${uid}`;
 function fixture(t) {
@@ -23,7 +25,7 @@ function fixture(t) {
   a.registerCapability({ id: 'qq', policy: 'conversation.v1' });
   a.bindActor({ capabilityId: 'qq', externalActorId: `qq:${SELF}:user:${OWNER}`, personId: 'person:owner' });
   a.bindStream({ capabilityId: 'qq', streamId: stream(OWNER), personId: 'person:owner', audience: 'private' });
-  a.admitPerson('qq', { uid: A }); a.admitPerson('qq', { uid: B });
+  a.admitPerson('qq', admit(A)); a.admitPerson('qq', admit(B));
   let seq = 0;
   const say = (uid, text, at = clock.now) => { const eventId = `e-${++seq}`; a.observe('qq', { eventId, streamId: stream(uid), actorId: `qq:${SELF}:user:${uid}`, role: 'user', text, at }); return eventId; };
   // A finished job as the content service lists it: who registered it and where, never the result.
@@ -52,12 +54,16 @@ test('a finished job is handed out for the conversation it was registered in, wh
   for (const account of [SELF, A]) assert.ok(!JSON.stringify(a.initiationLog()).includes(account));
   a.initiationAck('qq', { id: initiation.id, outcome: 'sent' });
   assert.deepEqual(notices(), [{ id: done.id, state: 'closed', outcome: 'sent' }]);
-  // The owner's own job goes to the owner; only the QQ conversation capability may fetch.
+  // The owner's own job goes to the owner. Another conversation channel may ask, and is handed nothing of a QQ
+  // conversation (nor told anything about its jobs); a capability that is no conversation channel may not ask.
   const own = job(OWNER);
+  a.registerCapability({ id: 'native', policy: 'conversation.v1' }); a.registerCapability({ id: 'reader', policy: 'learning.v1' });
+  assert.deepEqual(a.initiationNext('native', {}, [own, job(A)]), { initiation: null, reason: 'idle' });
+  assert.deepEqual(a.initiationCarry('native', { streamId: stream(A) }, [own, job(A)]), { initiation: null });
+  assert.deepEqual(notices(), []);
   assert.equal(next([own]).initiation.streamId, stream(OWNER));
-  a.registerCapability({ id: 'native', policy: 'conversation.v1' });
-  assert.throws(() => a.initiationNext('native', {}, [job(A)]), { code: 'FORBIDDEN' });
-  assert.throws(() => a.initiationCarry('native', { streamId: stream(A) }, [job(A)]), { code: 'FORBIDDEN' });
+  assert.throws(() => a.initiationNext('reader', {}, [job(A)]), { code: 'FORBIDDEN' });
+  assert.throws(() => a.initiationCarry('reader', { streamId: stream(A) }, [job(A)]), { code: 'FORBIDDEN' });
 });
 
 test('the target comes only from the job record and must still be what Authority itself has bound: anything else is closed as dropped and never handed out', t => {

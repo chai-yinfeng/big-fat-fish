@@ -219,3 +219,11 @@ test('the QQ bridge poll interval for initiated runs is optional; a value out of
     assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['qq-bridge.json CONFIG_INVALID'], String(bad));
   }
 });
+
+test('a test-only channel in authority.json refuses the deploy, as Authority would refuse to start, unless the configuration explicitly allows it', async t => {
+  const w = world(t);
+  w.edit('authority.json', c => { c.capabilities.push({ id: 'mock', policy: 'conversation.v1' }); c.credentials.push({ hash: 'c'.repeat(64), role: 'capability', capabilityId: 'mock' }); });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['authority.json TEST_CHANNEL_CONFIGURED']);
+  w.edit('authority.json', c => { c.operator.allowTestChannels = true; });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), []);
+});
