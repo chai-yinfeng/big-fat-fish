@@ -114,3 +114,37 @@ test('a voice reply is synthesized without bracketed asides and emoticons; the r
   await f.content.call({ action: 'synthesize', streamId: 'qq:100:private:200', memoryEpoch: 0, sourceEventId: f.observed[0].eventId, text: '好'.repeat(120) + '（笑）' });
   assert.equal(spoken.at(-1), '好'.repeat(120));
 });
+
+test('small faces: six in one message are answered, read by name and stored as nothing; her [微笑] goes out as a face in the same message', async t => {
+  const f = fixture(t); await f.bridge.connection(true);
+  f.executor.execute = async request => { f.executions.push(request); return '收到[微笑]，这个[不存在]不是表情'; };
+  await f.bridge.receive(f.event(10, [{ type: 'text', data: { text: '哈哈' } }, ...['14', '14', '179', '264', '277', '9999'].map(id => ({ type: 'face', data: { id } }))]));
+  assert.equal(f.executions.length, 1);
+  assert.equal(f.executions[0].input.text, '哈哈[微笑][微笑][doge][捂脸][汪汪][表情]');
+  assert.doesNotMatch(f.executions[0].input.text, /QQ编号/);
+  assert.equal(f.store.records().length, 0);
+  assert.deepEqual(f.sent.map(p => p.message), [[{ type: 'text', data: { text: '收到' } }, { type: 'face', data: { id: '14' } }, { type: 'text', data: { text: '，这个[不存在]不是表情' } }]]);
+  // What she said is recorded as she wrote it, under the one receipt.
+  assert.equal(f.observed.at(-1).text, '收到[微笑]，这个[不存在]不是表情');
+  assert.equal(Object.values(f.bridge.state.records).at(-1).receipts.length, 1);
+});
+
+test('more than four pictures: the first four are looked at, the model is told how many were not, and she still answers', async t => {
+  const f = fixture(t); await f.bridge.connection(true);
+  await f.bridge.receive(f.event(11, [{ type: 'text', data: { text: '看看这些' } }, ...[1, 2, 3, 4, 5, 6].map(n => ({ type: 'image', data: { file: 'trusted-image-' + n } }))]));
+  assert.equal(f.executions.length, 1);
+  assert.equal(f.store.records().filter(r => r.kind === 'image').length, 4);
+  assert.match(f.executions[0].input.text, /还有 2 个附件没有处理/);
+  assert.equal(f.sent.length, 1);
+});
+
+test('a voice reply is synthesized without face markers; the recorded reply keeps them', async t => {
+  const f = fixture(t); await f.bridge.connection(true);
+  const spoken = [], synthesize = f.service.speech.synthesize;
+  f.service.speech.synthesize = input => { spoken.push(input.text); return synthesize(input); };
+  f.executor.execute = async () => '在呢[微笑]，[不存在]也念';
+  await f.bridge.receive(f.event(12, [{ type: 'text', data: { text: '请用语音告诉我，你在吗' } }]));
+  assert.deepEqual(spoken, ['在呢，[不存在]也念']);
+  assert.equal(f.sent[0].message[0].type, 'record');
+  assert.match(f.observed.at(-1).text, /在呢\[微笑\]，\[不存在\]也念/);
+});

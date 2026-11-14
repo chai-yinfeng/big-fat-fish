@@ -533,7 +533,8 @@ test('carried event: a background result rides on a real message of the person, 
 
 // What the provider's prefix cache keys on, as it was before background jobs (the system message here is the base
 // prompt followed by the fixture persona). Changing either is a deliberate act: every conversation pays one cache miss.
-const PINNED_SYSTEM_SHA256 = '2e66705b2065102f9457cd6f9e66b21c8224a47b6794267f77e1749cf9f7c53d', PINNED_TOOLS_SHA256 = '7047ad04c0b28d0565d24b6946884934289eac5a0ebb303670d62e10cc1ae2ba';
+// The system hash changed once since, deliberately: the base prompt gained the small-face line (PROMPT_FACE_NAMES).
+const PINNED_SYSTEM_SHA256 = '06b75b35b2b342335e165c89e81dd412865ddecf6d3790b1cd13ae32c445656a', PINNED_TOOLS_SHA256 = '7047ad04c0b28d0565d24b6946884934289eac5a0ebb303670d62e10cc1ae2ba';
 test('the cached prefix is pinned: the base prompt and the tool definitions are byte-for-byte what they were before background jobs, in every kind of run', async t => {
   const f = await setup(t);
   f.gateway.state.script.push(reply('一'), reply('二'), reply('三'), reply('四'));

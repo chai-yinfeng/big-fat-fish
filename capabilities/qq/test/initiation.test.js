@@ -196,3 +196,13 @@ test('a report Authority could not take is made again on a later round, without 
   await f.bridge.pollInitiations();
   assert.deepEqual([f.acks.length, f.record('mock-2').reported], [1, true]);
 });
+
+test('an initiated run sends her [微笑] as a face in the same message, like any reply; the record keeps what she wrote', async t => {
+  const f = await fixture(t);
+  f.reply = 'MOCK 在忙吗[微笑][不存在]';
+  f.offers.push(offer('mock-face'));
+  await f.bridge.pollInitiations();
+  assert.deepEqual(f.sends.map(s => s.message), [[{ type: 'text', data: { text: 'MOCK 在忙吗' } }, { type: 'face', data: { id: '14' } }, { type: 'text', data: { text: '[不存在]' } }]]);
+  assert.deepEqual(f.observations.map(o => o.text), ['MOCK 在忙吗[微笑][不存在]']);
+  assert.equal(f.record('mock-face').status, 'sent');
+});

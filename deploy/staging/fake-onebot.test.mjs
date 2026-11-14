@@ -72,6 +72,17 @@ test('fake NapCat serves the real OneBotClient: token, login, friends, recorded 
   const message = messageFromOneBot(event, { expectedSelfId: '999900000001' });
   assert.deepEqual([message.observation.streamId, message.observation.actorId, message.observation.role, message.authoredText === incoming], ['qq:999900000001:private:999900000011', 'qq:999900000001:user:999900000011', 'user', true]);
   assert.equal((await control('POST', '/message', { user_id: 'abc', nickname: 'x', text: 'y' })).status, 400);
+  // Small faces: one face segment each after the text, read by the bridge as names; bad numbers are refused.
+  const withFaces = await control('POST', '/message', { user_id: '999900000011', nickname: 'MOCK-A', text: 'MOCK 看', faces: ['14', '179'] });
+  await until(() => events.some(item => item.message_id === withFaces.value.message_id));
+  const faced = events.find(item => item.message_id === withFaces.value.message_id);
+  assert.deepEqual(faced.message.map(segment => segment.type), ['text', 'face', 'face']);
+  assert.equal(messageFromOneBot(faced, { expectedSelfId: '999900000001' }).authoredText, 'MOCK 看[微笑][doge]');
+  for (const faces of ['14', [14], ['x'], ['1'.repeat(11)], Array(32).fill('14')]) assert.equal((await control('POST', '/message', { user_id: '999900000011', nickname: 'MOCK-A', text: 'y', faces })).status, 400);
+  // A send with faces is recorded with its text segments joined, its segment types and its face numbers.
+  await client.call('send_private_msg', { user_id: '999900000011', message: [{ type: 'text', data: { text: 'MOCK 好' } }, { type: 'face', data: { id: '14' } }, { type: 'text', data: { text: '呀' } }] });
+  const facedSend = (await control('GET', '/state')).value.sent.at(-1);
+  assert.deepEqual([facedSend.text, facedSend.types, facedSend.faces], ['MOCK 好呀', ['text', 'face', 'text'], ['14']]);
   assert.equal((await control('POST', '/reset', {})).status, 200);
   assert.equal((await control('GET', '/state')).value.sent.length, 0);
 

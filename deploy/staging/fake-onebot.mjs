@@ -3,9 +3,10 @@
 // Unix control socket for the scenario runner. Never part of a release or a production unit.
 //   node fake-onebot.mjs --port 13001 --token-file <file> --control <socket> --self <bot QQ>
 // Control (HTTP on the Unix socket):
-//   GET  /state                       -> { selfId, clients, friends, sent, lost }
+//   GET  /state                       -> { selfId, clients, friends, sent, lost }  (each sent item: its text segments joined, segment types, face ids)
 //   POST /friends { friends: [{ user_id, nickname }] }   (also emits a friend_add notice)
-//   POST /message { user_id, nickname, text, sub_type? } -> { message_id }  (private message event)
+//   POST /message { user_id, nickname, text, sub_type?, faces? } -> { message_id }  (private message event; `faces`: QQ face
+//                                     numbers, each a face segment after the text)
 //   POST /lose-receipts { count }     -> the next `count` send_private_msg calls get no receipt (recorded in `lost`, never in `sent`)
 //   POST /reset                       -> forgets recorded send_private_msg calls and pending lost receipts
 import fs from 'node:fs';
@@ -70,7 +71,7 @@ export function createFakeOneBot({ port, token, controlSocket, selfId, nickname 
       // The platform's answer is lost: the caller cannot tell whether the message went out.
       if (losing > 0) { losing--; lost.push({ user_id: String(params.user_id), text, at: Date.now() }); return { status: 'failed', retcode: 1200, data: null, echo }; }
       const message_id = ++nextMessageId;
-      sent.push({ message_id, user_id: String(params.user_id), text, types: params.message.map(segment => segment?.type), at: Date.now() });
+      sent.push({ message_id, user_id: String(params.user_id), text, types: params.message.map(segment => segment?.type), faces: params.message.filter(segment => segment?.type === 'face').map(segment => String(segment.data?.id)), at: Date.now() });
       return ok({ message_id });
     }
     return { status: 'failed', retcode: 1404, data: null, echo };
@@ -121,9 +122,10 @@ export function createFakeOneBot({ port, token, controlSocket, selfId, nickname 
       }
       if (req.url === '/message') {
         if (!qq(body.user_id) || typeof body.text !== 'string' || !body.text || typeof body.nickname !== 'string') throw new Error('MESSAGE');
+        if (body.faces !== undefined && (!Array.isArray(body.faces) || body.faces.length > 31 || body.faces.some(id => typeof id !== 'string' || !/^\d{1,10}$/.test(id)))) throw new Error('MESSAGE');
         if (!clients.size) { send(409, { ok: false, error: 'NO_BRIDGE_CONNECTED' }); return; }
         const message_id = ++nextMessageId, user_id = Number(body.user_id);
-        broadcast({ ...envelope(), post_type: 'message', message_type: 'private', sub_type: body.sub_type ?? 'friend', message_id, user_id, message: [{ type: 'text', data: { text: body.text } }], raw_message: body.text, font: 14, sender: { user_id, nickname: body.nickname, card: '' }, message_format: 'array' });
+        broadcast({ ...envelope(), post_type: 'message', message_type: 'private', sub_type: body.sub_type ?? 'friend', message_id, user_id, message: [{ type: 'text', data: { text: body.text } }, ...(body.faces ?? []).map(id => ({ type: 'face', data: { id } }))], raw_message: body.text + (body.faces ?? []).map(id => `[CQ:face,id=${id}]`).join(''), font: 14, sender: { user_id, nickname: body.nickname, card: '' }, message_format: 'array' });
         send(200, { ok: true, value: { message_id } }); return;
       }
       send(404, { ok: false });
