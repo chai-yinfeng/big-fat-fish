@@ -9,6 +9,8 @@ import { opaquePerson } from '../src/context.js';
 
 // Visibly fake accounts: 12 digits starting with 9999.
 const SELF = '999900000001', OWNER = '999900000002', A = '999900000011', B = '999900000012';
+// What the QQ bridge sends to admit a friend: the account and, in QQ's own terms, its actor and conversation.
+const admit = uid => ({ uid, actorId: `qq:${SELF}:user:${uid}`, streamId: `qq:${SELF}:private:${uid}` });
 const HOUR = 3600000, DAY = 24 * HOUR;
 const stream = uid => `qq:${SELF}:private:${uid}`, person = uid => `person:qq:${uid}`;
 function fixture(t) {
@@ -20,7 +22,7 @@ function fixture(t) {
   a.registerCapability({ id: 'qq', policy: 'conversation.v1' });
   a.bindActor({ capabilityId: 'qq', externalActorId: `qq:${SELF}:user:${OWNER}`, personId: 'person:owner' });
   a.bindStream({ capabilityId: 'qq', streamId: stream(OWNER), personId: 'person:owner', audience: 'private' });
-  a.admitPerson('qq', { uid: A }); a.admitPerson('qq', { uid: B });
+  a.admitPerson('qq', admit(A)); a.admitPerson('qq', admit(B));
   let seq = 0;
   /** One line of a private chat; `she: true` is her delivered reply. Returns the observation ID. */
   const say = (uid, text, { she = false, at = clock.now } = {}) => a.observe('qq', { eventId: `e-${++seq}`, streamId: stream(uid), actorId: she ? 'qq:model' : `qq:${SELF}:user:${uid}`, role: she ? 'assistant' : 'user', text, at }).observationId;

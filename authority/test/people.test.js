@@ -11,6 +11,8 @@ import { createOperatorServer } from '../src/operator.js';
 import { AuthorityClient } from '../src/client.js';
 
 const SELF = '100', OWNER = '200', A = '300', B = '400';
+// What the QQ bridge sends to admit a friend: the account and, in QQ's own terms, its actor and conversation.
+const admit = uid => ({ uid, actorId: `qq:${SELF}:user:${uid}`, streamId: `qq:${SELF}:private:${uid}` });
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-people-'));
   let now = 1_800_000_000_000;
@@ -34,18 +36,18 @@ function fixture(t) {
 
 test('admission is deterministic, idempotent, audited, owner-anchored and QQ-only', t => {
   const { a, stream } = fixture(t);
-  const first = a.admitPerson('qq', { uid: A });
+  const first = a.admitPerson('qq', admit(A));
   assert.deepEqual(first, { personId: `person:qq:${A}`, streamId: stream(A), admitted: true });
-  assert.deepEqual(a.admitPerson('qq', { uid: A }), { ...first, admitted: false });
+  assert.deepEqual(a.admitPerson('qq', admit(A)), { ...first, admitted: false });
   const snapshot = a.snapshot();
   assert.equal(snapshot.actors.filter(row => row.personId === `person:qq:${A}`).length, 1);
   assert.deepEqual({ ...snapshot.streams.find(row => row.streamId === stream(A)) }, { capabilityId: 'qq', streamId: stream(A), personId: `person:qq:${A}`, audience: 'private', entityId: 'entity:big-fat-fish' });
   assert.equal(snapshot.audit.filter(entry => entry.type === 'person.admit').length, 1);
   // The owner's own number keeps its owner binding.
-  assert.equal(a.admitPerson('qq', { uid: OWNER }).personId, 'person:owner');
-  assert.throws(() => a.admitPerson('qq', { uid: '0123' }), { code: 'VALIDATION_ERROR' });
+  assert.equal(a.admitPerson('qq', admit(OWNER)).personId, 'person:owner');
+  assert.throws(() => a.admitPerson('qq', admit('0123')), { code: 'VALIDATION_ERROR' });
   a.registerCapability({ id: 'other', policy: 'conversation.v1' });
-  assert.throws(() => a.admitPerson('other', { uid: B }), { code: 'FORBIDDEN' });
+  assert.throws(() => a.admitPerson('other', admit(B)), { code: 'FORBIDDEN' });
   const people = a.listPeople();
   assert.equal(people.admitted, 1);
   assert.ok(people.people.some(p => p.owner && p.personId === 'person:owner'));
@@ -58,18 +60,18 @@ test('admission requires the owner binding and stops at the people cap', t => {
   const bare = new Authority({ file: path.join(root, 'w.sqlite') });
   t.after(() => { bare.close(); fs.rmSync(root, { recursive: true, force: true }); });
   bare.registerCapability({ id: 'qq', policy: 'conversation.v1' });
-  assert.throws(() => bare.admitPerson('qq', { uid: A }), { code: 'CONFLICT' });
+  assert.throws(() => bare.admitPerson('qq', admit(A)), { code: 'CONFLICT' });
   const { a } = fixture(t);
-  for (let i = 0; i < MAX_ADMITTED_PEOPLE; i++) a.admitPerson('qq', { uid: String(1000 + i) });
+  for (let i = 0; i < MAX_ADMITTED_PEOPLE; i++) a.admitPerson('qq', admit(String(1000 + i)));
   assert.equal(MAX_ADMITTED_PEOPLE, 40);
-  assert.throws(() => a.admitPerson('qq', { uid: '9999' }), { code: 'PEOPLE_LIMIT' });
+  assert.throws(() => a.admitPerson('qq', admit('9999')), { code: 'PEOPLE_LIMIT' });
   // Already admitted people stay idempotent at the cap.
-  assert.equal(a.admitPerson('qq', { uid: '1000' }).admitted, false);
+  assert.equal(a.admitPerson('qq', admit('1000')).admitted, false);
 });
 
 test('two private people never see each other’s memory, and the model never sees raw person IDs', t => {
   const { a, tell, stream } = fixture(t);
-  a.admitPerson('qq', { uid: A }); a.admitPerson('qq', { uid: B });
+  a.admitPerson('qq', admit(A)); a.admitPerson('qq', admit(B));
   const id = tell(A, '称呼', '叫我阿星');
   tell(OWNER, '饮料', '我喜欢红茶');
   const contextA = a.context('qq', { streamId: stream(A), query: '称呼 阿星' });
@@ -91,7 +93,7 @@ test('two private people never see each other’s memory, and the model never se
 
 test('forgetting in one private chat retires only that conversation’s sessions', t => {
   const { a, tell, stream } = fixture(t);
-  a.admitPerson('qq', { uid: A }); a.admitPerson('qq', { uid: B });
+  a.admitPerson('qq', admit(A)); a.admitPerson('qq', admit(B));
   const id = tell(A, '称呼', '叫我阿星');
   const before = { a: a.context('qq', { streamId: stream(A) }).memoryEpoch, b: a.context('qq', { streamId: stream(B) }).memoryEpoch, entity: a.health().memoryEpoch };
   a.setWorldPaused({ paused: true });
@@ -114,7 +116,7 @@ test('forgetting in one private chat retires only that conversation’s sessions
 
 test('forgetting public material still retires every conversation', t => {
   const { a, tell, stream } = fixture(t);
-  a.admitPerson('qq', { uid: A });
+  a.admitPerson('qq', admit(A));
   const id = tell(A, '爱好', '我喜欢下棋');
   a.markMemoryPublic({ entityId: 'entity:big-fat-fish', id });
   a.setWorldPaused({ paused: true });
@@ -134,7 +136,7 @@ test('QQ capability admits through the UDS route; operator lists people, convers
   const app = createAuthorityServer({ authority: a, socketPath: path.join(root, 'api.sock'), credentials: [{ hash: hash(token), role: 'capability', capabilityId: 'qq' }] });
   await app.start(); t.after(() => app.close());
   const client = new AuthorityClient({ socketPath: path.join(root, 'api.sock'), tokenFile: path.join(root, 'qq.token') });
-  assert.equal((await client.admitPerson({ uid: A })).personId, `person:qq:${A}`);
+  assert.equal((await client.admitPerson(admit(A))).personId, `person:qq:${A}`);
   await assert.rejects(client.admitPerson({ uid: 'x' }), { code: 'INVALID_REQUEST' });
   const spend = { day: '2026-11-08', spentYuan: 1.2, reservedYuan: 0, capYuan: 5, tier: 'normal' }, posted = [];
   const operator = createOperatorServer({ authority: a, socketPath: path.join(root, 'op.sock'), tokenHash: hash(operatorToken), origins: [],

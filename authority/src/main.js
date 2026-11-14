@@ -7,6 +7,7 @@ import { createOperatorServer } from './operator.js';
 import { createModelControlClient } from './model-control.js';
 import { createContentControlClient, createContentOperatorClient, createContentJobsClient } from './content-control.js';
 import { fileURLToPath } from 'node:url';
+import { channel } from '../../capabilities/channels/index.js';
 
 process.umask(0o077);
 let authority, app, operator, closing = false;
@@ -24,6 +25,8 @@ try {
   const config = JSON.parse(fs.readFileSync(file, 'utf8'));
   const fields = ['schemaVersion', 'databasePath', 'socketPath', 'credentials', 'capabilities', 'actors', 'streams', 'persona', 'initialPaused', 'operator', 'content'];
   if (config.schemaVersion !== 1 || Object.keys(config).some(key => !fields.includes(key)) || !path.isAbsolute(config.databasePath) || !path.isAbsolute(config.socketPath) || !['credentials', 'capabilities', 'actors', 'streams'].every(key => Array.isArray(config[key]))) throw new Error('CONFIG');
+  // A test-only channel (capabilities/channels) is never served in production: only staging and tests set this.
+  if (process.env.COMPANION_TEST_CHANNELS !== '1' && [...config.capabilities, ...config.credentials].some(row => channel(row?.id ?? row?.capabilityId)?.testOnly)) throw new Error('CONFIG');
   fs.mkdirSync(path.dirname(config.databasePath), { recursive: true, mode: 0o700 });
   authority = new Authority({ file: config.databasePath, initialPaused: config.initialPaused, ...(config.persona ? { persona: config.persona } : {}) });
   if (authority.store.migrated.applied.length) process.stdout.write(`Authority schema migrated: ${authority.store.migrated.applied.map(m => `${m.id}-${m.name}`).join(', ')}; backup ${authority.store.migrated.backup ? path.basename(authority.store.migrated.backup) : 'none (new database)'}.\n`);
