@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- 房间 v0（`room/`，只在开发 checkout 里，**没有接进发布、端口、systemd 或 operator API，Authority、协议、数据库都没改，不读真实数据**）：一个静态网页，伪 2.5D 的房间里她在做自己的事；房间只是看世界状态的窗，自己不决定任何事。①房间状态契约（`room/state.js`）：北京时间与时段、天气、灯、活动（发呆/回消息/说话/看视频/写日记/后台忙/睡觉）、pose、可选的粗略心情、开始时刻。多人可见，所以只有类别：契约里没有放人、会话、消息、视频、日记、任务内容的字段，未列出的字段被拒绝，所有字符串来自固定词表。②假数据（`providers/fake.js`）：每个活动一份固定状态，加一条走完一天的时间线。③`providers/authority.js`：纯函数，把现有只读结果（世界是否暂停、安静时段、后台任务、会话最近时间）映射成 回消息/睡觉/后台忙/发呆；没有接线。说话、看视频、写日记、天气没有信号来源，以及 Authority 需要开什么样的只读出口，写在 `room/README.md`。④页面按素材清单（`manifest.json`）分层：底图、pose（图片或循环视频，按锚点摆放）、时段光照与窗外天气、可点热区（抽屉只显示类别）；换成真图或视频只改清单和文件。占位画是自己画的 SVG。`node --run test:room` 10 项通过；本机用浏览器打开看过时间线走完七种活动、四个时段、四种天气、热区抽屉。未验证：视频 pose 只过了清单校验，没有用真视频在浏览器里播过；没在手机上看过。
 - 默认人格的 `speechStyle` 不再提 QQ、不用颜文字和 emoji，改为偶尔用括号写小动作（如“（歪头）”）。只改默认值；生产上用的是控制台里填的人格，不迁移数据。
 - 删除 DSH 时代的遗留目录（plugin、adapter-plugin、asr-plugin、tts-plugin、preset、ui、adapters、asr、tts、voice-runtime、experiments、core）和 `test:legacy*` 脚本；Authority 复用的 `persona.js`、`util.js`（连同 `util.test.js`）移入 `authority/`，发行包不再单独复制 `core/src/`。行为不变。
 - 文档整理（只改文档，不改代码、测试与配置）：ARCHITECTURE.md 补上记忆 worker、Authority 的发起请求、控制台各页、额度账本的全部行和遗留目录清单；DEV_WORKFLOW.md 的场景回放改为按组列出（逐条断言以 `scenarios.json` 为准，补上 K1–K4 和缺的步骤名），额度页行数更新；`deploy/qq/README.md` 标明 NapCat 上游与镜像已下架、不要拉取或重建容器；README 与模块 README 里旧 VM、QQ 写死的说法改正。

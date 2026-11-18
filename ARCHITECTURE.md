@@ -66,7 +66,7 @@ companion-conversation QQ delivery adapter → 实际回执
 - DSH 时代的遗留目录（`plugin/`、`adapter-plugin/`、`asr-plugin/`、`tts-plugin/`、`preset/`、`ui/`、`adapters/`、`asr/`、`tts/`、`voice-runtime/`、`experiments/`、`core/`）已删除，`test:legacy*` 脚本随之去掉；需要时查 git 历史。
 
 当前限制：
-- Live2D/房间视觉未实施。
+- Live2D 未实施；房间视觉只有 `room/` 里的假数据原型（契约、素材清单、静态页），没有接 Authority，也不在发行包里。
 
 ## 媒体不是平台动作
 
