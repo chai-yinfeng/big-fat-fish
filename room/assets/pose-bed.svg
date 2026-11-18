@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="200 280 520 480" width="520" height="480">
+<!-- Placeholder pose, drawn by hand for big-fat-fish room v0. --><polygon points="430,479 620,574 400,684 210,589" fill="#8fb4d9" /><polygon points="620,574 400,684 400,710 620,600" fill="#6f97bf" /><polygon points="210,589 400,684 400,710 210,615" fill="#7ba3cb" /><path d="M557 535.5 Q445 517.5 375 615.5 L295 625.5 Q355 561.5 445 555.5 Z" fill="#a9c8e6"/><polygon points="430,478 620,573 596,585 406,490" fill="#f4f8fb" /><g transform="rotate(-24 577 490.5)">
+<path d="M571 422.5 q-16 -22 -30 -12 q14 2 20 16 Z M583 422.5 q16 -22 30 -12 q-14 2 -20 16 Z" fill="#476a90"/>
+<circle cx="577" cy="484.5" r="50" fill="#5b7fa6"/>
+<ellipse cx="577" cy="492.5" rx="40" ry="37" fill="#ffe3d0"/>
+<path d="M531 478.5 q46 -44 92 0 q-20 -18 -46 -14 q-26 -4 -46 14 Z" fill="#5b7fa6"/>
+<path d="M555 493.5 q6 5 12 0 M587 493.5 q6 5 12 0" stroke="#2c3550" stroke-width="3" fill="none" stroke-linecap="round"/>
+<ellipse cx="551" cy="505.5" rx="7" ry="4" fill="#ffb3b3"/><ellipse cx="603" cy="505.5" rx="7" ry="4" fill="#ffb3b3"/>
+<path d="M572 508.5 q5 4 10 0" stroke="#b5655b" stroke-width="2.5" fill="none" stroke-linecap="round"/></g><g fill="#fff" font-family="sans-serif" font-weight="700" opacity=".9"><text x="637" y="440.5" font-size="26">z</text><text x="661" y="412.5" font-size="34">z</text><text x="691" y="378.5" font-size="44">Z</text></g>
+</svg>

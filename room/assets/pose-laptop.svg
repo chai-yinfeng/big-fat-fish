@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300" width="200" height="300">
+<!-- Placeholder pose, drawn by hand for big-fat-fish room v0. --><ellipse cx="100" cy="288" rx="70" ry="11" fill="#00000026"/><path d="M130 250 q34 -4 48 -34 q14 4 22 -8 q2 22 -12 26 q10 10 6 24 q-14 -8 -24 -2 q-16 14 -40 12 Z" fill="#5b7fa6"/>
+<path d="M54 286 q-8 -100 46 -104 q54 4 46 104 Z" fill="#eef4fa" stroke="#34507a" stroke-width="4" stroke-linejoin="round"/>
+<path d="M56 262 q44 14 88 0" fill="none" stroke="#34507a" stroke-width="4"/>
+<ellipse cx="78" cy="284" rx="18" ry="9" fill="#ffe3d0"/><ellipse cx="122" cy="284" rx="18" ry="9" fill="#ffe3d0"/>
+<path d="M94 72 q-16 -22 -30 -12 q14 2 20 16 Z M106 72 q16 -22 30 -12 q-14 2 -20 16 Z" fill="#476a90"/>
+<circle cx="100" cy="134" r="50" fill="#5b7fa6"/>
+<ellipse cx="100" cy="142" rx="40" ry="37" fill="#ffe3d0"/>
+<path d="M54 128 q46 -44 92 0 q-20 -18 -46 -14 q-26 -4 -46 14 Z" fill="#5b7fa6"/>
+<circle cx="84" cy="142" r="5" fill="#2c3550"/><circle cx="116" cy="142" r="5" fill="#2c3550"/>
+<ellipse cx="74" cy="155" rx="7" ry="4" fill="#ffb3b3"/><ellipse cx="126" cy="155" rx="7" ry="4" fill="#ffb3b3"/>
+<path d="M95 158 q5 4 10 0" stroke="#b5655b" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+<path d="M56 262 h88 l8 12 h-104 Z" fill="#8792a6"/><path d="M60 206 h80 a4 4 0 0 1 4 4 v52 h-88 v-52 a4 4 0 0 1 4 -4 Z" fill="#2c3550"/>
+<circle cx="100" cy="234" r="9" fill="#9fd4ff"/>
+<path d="M60 216 L60 258" stroke="#ffe3d0" stroke-width="13" stroke-linecap="round"/><path d="M140 216 L140 258" stroke="#ffe3d0" stroke-width="13" stroke-linecap="round"/>
+<path d="M150 46 l-14 14 l14 14 M168 46 l14 14 l-14 14" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".9"/>
+</svg>

@@ -1,0 +1,63 @@
+:root { color-scheme: dark; --bg: #1c2029; --fg: #e8eaf0; --muted: #9aa3b5; --panel: #262b37; --line: #3a4152; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+[hidden] { display: none !important; }
+
+/* The stage keeps the manifest's aspect ratio (set from JS); every layer fills it. */
+.stage { position: relative; width: 100%; overflow: hidden; border-radius: 14px; background: #2a2f3d; }
+.layer { position: absolute; inset: 0; width: 100%; height: 100%; }
+.base { object-fit: fill; user-select: none; }
+.poses .pose { position: absolute; height: auto; display: block; cursor: pointer; animation: arrive .6s ease both; background: none; border: 0; padding: 0; }
+.poses .pose > * { display: block; width: 100%; height: auto; }
+.poses .pose:focus-visible { outline: 3px solid #9fd4ff; outline-offset: 4px; border-radius: 8px; }
+@keyframes arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.stage[data-activity="idle"] .pose > *, .stage[data-activity="sleeping"] .pose > * { animation: breathe 4s ease-in-out infinite; transform-origin: 50% 100%; }
+@keyframes breathe { 50% { transform: scaleY(1.015); } }
+
+/* Window: sky by phase, weather on top, clipped to manifest.window. */
+.sky .sky-fill { transition: fill 1.5s; fill: #9fd0f2; }
+.stage[data-phase="dawn"] .sky-fill { fill: #f7c9b8; }
+.stage[data-phase="dusk"] .sky-fill { fill: #f2a171; }
+.stage[data-phase="night"] .sky-fill { fill: #1d2748; }
+.stage[data-weather="cloudy"] .sky-fill, .stage[data-weather="rain"] .sky-fill, .stage[data-weather="snow"] .sky-fill { filter: saturate(.45) brightness(.9); }
+.sky .orb { fill: #fff3b0; transition: fill 1.5s, opacity 1s; }
+.stage[data-phase="night"] .orb { fill: #e9edf7; }
+.sky .clouds, .sky .rain, .sky .snow { opacity: 0; transition: opacity 1s; }
+.sky .clouds ellipse { fill: #fff; opacity: .85; }
+.sky .rain line { stroke: #dcecff; stroke-width: 3; stroke-linecap: round; }
+.sky .snow circle { fill: #fff; }
+.sky .frame { fill: none; stroke: #fbf6ee; stroke-width: 8; stroke-linejoin: round; }
+.stage:not([data-weather="clear"]) .orb { opacity: 0; }
+.stage:not([data-weather="clear"]) .clouds { opacity: 1; animation: drift 14s ease-in-out infinite alternate; }
+.stage[data-weather="rain"] .rain { opacity: 1; animation: fall .7s linear infinite; }
+.stage[data-weather="snow"] .snow { opacity: 1; animation: fall 4s linear infinite; }
+@keyframes drift { from { transform: translateX(-12px); } to { transform: translateX(12px); } }
+@keyframes fall { from { transform: translateY(-60px); } to { transform: translateY(0); } }
+
+/* Lighting: one multiply wash by phase, one lamp glow. */
+.light, .glow, .sky { pointer-events: none; }
+.light { mix-blend-mode: multiply; background: #fff; transition: background-color 1.5s; }
+.stage[data-phase="dawn"] .light { background: #ffe1d6; }
+.stage[data-phase="dusk"] .light { background: #ffc79f; }
+.stage[data-phase="night"] .light { background: #6f7cb5; }
+.stage[data-phase="night"][data-lamp="off"] .light { background: #46528c; }
+.glow { opacity: 0; transition: opacity 1.2s; mix-blend-mode: screen;
+  background: radial-gradient(ellipse var(--lamp-rx, 26%) var(--lamp-ry, 42%) at var(--lamp-x, 80%) var(--lamp-y, 40%), rgba(255, 205, 120, .55), rgba(255, 205, 120, 0) 100%); }
+.stage[data-lamp="on"] .glow { opacity: 1; }
+
+.hotspots { pointer-events: none; }
+.hotspots polygon { pointer-events: all; fill: transparent; stroke: transparent; stroke-width: 4; cursor: pointer; outline: none; }
+.hotspots polygon:hover, .hotspots polygon:focus-visible { fill: rgba(255, 255, 255, .14); stroke: rgba(255, 255, 255, .7); }
+
+.drawer { position: absolute; right: 12px; bottom: 12px; width: min(280px, calc(100% - 24px)); padding: 14px 16px; border-radius: 12px; background: rgba(30, 34, 45, .92); border: 1px solid var(--line); }
+.drawer h2 { margin: 0 0 6px; font-size: 16px; }
+.drawer p { margin: 2px 0; color: var(--muted); }
+.drawer .close { position: absolute; top: 6px; right: 8px; border: 0; background: none; color: var(--muted); font-size: 20px; cursor: pointer; }
+
+.caption { margin: 12px 2px 0; font-size: 16px; }
+.notice { color: #ffb38a; }
+.dev { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); }
+.dev .tag { padding: 1px 8px; border-radius: 999px; background: #5a4a1e; color: #ffd98a; font-size: 12px; }
+.dev select { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font: inherit; }
+@media (prefers-reduced-motion: reduce) { .pose, .pose > *, .clouds, .rain, .snow { animation: none !important; } }

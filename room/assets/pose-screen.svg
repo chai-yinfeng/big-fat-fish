@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300" width="200" height="300">
+<!-- Placeholder pose, drawn by hand for big-fat-fish room v0. --><path d="M128 232 q34 -4 48 -34 q14 4 22 -8 q2 22 -12 26 q10 10 6 24 q-14 -8 -24 -2 q-16 14 -40 12 Z" fill="#5b7fa6"/>
+<path d="M54 270 q-8 -96 46 -100 q54 4 46 100 Z" fill="#eef4fa" stroke="#34507a" stroke-width="4" stroke-linejoin="round"/>
+
+<path d="M94 62 q-16 -22 -30 -12 q14 2 20 16 Z M106 62 q16 -22 30 -12 q-14 2 -20 16 Z" fill="#476a90"/>
+<circle cx="100" cy="124" r="50" fill="#5b7fa6"/>
+
+<path d="M60 108 q40 -30 80 0" fill="none" stroke="#476a90" stroke-width="5" stroke-linecap="round"/>
+<path d="M30 252 l14 -34 h22 l-6 34 Z" fill="#f6c453" stroke="#c9942a" stroke-width="3"/><circle cx="46" cy="214" r="7" fill="#fff8e1"/><circle cx="58" cy="212" r="7" fill="#fff8e1"/><circle cx="52" cy="206" r="7" fill="#fff8e1"/>
+</svg>
