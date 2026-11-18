@@ -1,9 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, access } from 'node:fs/promises';
+import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { randomBytes, createHash } from 'node:crypto';
 import { ACTIVITIES, ALL_POSES, POSES, WEATHERS, LAMPS, PHASES, MOODS, SOURCES, TIMEZONE, beijingMinute, phaseOf, roomState, validateRoomState, isRoomState } from './state.js';
 import { TIMELINE, STEP_MS, fakeState, fixture, FIXTURES } from './providers/fake.js';
-import { fromAuthority, REPLYING_MS } from './providers/authority.js';
+import { acceptLive, POLL_MS } from './providers/authority.js';
+import { createRoomServer, authorityReader } from './serve.mjs';
+import { roomProjection, PHONE_MS } from '../authority/src/room.js';
+import { Authority } from '../authority/src/engine.js';
+import { createAuthorityServer } from '../authority/src/server.js';
 import { validateManifest, placement, HOTSPOT_SHOWS } from './manifest.js';
 import { caption, drawer, ACTIVITY_TEXT } from './view.js';
 
@@ -74,54 +83,55 @@ test('fake provider: the timeline is deterministic and passes through every acti
   assert.throws(() => fixture('dancing'));
 });
 
-// Fixture snapshots in the shapes Authority's operator routes return today, filled with things a room must not show.
-const snapshot = ({ quiet = false, lastAt = NOON - 3600000, jobs = [], paused = false } = {}) => ({
-  now: NOON,
-  world: { paused, revision: 7, worldNow: NOON, realNow: NOON },
-  initiative: { quietHours: { from: '23:30', to: '08:00', timezone: 'Asia/Shanghai', now: quiet }, deferredAt: null, items: [{ id: 'init:1', person: 'p-3f9a', status: 'delivered', reason: SECRETS[5] }] },
-  jobs: { limits: { queued: 8, perPerson: 2 }, jobs: jobs.map(job => ({ id: SECRETS[7], capability: 'demo', title: SECRETS[8], result: SECRETS[9], person: 'p-3f9a', owner: true, startedAt: null, ...job })) },
-  conversations: [
-    { capabilityId: 'qq', streamId: 'private:12345678', personId: SECRETS[0], audience: 'private', label: 'p-3f9a', owner: false, messages: 42, lastAt, memoryEpoch: 3 },
-    { capabilityId: 'qq', streamId: 'private:1', personId: 'person:owner', audience: 'private', label: '主人', owner: true, messages: 9, lastAt: NOON - 7200000, memoryEpoch: 1 },
-    { capabilityId: 'qq', streamId: 'private:2', personId: 'person:qq:2', label: 'p-0000', messages: 0, lastAt: null },
-  ],
+// What Authority hands its own projection (authority/src/room.js): the world's pause, the quiet hours, the content
+// service's job rows and recent message times. The job rows are filled with things a room must not show.
+const snapshot = ({ quiet = false, lastAt = NOON - 3600000, jobs = [], paused = false, now = NOON } = {}) => ({
+  now, paused, quiet: { now: quiet, fromMinute: 23 * 60 + 30 },
+  jobs: jobs.map(job => ({ id: SECRETS[7], capability: 'demo', title: SECRETS[8], result: SECRETS[9], scope: { personId: SECRETS[0], streamId: 'qq:1:private:12345678' }, startedAt: null, ...job })),
+  lastAts: [lastAt, NOON - 7200000, null],
 });
 
-test('authority mapping: quiet hours, running jobs and recent conversation become categories', () => {
-  assert.deepEqual(fromAuthority(snapshot()), roomState({ source: 'authority', at: NOON, since: NOON - 3600000, activity: 'idle' }));
-  const replying = fromAuthority(snapshot({ lastAt: NOON - 20000 }));
-  assert.equal(replying.activity, 'replying'); assert.equal(replying.since, NOON - 20000);
-  assert.equal(fromAuthority(snapshot({ lastAt: NOON - REPLYING_MS })).activity, 'replying');
-  assert.equal(fromAuthority(snapshot({ lastAt: NOON - REPLYING_MS - 1 })).activity, 'idle');
-  const working = fromAuthority(snapshot({ jobs: [{ status: 'queued' }, { status: 'running', startedAt: NOON - 60000 }, { status: 'done', startedAt: NOON - 900000 }] }));
+test('authority projection: quiet hours, running jobs and recent conversation become categories', () => {
+  assert.deepEqual(roomProjection(snapshot()), roomState({ source: 'authority', at: NOON, since: NOON - 3600000, activity: 'idle' }));
+  const replying = roomProjection(snapshot({ lastAt: NOON - 20000 }));
+  assert.equal(replying.activity, 'replying'); assert.equal(replying.pose, 'phone'); assert.equal(replying.since, NOON - 20000);
+  assert.equal(roomProjection(snapshot({ lastAt: NOON - PHONE_MS })).activity, 'replying');
+  assert.equal(roomProjection(snapshot({ lastAt: NOON - PHONE_MS - 1 })).activity, 'idle');
+  const working = roomProjection(snapshot({ jobs: [{ status: 'queued' }, { status: 'running', startedAt: NOON - 60000 }, { status: 'done', startedAt: NOON - 900000 }] }));
   assert.equal(working.activity, 'working'); assert.equal(working.since, NOON - 60000);
-  assert.equal(fromAuthority(snapshot({ jobs: [{ status: 'queued' }, { status: 'done' }] })).activity, 'idle');
+  assert.equal(roomProjection(snapshot({ jobs: [{ status: 'queued' }, { status: 'done' }] })).activity, 'idle');
   // Quiet hours: asleep since they began (23:30 the evening before, seen from 03:00), a job does not show, a message wakes her.
-  const night = Date.UTC(2026, 10, 17, 19, 0, 0), asleep = fromAuthority({ ...snapshot({ quiet: true, jobs: [{ status: 'running', startedAt: night - 1000 }] }), now: night });
+  const night = Date.UTC(2026, 10, 17, 19, 0, 0), asleep = roomProjection(snapshot({ now: night, quiet: true, jobs: [{ status: 'running', startedAt: night - 1000 }] }));
   assert.equal(asleep.activity, 'sleeping'); assert.equal(asleep.since, night - 3.5 * 3600000); assert.equal(asleep.lamp, 'off'); assert.equal(asleep.clock.phase, 'night');
-  assert.equal(fromAuthority({ ...snapshot({ quiet: true, lastAt: night - 5000 }), now: night }).activity, 'replying');
+  assert.equal(roomProjection({ ...snapshot({ now: night, quiet: true }), lastAts: [night - 5000] }).activity, 'replying');
   // A paused world does nothing; quiet hours still read as sleep.
-  assert.equal(fromAuthority(snapshot({ paused: true, lastAt: NOON - 1000, jobs: [{ status: 'running', startedAt: NOON - 1000 }] })).activity, 'idle');
-  assert.equal(fromAuthority(snapshot({ paused: true, quiet: true })).activity, 'sleeping');
+  assert.equal(roomProjection(snapshot({ paused: true, lastAt: NOON - 1000, jobs: [{ status: 'running', startedAt: NOON - 1000 }] })).activity, 'idle');
+  assert.equal(roomProjection(snapshot({ paused: true, quiet: true })).activity, 'sleeping');
 });
 
-test('authority mapping: missing or malformed input degrades to idle, never throws, never leaks', () => {
-  assert.deepEqual(fromAuthority({ now: NOON }), roomState({ source: 'authority', at: NOON, activity: 'idle' }));
-  const odd = fromAuthority({ now: NOON, world: 'x', initiative: { quietHours: { now: 'yes', from: 7 } }, jobs: { jobs: [null, { status: 'running', startedAt: 'soon' }, { status: 'running', startedAt: NOON + 5 }] }, conversations: [null, { lastAt: 'now' }, { lastAt: NOON + 60000 }, { lastAt: -4 }] });
-  assert.equal(odd.activity, 'working'); assert.equal(odd.since, NOON);
-  assert.equal(fromAuthority({ now: NOON, initiative: { quietHours: { now: true, from: 'late' } } }).since, NOON);
-  assert.throws(() => fromAuthority({})); assert.throws(() => fromAuthority());
+test('authority projection: Authority builds exactly what the contract builds, at every hour, and nothing leaks', () => {
+  // Authority's copy of the clock, phase, lamp and pose rules (room/ is not in a release) against this contract.
+  for (let step = 0; step < 96; step++) for (const extra of [{}, { lastAt: NOON + step * 900000 - 1000 }, { quiet: true }, { jobs: [{ status: 'running', startedAt: NOON - 5 }] }]) {
+    const now = NOON + step * 900000 + 123, state = roomProjection(snapshot({ now, ...extra }));
+    assert.deepEqual(state, roomState({ source: 'authority', at: now, since: state.since, activity: state.activity }));
+    assert.equal(acceptLive(state), state);
+  }
+  assert.deepEqual([...new Set(Array.from({ length: 96 }, (_, step) => roomProjection({ now: NOON + step * 900000 }).clock.phase))].sort(), [...PHASES].sort());
   for (const input of [snapshot(), snapshot({ lastAt: NOON - 1 }), snapshot({ quiet: true }), snapshot({ jobs: [{ status: 'running', startedAt: NOON - 1 }] })]) {
-    const state = validateRoomState(fromAuthority(input)), json = JSON.stringify(state);
+    const state = validateRoomState(roomProjection(input)), json = JSON.stringify(state);
     for (const text of strings(state)) assert.ok(VOCABULARY.has(text), text);
     for (const secret of SECRETS.filter(item => item !== 'qq')) assert.ok(!json.includes(secret), secret);
     for (const page of [caption(state), ...HOTSPOT_SHOWS.map(shows => JSON.stringify(drawer(shows, state)))]) for (const secret of SECRETS) assert.ok(!page.includes(secret), secret);
   }
+  assert.throws(() => acceptLive(FIXTURES.idle), invalid);
+  assert.throws(() => acceptLive({ ...roomProjection(snapshot()), person: SECRETS[0] }), invalid);
 });
 
 test('page text: captions and drawers are fixed sentences chosen by category', () => {
   assert.equal(caption(fixture('watching', NOON)), '看视频 · 14:00 白天 · 下雨');
-  assert.deepEqual(drawer('activity', roomState({ source: 'fake', at: NOON, since: NOON - 12 * 60000, activity: 'replying', mood: 'cheerful' })), { title: '回消息', lines: ['她在回消息。', '已经 12 分钟', '看起来开心。'] });
+  assert.deepEqual(drawer('activity', roomState({ source: 'fake', at: NOON, since: NOON - 12 * 60000, activity: 'replying', mood: 'cheerful' })), { title: '看手机', lines: ['她在看手机。', '已经 12 分钟', '看起来开心。'] });
+  // The phone pose says she is on her phone, not that she is answering anyone.
+  for (const text of Object.values(ACTIVITY_TEXT).flat()) assert.ok(!/回消息|回复|聊天|消息/.test(text), text);
   assert.deepEqual(drawer('activity', roomState({ source: 'fake', at: NOON, since: NOON - 5 * 3600000, activity: 'sleeping' })).lines, ['她睡了，安静时段不打扰。', '已经 5 小时多']);
   assert.deepEqual(drawer('lamp', fixture('writing', NOON)), { title: '灯', lines: ['灯开着。'] });
   assert.deepEqual(drawer('clock', fixture('idle', NOON)).lines, ['北京时间 08:10，白天。']);
@@ -159,5 +169,91 @@ test('page: no inline script or style, and nothing but its own files', async () 
   assert.match(html, /default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self'; connect-src 'self'/);
   assert.ok(!/<script(?![^>]*\bsrc=)/.test(html) && !/\sstyle=|<style/.test(html) && !/https?:\/\//.test(html));
   assert.ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write|localStorage|sessionStorage|3082|Authorization/.test(script));
+  // The page reads two things, both from its own server: the manifest and (live provider) the room state.
+  const provider = await readFile(new URL('providers/authority.js', root), 'utf8');
   assert.deepEqual([...script.matchAll(/fetch\(([^,)]+)/g)].map(match => match[1]), ["'manifest.json'"]);
+  assert.deepEqual([...provider.matchAll(/fetch\(([^,)]+)/g)].map(match => match[1]), ["'state'"]);
+  assert.ok(!/Authorization|Bearer|token|\.sock|3082/i.test(provider.replace(/^\s*(\/\/|\/\*\*|\*).*$/gm, '')));
+});
+
+/** A real Authority on a temporary Unix socket with a room credential, and people, messages and a job with names. */
+async function liveAuthority(t) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'room-live-')), socketPath = path.join(dir, 'api.sock'), credentialFile = path.join(dir, 'room.token');
+  const token = randomBytes(32).toString('hex'), other = randomBytes(32).toString('hex'), sha = value => createHash('sha256').update(value).digest('hex');
+  const authority = new Authority({ file: path.join(dir, 'state.sqlite') });
+  authority.registerCapability({ id: 'qq', policy: 'conversation.v1' });
+  authority.bindActor({ capabilityId: 'qq', externalActorId: 'qq:1:user:2', personId: 'person:owner' });
+  authority.bindStream({ capabilityId: 'qq', streamId: 'qq:1:private:2', personId: 'person:owner', audience: 'private' });
+  authority.observe('qq', { eventId: 'e1', streamId: 'qq:1:private:2', actorId: 'qq:1:user:2', role: 'user', text: SECRETS[5], at: Date.now() - 3600000 });
+  const app = createAuthorityServer({ authority, socketPath, credentials: [{ hash: sha(token), role: 'room' }, { hash: sha(other), role: 'capability', capabilityId: 'qq' }],
+    contentJobs: async () => ({ jobs: [{ id: SECRETS[7], title: SECRETS[8], result: SECRETS[9], scope: { personId: SECRETS[0] }, status: 'queued', startedAt: null }] }) });
+  await app.start();
+  writeFileSync(credentialFile, token + '\n', { mode: 0o600 });
+  t.after(async () => { await app.close(); authority.close(); rmSync(dir, { recursive: true, force: true }); });
+  return { dir, socketPath, credentialFile, token, other, authority };
+}
+async function serving(t, options) {
+  const server = createRoomServer(options);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  return path => fetch(`http://127.0.0.1:${server.address().port}/${path}`);
+}
+
+test('serve: fake mode has no state route; real mode hands on the contract and never the credential', async t => {
+  const fake = await serving(t);
+  assert.equal((await fake('state')).status, 404);
+  assert.equal((await fake('')).status, 200);
+  const { socketPath, credentialFile, token, dir } = await liveAuthority(t);
+  const get = await serving(t, { live: authorityReader({ socketPath, credentialFile, cacheMs: 0 }) });
+  const response = await get('state'), text = await response.text(), state = JSON.parse(text);
+  assert.equal(response.status, 200);
+  assert.equal(acceptLive(state), state);
+  // This Authority runs on the real clock. The owner spoke an hour ago and the only job is queued: idle since that
+  // message, or asleep when the test happens to run in the quiet hours.
+  assert.ok(state.activity === 'idle' ? state.at - state.since >= 3600000 : state.activity === 'sleeping', state.activity);
+  assert.ok(Math.abs(Date.now() - state.at) < 60000);
+  assert.deepEqual(Object.keys(state), ['version', 'source', 'at', 'since', 'clock', 'weather', 'lamp', 'activity', 'pose']);
+  for (const secret of [token, ...SECRETS.filter(item => item !== 'qq')]) assert.ok(!text.includes(secret) && !JSON.stringify([...response.headers]).includes(secret), secret);
+  // Nothing this server answers contains the credential, and the credential file cannot be asked for.
+  for (const name of ['', 'room.js', 'providers/authority.js', 'serve.mjs', 'state.js', 'manifest.json', 'state?x=1']) assert.ok(!(await (await get(name)).text()).includes(token), name);
+  for (const name of ['room.token', '../room.token', '%2e%2e/room.token', encodeURIComponent(credentialFile), 'state/room.token']) assert.equal((await get(name)).status, 404, name);
+  assert.equal((await fetch(`http://127.0.0.1:${new URL((await get('state')).url).port}/state`, { method: 'POST' })).status, 404);
+  assert.ok(POLL_MS >= 1000);
+  // Unavailable: 503 with an empty body, no reason and no path. A wrong grant, a loose file mode, a missing socket.
+  for (const [change, restore] of [
+    [() => writeFileSync(credentialFile, randomBytes(32).toString('hex')), () => writeFileSync(credentialFile, token)],
+    [() => chmodSync(credentialFile, 0o644), () => chmodSync(credentialFile, 0o600)],
+    [() => writeFileSync(credentialFile, 'short'), () => writeFileSync(credentialFile, token)],
+  ]) {
+    change();
+    const failed = await get('state');
+    assert.equal(failed.status, 503); assert.equal(await failed.text(), '{}');
+    restore();
+    assert.equal((await get('state')).status, 200);
+  }
+  const gone = await serving(t, { live: authorityReader({ socketPath: path.join(dir, 'none.sock'), credentialFile }) });
+  assert.equal((await gone('state')).status, 503);
+  assert.throws(() => authorityReader({ socketPath: 'api.sock', credentialFile }));
+});
+
+test('serve: a capability credential is refused by Authority, an answer outside the contract is not passed on, reads are cached', async t => {
+  const { socketPath, credentialFile, other } = await liveAuthority(t);
+  writeFileSync(credentialFile, other);
+  const wrong = await serving(t, { live: authorityReader({ socketPath, credentialFile, cacheMs: 0 }) });
+  assert.equal((await wrong('state')).status, 503);
+  let calls = 0;
+  const good = roomProjection({ now: NOON });
+  const bad = await serving(t, { live: async () => ({ ...good, person: SECRETS[0] }) });
+  assert.equal(await (await bad('state')).text(), '{}');
+  // A stand-in Authority counts the reads: many viewers within the cache time are one read.
+  const dir = mkdtempSync(path.join(tmpdir(), 'room-stub-')), stubSocket = path.join(dir, 'stub.sock'), tokenFile = path.join(dir, 'room.token');
+  writeFileSync(tokenFile, randomBytes(32).toString('hex'), { mode: 0o600 });
+  const stub = http.createServer((req, res) => { calls++; res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true, value: req.url === '/v1/room' && req.method === 'GET' ? good : null })); });
+  await new Promise(resolve => stub.listen(stubSocket, resolve));
+  t.after(() => new Promise(resolve => stub.close(() => { rmSync(dir, { recursive: true, force: true }); resolve(); })));
+  const cached = await serving(t, { live: authorityReader({ socketPath: stubSocket, credentialFile: tokenFile, cacheMs: 60000 }) });
+  const answers = await Promise.all(Array.from({ length: 8 }, () => cached('state').then(response => response.json())));
+  for (const answer of answers) assert.deepEqual(answer, good);
+  assert.equal((await cached('state')).status, 200);
+  assert.equal(calls, 1);
 });

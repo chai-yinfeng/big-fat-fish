@@ -1,7 +1,8 @@
 // The room page: draws a room state through the asset manifest. It reads a state and shows it; it never
-// decides what she does. Only the fake provider exists so far (README.md, "真实数据").
+// decides what she does. Live state when this page's server offers it (README.md, "真实数据"), else the fake provider.
 import { ACTIVITIES, WEATHERS, PHASES, roomState, validateRoomState } from './state.js';
 import { fakeState, fixture, STEP_MS } from './providers/fake.js';
+import { liveState, POLL_MS } from './providers/authority.js';
 import { validateManifest, placement } from './manifest.js';
 import { ACTIVITY_TEXT, WEATHER_TEXT, PHASE_TEXT, caption, drawer } from './view.js';
 
@@ -101,20 +102,30 @@ function buildDev() {
   dev.hidden = false;
 }
 
+const notify = message => { const notice = $('#notice'); notice.textContent = message ?? ''; notice.hidden = !message; };
 async function start() {
-  if (query.get('fake') === '0') throw new Error('真实数据还没有接入：Authority 目前没有给房间用的只读出口。去掉 ?fake=0 看假数据。');
+  // Live unless `?fake=1`: the server says whether it has live state. While it has but cannot read it, wait and retry.
+  let first = null;
+  if (query.get('fake') !== '1') for (;;) {
+    try { first = await liveState(); break; } catch (error) { notify(error.message); await new Promise(resolve => setTimeout(resolve, POLL_MS)); }
+  }
+  const live = first !== null;
+  if (!live && query.get('fake') === '0') throw new Error('这个预览服务没有接真实数据（启动方式见 README“真实数据”）。去掉 ?fake=0 看假数据。');
+  notify(null);
   const response = await fetch('manifest.json', { cache: 'no-store' });
   if (!response.ok) throw new Error('manifest.json 读不到');
   manifest = validateManifest(await response.json());
   stage.style.aspectRatio = `${manifest.stage.width} / ${manifest.stage.height}`;
   $('.base').src = manifest.base.src;
   if (manifest.lamp) for (const [name, value] of [['--lamp-x', manifest.lamp.x / manifest.stage.width], ['--lamp-y', manifest.lamp.y / manifest.stage.height], ['--lamp-rx', manifest.lamp.radius / manifest.stage.width], ['--lamp-ry', manifest.lamp.radius / manifest.stage.height]]) $('.glow').style.setProperty(name, value * 100 + '%');
-  buildDev();
-  state = fakeNow();
+  if (!live) buildDev();
+  state = live ? first : fakeNow();
   buildSky(); buildHotspots();
   panel.querySelector('.close').addEventListener('click', () => { open = null; renderDrawer(); });
   stage.hidden = false;
   render(state);
-  setInterval(() => render(fakeNow()), 500);
+  // A failed poll keeps the last drawing and says so; the next one that works clears the notice.
+  if (live) setInterval(async () => { try { const next = await liveState(); if (next) { render(next); notify(null); } } catch (error) { notify(error.message); } }, POLL_MS);
+  else setInterval(() => render(fakeNow()), 500);
 }
-start().catch(error => { const notice = $('#notice'); notice.textContent = error.message; notice.hidden = false; });
+start().catch(error => notify(error.message));

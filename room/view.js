@@ -4,7 +4,8 @@ import { validateRoomState } from './state.js';
 
 export const ACTIVITY_TEXT = Object.freeze({
   idle: ['发呆', '她在发呆，什么也没做。'],
-  replying: ['回消息', '她在回消息。'],
+  // The signal is only "a conversation moved just now": she may be answering or just scrolling, so the words say neither.
+  replying: ['看手机', '她在看手机。'],
   speaking: ['说话', '她在说话（发语音）。'],
   watching: ['看视频', '她在看视频。'],
   writing: ['写日记', '她在写日记。'],

@@ -94,7 +94,7 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
   if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 256) throw new Error('Invalid review batch size');
   const seen = new Set();
   const grants = credentials.map(record => {
-    if (!/^[a-f0-9]{64}$/.test(record.hash) || seen.has(record.hash) || !['admin', 'capability', 'maintenance'].includes(record.role) || (record.role === 'capability' && (typeof record.capabilityId !== 'string' || !record.capabilityId)) || (record.role === 'maintenance' && (typeof record.entityId !== 'string' || !record.entityId))) throw new Error('Invalid authority credential configuration');
+    if (!/^[a-f0-9]{64}$/.test(record.hash) || seen.has(record.hash) || !['admin', 'capability', 'maintenance', 'room'].includes(record.role) || (record.role === 'capability' && (typeof record.capabilityId !== 'string' || !record.capabilityId)) || (record.role === 'maintenance' && (typeof record.entityId !== 'string' || !record.entityId))) throw new Error('Invalid authority credential configuration');
     seen.add(record.hash);
     return { ...record, bytes: Buffer.from(record.hash, 'hex') };
   });
@@ -139,7 +139,14 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
       const route = url.pathname;
       if (route.startsWith('/v1/admin/') && grant.role !== 'admin') throw failure('FORBIDDEN');
       let value;
-      if (route === '/v1/content') {
+      // The room grant reads the room state and nothing else, and nobody else reads it: no write, no admin or
+      // capability route, not even health. Running jobs come from the content service; unreachable means none.
+      if (grant.role === 'room' || route === '/v1/room') {
+        if (grant.role !== 'room' || route !== '/v1/room' || req.method !== 'GET') throw failure('FORBIDDEN');
+        let listing = null;
+        try { listing = contentJobs ? await contentJobs({ action: 'list' }) : null; } catch {}
+        value = authority.roomState(listing);
+      } else if (route === '/v1/content') {
         if (grant.role !== 'capability' || req.method !== 'POST') throw failure('FORBIDDEN');
         if (!contentControl) throw failure('UNAVAILABLE');
         const body = await bodyOf(req, ['action', 'streamId', 'memoryEpoch', 'sourceEventId', 'requestId', 'kind', 'data', 'ref', 'quality', 'voiceProfile', 'question', 'text', 'query', 'url', 'sticker', 'name'], 13 * 1024 * 1024);
