@@ -42,6 +42,8 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       world: authority.worldStatus(), persona: { revision: state.personaRevision, value: state.persona, default: DEFAULT_PERSONA },
       counts: { facts: state.facts.length, notes: state.notes.length, experiences: state.experiences.length, pending: authority.health().pending },
       channels, bindings, model: modelControl ? await modelControl('/model', undefined, authorization) : { provider: 'deepseek', model: 'deepseek-flash', configured: false, status: 'unconfigured' },
+      // The world's conversation settings (whether everyday chat thinks).
+      conversation: authority.conversationSettings(),
       // Today's spend (Beijing day) from the model gateway; null when unavailable.
       spend: modelControl ? await modelControl('/spend', undefined, authorization).catch(() => null) : null,
     };
@@ -203,6 +205,9 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         // Staging and tests only (private configuration `operator.allowDiaryTrigger`; no prepare script of a release
         // writes it): the running day's diaries are written now instead of after the day has ended.
         value = authority.diaryTrigger(object(body, []));
+      } else if (req.url === '/conversation/settings') {
+        // Whether everyday chat thinks; runs she starts herself think regardless. Applies from the next run on.
+        value = authority.setConversationSettings(object(body, ['chatThinking']));
       } else if (req.url === '/initiative/settings') {
         value = authority.initiationSettings(object(body, ['quietHours']));
       } else if (req.url === '/spend/settings') {

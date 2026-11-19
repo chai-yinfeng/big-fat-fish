@@ -134,7 +134,8 @@ test('a poke with nothing said is a turn with no message of the person: she is t
   f.executor.reply = () => '干嘛呀';
   await f.answered(f.poke());
   assert.equal(f.requests.length, 1);
-  assert.deepEqual(f.requests[0].input, { text: '对方在 QQ 上戳了你一下（拍一拍），没有说话。', initiated: true });
+  // A light turn: the executor gives it thinking only when everyday chat has it (a run she starts herself has no `light`).
+  assert.deepEqual(f.requests[0].input, { text: '对方在 QQ 上戳了你一下（拍一拍），没有说话。', initiated: true, light: true });
   assert.deepEqual(f.requests[0].scope, { streamId: 'qq:100:private:200', memoryEpoch: 0 });
   assert.deepEqual(f.sends.map(send => [send.user_id, send.message[0].data.text]), [['200', '干嘛呀']]);
   assert.deepEqual(f.observations.map(o => [o.role, o.text]), [['assistant', '干嘛呀']]);

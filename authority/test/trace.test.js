@@ -43,7 +43,7 @@ test('context() records what it injected: entry IDs per block and sizes, for an 
   const other = tell(B, 'fact.report', { key: 'MOCK-代号', value: 'MOCK-蓝鲸队长二号' }, 'MOCK-蓝鲸队长二号');
   assert.deepEqual(a.contextTrace(), { capacity: TRACE_LIMIT, recorded: 0, traces: [] });
   const query = 'MOCK-蓝鲸队长 是谁', context = a.context('qq', { streamId: stream(A), query });
-  assert.deepEqual(Object.keys(context).sort(), ['capabilityId', 'continuationIds', 'continuationText', 'entityId', 'memoryEpoch', 'memoryIds', 'memoryText', 'personaRevision', 'personaText', 'profileText', 'revision', 'scope', 'text', 'world']);
+  assert.deepEqual(Object.keys(context).sort(), ['capabilityId', 'chatThinking', 'continuationIds', 'continuationText', 'entityId', 'memoryEpoch', 'memoryIds', 'memoryText', 'personaRevision', 'personaText', 'profileText', 'revision', 'scope', 'text', 'world']);
   assert.deepEqual([...context.memoryIds].sort(), [fact, experience].sort(), 'the response names the entries it rendered');
   const { traces: [trace], recorded } = a.contextTrace();
   assert.equal(recorded, 1);

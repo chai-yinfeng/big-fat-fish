@@ -17,9 +17,10 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 
 // The real gateway (fake upstream fetch, no provider): pi-ai's request must pass
 // the gateway's validation, and reasoning_content must survive the round trip.
-test('through the real model gateway: thinking is forced and reasoning_content is replayed upstream', async t => {
+test('through the real model gateway: thinking is on with the switch and reasoning_content is replayed upstream', async t => {
   const root = tempRoot(t);
   const authority = await fakeAuthority(t, root);
+  authority.state.chatThinking = true;
   const inference = tokenFile(root, 'inference.token'), operator = 'operator-token-for-test-only-0000000000';
   const upstream = [], script = [toolCall('companion_scope', { action: 'evidence' }, 'R1-upstream'), reply('好的', 'R2')];
   const gateway = createModelGateway({
@@ -55,6 +56,63 @@ test('through the real model gateway: thinking is forced and reasoning_content i
   authority.state.paused = true;
   await assert.rejects(executor.execute({ scope: { streamId: 'qq:1:private:2', memoryEpoch: 0 }, requestId: 'r-2', input: { text: '在吗' }, timeoutMs: 10000 }), { code: 'WORLD_PAUSED' });
   assert.equal(upstream.length, 2);
+});
+
+// Thinking on and off in one conversation, through the real gateway: runs that thought (with a tool step), runs
+// that did not, a run she starts herself and a poke. Every request passes the gateway; the reasoning is replayed only
+// inside the run that produced it; nothing of it is stored in the session file.
+test('through the real model gateway: a history of runs with and without thinking replays; thinking follows each run; no reasoning is stored', async t => {
+  const root = tempRoot(t);
+  const authority = await fakeAuthority(t, root);
+  const inference = tokenFile(root, 'inference.token'), operator = 'operator-token-for-test-only-0000000000';
+  const MARK = 'MOCK-THINKING-MARK-c41e';
+  const upstream = [], script = [
+    toolCall('companion_scope', { action: 'evidence' }, `${MARK}-1`), reply('一号', `${MARK}-2`),
+    reply('二号'), reply('三号', `${MARK}-3`), reply('四号'), reply('五号', `${MARK}-4`)];
+  const gateway = createModelGateway({
+    settingsFile: path.join(root, 'model/settings.json'), usageFile: path.join(root, 'model/usage.json'),
+    inferenceSocket: path.join(root, 'model/infer.sock'), controlSocket: path.join(root, 'model/control.sock'),
+    inferenceTokenHash: sha(inference.token), operatorTokenHash: sha(operator), worldStatus: async () => ({ paused: authority.state.paused }),
+    fetchImpl: async (url, options) => { upstream.push({ body: JSON.parse(options.body) }); return new Response(script.shift().map(value => `data: ${JSON.stringify(value)}\n\n`).join('') + 'data: [DONE]\n\n'); },
+  });
+  fs.mkdirSync(path.join(root, 'model'), { mode: 0o700 });
+  await gateway.start(); t.after(() => gateway.close());
+  authority.state.paused = true;
+  const configured = await new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: path.join(root, 'model/control.sock'), path: '/model', method: 'POST', headers: { authorization: 'Bearer ' + operator, 'content-type': 'application/json' } }, res => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    req.on('error', reject); req.end(JSON.stringify({ model: 'deepseek-flash', apiKey: 'synthetic-key-not-a-real-secret' }));
+  });
+  assert.equal(configured, 200);
+  authority.state.paused = false;
+  const { model, streamFn } = createGatewayStream({ socketPath: path.join(root, 'model/infer.sock'), tokenFile: inference.file });
+  const sessions = path.join(root, 'sessions');
+  const executor = createConversationExecutor({ authority: new AuthorityClient(authority.config), store: new SessionStore(sessions), model, streamFn });
+  const scope = { streamId: 'qq:1:private:2', memoryEpoch: 0 }, evidence = [{ ref: 'obs', eventId: 'e', role: 'user' }];
+  const run = (requestId, input) => executor.execute({ scope, requestId, input, timeoutMs: 10000 });
+  authority.state.chatThinking = true;
+  assert.equal(await run('r-1', { text: '帮我记一下', evidence }), '一号');
+  authority.state.chatThinking = false;
+  assert.equal(await run('r-2', { text: '在吗', evidence }), '二号');
+  assert.equal(await run('r-3', { text: '[MOCK 事件]', initiated: true }), '三号');
+  assert.equal(await run('r-4', { text: '[MOCK 戳一戳]', initiated: true, light: true }), '四号');
+  authority.state.chatThinking = true;
+  assert.equal(await run('r-5', { text: '还记得吗', evidence }), '五号');
+  const thinking = upstream.map(({ body }) => body.thinking.type === 'disabled' ? 'off' : body.reasoning_effort);
+  assert.deepEqual(thinking, ['high', 'high', 'off', 'high', 'off', 'high']);
+  for (const { body } of upstream) {
+    assert.equal(body.model, 'deepseek-flash');
+    // Every earlier assistant message carries reasoning_content (pi-ai's DeepSeek rule), thinking on or off.
+    for (const message of body.messages.filter(message => message.role === 'assistant')) assert.equal(typeof message.reasoning_content, 'string');
+  }
+  // Inside run 1 the tool step's reasoning is replayed to its own continuation; no later run sees any reasoning.
+  assert.equal(upstream[1].body.messages.find(message => message.tool_calls).reasoning_content, `${MARK}-1`);
+  for (const { body } of upstream.slice(2)) assert.doesNotMatch(JSON.stringify(body.messages), new RegExp(MARK));
+  assert.deepEqual(upstream[5].body.messages.filter(message => message.role === 'assistant').map(message => message.content ?? null), [null, '一号', '二号', '三号', '四号']);
+  // The session file has every reply and tool call, and none of the reasoning.
+  const [file] = fs.readdirSync(sessions), stored = fs.readFileSync(path.join(sessions, file), 'utf8');
+  for (const said of ['一号', '二号', '三号', '四号', '五号', 'companion_scope']) assert.ok(stored.includes(said), said);
+  assert.doesNotMatch(stored, new RegExp(MARK));
+  assert.doesNotMatch(stored, /"type":"thinking"/);
 });
 
 test('service entrypoint runs main() through a symlinked release directory', t => {

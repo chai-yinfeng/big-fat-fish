@@ -54,18 +54,22 @@ test('one batch per run: commit the answer, report an unusable one, hand back a 
   reply = async () => { throw new Error('MEMORY_GATEWAY_UNAVAILABLE'); };
   assert.equal(await worker.runOnce(), 'unavailable');
   assert.equal(commits.length, 2);
+  // Cut at the output cap (thinking took the room): not invalid, not committed; the batch is handed out again.
+  reply = async () => { throw Object.assign(new Error('MEMORY_TRUNCATED'), { code: 'MEMORY_TRUNCATED' }); };
+  for (let attempt = 0; attempt < 3; attempt++) assert.equal(await worker.runOnce(), 'truncated');
+  assert.equal(commits.length, 2);
   // Spend tier: reported as deferred, then no batch is even taken until the wait is over.
   reply = async () => { throw Object.assign(new Error('MEMORY_BUDGET_DEFERRED'), { code: 'MEMORY_BUDGET_DEFERRED' }); };
   assert.equal(await worker.runOnce(), 'budget_deferred');
   assert.deepEqual(commits[2], { taskId: 'task-1', outcome: 'deferred' });
   reply = async () => ({ content: '{"summary":"MOCK-摘要"}' });
   assert.equal(await worker.runOnce(), 'budget_deferred');
-  assert.equal(asked.length, 4);
+  assert.equal(asked.length, 7);
   clock.now += 60000;
   assert.equal(await worker.runOnce(), 'committed');
   // Nothing to do, paused, or Authority unreachable: no model call.
   for (const [value, status] of [[{ task: null, reason: 'idle' }, 'idle'], [{ task: null, reason: 'paused' }, 'paused'], [{ task: null, reason: 'budget' }, 'budget_deferred']]) { next = value; assert.equal(await worker.runOnce(), status); }
   authority.consolidationNext = async () => { throw new Error('AUTHORITY'); };
   assert.equal(await worker.runOnce(), 'unavailable');
-  assert.equal(asked.length, 5);
+  assert.equal(asked.length, 8);
 });

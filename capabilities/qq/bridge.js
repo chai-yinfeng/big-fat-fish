@@ -307,7 +307,7 @@ export class QQBridge {
   /** The initiated run itself, in its conversation's queue: a turn with no message of the person. Her reply is split
    * and sent like any reply, each message with its own receipt; the first that fails or is unknown ends it, and
    * nothing is sent twice. Only delivered messages are observed as hers. */
-  async initiated({ cfg, kind, requestId, item, streamId, userId, jobRef, event: given }) {
+  async initiated({ cfg, kind, requestId, item, streamId, userId, jobRef, event: given, light = false }) {
     const scope = { streamId, memoryEpoch: item.memoryEpoch }, stream = { streamId, text: '' };
     const end = status => { item.status = status; this.save(); };
     let sending = false, report = null;
@@ -318,7 +318,7 @@ export class QQBridge {
       // carries the text, and a job of another conversation cannot be read here.
       const event = given ?? (jobRef ? completionEvent(await this.media.call(scope, 'jobResult', { ref: jobRef })) : INITIATION_EVENTS[kind]);
       // A sticker marker is taken out and dropped: a run she starts herself sends no sticker yet.
-      const reply = await executeConversation(this.executor, { scope, requestId, input: { text: event, initiated: true } }), text = this.sayable(takeStickerMarker(reply).text);
+      const reply = await executeConversation(this.executor, { scope, requestId, input: { text: event, initiated: true, ...(light ? { light: true } : {}) } }), text = this.sayable(takeStickerMarker(reply).text);
       if (DECLINED.test(text)) return end('declined');
       const pieces = splitReply(text).filter(piece => piece.trim());
       // What becomes of each message, and of the dropped markers, is reported when the run ends (finally).
@@ -368,7 +368,8 @@ export class QQBridge {
    * observed; only her delivered messages are. Its model work is counted like a run she starts herself (proactive). */
   async poked(turn) {
     const last = turn.at(-1), { streamId } = last.message.observation;
-    await this.initiated({ cfg: last.cfg, requestId: last.requestId, item: last.item, streamId, userId: last.userId, event: POKE_EVENT });
+    // `light`: a poke is a light turn; it thinks only when everyday chat does (the executor's choice, not a channel's).
+    await this.initiated({ cfg: last.cfg, requestId: last.requestId, item: last.item, streamId, userId: last.userId, event: POKE_EVENT, light: true });
     for (const entry of turn) entry.item.status = last.item.status;
     this.save();
   }

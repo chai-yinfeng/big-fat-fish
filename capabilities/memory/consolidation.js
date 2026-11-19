@@ -1,6 +1,6 @@
 const failure = code => Object.assign(new Error(code), { code });
-/** Output tokens asked for one consolidation (the gateway's cap for a maintenance completion). */
-export const CONSOLIDATION_MAX_TOKENS = 1536;
+/** Output tokens asked for one consolidation, reasoning included (the gateway's cap for a memory completion; it thinks). */
+export const CONSOLIDATION_MAX_TOKENS = 4096;
 const INPUT_CHARS = 8000, SUMMARY_CHARS = 300, FEELING_CHARS = 120, MAX_FACTS = 4;
 
 // The dialogue is quoted data inside one JSON user message; this system text is the only instruction.
@@ -66,6 +66,9 @@ export class MemoryConsolidation {
         const result = await this.complete({ messages: consolidationMessages(task), maxTokens: CONSOLIDATION_MAX_TOKENS });
         answer = { outcome: 'ok', ...parseConsolidation(result.content) };
       } catch (error) {
+        // Cut at the output cap: not the model's fault and not an invalid answer. Nothing is committed, so the batch
+        // stays where it is and is handed out again on the next tick (it already took one of the day's calls).
+        if (error?.code === 'MEMORY_TRUNCATED') return this.status = 'truncated';
         if (error?.code === 'MEMORY_BUDGET_DEFERRED') { this.deferUntil = this.clock() + this.deferMs; answer = { outcome: 'deferred' }; }
         else if (['INVALID_CONSOLIDATION_OUTPUT', 'MEMORY_INPUT_BUDGET', 'INVALID_MEMORY_BATCH'].includes(error?.code)) answer = { outcome: 'invalid' };
         // Gateway unreachable or paused: the batch stays where it is and is handed out again.
