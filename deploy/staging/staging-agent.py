@@ -258,24 +258,25 @@ def unix_post(path, route, token=None):
     return int(status[1])
 
 
+class UnixConnection(http.client.HTTPConnection):
+    def __init__(self, path):
+        super().__init__('staging', timeout=15)
+        self.path = str(path)
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(15)
+        self.sock.connect(self.path)
+
+
 def unix_get(path, route, token=None):
     """HTTP GET over a Unix socket; returns (status, body text)."""
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(15)
-    client.connect(str(path))
-    headers = 'GET %s HTTP/1.1\r\nHost: staging\r\nConnection: close\r\n' % route
-    if token:
-        headers += 'Authorization: Bearer %s\r\n' % token
-    client.sendall((headers + '\r\n').encode())
-    data = b''
-    while len(data) < 65536:
-        chunk = client.recv(4096)
-        if not chunk:
-            break
-        data += chunk
-    client.close()
-    head, _, body = data.decode('utf8', 'replace').partition('\r\n\r\n')
-    return int(head.split(' ')[1]), body
+    connection = UnixConnection(path)
+    connection.request('GET', route, headers={'authorization': 'Bearer ' + token} if token else {})
+    response = connection.getresponse()
+    text = response.read(65536).decode('utf8', 'replace')
+    connection.close()
+    return response.status, text
 
 
 def room_page(route):
