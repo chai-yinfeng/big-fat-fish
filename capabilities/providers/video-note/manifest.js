@@ -4,7 +4,7 @@ export default {
   // The model call that turns a video's machine transcript into a short summary (capabilities/providers/video).
   // Made by the content service through the gateway's /v1/activity/completions: no tools, thinking off. Not something
   // the model calls. Refused by the spend tier, the note is filed without a summary instead.
-  actions: [{ name: 'summarize', mode: 'background', model: false }],
+  actions: [{ name: 'summarize', mode: 'background', model: false, content: null }],
   meter: { kind: 'paid', source: 'gateway', unit: 'requests', units: ['inputTokens', 'outputTokens'], dailyLimit: null, spendCategory: 'activity', stopTier: 'restricted', perPerson: false },
   credentials: [
     { name: 'provider API key', location: 'model-data/settings.json', holder: 'model-gateway' },
@@ -14,4 +14,6 @@ export default {
   outputs: [{ type: 'note', derived: 'machine-summary' }],
   runtime: { process: 'companion-content', subprocess: false, network: 'model-gateway' },
   operatorConfig: null,
+  config: null,
+  forget: { owner: 'companion-content', what: 'the note reference filed under the forgotten message' },
 };
