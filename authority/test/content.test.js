@@ -31,6 +31,14 @@ test('content delegation uses bound Authority scope, rejects unobserved sources 
   await assert.rejects(client.call({ ...input, entityId: 'entity:someone-else' }));
   await assert.rejects(client.call({ ...input, sourceEventId: 'unobserved' }), { code: 'CONTENT_FORBIDDEN' });
   await assert.rejects(client.call({ ...input, memoryEpoch: 1 }));
+  // An activity (companion_activity): the capability, its action and its input pass through under the same scope, and
+  // the message it names as its source must be an observation of this very conversation.
+  const activity = { action: 'activity', streamId: 'private', memoryEpoch: 0, sourceEventId: 'input', requestId: 'MOCK-request', capability: 'video', activity: 'watch', input: { url: 'https://video.mock.invalid/v/MOCK001' } };
+  const before = calls;
+  assert.equal((await client.call(activity)).action, 'activity');
+  assert.deepEqual([calls, received.personId, received.streamId, received.audience], [before + 1, 'person:owner', 'private', 'private']);
+  await assert.rejects(client.call({ ...activity, sourceEventId: 'unobserved' }), { code: 'CONTENT_FORBIDDEN' });
+  await assert.rejects(client.call({ ...activity, personId: 'person:someone-else' }));
   core.setWorldPaused({ paused: true, expectedRevision: core.worldStatus().revision });
-  await assert.rejects(client.call(input)); assert.equal(calls, 1);
+  await assert.rejects(client.call(input)); await assert.rejects(client.call(activity)); assert.equal(calls, before + 1);
 });
