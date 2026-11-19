@@ -11,6 +11,7 @@ import { createModelGateway } from '../../model-gateway/server.mjs';
 import { MemoryMaintenance } from './maintenance.js';
 import { completeDiary } from './model-client.js';
 import { MemoryConsolidation } from './consolidation.js';
+import { MemoryDiary, DIARY_PROMPT } from './diary.js';
 
 test('accepted incremental memories cross real UDS/gateway into a private diary without reprocessing or public leakage', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-memory-flow-'));
@@ -100,4 +101,55 @@ test('rolled-out dialogue crosses real UDS/gateway into a digest and a quoted fa
   assert.equal(authority.consolidationState()[DEFAULT_ENTITY_ID].streams['source\u0000private'].lastObservationId, before[DEFAULT_ENTITY_ID].streams['source\u0000private'].lastObservationId);
   assert.equal(await worker.runOnce(), 'budget_deferred');
   assert.equal(authority.consolidationStatus().calls, 1, 'while waiting it does not even take a batch');
+});
+
+test('a finished day crosses real UDS/gateway into one private and one open diary; a second run asks the model nothing; the old private task is never called', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-memory-flow-'));
+  // 2027-01-15 16:00 in Beijing, then 05:00 the next morning.
+  const clock = { now: 1_800_000_000_000 };
+  const authority = new Authority({ file: path.join(dir, 'core.sqlite'), clock: () => clock.now });
+  authority.registerCapability({ id: 'source', policy: 'conversation.v1' });
+  authority.bindActor({ capabilityId: 'source', externalActorId: 'owner', personId: 'person:owner' });
+  authority.bindStream({ capabilityId: 'source', streamId: 'private', personId: 'person:owner', audience: 'private' });
+  const say = (eventId, text, she = false) => authority.observe('source', { eventId, streamId: 'private', actorId: she ? 'model' : 'owner', role: she ? 'assistant' : 'user', text, at: clock.now }).observationId;
+  say('event-1', '我养了一只叫MOCK-年糕的仓鼠'); say('reply-1', 'MOCK-REPLY 好可爱', true); clock.now += 1000;
+  const hash = value => createHash('sha256').update(value).digest('hex');
+  const coreSocket = path.join(dir, 'core.sock'), inferenceSocket = path.join(dir, 'infer.sock'), tokenFile = path.join(dir, 'maintenance.token'), inferenceTokenFile = path.join(dir, 'inference.token');
+  fs.writeFileSync(tokenFile, 'synthetic-maintenance-token-not-a-real-credential', { mode: 0o600 }); fs.writeFileSync(inferenceTokenFile, 'synthetic-inference-token', { mode: 0o600 });
+  const server = createAuthorityServer({ authority, socketPath: coreSocket, credentials: [{ hash: hash('synthetic-maintenance-token-not-a-real-credential'), role: 'maintenance', entityId: DEFAULT_ENTITY_ID }] });
+  const settingsFile = path.join(dir, 'model.json');
+  fs.writeFileSync(settingsFile, JSON.stringify({ model: 'deepseek-flash', apiKey: 'synthetic-provider-key', status: 'configured' }), { mode: 0o600 });
+  const requests = [];
+  const gateway = createModelGateway({ settingsFile, inferenceSocket, controlSocket: path.join(dir, 'control.sock'), inferenceTokenHash: hash('synthetic-inference-token'), operatorTokenHash: hash('synthetic-operator'), worldStatus: async () => authority.worldStatus(), fetchImpl: async (_url, options) => {
+    const request = JSON.parse(options.body), input = JSON.parse(request.messages[1].content); requests.push(request);
+    const content = Array.isArray(input.messages) ? { summary: 'MOCK-摘要：对方说起自己养的仓鼠。', feeling: 'MOCK-感受', facts: [] }
+      : { private: { text: 'MOCK-私密：今天听说了一只仓鼠，想了想。' }, open: { text: 'MOCK-明面：今天挺开心。' }, usedIds: input.digests.map(row => row.ref) };
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }], usage: { prompt_tokens: 120, completion_tokens: 60 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  } });
+  t.after(async () => { await gateway.close(); await server.close(); authority.close(); assert.equal(path.dirname(dir), os.tmpdir()); assert.match(path.basename(dir), /^fish-memory-flow-/); fs.rmSync(dir, { recursive: true }); });
+  await server.start(); await gateway.start();
+  const calls = [];
+  const client = new AuthorityClient({ socketPath: coreSocket, tokenFile }), complete = completeDiary({ socketPath: inferenceSocket, tokenFile: inferenceTokenFile });
+  // The worker's tick as main.mjs wires it: of the old task only public drafts are left.
+  const old = new MemoryMaintenance({ authority: { maintenanceBatch: async input => { calls.push(input.mode); return client.maintenanceBatch(input); }, writeDiary: input => client.writeDiary(input) }, complete, stateFile: path.join(dir, 'progress.json'), modes: ['public'] });
+  const consolidation = new MemoryConsolidation({ authority: client, complete }), diary = new MemoryDiary({ authority: client, complete });
+  const tick = async () => { await old.runOnce(); return [await consolidation.runOnce(), await diary.runOnce()]; };
+  authority.context('source', { streamId: 'private', query: 'MOCK', windowFromAt: clock.now });
+  assert.deepEqual(await tick(), ['committed', 'idle'], 'the day has not ended');
+  clock.now += 13 * 3600000;
+  assert.deepEqual(await tick(), ['idle', 'committed']);
+  const sent = requests.at(-1), input = JSON.parse(sent.messages[1].content);
+  assert.deepEqual([requests.length, sent.max_tokens, sent.thinking, sent.tools, sent.messages.length, sent.messages[0].content], [2, 1536, { type: 'disabled' }, undefined, 2, DIARY_PROMPT]);
+  assert.deepEqual([input.day, input.digests.map(row => [row.ref, /^p-[0-9a-f]{6}$/.test(row.person), row.summary, row.feeling]), input.previous, input.own], ['2027-01-15', [['d1', true, 'MOCK-摘要：对方说起自己养的仓鼠。', 'MOCK-感受']], [], {}]);
+  assert.ok(!sent.messages[1].content.includes('person:owner'));
+  const diaries = authority.listMemory({}).diaries;
+  assert.deepEqual(diaries.map(entry => [entry.kind, entry.v, entry.day, entry.text]).sort(), [['open', 2, '2027-01-15', 'MOCK-明面：今天挺开心。'], ['private', 2, '2027-01-15', 'MOCK-私密：今天听说了一只仓鼠，想了想。']]);
+  // Run again and again: no model request, no third diary. The old private mode was never asked for a batch.
+  assert.deepEqual(await tick(), ['idle', 'idle']); assert.deepEqual(await tick(), ['idle', 'idle']);
+  assert.equal(requests.length, 2);
+  assert.equal(authority.listMemory({}).diaries.length, 2);
+  assert.deepEqual([...new Set(calls)], ['public']);
+  // The diary's call is one of the new day's consolidation batches.
+  assert.equal(authority.consolidationStatus().calls, 1);
+  assert.ok(!authority.context('source', { streamId: 'private', query: 'MOCK-私密 仓鼠 想了想', windowFromAt: clock.now }).text.includes('MOCK-私密'));
 });

@@ -380,6 +380,45 @@ export const STEPS = {
     if (count === undefined ? !selected.length : selected.length !== count) fail(`${selected.length} consolidation request(s) contain ${JSON.stringify(contains)}, expected ${count ?? 'at least 1'}`);
     if (absent !== undefined && selected.some(entry => entry.maintenance.includes(absent))) fail(`a consolidation request containing ${JSON.stringify(contains)} also contains ${JSON.stringify(absent)}`);
   },
+  /** Staging only (operator POST /memory/diary/trigger, which exists only with `operator.allowDiaryTrigger`): the two
+   * diaries of the running Beijing day are written now, as production writes them for a day that has ended. */
+  async triggerDiary(run) { await run.operator('POST', '/memory/diary/trigger', {}); },
+  /** Exactly one private and one open diary (operator GET /memory, two-diary format) whose text contains `contains`:
+   * of one Beijing day, each carrying the persona card it was written under; only the open one carries the
+   * de-identification result, `readback` when given ("clear" or "blocked"). */
+  async expectDiary(run, _ctx, { contains, readback, timeoutMs = 90000 }) {
+    const found = await run.poll(async () => { const diaries = (await run.diaries()).filter(diary => diary.text.includes(contains)); return diaries.length >= 2 ? diaries : null; }, timeoutMs, `Authority has no pair of diaries containing ${JSON.stringify(contains)}`);
+    if (found.map(diary => diary.kind).sort().join() !== 'open,private') fail(`the diaries containing ${JSON.stringify(contains)} are ${JSON.stringify(found.map(diary => diary.kind))}, expected one private and one open`);
+    const own = found.find(diary => diary.kind === 'private'), open = found.find(diary => diary.kind === 'open');
+    if (own.day !== open.day || !/^\d{4}-\d{2}-\d{2}$/.test(own.day)) fail('the two diaries are not of one Beijing day');
+    if (![own, open].every(diary => typeof diary.cardId === 'string' && diary.cardId)) fail('a diary does not carry its persona card');
+    if (own.readback !== undefined || !['clear', 'blocked'].includes(open.readback)) fail('only the open diary carries the de-identification result');
+    if (readback !== undefined && open.readback !== readback) fail(`the open diary is marked ${JSON.stringify(open.readback)}, expected ${JSON.stringify(readback)}`);
+  },
+  async expectNoDiary(run, _ctx, { contains }) {
+    if ((await run.diaries()).some(diary => diary.text.includes(contains))) fail(`Authority has a diary containing ${JSON.stringify(contains)}`);
+  },
+  /** The diary requests the model was sent during this scenario (the fake model logs their whole input). `contains`
+   * selects them: at least one, or exactly `count`; each selected one must contain `also` and none `absent`, name
+   * people only by opaque labels and carry no account number. The old automatic private diary must not have been
+   * requested at all. `afterMs`: wait first, to give an unwanted request the time to happen. */
+  async expectDiaryInput(run, ctx, { contains, also, absent, count, afterMs = 0 }) {
+    await run.sleep(afterMs);
+    const log = run.modelLog(ctx);
+    if (log.some(entry => entry.stream === false && typeof entry.system === 'string' && entry.system.startsWith('你为一个独立实体维护日记') && entry.system.includes('私密日记'))) fail('the old automatic private diary was requested');
+    const requests = log.filter(entry => entry.diary === true);
+    if (!requests.every(entry => typeof entry.maintenance === 'string' && entry.stream === false)) fail('the model request log lacks the diary input');
+    const selected = requests.filter(entry => entry.maintenance.includes(contains));
+    if (count === undefined ? !selected.length : selected.length !== count) fail(`${selected.length} diary request(s) contain ${JSON.stringify(contains)}, expected ${count ?? 'at least 1'}`);
+    for (const entry of selected) {
+      if (also !== undefined && !entry.maintenance.includes(also)) fail(`a diary request containing ${JSON.stringify(contains)} lacks ${JSON.stringify(also)}`);
+      if (absent !== undefined && entry.maintenance.includes(absent)) fail(`a diary request containing ${JSON.stringify(contains)} also contains ${JSON.stringify(absent)}`);
+      const leaked = Object.values(run.data.people).find(person => entry.maintenance.includes(person.qq));
+      if (leaked) fail(`a diary request contains the account number ${leaked.qq}`);
+      const digests = JSON.parse(entry.maintenance).digests;
+      if (!digests.length || !digests.every(row => /^p-[0-9a-f]{6}$/.test(row.person))) fail('a diary request does not name people by opaque labels only');
+    }
+  },
   /** No chat request of this scenario contains `text` anywhere (system message, memory-hub notes, typed text,
    * earlier dialogue, tool results). At least `minRequests` chat requests must have been made. */
   async expectNoChatContains(run, ctx, { text, minRequests = 1 }) {
@@ -424,7 +463,7 @@ export const STEPS = {
    * resume. The preview must list the digest derived from it; afterwards only that person's conversation has a
    * new memory epoch. Staging's memory unit cannot reach the operator port, so the runner acknowledges the
    * cleanup job itself: no session file is purged here (the retired session is simply never loaded again). */
-  async forget(run, _ctx, { person, source }) {
+  async forget(run, _ctx, { person, source, diaries }) {
     let observation, digest;
     for (const item of await run.digests(person)) {
       const found = (await run.operator('GET', '/memory/sources?id=' + encodeURIComponent(item.id))).sources.find(row => row.text.includes(source));
@@ -433,6 +472,8 @@ export const STEPS = {
     if (!observation) fail(`no digest of ${person} is derived from an observation containing ${JSON.stringify(source)}`);
     const preview = await run.operator('POST', '/memory/forget-preview', { entityId: digest.entityId, ids: [observation.id] });
     if (!preview.digestIds?.includes(digest.id) || !preview.sourceObservationIds.includes(observation.id)) fail('the forget preview does not list the digest derived from the observation');
+    // `diaries`: how many diaries the preview must list as removed along (each also holding other content).
+    if (diaries !== undefined && (preview.diaryIds?.length !== diaries || preview.mixedDiaryIds?.length !== diaries)) fail(`the forget preview lists ${preview.diaryIds?.length} diaries (${preview.mixedDiaryIds?.length} with other content), expected ${diaries}`);
     const epochs = async () => new Map((await run.operator('GET', '/conversations')).map(row => [row.streamId, row.memoryEpoch]));
     const before = await epochs();
     await run.setPaused(true);
@@ -719,6 +760,8 @@ export class Runner {
       before = Math.min(...page.items.map(item => item.revision));
     }
   }
+  /** The newest diaries of the two-diary format (operator GET /memory, first page). */
+  async diaries() { return (await this.operator('GET', '/memory?limit=100')).diaries.filter(diary => diary.v === 2 && typeof diary.text === 'string'); }
   /** The active machine digests of a person (operator GET /memory, every page). */
   async digests(name) {
     const label = await this.personLabel(name);

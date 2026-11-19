@@ -818,6 +818,25 @@ export function WorldConsole({ t, standalone = false }) {
       `${['user', 'assistant', 'external'].includes(line.role) ? t(`memoryPanel.role.${line.role}`) : ''} · ${time(line.at)}: ${line.forgotten ? t('memoryPanel.sourceForgotten') : line.text}`))) : null;
     // The quote she noted is not word for word in the observation it cites: marked, with the source one click away.
     const looseQuote = item => item.evidence?.quoteVerbatim === false;
+    // The two diaries of one Beijing day (body.v 2) are shown side by side; any other diary is of the old format.
+    const twoBooks = diary => diary.v === 2 && typeof diary.day === 'string' && ['private', 'open'].includes(diary.kind);
+    const diaryDays = memory ? [...new Set(memory.diaries.filter(twoBooks).map(diary => diary.day))].sort().reverse() : [];
+    // The persona card a diary was written under: its name, or its id once the card is gone.
+    const diaryCard = diary => badge(`${t('diaryPanel.card')}: ${typeof diary.cardTitle === 'string' && diary.cardTitle ? diary.cardTitle : diary.cardId}`);
+    // Whether anyone could be told from an open diary (Authority's check when it was written), and by what.
+    const readback = diary => diary.readback === 'blocked' ? badge(t('diaryPanel.readback.blocked'), 'warn') : diary.readback === 'clear' ? badge(t('diaryPanel.readback.clear'), 'ok') : null;
+    const readbackReasons = diary => diary.readback === 'blocked' && Array.isArray(diary.readbackReasons) && diary.readbackReasons.length
+      ? h('p', { className: 'bff-small bff-muted' }, `${t('diaryPanel.readback.found')}: ${diary.readbackReasons.filter(reason => ['label', 'fact', 'digits'].includes(reason)).map(reason => t(`diaryPanel.reason.${reason}`)).join(' · ')}`) : null;
+    const book = (day, kind) => {
+      const written = memory.diaries.filter(diary => twoBooks(diary) && diary.day === day && diary.kind === kind);
+      return h('div', { className: 'bff-diary-book', key: kind },
+        h('div', { className: 'bff-actions' }, badge(t(`diaryPanel.${kind}`), kind === 'open' ? 'primary' : '', icon('note'))),
+        ...(written.length ? written.map(diary => h('div', { key: diary.id },
+          h('div', { className: 'bff-actions' }, diaryCard(diary), kind === 'open' ? readback(diary) : null),
+          h('p', { style: { whiteSpace: 'pre-wrap' } }, diary.text), kind === 'open' ? readbackReasons(diary) : null,
+          h('div', { className: 'bff-actions' }, preview(diary.id)))) : [h('p', { key: 'none', className: 'bff-small bff-muted' }, t('diaryPanel.none'))]));
+    };
+    const diaryLine = id => { const diary = memory?.diaries.find(entry => entry.id === id); return diary ? `${diary.day || ''} ${twoBooks(diary) ? t(`diaryPanel.${diary.kind}`) : t('diaryPanel.legacy')}: ${String(diary.text || '').slice(0, 80)}` : id; };
     const validConsolidation = value => value && Array.isArray(value.streams) && Array.isArray(value.staleDigestIds) && Number.isFinite(value.calls) && Number.isFinite(value.limits?.perDay) && Number.isFinite(value.limits?.perStreamPerDay);
     const refused = consolidation ? Object.values(consolidation.extracted?.rejected || {}).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0) : 0;
     const consolidationCard = h('section', { className: 'bff-card' }, cardHead(h('h2', null, t('consolidation.title')),
@@ -865,8 +884,12 @@ export function WorldConsole({ t, standalone = false }) {
             item.source?.machine || looseQuote(item) ? readSources(item) : null,
             item.visibility !== 'public' && item.kind !== 'inner' && item.kind !== 'digest' && button('memoryPublicAuthorize', () => mutate('/memory/public', { entityId: memory.entityId, id: item.id }), { className: 'bff-ghost bff-sm', icon: 'shield' }),
             preview(item.id)))),
-        ...memory.diaries.map(diary => h('article', { className: 'bff-card bff-memory', key: diary.id },
-          h('div', { className: 'bff-actions' }, badge(t(diary.kind === 'private' ? 'memoryPrivateDiary' : diary.status === 'published' ? 'memoryPublishedDiary' : 'memoryPublicDraft'), diary.kind === 'private' ? '' : 'primary', icon('note'))),
+        ...diaryDays.map(day => h('article', { className: 'bff-card bff-memory', key: 'diary:' + day },
+          h('h3', null, `${t('diaryPanel.day')} ${day}`),
+          h('div', { className: 'bff-diary-pair' }, book(day, 'private'), book(day, 'open')))),
+        ...memory.diaries.filter(diary => !twoBooks(diary)).map(diary => h('article', { className: 'bff-card bff-memory', key: diary.id },
+          h('div', { className: 'bff-actions' }, badge(t(diary.kind === 'private' ? 'memoryPrivateDiary' : diary.status === 'published' ? 'memoryPublishedDiary' : 'memoryPublicDraft'), diary.kind === 'private' ? '' : 'primary', icon('note')),
+            diary.kind === 'private' ? badge(t('diaryPanel.legacy')) : null),
           h('p', { style: { whiteSpace: 'pre-wrap' } }, diary.text),
           h('div', { className: 'bff-actions' },
             diary.kind === 'public' && diary.status === 'draft' && button('memoryPublishDraft', () => mutate('/diary/publish', { entityId: memory.entityId, id: diary.id }), { className: 'bff-sm', icon: 'check' }),
@@ -875,6 +898,11 @@ export function WorldConsole({ t, standalone = false }) {
         !memory.items.length && !memory.diaries.length && h('div', { className: 'bff-empty' }, icon('memory'), h('p', null, t('memoryEmpty')))),
       forgetPreview && dialog(t('memoryForgetPreview'), [
         h('p', { key: 'count', className: 'bff-mono' }, `${t('memoryAffected')}: ${forgetPreview.expandedIds.length} · ${t('memorySources')}: ${forgetPreview.sourceObservationIds.length}${Array.isArray(forgetPreview.digestIds) && forgetPreview.digestIds.length ? ` · ${t('memoryPanel.digestsRemoved')}: ${forgetPreview.digestIds.length}` : ''}`),
+        Array.isArray(forgetPreview.diaryIds) && forgetPreview.diaryIds.length ? h('p', { key: 'diaries', className: 'bff-mono' }, `${t('diaryPanel.forgetDiaries')}: ${forgetPreview.diaryIds.length} · ${t('diaryPanel.forgetMixed')}: ${Array.isArray(forgetPreview.mixedDiaryIds) ? forgetPreview.mixedDiaryIds.length : 0}`) : null,
+        // Diaries that stay but may still speak of it: the owner decides one by one (a new preview with that diary added).
+        Array.isArray(forgetPreview.mentionDiaryIds) && forgetPreview.mentionDiaryIds.length ? h('div', { key: 'mentions' }, h('p', { className: 'bff-muted' }, t('diaryPanel.forgetMentions')),
+          ...forgetPreview.mentionDiaryIds.map(id => h('div', { key: id, className: 'bff-actions' }, h('span', { className: 'bff-small', style: { whiteSpace: 'pre-wrap' } }, diaryLine(id)),
+            button('diaryPanel.forgetToo', () => run(async () => { setForgetPreview(await request('/memory/forget-preview', { entityId: forgetPreview.entityId, ids: [...forgetPreview.ids, id] })); }), { className: 'bff-danger-ghost bff-sm', icon: 'trash' })))) : null,
         h('p', { key: 'warning', className: 'bff-muted' }, t('memoryForgetWarning')), !data.world.paused && h('div', { key: 'pause' }, alert('warn', t('memoryPauseRequired')))], [
         button('discard', () => setForgetPreview(null), { className: 'bff-ghost', autoFocus: true, key: 'discard' }),
         button('memoryForgetConfirm', () => run(async () => {

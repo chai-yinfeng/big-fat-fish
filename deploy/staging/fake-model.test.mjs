@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createModelGateway } from '../../model-gateway/server.mjs';
-import { consolidationRows, DEFAULT_DIGEST, planReply, renderReply, evidenceRef, createFakeUpstream, DEFAULT_REPLY } from './fake-model.mjs';
+import { consolidationRows, diaryRows, DEFAULT_DIARY, DEFAULT_DIGEST, planReply, renderReply, evidenceRef, createFakeUpstream, DEFAULT_REPLY } from './fake-model.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 const system = 'persona';
@@ -165,4 +165,27 @@ test('scripted model: `scope` is a companion_scope call with the scripted argume
   assert.deepEqual([first.kind, first.call], ['tool', { name: 'companion_scope', arguments: scope }]);
   const second = planReply({ stream: true, tools, messages: [...turn, { role: 'assistant', tool_calls: [] }, { role: 'tool', content: '{"items":[]}' }] }, script);
   assert.deepEqual([second.kind, second.text, second.toolResult], ['text', 'MOCK-查到了', '{"items":[]}']);
+});
+
+test('scripted model: a diary request is answered by a `diary` rule with the refs of the rows that matched; nothing else is', async () => {
+  const { diaryMessages, parseDiaries } = await import('../../capabilities/memory/diary.js');
+  const task = { taskId: 't', day: '2026-11-18', personaText: 'MOCK 人设', own: {}, previous: [{ day: '2026-11-17', text: 'MOCK-甲 昨天的私密日记' }],
+    digests: [{ ref: 'd1', person: 'p-aaaaaa', time: '21:03', summary: 'MOCK-甲 摘要' }, { ref: 'd2', person: 'p-bbbbbb', time: '21:09', summary: 'MOCK-别的 摘要', feeling: 'MOCK-甲 感受' }, { ref: 'd3', person: 'p-cccccc', time: '22:00', summary: 'MOCK-丙 摘要' }],
+    notes: [{ ref: 'n1', kind: 'inner', text: 'MOCK-甲 内心话' }] };
+  const body = { stream: false, messages: diaryMessages(task) };
+  const scripted = [{ match: 'MOCK-甲', reply: 'MOCK-聊天回复' }, { match: 'MOCK-乙', diary: { private: 'MOCK-别人的', open: 'MOCK-别人的' } }, { match: 'MOCK-甲', consolidate: { summary: 'MOCK-DIGEST' } },
+    { match: 'MOCK-甲', diary: { private: 'MOCK-DIARY 私密甲', open: 'MOCK-DIARY 明面甲' } }];
+  const plan = planReply(body, scripted);
+  // The rows that contain the rule's `match` (in any of their fields) are the ones "used"; an earlier diary is not a row.
+  assert.deepEqual(parseDiaries(plan.text), { private: { text: 'MOCK-DIARY 私密甲' }, open: { text: 'MOCK-DIARY 明面甲' }, usedIds: ['d1', 'd2', 'n1'] });
+  // Logged apart from chats and consolidation: no `userText`, the whole input under `maintenance`.
+  assert.deepEqual([plan.diary, plan.consolidation, plan.userText, plan.stream, plan.maintenance], [true, undefined, '', false, body.messages[1].content]);
+  // Without a rule: a plain valid pair that used every row.
+  assert.deepEqual(parseDiaries(planReply(body, []).text), { private: { text: DEFAULT_DIARY.private }, open: { text: DEFAULT_DIARY.open }, usedIds: ['d1', 'd2', 'd3', 'n1'] });
+  // A chat or a consolidation batch is never answered by a `diary` rule, and neither is a diary request.
+  assert.equal(planReply({ stream: true, messages: [{ role: 'user', content: 'MOCK-乙 在吗' }] }, scripted).text, DEFAULT_REPLY);
+  assert.equal(planReply({ stream: true, messages: [{ role: 'user', content: 'MOCK-甲 在吗' }] }, [scripted[3], scripted[0]]).text, 'MOCK-聊天回复');
+  for (const content of ['Reply OK.', JSON.stringify({ persona: '', sources: [] }), JSON.stringify({ messages: [['o1', '对方', '21:03', 'x']] }), JSON.stringify({ day: '2026-11-18', digests: [] })]) assert.equal(diaryRows({ stream: false }, content), null, content);
+  assert.equal(diaryRows({ stream: true }, body.messages[1].content), null);
+  assert.equal(consolidationRows(body, body.messages[1].content), null);
 });

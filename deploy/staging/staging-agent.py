@@ -428,7 +428,9 @@ def scenario_unit(name, text, root=ROOT):
 def reset_consolidation(database):
     """Deterministic reruns of the consolidation scenarios, while Authority is stopped: every private
     conversation starts the replay with nothing waiting (its cursor at its newest observation) and with
-    today's batches unused. Digests and facts already written stay. Returns the number of conversations."""
+    today's batches unused; no day's diaries count as written (the diary marker goes, so the day an earlier
+    replay had written can be triggered again). Digests, facts and diaries already written stay. Returns the
+    number of conversations."""
     if not Path(database).exists():
         return 0
     db = sqlite3.connect(str(database))
@@ -440,6 +442,7 @@ def reset_consolidation(database):
         for entity, own in state.items():
             own['calls'] = 0
             own.pop('deferredAt', None)
+            own.pop('diary', None)
             streams = own.setdefault('streams', {})
             for capability, stream in db.execute("SELECT capability_id,stream_id FROM streams WHERE entity_id=? AND audience='private'", (entity,)).fetchall():
                 entry = streams.setdefault(capability + '\0' + stream, {})
@@ -450,7 +453,7 @@ def reset_consolidation(database):
                     entry['lastObservationId'] = newest[0]
                 count += 1
         db.execute("UPDATE metadata SET value=? WHERE key='consolidation'", (json.dumps(state),))
-        db.execute("DELETE FROM maintenance_tasks WHERE mode='consolidation'")
+        db.execute("DELETE FROM maintenance_tasks WHERE mode IN ('consolidation','diary')")
         db.commit()
         return count
     finally:
@@ -540,6 +543,14 @@ def mock_authority_config(config, token_hash):
     return config
 
 
+def scenario_authority_config(config):
+    """authority.json while scenarios replay: the staging-only switch behind the operator's diary trigger, so a replay
+    can have the running day's two diaries written now (production writes a day only after it has ended). Like
+    `allowTestChannels` it stays afterwards; an older release ignores it. Idempotent."""
+    config['operator']['allowDiaryTrigger'] = True
+    return config
+
+
 def mock_executor_config(conversation, root=None):
     """The conversation executor of the MOCK channel: the release's executor configuration with its own socket,
     caller token, sessions and, above all, the MOCK capability credential instead of the QQ one."""
@@ -585,6 +596,7 @@ def scenarios(deployer, only=None):
     stop_fake_channel()
     deployer.stop_all(names)
     second_channel = prepare_mock_channel(release)
+    edit('authority.json', scenario_authority_config)
     edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_source))
     content_source = (release / 'capabilities/media/main.mjs').read_text()
     edit('content.json', lambda c: scenario_content_config(c, content_source, True))

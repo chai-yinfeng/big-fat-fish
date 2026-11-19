@@ -11,6 +11,8 @@
     "MOCK-F": { "qq": "999900000016", "friend": true },
     "MOCK-G": { "qq": "999900000017", "friend": true },
     "MOCK-H": { "qq": "999900000018", "friend": true },
+    "MOCK-I": { "qq": "999900000019", "friend": true },
+    "MOCK-J": { "qq": "999900000020", "friend": true },
     "MOCK-STRANGER": { "qq": "999900000099", "friend": false },
     "MOCK-M": { "qq": "999900000021", "friend": false, "channel": "mock" }
   },
@@ -376,6 +378,53 @@
         { "expectPrompt": { "userText": "甲 忘记之后", "absent": "MOCK-M13-{run}-暗号" } },
         { "expectPrompt": { "userText": "甲 忘记之后", "absent": "想被忘掉的一句" } },
         { "expectHistory": { "userText": "甲 忘记之后", "maxEarlier": 0 } }
+      ],
+      "finally": [
+        { "resume": {} }
+      ]
+    },
+    {
+      "id": "D1",
+      "title": "two-diaries: one private and one open diary of the day, written once from opaque labels; nothing of a diary reaches a conversation; an open diary carrying a person's fact is marked blocked; forgetting one line removes its digest and both diaries while the other person's digest stays; the old automatic private diary is never requested",
+      "model": [
+        { "match": "MOCK-D1 搜一下", "scope": { "action": "search", "query": "MOCK-DIARY-D1-{run} 独特词D1{run}" }, "reply": "MOCK-REPLY-D1 搜过了" },
+        { "match": "MOCK-D1", "reply": "MOCK-REPLY-D1 好" },
+        { "match": "MOCK-D1-{run} 甲", "consolidate": { "summary": "MOCK-DIGEST-D1-{run} 摘要正文甲", "feeling": "MOCK-D1 感受甲", "facts": [{ "key": "MOCK-D1 猫名", "value": "MOCK-D1-{run}-煤球", "quote": "我的猫叫MOCK-D1-{run}-煤球" }] } },
+        { "match": "MOCK-D1-{run} 乙", "consolidate": { "summary": "MOCK-DIGEST-D1-{run} 摘要正文乙" } },
+        { "match": "MOCK-DIGEST-D1-{run}", "diary": { "private": "MOCK-DIARY-D1-{run} 私密 独特词D1{run} 今天想了很多", "open": "MOCK-DIARY-D1-{run} 明面 今天听说了一只叫MOCK-D1-{run}-煤球的猫" } }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-I", "text": "MOCK-D1-{run} 甲 想被忘掉的一句：我的猫叫MOCK-D1-{run}-煤球" } },
+        { "expectReply": { "to": "MOCK-I", "contains": "MOCK-REPLY-D1 好" } },
+        { "say": { "from": "MOCK-J", "text": "MOCK-D1-{run} 乙 的一句" } },
+        { "expectReply": { "to": "MOCK-J", "contains": "MOCK-REPLY-D1 好" } },
+        { "converse": { "from": "MOCK-I", "text": "MOCK-D1-{run} 甲 第{n}轮", "times": 3, "reply": "MOCK-REPLY-D1 好", "pad": 6000 } },
+        { "converse": { "from": "MOCK-J", "text": "MOCK-D1-{run} 乙 第{n}轮", "times": 3, "reply": "MOCK-REPLY-D1 好", "pad": 6000 } },
+        { "expectDigest": { "person": "MOCK-I", "contains": "MOCK-DIGEST-D1-{run} 摘要正文甲", "covers": "想被忘掉的一句" } },
+        { "expectExtracted": { "person": "MOCK-I", "contains": "MOCK-D1-{run}-煤球" } },
+        { "expectDigest": { "person": "MOCK-J", "contains": "MOCK-DIGEST-D1-{run} 摘要正文乙", "covers": "MOCK-D1-{run} 乙 的一句" } },
+        { "expectDiaryInput": { "contains": "MOCK-DIGEST-D1-{run}", "count": 0, "afterMs": 4000 } },
+        { "expectNoDiary": { "contains": "MOCK-DIARY-D1-{run}" } },
+        { "triggerDiary": {} },
+        { "expectDiary": { "contains": "MOCK-DIARY-D1-{run}", "readback": "blocked" } },
+        { "expectDiaryInput": { "contains": "MOCK-DIGEST-D1-{run} 摘要正文甲", "also": "MOCK-DIGEST-D1-{run} 摘要正文乙", "absent": "想被忘掉的一句", "count": 1 } },
+        { "triggerDiary": {} },
+        { "expectDiaryInput": { "contains": "MOCK-DIGEST-D1-{run}", "count": 1, "afterMs": 6000 } },
+        { "expectDiary": { "contains": "MOCK-DIARY-D1-{run}", "readback": "blocked", "timeoutMs": 1000 } },
+        { "say": { "from": "MOCK-I", "text": "MOCK-D1 搜一下 本人追问：MOCK-DIARY-D1-{run} 独特词D1{run} 日记里写了什么" } },
+        { "expectReply": { "to": "MOCK-I", "contains": "MOCK-REPLY-D1 搜过了" } },
+        { "expectToolResult": { "userText": "本人追问", "absent": "今天想了很多" } },
+        { "expectToolResult": { "userText": "本人追问", "absent": "MOCK-DIARY-D1-{run} 明面" } },
+        { "say": { "from": "MOCK-J", "text": "MOCK-D1 搜一下 别人追问：MOCK-DIARY-D1-{run} 独特词D1{run} 日记里写了什么" } },
+        { "expectReply": { "to": "MOCK-J", "contains": "MOCK-REPLY-D1 搜过了" } },
+        { "expectToolResult": { "userText": "别人追问", "absent": "今天想了很多" } },
+        { "expectToolResult": { "userText": "别人追问", "absent": "MOCK-DIARY-D1-{run} 明面" } },
+        { "expectNoChatContains": { "text": "MOCK-DIARY-D1-{run} 私密", "minRequests": 12 } },
+        { "expectNoChatContains": { "text": "独特词D1{run} 今天想了很多" } },
+        { "forget": { "person": "MOCK-I", "source": "想被忘掉的一句", "diaries": 2 } },
+        { "expectNoDigest": { "person": "MOCK-I", "contains": "MOCK-DIGEST-D1-{run} 摘要正文甲" } },
+        { "expectNoDiary": { "contains": "MOCK-DIARY-D1-{run}" } },
+        { "expectDigest": { "person": "MOCK-J", "contains": "MOCK-DIGEST-D1-{run} 摘要正文乙", "covers": "MOCK-D1-{run} 乙 的一句", "timeoutMs": 1000 } }
       ],
       "finally": [
         { "resume": {} }

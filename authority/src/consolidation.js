@@ -36,7 +36,7 @@ const UNSAFE_DIGEST = /[<＜]{3,}|[>＞]{3,}|记忆中枢附注|\d{7,}/u;
 
 export const beijingDay = at => new Date(at + BEIJING).toISOString().slice(0, 10);
 const beijingMidnight = at => Math.floor((at + BEIJING) / DAY) * DAY - BEIJING;
-const beijingHour = at => new Date(at + BEIJING).getUTCHours();
+export const beijingHour = at => new Date(at + BEIJING).getUTCHours();
 const beijingMinute = at => new Date(at + BEIJING).toISOString().slice(0, 16).replace('T', ' ');
 const streamKey = (capabilityId, streamId) => `${capabilityId}\u0000${streamId}`;
 const sha256 = value => createHash('sha256').update(value).digest('hex');
@@ -100,6 +100,36 @@ export class ConsolidationDomain extends MemoryDomain {
     }
     return { trigger, batch };
   }
+  /** The conversation the next batch comes from, with that batch (`found`), or only the `reason` there is none.
+   * A batch nobody spoke in (forgotten, too old, only her side) moves the cursor in `own` without a model call. */
+  #pick(e, own, now) {
+    let reason = 'idle';
+    // In the night hours one of the day's batches is kept for the diary of the day that just ended (diary.js).
+    const perDay = CONSOLIDATION.perDay - (beijingHour(now) < CONSOLIDATION.nightlyToHour && !((own.diary?.lastDay ?? '') >= beijingDay(now - DAY)) ? 1 : 0);
+    const streams = this.#privateStreams(e.id).map(stream => ({ stream, key: streamKey(stream.capabilityId, stream.streamId) }))
+      .sort((a, b) => (own.streams[a.key]?.calls ?? 0) - (own.streams[b.key]?.calls ?? 0));
+    for (const { stream, key } of streams) {
+      const state = own.streams[key] ||= { calls: 0 };
+      let found = this.#batch(stream, state, own.since, now);
+      for (let guard = 0; found && !found.batch.some(row => row.role === 'user' && !row.omitted) && guard < 8; guard++) {
+        state.lastObservationId = found.batch.at(-1).id;
+        found = this.#batch(stream, state, own.since, now);
+      }
+      if (!found || !found.batch.some(row => row.role === 'user' && !row.omitted)) continue;
+      if (own.calls >= perDay || state.calls >= CONSOLIDATION.perStreamPerDay) { reason = 'budget'; continue; }
+      return { stream, key, state, found };
+    }
+    return { reason };
+  }
+  // For the diary (diary.js): it keeps its marker in this same state and spends the same daily batches.
+  /** This entity's part of `all` (a `consolidationState()`), with the daily counters of today. */
+  consolidationOwn(all, entityId, now) { return this.#today(all, entityId, now); }
+  saveConsolidationState(all) { this.#save(all); }
+  /** Would `consolidationNext` hand out a batch now? Read-only. */
+  consolidationWaiting(entityId, now = this.now()) {
+    const e = this.entity(entityId);
+    return Boolean(this.#pick(e, structuredClone(this.#today(this.consolidationState(), e.id, now)), now).found);
+  }
   /** Maintenance credential only. Picks the conversation itself; the caller cannot name one. */
   consolidationNext(entityId, input = {}) {
     closed(input, [], []);
@@ -107,19 +137,9 @@ export class ConsolidationDomain extends MemoryDomain {
       const e = this.entity(entityId), world = this.worldStatus(), now = this.now();
       if (world.paused) return { entityId: e.id, task: null, reason: 'paused' };
       const all = this.consolidationState(), stored = JSON.stringify(all), own = this.#today(all, e.id, now);
-      let task = null, reason = 'idle';
-      const streams = this.#privateStreams(e.id).map(stream => ({ stream, key: streamKey(stream.capabilityId, stream.streamId) }))
-        .sort((a, b) => (own.streams[a.key]?.calls ?? 0) - (own.streams[b.key]?.calls ?? 0));
-      for (const { stream, key } of streams) {
-        const state = own.streams[key] ||= { calls: 0 };
-        // A batch nobody spoke in (forgotten, too old, only her side) moves the cursor without a model call.
-        let found = this.#batch(stream, state, own.since, now);
-        for (let guard = 0; found && !found.batch.some(row => row.role === 'user' && !row.omitted) && guard < 8; guard++) {
-          state.lastObservationId = found.batch.at(-1).id;
-          found = this.#batch(stream, state, own.since, now);
-        }
-        if (!found || !found.batch.some(row => row.role === 'user' && !row.omitted)) continue;
-        if (own.calls >= CONSOLIDATION.perDay || state.calls >= CONSOLIDATION.perStreamPerDay) { reason = 'budget'; continue; }
+      let task = null;
+      const { stream, key, state, found, reason } = this.#pick(e, own, now);
+      if (found) {
         const shown = found.batch.filter(row => row.ref), epoch = this.streamEpoch(e, stream.capabilityId, stream.streamId), base = state.lastObservationId ?? null, ids = found.batch.map(row => row.id);
         const taskId = sha256(canonical({ entityId: e.id, capabilityId: stream.capabilityId, streamId: stream.streamId, base, ids, epoch, worldRevision: world.revision }));
         this.store.db.prepare('INSERT OR IGNORE INTO maintenance_tasks(id,entity_id,epoch,cursor,world_revision,mode,source_ids) VALUES(?,?,?,?,?,?,?)').run(taskId, e.id, epoch, 0, world.revision, 'consolidation', JSON.stringify({
@@ -140,7 +160,6 @@ export class ConsolidationDomain extends MemoryDomain {
           // Short refs and Beijing minutes only: no observation, stream or person ID leaves Authority here.
           observations: shown.map(row => ({ ref: row.ref, role: row.role, time: beijingMinute(row.at), text: row.text })),
         };
-        break;
       }
       // An idle tick writes nothing.
       if (JSON.stringify(all) !== stored) this.#save(all);
@@ -249,6 +268,8 @@ export class ConsolidationDomain extends MemoryDomain {
       // (`deferredAt`), or today's batches are used up.
       paused: deferredAt !== null && beijingDay(deferredAt) === day ? 'spend' : calls >= CONSOLIDATION.perDay ? 'daily' : null,
       streams,
+      // The two diaries (diary.js): the last Beijing day that is done, when, and how many days were given up.
+      diary: { lastDay: own?.diary?.lastDay ?? null, lastAt: own?.diary?.lastAt ?? null, skipped: own?.diary?.skipped ?? 0 },
       // What review() made of the facts consolidation extracted, by its own reason codes.
       extracted: this.store.db.prepare("SELECT status,json_extract(receipt,'$.reason') AS reason,COUNT(*) AS n FROM inbox WHERE entity_id=? AND proposal_id LIKE 'cons:%' GROUP BY status,reason").all(e.id)
         .reduce((counts, row) => { if (row.status === 'rejected') counts.rejected[row.reason ?? 'unknown'] = row.n; else counts[row.status] = row.n; return counts; }, { accepted: 0, pending: 0, rejected: {} }),

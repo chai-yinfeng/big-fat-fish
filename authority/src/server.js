@@ -23,6 +23,8 @@ const SCHEMAS = {
   '/v1/maintenance/diary': ['taskId', 'kind', 'text', 'sourceIds'],
   '/v1/maintenance/consolidation/next': [],
   '/v1/maintenance/consolidation/commit': ['taskId', 'outcome', 'digest', 'facts'],
+  '/v1/maintenance/diary/next': [],
+  '/v1/maintenance/diary/commit': ['taskId', 'outcome', 'private', 'open', 'usedIds'],
 };
 const ERRORS = {
   AUTH_REQUIRED: [401, 'A valid capability or operator credential is required'],
@@ -163,6 +165,8 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
         if (route === '/v1/maintenance/consolidation/next') value = authority.consolidationNext(grant.entityId, body);
         // A commit may queue quoted facts: they are reviewed like any other proposal.
         else if (route === '/v1/maintenance/consolidation/commit') { value = authority.consolidationCommit(grant.entityId, body); schedule(); }
+        else if (route === '/v1/maintenance/diary/next') value = authority.diaryNext(grant.entityId, body);
+        else if (route === '/v1/maintenance/diary/commit') value = authority.diaryCommit(grant.entityId, body);
         else value = route === '/v1/maintenance/batch' ? authority.maintenanceBatch(grant.entityId, body) : authority.maintenanceDiary(grant.entityId, body);
       } else if (grant.role === 'maintenance') throw failure('FORBIDDEN');
       else if (req.method === 'GET' && route === '/v1/health') value = authority.health();
