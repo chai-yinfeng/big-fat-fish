@@ -7,6 +7,8 @@
 export const MAX_STICKERS_PER_REPLY = 1;
 /** How many of her latest replies the frequency line counts. */
 export const RECENT_REPLIES = 10;
+/** The most characters of a sent sticker's description in the outcome line. */
+export const OUTCOME_DESCRIPTION_CHARS = 40;
 /** "收下这个" refers to the last picture of the owner's own conversation at most this long ago. */
 export const KEEP_WINDOW_MS = 10 * 60000;
 const MARKER = /\[表情[:：]\s*([^[\]\n]{1,12}?)\s*\]/g;
@@ -28,4 +30,19 @@ export function asksToKeep(text) {
 export function frequencyLine(recent) {
   if (!recent?.length) return '';
   return `\n[渠道事实：你最近 ${recent.length} 条回复里发过 ${recent.filter(Boolean).length} 次表情包。]`;
+}
+/** The fact line, in her next turn, about what became of the sticker of her last reply (`outcome.status`): `sent` with
+ * a platform receipt (`description`: what the picture is, as the content service already knew it), `none` (no
+ * library sticker close to her word), `unavailable` (the content service failed to pick one), `unsent` (the reply
+ * stopped before the sticker was sent) or `unknown` (its send failed or has no receipt: never said to be sent). The
+ * description is machine text: like a quoted message, control characters become spaces and square brackets become
+ * full-width ones (note delimiters are neutralized by the executor like any message text), and it is cut short. */
+export function outcomeLine(outcome) {
+  if (outcome?.status === 'sent') {
+    const chars = [...(typeof outcome.description === 'string' ? outcome.description : '').replace(/[\p{Cc}\u2028\u2029]/gu, ' ').replaceAll('[', '［').replaceAll(']', '］').replace(/\s+/g, ' ').trim().replace(/[。.！!]+$/u, '')];
+    const description = chars.length > OUTCOME_DESCRIPTION_CHARS ? chars.slice(0, OUTCOME_DESCRIPTION_CHARS).join('') + '…' : chars.join('');
+    return description ? `\n[渠道事实：你上一条回复配的表情包已发出：${description}。]` : '\n[渠道事实：你上一条回复已发出一张表情包。]';
+  }
+  const said = { none: '没找到合适的表情包，没发', unavailable: '没能取出表情包，没发', unsent: '配的表情包没有发出', unknown: '配的表情包发送状态未知，不确定对方是否收到' }[outcome?.status];
+  return said ? `\n[渠道事实：你上一条回复${said}。]` : '';
 }

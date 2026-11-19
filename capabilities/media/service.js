@@ -117,7 +117,7 @@ export class MediaService {
       const picked = this.stickers.pick(input.query.trim());
       if (!picked) return { found: false };
       const copy = this.store.put({ scope, sourceEventId: input.sourceEventId, kind: 'image', mime: picked.mime, data: picked.data, ttlMs: Math.min(3600000, this.store.ttlMs) });
-      return { found: true, ref: copy.id, name: picked.name };
+      return { found: true, ref: copy.id, name: picked.name, ...(picked.description ? { description: picked.description } : {}) };
     }
     if (action === 'synthesize') {
       // Only what is said aloud is synthesized: bracketed asides and emoticons are dropped (speech/text.js).

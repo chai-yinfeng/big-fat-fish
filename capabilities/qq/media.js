@@ -84,10 +84,11 @@ export class QQMedia {
   }
   /** Add the owner's picture `ref` to her library (the content service checks it is the owner's own conversation). */
   keepSticker(scope, ref) { return this.call(scope, 'stickerKeep', { ref }); }
-  /** A part for a library sticker close to `word` (a picture of this conversation), or null when none is close enough. */
+  /** A part for a library sticker close to `word` (a picture of this conversation), or null when none is close enough.
+   * `description`: what the picture is, when the content service already knew it. */
   async pickSticker(scope, word, sourceEventId) {
     const picked = await this.call(scope, 'stickerPick', { query: word, sourceEventId });
-    return picked?.found === true && typeof picked.ref === 'string' && typeof picked.name === 'string' ? { type: 'image', ref: picked.ref, sticker: true, name: picked.name } : null;
+    return picked?.found === true && typeof picked.ref === 'string' && typeof picked.name === 'string' ? { type: 'image', ref: picked.ref, sticker: true, name: picked.name, ...(typeof picked.description === 'string' && picked.description ? { description: picked.description } : {}) } : null;
   }
   async send({ scope, userId, part }) {
     let segment;

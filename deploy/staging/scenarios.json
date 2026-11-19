@@ -985,7 +985,8 @@
       "model": [
         { "match": "MOCK-K8-{run} 给你", "reply": "MOCK-REPLY-K8-{run} 收到图" },
         { "match": "MOCK-K8-{run} 收下这个", "reply": "MOCK-REPLY-K8-{run} 收好啦" },
-        { "match": "MOCK-K8B-{run}", "reply": "MOCK-REPLY-K8B-{run} 太好了[表情:开心]" }
+        { "match": "MOCK-K8B-{run}", "reply": "MOCK-REPLY-K8B-{run} 太好了[表情:开心]" },
+        { "match": "MOCK-K8C-{run}", "reply": "MOCK-REPLY-K8C-{run} 嘿嘿" }
       ],
       "steps": [
         { "say": { "from": "MOCK-OWNER", "text": "MOCK-K8-{run} 给你", "image": { "seed": "K8-{run}", "as": "mall", "name": "开心" } } },
@@ -999,6 +1000,9 @@
         { "expectReply": { "to": "MOCK-A", "image": "sticker" } },
         { "expectSentCount": { "to": "MOCK-A", "contains": "[表情", "count": 0 } },
         { "expectMessages": { "person": "MOCK-A", "added": 3 } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-K8C-{run} 收到啦" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K8C-{run} 嘿嘿" } },
+        { "expectPrompt": { "userText": "MOCK-K8C-{run}", "contains": "[渠道事实：你上一条回复配的表情包已发出：商城表情「开心」。]" } },
         { "expectSilence": { "to": "*", "afterMs": 3000 } }
       ]
     },
@@ -1006,13 +1010,17 @@
       "id": "K9",
       "title": "no-match-sends-nothing: her [表情:词] with no library sticker close to it sends her text and nothing else",
       "model": [
-        { "match": "MOCK-K9-{run}", "reply": "MOCK-REPLY-K9-{run} 好的[表情:犀牛潜水艇]" }
+        { "match": "MOCK-K9-{run}", "reply": "MOCK-REPLY-K9-{run} 好的[表情:犀牛潜水艇]" },
+        { "match": "MOCK-K9B-{run}", "reply": "MOCK-REPLY-K9B-{run} 嗯" }
       ],
       "steps": [
         { "say": { "from": "MOCK-A", "text": "MOCK-K9-{run} 随便聊聊" } },
         { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K9-{run} 好的" } },
         { "expectSilence": { "to": "*", "afterMs": 3000 } },
-        { "expectSentCount": { "to": "MOCK-A", "contains": "[表情", "count": 0 } }
+        { "expectSentCount": { "to": "MOCK-A", "contains": "[表情", "count": 0 } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-K9B-{run} 然后呢" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K9B-{run} 嗯" } },
+        { "expectPrompt": { "userText": "MOCK-K9B-{run}", "contains": "[渠道事实：你上一条回复没找到合适的表情包，没发。]" } }
       ]
     },
     {

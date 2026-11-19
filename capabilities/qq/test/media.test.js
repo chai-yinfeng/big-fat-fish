@@ -200,6 +200,48 @@ test('her library: the owner says 收下这个 after a picture; her [表情:词]
   assert.doesNotMatch(f.executions[4].input.text, /渠道事实/);
 });
 
+test('her next turn is told once what became of the sticker of her last reply: sent with what it is, none, unknown', async t => {
+  const f = fixture(t); await f.bridge.connection(true);
+  const replies = ['好可爱', '收到', '好呀[表情:合成测试表情]', '嗯', '在呢[表情:犀牛潜水艇]', '嗯', '给你[表情:合成测试表情]', '嗯', '给你[表情:合成测试表情]', '嗯'];
+  f.executor.execute = async request => { f.executions.push(request); return replies.shift(); };
+  const said = () => f.executions.at(-1).input.text.match(/\[渠道事实：你上一条回复[^\]]*\]/g) ?? [];
+  await f.bridge.receive(f.event(71, [{ type: 'image', data: { file: 'trusted-sticker', sub_type: 1 } }]));
+  await f.bridge.receive(f.event(72, [{ type: 'text', data: { text: '收下这个' } }]));
+  await f.bridge.receive(f.event(73, [{ type: 'text', data: { text: '考过了！' } }]));
+  // Sent with a receipt: what the picture is, from what the content service already knew (no new look).
+  const looks = f.service.vision; f.service.vision = async () => { throw new Error('no look for the outcome'); };
+  await f.bridge.receive(f.event(74, [{ type: 'text', data: { text: '哈哈' } }]));
+  assert.deepEqual(said(), ['[渠道事实：你上一条回复配的表情包已发出：一张合成测试表情图。]']);
+  assert.match(f.executions.at(-1).input.text, /已发出：一张合成测试表情图。\]\n\[渠道事实：你最近 \d+ 条回复里发过 1 次表情包。\]$/);
+  // Once: the turn after says nothing of it.
+  await f.bridge.receive(f.event(75, [{ type: 'text', data: { text: '还在吗' } }]));
+  assert.deepEqual(said(), []);
+  await f.bridge.receive(f.event(76, [{ type: 'text', data: { text: '嗯嗯' } }]));
+  assert.deepEqual(said(), ['[渠道事实：你上一条回复没找到合适的表情包，没发。]']);
+  f.service.vision = looks;
+  // The sticker's send fails (no receipt): never said to be sent.
+  const call = f.bridge.onebot.call;
+  f.bridge.onebot.call = async (action, params) => action === 'send_private_msg' && params.message[0].type === 'image' ? { message_id: 'not-a-receipt' } : call(action, params);
+  await f.bridge.receive(f.event(77, [{ type: 'text', data: { text: '来一张' } }]));
+  await f.bridge.receive(f.event(78, [{ type: 'text', data: { text: '收到没' } }]));
+  assert.deepEqual(said(), ['[渠道事实：你上一条回复配的表情包发送状态未知，不确定对方是否收到。]']);
+  // The content service failing to pick one: not sent.
+  f.bridge.onebot.call = call; f.bridge.media.pickSticker = async () => { throw new Error('content down'); };
+  await f.bridge.receive(f.event(79, [{ type: 'text', data: { text: '再来' } }]));
+  await f.bridge.receive(f.event(80, [{ type: 'text', data: { text: '呢' } }]));
+  assert.deepEqual(said(), ['[渠道事实：你上一条回复没能取出表情包，没发。]']);
+});
+
+test('a sticker without a known description is said to be sent, without one', async t => {
+  const f = fixture(t); await f.bridge.connection(true);
+  const replies = ['给你[表情:合成测试表情]', '嗯'];
+  f.executor.execute = async request => { f.executions.push(request); return replies.shift(); };
+  f.bridge.media.pickSticker = async () => ({ type: 'image', ref: (await f.content.call({ streamId: 'qq:100:private:200', memoryEpoch: 0, action: 'ingest', sourceEventId: 'synthetic', kind: 'image', data: 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' })).id, sticker: true, name: '表情包' });
+  await f.bridge.receive(f.event(81, [{ type: 'text', data: { text: '来一张' } }]));
+  await f.bridge.receive(f.event(82, [{ type: 'text', data: { text: '收到了' } }]));
+  assert.match(f.executions.at(-1).input.text, /\[渠道事实：你上一条回复已发出一张表情包。\]/);
+});
+
 test('收下这个 from anyone but the owner changes nothing; without the sticker switch the picture goes as an ordinary image', async t => {
   const f = fixture(t), kept = [];
   const call = f.bridge.onebot.call;
