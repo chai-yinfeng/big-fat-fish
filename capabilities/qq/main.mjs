@@ -10,6 +10,7 @@ import { QQBridge, FRIEND_REFRESH_MS, INITIATION_POLL_MS } from './bridge.js';
 import { OneBotClient, onebotURL } from './onebot-client.js';
 import { ContentClient } from '../media/client.js';
 import { QQMedia } from './media.js';
+import { pacingFrom } from './pacing.js';
 
 process.umask(0o077);
 async function main() {
@@ -28,7 +29,9 @@ async function main() {
   // implementation without NapCat's `sub_type: 1`.
   if (cfg.stickerSubType !== undefined && typeof cfg.stickerSubType !== 'boolean') throw new Error('QQ_CONFIG');
   const media = cfg.contentEnabled ? new QQMedia({ content: new ContentClient(cfg.authority), onebot, stickerSubType: cfg.stickerSubType ?? true }) : undefined;
-  bridge = new QQBridge({ ...cfg, authority, port, onebot, executor, media });
+  // Optional qq-bridge.json `pacing` (any of the settings in pacing.js): the burst wait and the pauses between messages.
+  const pacing = pacingFrom(cfg.pacing);
+  bridge = new QQBridge({ ...cfg, authority, port, onebot, executor, media, pacing });
   const expected = Buffer.from(cfg.operatorTokenHash, 'hex');
   const server = http.createServer(async (req, res) => {
     const send = (status, value) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); };

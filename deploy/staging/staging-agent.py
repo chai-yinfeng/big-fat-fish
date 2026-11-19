@@ -51,6 +51,8 @@ NODE_CACHE = Path.home() / '.cache/companion-staging'  # outside ROOT: survives 
 PREFIX = 'companion-staging-'
 OPERATOR_PORT, ONEBOT_PORT = 13082, 13001
 INITIATION_POLL_MS = 3000  # scenario replay: how often the QQ bridge asks for an initiated run (production: 60 s)
+# scenario replay: the QQ bridge still merges a burst, but waits briefly and sends split replies without pauses
+SCENARIO_PACING = {'burstQuietMs': 500, 'burstMaxWaitMs': 1500, 'gapBaseMs': 0, 'gapPerLogMs': 0, 'gapJitterMs': 0, 'gapMinMs': 0, 'gapMaxMs': 0, 'firstMinMs': 0, 'firstMaxMs': 0}
 PROD_PORTS = (3001, 3082, 6099)
 UNIX_ONLY = ('memory', 'qq')  # their old code dials 127.0.0.1:3082 / :3001
 PROXY = 'http://127.0.0.1:7890'
@@ -345,9 +347,12 @@ def reset_initiations(database):
 
 def scenario_bridge_config(config, bridge_source):
     """qq-bridge.json for scenario replay: a release whose bridge fetches initiated runs asks every few seconds
-    (production: every minute), so those scenarios do not wait minutes. Other releases are left alone. Idempotent."""
+    (production: every minute), so those scenarios do not wait minutes; one that paces its replies (`pacing`) waits
+    briefly for a burst and sends without pauses. Other releases are left alone. Idempotent."""
     if 'initiationPollMs' in bridge_source:
         config['initiationPollMs'] = INITIATION_POLL_MS
+    if 'cfg.pacing' in bridge_source:
+        config['pacing'] = dict(SCENARIO_PACING)
     return config
 
 
@@ -360,6 +365,31 @@ def scenario_content_config(config, content_source, replaying):
     else:
         config.pop('allowRawSmallPng', None)
     return config
+
+
+def video_scenario_config(site, node, tools, runtime):
+    """operator/providers/video.json for scenario replay: the MOCK site only, answered by tools/fake-ytdlp.mjs (no
+    network is used), run inside bubblewrap as production runs yt-dlp: the node runtime and the tools read-only, the
+    job's work directory the only writable place. ffmpeg is never started here (staging has no speech model, so
+    nothing is downloaded)."""
+    return {'schemaVersion': 1, 'ytdlp': [str(node), str(tools / 'fake-ytdlp.mjs')], 'ffmpeg': ['/usr/bin/ffmpeg'],
+            'sandbox': {'kind': 'bwrap', 'bwrap': '/usr/bin/bwrap', 'readOnly': [str(runtime), str(tools)]}, 'sites': [site]}
+
+
+def scenario_video_config(release, replaying):
+    """Written while scenarios replay, for a release that has the video capability; removed afterwards (production
+    never has a MOCK site; an older release does not read the file). Returns whether it is in place."""
+    target = BASE / 'operator/providers/video.json'
+    if not replaying or not (release / 'capabilities/providers/video/provider.js').is_file():
+        target.unlink(missing_ok=True)
+        return False
+    listed = subprocess.run([str(NODE), str(TOOLS / 'fake-ytdlp.mjs'), '--mock-site'], env={'PATH': '/usr/bin:/bin', 'HOME': str(ROOT), 'LANG': 'C.UTF-8'},
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=True)
+    target.parent.mkdir(mode=0o700, exist_ok=True)
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as handle:
+        handle.write(json.dumps(video_scenario_config(json.loads(listed.stdout), NODE, TOOLS, ROOT / '.local/opt/companion')) + '\n')
+    return True
 
 
 def stop_fake_onebot():
@@ -431,6 +461,7 @@ def scenarios(deployer, only=None):
     edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_source))
     content_source = (release / 'capabilities/media/main.mjs').read_text()
     edit('content.json', lambda c: scenario_content_config(c, content_source, True))
+    scenario_video_config(release, True)
     for name in (PREFIX + 'model.service', PREFIX + 'qq.service'):
         path = deployer.config.units / name
         path.write_text(scenario_unit(name, path.read_text()))
@@ -450,6 +481,9 @@ def scenarios(deployer, only=None):
     (BASE / 'media-data/describe-cache.json').unlink(missing_ok=True)
     if (BASE / 'media-data/stickers').is_dir() and not (BASE / 'media-data/stickers').is_symlink():
         shutil.rmtree(BASE / 'media-data/stickers')
+    # Videos an earlier replay watched (their notes, and a site marked blocked): every replay starts without them.
+    if (BASE / 'media-data/video-cache').is_dir() and not (BASE / 'media-data/video-cache').is_symlink():
+        shutil.rmtree(BASE / 'media-data/video-cache')
     dispatch = Path(qq_config['stateFile'])
     if dispatch.exists():
         state = json.loads(dispatch.read_text())
@@ -500,6 +534,7 @@ def scenarios(deployer, only=None):
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 process.kill()
+        scenario_video_config(release, False)
         stop_fake_channel()
         edit('content.json', lambda c: scenario_content_config(c, content_source, False))
     lines = (result.stdout + result.stderr).strip().splitlines()

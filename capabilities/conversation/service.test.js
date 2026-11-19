@@ -45,7 +45,7 @@ test('plain reply: persona in the system prompt, the memory-hub note leads the u
   const [body] = f.gateway.state.bodies;
   assert.equal(body.model, 'deepseek'); assert.equal(body.stream, true); assert.equal(body.max_tokens > 0, true);
   assert.deepEqual(body.thinking, { type: 'enabled' });
-  assert.deepEqual(body.tools.map(tool => tool.function.name).sort(), ['companion_content', 'companion_scope']);
+  assert.deepEqual(body.tools.map(tool => tool.function.name).sort(), ['companion_activity', 'companion_content', 'companion_scope']);
   for (const tool of body.tools) assert.equal(JSON.stringify(tool.function.parameters).match(/streamId|memoryEpoch|entityId|personId|requestId|path/), null);
   assert.equal(body.messages[0].role, 'system');
   assert.match(body.messages[0].content, /大肥鱼，说话简短/);
@@ -542,7 +542,10 @@ test('carried event: a background result rides on a real message of the person, 
 // PINNED_NEUTRAL_SYSTEM_SHA256 is the same without any channel part.
 const PINNED_NEUTRAL_SYSTEM_SHA256 = '2d3246158ecafc165c0be974c6ca02ab1bf60a5f7842b96e5b0804731e1eb01c';
 const PINNED_SYSTEM_SHA256 = 'e460174841df0a7c6f65c46cab6b297b889423b12345b96c4b6554da7e7e2f34', PINNED_TOOLS_SHA256 = '7047ad04c0b28d0565d24b6946884934289eac5a0ebb303670d62e10cc1ae2ba';
-test('the cached prefix is pinned: the base prompt and the tool definitions are byte-for-byte what they were before background jobs, in every kind of run', async t => {
+// With companion_activity (the first tool added since): the two earlier definitions are still the pinned bytes above,
+// and the third follows them. PINNED_ALL_TOOLS_SHA256 is the three together, to be changed only on purpose.
+const PINNED_ALL_TOOLS_SHA256 = '5d05d1fd915b4d65cefb295bcc299fcee9653d02e65a7c6650e4a27f65a32a7d';
+test('the cached prefix is pinned: the base prompt and the two earlier tool definitions are byte-for-byte what they were before background jobs, the third tool follows them, in every kind of run', async t => {
   const f = await setup(t);
   f.gateway.state.script.push(reply('一'), reply('二'), reply('三'), reply('四'));
   await f.executor.execute(request('MOCK 普通一轮'));
@@ -551,8 +554,8 @@ test('the cached prefix is pinned: the base prompt and the tool definitions are 
   await f.executor.execute(request('MOCK 之后的一轮'));
   const sha = value => createHash('sha256').update(value).digest('hex'), bodies = f.gateway.state.bodies;
   assert.equal(bodies.length, 4);
-  for (const body of bodies) assert.deepEqual([sha(body.messages[0].content), sha(JSON.stringify(body.tools))], [PINNED_SYSTEM_SHA256, PINNED_TOOLS_SHA256]);
-  assert.deepEqual(bodies[0].tools.map(tool => tool.function.name), ['companion_scope', 'companion_content']);
+  for (const body of bodies) assert.deepEqual([sha(body.messages[0].content), sha(JSON.stringify(body.tools.slice(0, 2))), sha(JSON.stringify(body.tools))], [PINNED_SYSTEM_SHA256, PINNED_TOOLS_SHA256, PINNED_ALL_TOOLS_SHA256]);
+  assert.deepEqual(bodies[0].tools.map(tool => tool.function.name), ['companion_scope', 'companion_content', 'companion_activity']);
   for (let n = 1; n < bodies.length; n++) assert.equal(JSON.stringify(bodies[n].messages.slice(0, bodies[n - 1].messages.length)), JSON.stringify(bodies[n - 1].messages), `request ${n + 1} extends request ${n}`);
 });
 

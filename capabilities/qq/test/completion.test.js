@@ -4,6 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { QQBridge } from '../bridge.js';
+import { PACING } from '../pacing.js';
+
+// No burst wait (each message is its own turn unless they arrive together) and a fixed random source.
+const QUICK = { pacing: { ...PACING, burstQuietMs: 0, burstMaxWaitMs: 0 }, random: () => 0.5 };
 
 // Bot 100, owner 200, friends 201 and 202; 203 is nobody's friend. A finished background job is told to the person
 // who registered it: in a run she starts (`completion`) or with that person's next message (`carried`).
@@ -36,7 +40,7 @@ async function fixture(t) {
     send: async ({ userId, part }) => { const sent = await onebot.call('send_private_msg', { user_id: userId, message: [{ type: 'text', data: { text: part.text } }], auto_escape: true }); return { messageId: String(sent.message_id), type: 'text', text: part.text }; },
   };
   const executor = { execute: async request => { runs.push(request); if (typeof f.reply === 'function') return f.reply(request); return f.reply; } };
-  const bridge = new QQBridge({ authority, port: { observe: async value => { observations.push(value); return { observationId: 'observation-' + observations.length }; } }, onebot, executor, media, settingsFile: path.join(dir, 'settings.json'), stateFile: path.join(dir, 'state.json'), sleep: async () => {} });
+  const bridge = new QQBridge({ ...QUICK, authority, port: { observe: async value => { observations.push(value); return { observationId: 'observation-' + observations.length }; } }, onebot, executor, media, settingsFile: path.join(dir, 'settings.json'), stateFile: path.join(dir, 'state.json'), sleep: async () => {} });
   await bridge.connection(true); await bridge.configure({ expectedSelfId: '100', allowedCallerUID: '200' });
   world.paused = false; world.revision++;
   const message = (userId, id, text = 'Hello') => ({ post_type: 'message', message_type: 'private', sub_type: 'friend', self_id: 100, user_id: userId, sender: { user_id: userId }, message_id: id, time: Math.floor(Date.now() / 1000), message: [{ type: 'text', data: { text } }] });

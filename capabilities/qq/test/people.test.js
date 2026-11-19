@@ -4,6 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { QQBridge, OWNER_BUDGET_NOTICE, beijingDay } from '../bridge.js';
+import { PACING } from '../pacing.js';
+
+// No burst wait (each message is its own turn unless they arrive together) and a fixed random source.
+const QUICK = { pacing: { ...PACING, burstQuietMs: 0, burstMaxWaitMs: 0 }, random: () => 0.5 };
 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 async function fixture(t, { friends = ['300', '400', '500'] } = {}) {
@@ -19,7 +23,7 @@ async function fixture(t, { friends = ['300', '400', '500'] } = {}) {
   } };
   const executor = { execute: async request => { executions.push(request.scope.streamId); return (executor.reply ?? (async () => 'hi'))(request); } };
   let observed = 0;
-  const bridge = new QQBridge({ authority, port: { observe: async () => ({ observationId: 'o-' + ++observed }) }, onebot, executor, clock: () => now,
+  const bridge = new QQBridge({ ...QUICK, sleep: async () => {}, authority, port: { observe: async () => ({ observationId: 'o-' + ++observed }) }, onebot, executor, clock: () => now,
     settingsFile: path.join(dir, 'settings.json'), stateFile: path.join(dir, 'state.json') });
   await bridge.connection(true); await bridge.configure({ expectedSelfId: '100', allowedCallerUID: '200' });
   world.paused = false; world.revision++;
@@ -65,15 +69,17 @@ test('per-conversation queues: one person’s slow reply never blocks another; g
   const gates = { 'qq:100:private:300': deferred(), 'qq:100:private:400': deferred() };
   f.executor.reply = async request => { const gate = gates[request.scope.streamId]; if (gate) await gate.promise; return 'ok'; };
   const slowA = f.bridge.receive(f.event('300'));
+  // A's second message comes once A's first turn is running: it is not merged into it, it waits behind it.
+  while (!f.executions.length) await new Promise(setImmediate);
   const secondA = f.bridge.receive(f.event('300'));
   await f.bridge.receive(f.event('500'));
   assert.deepEqual(f.sends.map(s => s.user_id), ['500'], 'B finished while A is still generating');
   assert.equal(f.executions.filter(s => s.endsWith(':300')).length, 1, 'A’s second message waits behind its first');
   // Two slow conversations hold both slots; a third conversation waits for a slot.
   const slowB = f.bridge.receive(f.event('400'));
-  await new Promise(setImmediate);
+  while (!f.executions.includes('qq:100:private:400')) await new Promise(setImmediate);
   const waiting = f.bridge.receive(f.event('500'));
-  await new Promise(setImmediate);
+  while (!f.bridge.waiting.length) await new Promise(setImmediate);
   assert.equal(f.bridge.active, 2); assert.equal(f.bridge.waiting.length, 1);
   assert.equal(f.executions.filter(s => s.endsWith(':500')).length, 1);
   gates['qq:100:private:400'].resolve();

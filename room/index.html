@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self'; connect-src 'self'">
+<title>大肥鱼的房间</title>
+<link rel="stylesheet" href="room.css">
+</head>
+<body>
+<main>
+  <div id="stage" class="stage" hidden>
+    <img class="layer base" alt="">
+    <svg class="layer sky" aria-hidden="true"></svg>
+    <div class="layer poses"></div>
+    <div class="layer light"></div>
+    <div class="layer glow"></div>
+    <svg class="layer hotspots"></svg>
+    <aside id="drawer" class="drawer" hidden>
+      <button type="button" class="close" aria-label="关闭">×</button>
+      <h2></h2>
+      <div class="lines"></div>
+    </aside>
+  </div>
+  <p id="caption" class="caption" role="status"></p>
+  <p id="notice" class="notice" hidden></p>
+  <form id="dev" class="dev" hidden>
+    <span class="tag">假数据</span>
+    <label>活动 <select name="activity"></select></label>
+    <label>天气 <select name="weather"></select></label>
+    <label>时段 <select name="phase"></select></label>
+  </form>
+</main>
+<script type="module" src="room.js"></script>
+</body>
+</html>

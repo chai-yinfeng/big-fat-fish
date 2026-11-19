@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "stage": { "width": 1600, "height": 1000 },
+  "base": { "src": "assets/base.svg" },
+  "window": [[740, 100], [520, 210], [520, 350], [740, 240]],
+  "lamp": { "x": 1390, "y": 455, "radius": 420 },
+  "poses": {
+    "sitting": { "kind": "image", "src": "assets/pose-sitting.svg", "anchor": { "x": 740, "y": 705 }, "width": 180 },
+    "phone": { "kind": "image", "src": "assets/pose-phone.svg", "anchor": { "x": 630, "y": 720 }, "width": 180 },
+    "mic": { "kind": "image", "src": "assets/pose-mic.svg", "anchor": { "x": 890, "y": 710 }, "width": 180 },
+    "screen": { "kind": "image", "src": "assets/pose-screen.svg", "anchor": { "x": 745, "y": 552 }, "width": 180 },
+    "notebook": { "kind": "image", "src": "assets/pose-notebook.svg", "anchor": { "x": 1005, "y": 600 }, "width": 180 },
+    "laptop": { "kind": "image", "src": "assets/pose-laptop.svg", "anchor": { "x": 1115, "y": 655 }, "width": 180 },
+    "bed": { "kind": "image", "src": "assets/pose-bed.svg", "anchor": { "x": 460, "y": 760 }, "width": 520 }
+  },
+  "hotspots": [
+    { "id": "window", "shows": "weather", "polygon": [[740, 100], [520, 210], [520, 350], [740, 240]] },
+    { "id": "clock", "shows": "clock", "polygon": [[1060, 190], [1140, 190], [1140, 270], [1060, 270]] },
+    { "id": "lamp", "shows": "lamp", "polygon": [[1345, 415], [1435, 415], [1435, 690], [1345, 690]] }
+  ]
+}

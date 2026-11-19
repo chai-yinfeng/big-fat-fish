@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
 const fail = code => Object.assign(new Error(code), { code });
-const kinds = new Set(['audio', 'image', 'sticker', 'transcript', 'description', 'web']);
+const kinds = new Set(['audio', 'image', 'sticker', 'transcript', 'description', 'web', 'note']);
 const idPattern = /^media:([a-f0-9-]{36})$/;
 const sameScope = (a, b) => a.entityId === b.entityId && a.streamId === b.streamId && a.personId === b.personId && a.audience === b.audience;
 function scopeOf(value) {
@@ -75,6 +75,11 @@ export class ArtifactStore {
   }
   records() {
     return fs.readdirSync(this.root).filter(name => /^[a-f0-9-]{36}$/.test(name)).map(name => this.metadata('media:' + name));
+  }
+  /** The newest readable artifact of one kind in exactly this scope (its metadata), or null. */
+  latest(scope, kind) {
+    const owner = scopeOf(scope), now = this.clock();
+    return this.records().filter(meta => meta.kind === kind && meta.state === 'ready' && meta.expiresAt > now && sameScope(meta, owner)).sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
   }
   expire() {
     let removed = 0;

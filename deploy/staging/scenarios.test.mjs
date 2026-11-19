@@ -15,6 +15,7 @@ import { prepareContent } from '../authority/prepare-content.mjs';
 import { createFakeOneBot } from './fake-onebot.mjs';
 import { Runner, STEPS, validateScenarios, summaryLine, gatewayCaller, gatewayReader, MOCK_PROVIDER_KEY } from './scenarios.mjs';
 import { planReply } from './fake-model.mjs';
+import { MOCK_SITE } from './fake-ytdlp.mjs';
 
 const project = fileURLToPath(new URL('../../', import.meta.url));
 const shipped = () => JSON.parse(fs.readFileSync(new URL('./scenarios.json', import.meta.url), 'utf8'));
@@ -22,7 +23,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'B1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -423,9 +424,14 @@ async function stack(t) {
   edit('authority.json', c => { Object.assign(c.operator, { modelSocketPath: path.join(base, 'ipc/model-control/control.sock'), qqSocketPath: path.join(base, 'ipc/qq-control/control.sock') }); c.content = { socketPath: path.join(base, 'ipc/content/content.sock'), tokenFile: path.join(base, 'authority-content/control.token') }; });
   const onebotPort = await new Promise(resolve => { const probe = net.createServer(); probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
   // The bridge asks for initiated runs every second here (production: every minute).
-  edit('qq-bridge.json', c => { c.onebotPort = onebotPort; c.initiationPollMs = 1000; });
+  // A burst is still merged, after a short wait; split replies go without pauses (production: capabilities/qq/pacing.js).
+  edit('qq-bridge.json', c => { c.onebotPort = onebotPort; c.initiationPollMs = 1000; c.pacing = { burstQuietMs: 500, burstMaxWaitMs: 1500, gapBaseMs: 0, gapPerLogMs: 0, gapJitterMs: 0, gapMinMs: 0, gapMaxMs: 0, firstMinMs: 0, firstMaxMs: 0 }; });
   // No image runtime here either: the staging-only switch lets the fake OneBot's small PNGs through, as in staging.
   edit('content.json', c => { c.allowRawSmallPng = true; });
+  // Watching a video: the MOCK site only, answered by the stand-in for yt-dlp (no network, no sandbox on this machine).
+  // With no speech model nothing is downloaded or converted, so ffmpeg is never started.
+  fs.mkdirSync(path.join(base, 'operator/providers'), { mode: 0o700 });
+  write('operator/providers/video.json', { schemaVersion: 1, ytdlp: [process.execPath, path.join(project, 'deploy/staging/fake-ytdlp.mjs')], ffmpeg: [process.execPath], sandbox: { kind: 'none' }, sites: [MOCK_SITE] });
   // The worker's cleanup client gets a port nobody listens on (as in staging, where it cannot reach the operator).
   edit('memory-worker.json', c => Object.assign(c, { operatorPort: onebotPort === 65535 ? 65534 : onebotPort + 1, tickMs: 1000, consolidationDeferMs: 2000 }));
   // The second channel (test-only MOCK): its own capability and credential, and its own conversation executor
@@ -664,6 +670,10 @@ test('job steps: the demo job is registered with nothing but its seconds, a job 
   await assert.rejects(STEPS.expectJob(run, ctx, { job: 1, status: 'done', notice: 'carried' }), /shows no result/);
   jobs = [listed('job:a', 'done', { state: 'closed', outcome: 'carried' }, { owner: false })];
   await assert.rejects(STEPS.expectJob(run, ctx, { job: 1, status: 'done' }), /not the owner's/);
+  // Somebody else's job is expected only when the step says so.
+  await STEPS.expectJob(run, ctx, { job: 1, status: 'done', owner: false });
+  jobs = [listed('job:a', 'done', { state: 'closed', outcome: 'carried' })];
+  await assert.rejects(STEPS.expectJob(run, ctx, { job: 1, status: 'done', owner: false }), /is the owner's/);
   jobs = [listed('job:a', 'done', { state: 'closed', outcome: 'sent' }, { person: owner })];
   await assert.rejects(STEPS.expectJob(run, ctx, { job: 1, status: 'done' }), /the job list contains the account number/);
   // Completions: only the ones since the note, oldest first, each by how it ended; pokes are not counted.
@@ -679,14 +689,15 @@ test('job steps: the demo job is registered with nothing but its seconds, a job 
   await assert.rejects(STEPS.expectCompletions(run, ctx, { outcomes: ['deferred:budget', 'carried', 'sent'], timeoutMs: 0 }), /"issued"\]/);
   items = [item('c3', 'completion', 'closed', 'sent', { owner: false }), ...items.slice(1)];
   await assert.rejects(STEPS.expectCompletions(run, ctx, { outcomes: ['deferred:budget', 'carried', 'sent'], timeoutMs: 0 }), /not-the-owner/);
+  await STEPS.expectCompletions(run, ctx, { outcomes: ['deferred:budget', 'carried', 'not-the-owner:sent'], timeoutMs: 0 });
 });
 
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 600000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'B1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '44/44 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '47/47 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));

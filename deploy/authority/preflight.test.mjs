@@ -228,6 +228,16 @@ test('the QQ bridge poll interval for initiated runs is optional; a value out of
   }
 });
 
+test('the QQ bridge reply pacing is optional; an unknown key or a value out of range is refused, as the bridge would refuse to start', async t => {
+  const w = world(t);
+  w.edit('qq-bridge.json', c => { c.pacing = { burstQuietMs: 500, burstMaxWaitMs: 1500, gapMinMs: 0, gapMaxMs: 0, firstMinMs: 0, firstMaxMs: 0 }; });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), []);
+  for (const bad of [null, [], { unknown: 1 }, { burstQuietMs: -1 }, { burstQuietMs: '2500' }, { burstMaxMessages: 13 }, { burstQuietMs: 9000 }]) {
+    w.edit('qq-bridge.json', c => { c.pacing = bad; });
+    assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['qq-bridge.json CONFIG_INVALID'], JSON.stringify(bad));
+  }
+});
+
 test('a test-only channel in authority.json refuses the deploy, as Authority would refuse to start, unless the configuration explicitly allows it', async t => {
   const w = world(t);
   w.edit('authority.json', c => { c.capabilities.push({ id: 'mock', policy: 'conversation.v1' }); c.credentials.push({ hash: 'c'.repeat(64), role: 'capability', capabilityId: 'mock' }); });
