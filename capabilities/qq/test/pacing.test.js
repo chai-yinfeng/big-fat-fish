@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PACING, pacingFrom, segmentGap, firstDelay } from '../pacing.js';
 
-test('the defaults: 2.5 s quiet, 8 s at most, 8 messages a reply; pauses 0.8–3.5 s, first 0.4–1.5 s', () => {
-  assert.deepEqual(PACING, { burstQuietMs: 2500, burstMaxWaitMs: 8000, burstMaxMessages: 8, gapBaseMs: 500, gapPerLogMs: 450, gapJitterMs: 500, gapMinMs: 800, gapMaxMs: 3500, firstMinMs: 400, firstMaxMs: 1500 });
+test('the defaults: 2.5 s quiet, 8 s at most, 8 messages a reply; pauses 0.8–3.5 s, first 0.4–1.5 s; one poke in 10 minutes', () => {
+  assert.deepEqual(PACING, { burstQuietMs: 2500, burstMaxWaitMs: 8000, burstMaxMessages: 8, gapBaseMs: 500, gapPerLogMs: 450, gapJitterMs: 500, gapMinMs: 800, gapMaxMs: 3500, firstMinMs: 400, firstMaxMs: 1500, pokeCooldownMs: 600000 });
 });
 
 test('the pause before a following message grows with the log of its length, with jitter, within the bounds', () => {
@@ -24,6 +24,7 @@ test('the pause before the first message is uniform between its bounds', () => {
 test('qq-bridge.json pacing overrides: known keys, integers in range, consistent bounds; anything else refuses', () => {
   assert.equal(pacingFrom(undefined), PACING);
   assert.deepEqual(pacingFrom({ burstQuietMs: 0, gapMaxMs: 5000 }), { ...PACING, burstQuietMs: 0, gapMaxMs: 5000 });
+  assert.deepEqual(pacingFrom({ pokeCooldownMs: 0 }), { ...PACING, pokeCooldownMs: 0 });
   for (const bad of [null, [], 'fast', { unknown: 1 }, { burstQuietMs: -1 }, { burstQuietMs: 1.5 }, { burstQuietMs: '2500' }, { burstMaxMessages: 0 }, { burstMaxMessages: 13 },
-    { burstQuietMs: 9000 }, { gapMinMs: 4000 }, { firstMinMs: 2000 }]) assert.throws(() => pacingFrom(bad), /QQ_CONFIG/, JSON.stringify(bad));
+    { burstQuietMs: 9000 }, { gapMinMs: 4000 }, { firstMinMs: 2000 }, { pokeCooldownMs: -1 }, { pokeCooldownMs: 86400001 }, { pokeCooldownMs: '600000' }]) assert.throws(() => pacingFrom(bad), /QQ_CONFIG/, JSON.stringify(bad));
 });

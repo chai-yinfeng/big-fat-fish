@@ -75,6 +75,62 @@ export function imageProbeLines(event) {
     return `qq image segment: keys=${keys || '-'} sub_type=${subType} emoji_id=${data.emoji_id !== undefined && data.emoji_id !== '' ? 'yes' : 'no'} summary=${summary}`;
   });
 }
+/** One log line per `reply` segment of an inbound message, to see what NapCat really sends: the names of the
+ * segment's data fields and whether `id` is a usable message id. Never a value. */
+export function replyProbeLines(event) {
+  if (!Array.isArray(event?.message)) return [];
+  return event.message.filter(segment => segment?.type === 'reply' && segment.data && typeof segment.data === 'object').map(({ data }) => {
+    const keys = Object.keys(data).filter(key => /^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(key)).slice(0, 24).join(',');
+    return `qq reply segment: keys=${keys || '-'} id=${replyId(data) ? 'yes' : 'no'}`;
+  });
+}
+const replyId = data => { try { return id(data?.id, true); } catch { return null; } };
+/** At most this many characters of a quoted message reach the model. */
+export const QUOTE_CHARS = 100;
+/** What a quoted message says, as one line for the model, or '' when nothing readable is left: text and small faces
+ * as they stand, a placeholder for a picture, voice clip, video or card. Only one level: a quote inside it is
+ * skipped. The text is the quoted person's (or her own) words, so line breaks and control characters become spaces
+ * and square brackets become full-width ones (it cannot close the quote line or open a bracketed line of its own);
+ * note delimiters are neutralized by the executor like any message text. `message` is get_msg's `message` (an array
+ * of segments) or her own sent text (a string). */
+export function quotedText(message) {
+  const plainText = value => value.replace(/[\p{Cc}\u2028\u2029]/gu, ' ').replaceAll('[', '［').replaceAll(']', '］');
+  let text;
+  if (typeof message === 'string') text = plainText(message.slice(0, 4000));
+  else if (Array.isArray(message)) {
+    const placeholders = { image: '[图片]', record: '[语音]', video: '[视频]', file: '[文件]', json: '[卡片]', xml: '[卡片]' };
+    text = message.slice(0, 32).map(segment => {
+      const data = segment?.data;
+      if (segment?.type === 'text' && typeof data?.text === 'string') return plainText(data.text.slice(0, 4000));
+      if (segment?.type === 'face' && /^\d{1,10}$/.test(String(data?.id))) return faceText(String(data.id));
+      return placeholders[segment?.type] ?? '';
+    }).join('');
+  } else return '';
+  const chars = [...text.replace(/\s+/g, ' ').trim()];
+  return chars.length > QUOTE_CHARS ? chars.slice(0, QUOTE_CHARS).join('') + '…' : chars.join('');
+}
+/** The line put before a message that quotes another: whose words and what they say, or that some message was quoted. */
+export function quoteLine(who, text) { return text ? `[引用 ${who === 'self' ? '你之前说的' : '对方之前说的'}：${text}]` : '[引用了一条消息]'; }
+/** One log line per poke notice (whatever its target or conversation), to see NapCat's real fields: the field names,
+ * whether it is in a group, and whether its target is this bot. Never an account number or any other value. */
+export function pokeProbeLine(event) {
+  const keys = Object.keys(event ?? {}).filter(key => /^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(key)).slice(0, 24).join(',');
+  const same = (a, b) => { try { return id(a) === id(b); } catch { return false; } };
+  return `qq poke notice: keys=${keys || '-'} group=${event?.group_id !== undefined ? 'yes' : 'no'} target=${event?.target_id === undefined ? '-' : same(event.target_id, event.self_id) ? 'self' : 'other'} sender_id=${event?.sender_id === undefined ? '-' : same(event.sender_id, event.user_id) ? 'user' : 'other'}`;
+}
+/** A private poke at this bot (OneBot v11 `notice`, `notify`/`poke`; NapCat's own documentation of it is gone, so this
+ * is the common form: `user_id` pokes `target_id`, a group poke has `group_id`), as a message with no words: null for
+ * any other notice, a group poke, a poke at someone else or one of this bot's own. Account attribution comes from the
+ * envelope, like a message. */
+export function pokeFromOneBot(event, { expectedSelfId }) {
+  if (event?.post_type !== 'notice' || event.notice_type !== 'notify' || event.sub_type !== 'poke' || event.group_id !== undefined) return null;
+  const self = id(event.self_id);
+  if (self !== id(expectedSelfId)) throw new Error('UNEXPECTED_ONEBOT_ACCOUNT');
+  const sender = id(event.user_id);
+  if (sender === self || id(event.target_id) !== self) return null;
+  if (!Number.isSafeInteger(event.time) || event.time < 0 || event.time > Math.floor(Number.MAX_SAFE_INTEGER / 1000)) throw new Error('INVALID_ONEBOT_TIME');
+  return { authoredText: '', media: [], skippedMedia: 0, poke: true, observation: { eventId: `onebot:v11:poke:${sender}:${event.time}`, streamId: `qq:${self}:private:${sender}`, actorId: `qq:${self}:user:${sender}`, role: 'user', text: '', at: event.time * 1000 } };
+}
 export function messageFromOneBot(event, { expectedSelfId }) {
   if (!event || typeof event !== 'object' || event.post_type !== 'message') return null;
   const self = id(event.self_id);
@@ -86,11 +142,12 @@ export function messageFromOneBot(event, { expectedSelfId }) {
   const group = event.message_type === 'group' ? id(event.group_id) : null, messageId = id(event.message_id, true);
   if (!Number.isSafeInteger(event.time) || event.time < 0 || event.time > Math.floor(Number.MAX_SAFE_INTEGER / 1000)) throw new Error('INVALID_ONEBOT_TIME');
   // Pictures and voice beyond MAX_MEDIA are not fetched; `skippedMedia` counts them, so the model is told.
-  const media = []; let authoredText, skippedMedia = 0, audio = 0;
+  const media = []; let authoredText, skippedMedia = 0, audio = 0, replyTo = null;
   if (typeof event.message === 'string') authoredText = event.message; // CQ-looking text remains literal text.
   else if (Array.isArray(event.message) && event.message.length <= 32) {
     // Text segments joined by line breaks; a small face is its name (`[微笑]`) where it stands, not an attachment.
     // A share card is the line `[分享] <title> <link>` (cardText), at most CARD.perMessage of them.
+    // A quote (`reply` segment) is only its message id here (the first one); the bridge looks up what it says.
     const pieces = []; let cards = 0;
     for (const [segmentIndex, segment] of event.message.entries()) {
       const data = segment?.data;
@@ -98,6 +155,7 @@ export function messageFromOneBot(event, { expectedSelfId }) {
       else if (segment?.type === 'face' && /^\d{1,10}$/.test(String(data?.id))) pieces.push({ text: faceText(String(data.id)) });
       else if (segment?.type === 'record' && mediaFile(data?.file)) { audio++; if (media.length < MAX_MEDIA) media.push({ kind: 'audio', file: data.file, segmentIndex }); else skippedMedia++; }
       else if (segment?.type === 'image' && mediaFile(data?.file)) { if (media.length < MAX_MEDIA) media.push({ kind: 'image', file: data.file, segmentIndex, ...stickerOf(data) }); else skippedMedia++; }
+      else if (segment?.type === 'reply') replyTo ??= replyId(data);
       else if ((segment?.type === 'json' || segment?.type === 'xml') && cards < CARD.perMessage) { const shared = cardText(segment.type, data); if (shared) { cards++; pieces.push({ text: shared, line: true }); } }
     }
     authoredText = pieces.map((piece, index) => (piece.line && pieces[index - 1]?.line ? '\n' : '') + piece.text).join('');
@@ -105,6 +163,6 @@ export function messageFromOneBot(event, { expectedSelfId }) {
   if (typeof authoredText !== 'string' || authoredText.length > 16000 || authoredText.includes('\0') || !authoredText && !media.length || audio > 1) throw new Error('INVALID_ONEBOT_MESSAGE');
   const placeholder = media.length === 1 ? { audio: '[QQ语音消息]', image: '[QQ图片消息]' }[media[0].kind] : '[QQ附件消息]';
   const anonymous = event.anonymous != null;
-  return { authoredText, media, skippedMedia, observation: { eventId: `onebot:v11:message:${messageId}`, streamId: group ? `qq:${self}:group:${group}` : `qq:${self}:private:${sender}`, actorId: anonymous ? `qq:${self}:anonymous` : `qq:${self}:user:${sender}`, role: anonymous ? 'external' : 'user', text: authoredText || placeholder, at: event.time * 1000, ...(!authoredText.trim() ? { origin: 'attachment' } : {}) } };
+  return { authoredText, media, skippedMedia, ...(replyTo ? { replyTo } : {}), observation: { eventId: `onebot:v11:message:${messageId}`, streamId: group ? `qq:${self}:group:${group}` : `qq:${self}:private:${sender}`, actorId: anonymous ? `qq:${self}:anonymous` : `qq:${self}:user:${sender}`, role: anonymous ? 'external' : 'user', text: authoredText || placeholder, at: event.time * 1000, ...(!authoredText.trim() ? { origin: 'attachment' } : {}) } };
 }
 export function observationFromOneBot(event, config) { return messageFromOneBot(event, config)?.observation || null; }

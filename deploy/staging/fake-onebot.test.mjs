@@ -6,7 +6,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { OneBotClient, onebotURL } from '../../capabilities/qq/onebot-client.js';
-import { messageFromOneBot } from '../../capabilities/qq/source.js';
+import { messageFromOneBot, pokeFromOneBot } from '../../capabilities/qq/source.js';
 import { createFakeOneBot, createFrameParser, encodeFrame, mockPicture } from './fake-onebot.mjs';
 
 const freePort = () => new Promise(resolve => { const probe = net.createServer(); probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
@@ -83,6 +83,20 @@ test('fake NapCat serves the real OneBotClient: token, login, friends, recorded 
   await client.call('send_private_msg', { user_id: '999900000011', message: [{ type: 'text', data: { text: 'MOCK 好' } }, { type: 'face', data: { id: '14' } }, { type: 'text', data: { text: '呀' } }] });
   const facedSend = (await control('GET', '/state')).value.sent.at(-1);
   assert.deepEqual([facedSend.text, facedSend.types, facedSend.faces], ['MOCK 好呀', ['text', 'face', 'text'], ['14']]);
+  // A quote: a reply segment before the text, read back with get_msg (one of hers by its sent text, one injected as
+  // it was); a poke: the private notice the bridge reads as a poke at the bot.
+  const quoting = await control('POST', '/message', { user_id: '999900000011', nickname: 'MOCK-A', text: 'MOCK 这句', reply_to: first.message_id });
+  await until(() => events.some(item => item.message_id === quoting.value.message_id));
+  const quoted = events.find(item => item.message_id === quoting.value.message_id);
+  assert.deepEqual(quoted.message.slice(0, 2), [{ type: 'reply', data: { id: String(first.message_id) } }, { type: 'text', data: { text: 'MOCK 这句' } }]);
+  assert.equal(messageFromOneBot(quoted, { expectedSelfId: '999900000001' }).replyTo, String(first.message_id));
+  assert.deepEqual(await client.call('get_msg', { message_id: first.message_id }), { message_id: first.message_id, message_type: 'private', sender: { user_id: 999900000001, nickname: 'MOCK-BOT' }, message: [{ type: 'text', data: { text: 'MOCK-REPLY' } }] });
+  assert.deepEqual((await client.call('get_msg', { message_id: quoting.value.message_id })).sender.user_id, 999900000011);
+  assert.equal((await control('POST', '/message', { user_id: '999900000011', nickname: 'MOCK-A', text: 'y', reply_to: '1' })).status, 400);
+  assert.equal((await control('POST', '/poke', { user_id: '999900000011' })).status, 200);
+  await until(() => events.some(item => item.sub_type === 'poke'));
+  assert.equal(pokeFromOneBot(events.find(item => item.sub_type === 'poke'), { expectedSelfId: '999900000001' }).observation.streamId, 'qq:999900000001:private:999900000011');
+  assert.equal((await control('POST', '/poke', { user_id: 'x' })).status, 400);
   // Pictures: one image segment after the text, with NapCat's sticker fields as asked; get_image gives the made-up bytes
   // back (the same seed, the same bytes), and the bridge reads the segment as a sticker or a mall sticker by name.
   const pictured = {};

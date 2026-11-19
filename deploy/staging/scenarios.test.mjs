@@ -23,7 +23,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'B1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -425,7 +425,8 @@ async function stack(t) {
   const onebotPort = await new Promise(resolve => { const probe = net.createServer(); probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); }); });
   // The bridge asks for initiated runs every second here (production: every minute).
   // A burst is still merged, after a short wait; split replies go without pauses (production: capabilities/qq/pacing.js).
-  edit('qq-bridge.json', c => { c.onebotPort = onebotPort; c.initiationPollMs = 1000; c.pacing = { burstQuietMs: 500, burstMaxWaitMs: 1500, gapBaseMs: 0, gapPerLogMs: 0, gapJitterMs: 0, gapMinMs: 0, gapMaxMs: 0, firstMinMs: 0, firstMaxMs: 0 }; });
+  // No poke cooldown: the second replay below runs in the same bridge process (staging restarts it between replays).
+  edit('qq-bridge.json', c => { c.onebotPort = onebotPort; c.initiationPollMs = 1000; c.pacing = { burstQuietMs: 500, burstMaxWaitMs: 1500, gapBaseMs: 0, gapPerLogMs: 0, gapJitterMs: 0, gapMinMs: 0, gapMaxMs: 0, firstMinMs: 0, firstMaxMs: 0, pokeCooldownMs: 0 }; });
   // No image runtime here either: the staging-only switch lets the fake OneBot's small PNGs through, as in staging.
   edit('content.json', c => { c.allowRawSmallPng = true; });
   // Watching a video: the MOCK site only, answered by the stand-in for yt-dlp (no network, no sandbox on this machine).
@@ -695,9 +696,9 @@ test('job steps: the demo job is registered with nothing but its seconds, a job 
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 600000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'B1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '47/47 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '49/49 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));

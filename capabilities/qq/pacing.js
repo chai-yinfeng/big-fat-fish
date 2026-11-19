@@ -6,17 +6,21 @@
  *   the burst; one reply covers at most `burstMaxMessages` messages.
  * - gap*: the pause before each message of a split reply after the first grows with the log of that message's length,
  *   plus a random jitter, within [gapMinMs, gapMaxMs].
- * - first*: a random pause in [firstMinMs, firstMaxMs] before the first message of a text reply to the person. */
+ * - first*: a random pause in [firstMinMs, firstMaxMs] before the first message of a text reply to the person.
+ * - pokeCooldownMs: a poke (QQ 戳一戳) at her in one private conversation is taken at most once in this long; later
+ *   ones are ignored. */
 export const PACING = Object.freeze({
   burstQuietMs: 2500, burstMaxWaitMs: 8000, burstMaxMessages: 8,
   gapBaseMs: 500, gapPerLogMs: 450, gapJitterMs: 500, gapMinMs: 800, gapMaxMs: 3500,
   firstMinMs: 400, firstMaxMs: 1500,
+  pokeCooldownMs: 600000,
 });
 /** Allowed range of each setting (inclusive). */
 const RANGES = {
   burstQuietMs: [0, 10000], burstMaxWaitMs: [0, 30000], burstMaxMessages: [1, 12],
   gapBaseMs: [0, 10000], gapPerLogMs: [0, 5000], gapJitterMs: [0, 5000], gapMinMs: [0, 10000], gapMaxMs: [0, 10000],
   firstMinMs: [0, 5000], firstMaxMs: [0, 5000],
+  pokeCooldownMs: [0, 86400000],
 };
 /** Fixed limits of one merged reply, from what the conversation executor accepts in one turn (12 media refs, each
  * picture or voice clip giving up to 2) and to keep its text well under the executor's limit. A single message beyond

@@ -136,10 +136,19 @@ export const STEPS = {
   },
   /** A private message arrives from a person (subType: OneBot sub_type, default "friend"; faces: QQ face numbers,
    * each a face segment after the text; image: { seed, as: "picture" | "sticker" | "mall", name } one made-up picture after
-   * those, the same bytes for the same seed, as fake-onebot.mjs describes). */
-  async say(run, ctx, { from, text, subType, faces, image }) {
+   * those, the same bytes for the same seed, as fake-onebot.mjs describes; quote: the message quotes "her" latest message
+   * delivered to this person, or their "own" previous message said in this scenario). */
+  async say(run, ctx, { from, text, subType, faces, image, quote }) {
+    if (quote !== undefined && !['her', 'own'].includes(quote)) fail(`say: unknown quote ${JSON.stringify(quote)}`);
+    const quoted = quote === 'her' ? (await run.sent()).filter(item => item.user_id === run.qq(from)).at(-1)?.message_id ?? fail(`say: nothing was delivered to ${from} to quote`)
+      : quote === 'own' ? ctx.said?.get(from) ?? fail(`say: ${from} said nothing earlier in this scenario to quote`) : undefined;
     ctx.observed.set(from, await run.messageCount(from));
-    await run.onebot('POST', '/message', { user_id: run.qq(from), nickname: from, text, ...(subType ? { sub_type: subType } : {}), ...(faces ? { faces } : {}), ...(image ? { image } : {}) });
+    const said = await run.onebot('POST', '/message', { user_id: run.qq(from), nickname: from, text, ...(subType ? { sub_type: subType } : {}), ...(faces ? { faces } : {}), ...(image ? { image } : {}), ...(quoted !== undefined ? { reply_to: quoted } : {}) });
+    (ctx.said ??= new Map()).set(from, said?.message_id);
+  },
+  /** A person pokes her (QQ 戳一戳) in their private conversation: no words, a notice. */
+  async pokeHer(run, _ctx, { from }) {
+    await run.onebot('POST', '/poke', { user_id: run.qq(from) });
   },
   /** The next not-yet-matched message delivered to `to` must arrive and contain `contains` (in its text segments).
    * `faces`: that same message must carry exactly these QQ face numbers as face segments, in this order.

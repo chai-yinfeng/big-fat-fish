@@ -230,9 +230,9 @@ test('the QQ bridge poll interval for initiated runs is optional; a value out of
 
 test('the QQ bridge reply pacing is optional; an unknown key or a value out of range is refused, as the bridge would refuse to start', async t => {
   const w = world(t);
-  w.edit('qq-bridge.json', c => { c.pacing = { burstQuietMs: 500, burstMaxWaitMs: 1500, gapMinMs: 0, gapMaxMs: 0, firstMinMs: 0, firstMaxMs: 0 }; });
+  w.edit('qq-bridge.json', c => { c.pacing = { burstQuietMs: 500, burstMaxWaitMs: 1500, gapMinMs: 0, gapMaxMs: 0, firstMinMs: 0, firstMaxMs: 0, pokeCooldownMs: 0 }; });
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), []);
-  for (const bad of [null, [], { unknown: 1 }, { burstQuietMs: -1 }, { burstQuietMs: '2500' }, { burstMaxMessages: 13 }, { burstQuietMs: 9000 }]) {
+  for (const bad of [null, [], { unknown: 1 }, { burstQuietMs: -1 }, { burstQuietMs: '2500' }, { burstMaxMessages: 13 }, { burstQuietMs: 9000 }, { pokeCooldownMs: 86400001 }]) {
     w.edit('qq-bridge.json', c => { c.pacing = bad; });
     assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['qq-bridge.json CONFIG_INVALID'], JSON.stringify(bad));
   }
