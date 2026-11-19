@@ -2,12 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { messageFromOneBot, imageProbeLines, replyProbeLines, quotedText, quoteLine, pokeFromOneBot, pokeProbeLine } from './source.js';
 import { qqRequestId } from './worker-route.js';
-import { executeConversation, DECLINE_MARK } from '../conversation/executor.js';
+import { executeConversation, reportDelivery, DECLINE_MARK, MAX_DELIVERY_MARKER_CHARS, MAX_DELIVERY_DESCRIPTION_CHARS } from '../conversation/executor.js';
 import { splitReply } from './split.js';
 import { PACING, BURST_MAX_MEDIA, BURST_MAX_CHARS, segmentGap, firstDelay } from './pacing.js';
 import { replySegments } from './faces.js';
 import { channel } from '../channels/index.js';
-import { takeStickerMarker, asksToKeep, asksToKeepMany, frequencyLine, RECENT_REPLIES, KEEP_WINDOW_MS, MAX_KEEP_PER_REQUEST } from './stickers.js';
+import { takeStickerMarker, stickerMarkers, asksToKeep, asksToKeepMany, frequencyLine, RECENT_REPLIES, KEEP_WINDOW_MS, MAX_KEEP_PER_REQUEST } from './stickers.js';
 
 const identifier = value => typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value);
 export const FRIEND_REFRESH_MS = 10 * 60 * 1000;
@@ -37,6 +37,12 @@ const POKE_FACT = '[渠道事实：对方在 QQ 上戳了你一下（拍一拍�
 const SENT_TEXTS = 500;
 // She chose to say nothing: the mark anywhere in the reply (full-width brackets too) means nothing is sent.
 const DECLINED = new RegExp(`[<＜]\\s*${DECLINE_MARK.slice(1, -1)}\\s*[>＞]`, 'u');
+/** Delivery report parts (conversation/executor.js `validDelivery`): one per message this bridge means to send, and one
+ * per `[表情:词]` of her reply. Each starts `unsent`, is `unknown` from the moment it is handed to the platform and
+ * `sent` only with the platform's receipt. */
+const deliveryPart = part => part.type === 'text' ? { kind: 'text', status: 'unsent', chars: part.text.length, ...(part.voiceFallback ? { fallback: 'voice' } : {}) }
+  : { kind: part.type === 'audio' ? 'voice' : part.type === 'image' && !part.sticker ? 'image' : 'sticker', status: 'unsent' };
+const markerParts = reply => stickerMarkers(reply).map(({ marker, word }) => ({ word, part: { kind: 'sticker', status: 'unsent', ...(marker.length <= MAX_DELIVERY_MARKER_CHARS ? { marker } : {}) } }));
 export const OWNER_BUDGET_NOTICE = '提醒：今天的模型开销已经到达每日上限，大肥鱼今天先不再回复任何人，北京时间零点后自动恢复。可以在控制台查看今日开销或调整上限。';
 export class QQBridge {
   /** faces: send her `[名字]` as small faces (only where the bridge sends without the content service); by default
@@ -232,6 +238,13 @@ export class QQBridge {
     try { await this.port.observe({ eventId: 'qq:sent:' + receipt.messageId, streamId: observation.streamId, actorId: 'qq:model', role: 'assistant', text: receipt.text, at: Date.now() }); }
     catch { item.unobserved = true; this.save(); }
   }
+  /** Tells the executor what became of the reply of run `requestId`, once the turn's sending has ended: the executor
+   * keeps it with the stored reply, so her next turn sees what really went out. Best effort: the turn's outcome never
+   * depends on it, and a backend that keeps no such record is told nothing. */
+  async tellDelivery(scope, requestId, parts) {
+    try { await reportDelivery(this.executor, { scope, requestId, delivery: { parts } }); }
+    catch (error) { this.log(`qq delivery report: ${typeof error?.code === 'string' && /^[A-Z_]{1,64}$/.test(error.code) ? error.code : 'failed'}`); }
+  }
   /** One round of initiated runs: report what earlier ones came to, ask Authority for the next, run it. A timer
    * calls this; nothing happens unless QQ is connected, logged in as the configured bot and idle here. */
   async pollInitiations() {
@@ -290,7 +303,7 @@ export class QQBridge {
   async initiated({ cfg, kind, requestId, item, streamId, userId, jobRef, event: given }) {
     const scope = { streamId, memoryEpoch: item.memoryEpoch }, stream = { streamId, text: '' };
     const end = status => { item.status = status; this.save(); };
-    let sending = false;
+    let sending = false, report = null;
     try {
       if (!await this.current(cfg, stream, item)) return end('dropped:stale');
       item.status = 'processing'; this.save();
@@ -298,12 +311,15 @@ export class QQBridge {
       // carries the text, and a job of another conversation cannot be read here.
       const event = given ?? (jobRef ? completionEvent(await this.media.call(scope, 'jobResult', { ref: jobRef })) : INITIATION_EVENTS[kind]);
       // A sticker marker is taken out and dropped: a run she starts herself sends no sticker yet.
-      const text = takeStickerMarker(await executeConversation(this.executor, { scope, requestId, input: { text: event, initiated: true } })).text;
+      const reply = await executeConversation(this.executor, { scope, requestId, input: { text: event, initiated: true } }), text = takeStickerMarker(reply).text;
       if (DECLINED.test(text)) return end('declined');
-      for (const [index, piece] of splitReply(text).entries()) {
+      const pieces = splitReply(text);
+      // What becomes of each message, and of the dropped markers, is reported when the run ends (finally).
+      report = [...pieces.map(piece => deliveryPart({ type: 'text', text: piece })), ...markerParts(reply).map(mark => mark.part)];
+      for (const [index, piece] of pieces.entries()) {
         if (index) await this.sleep(segmentGap(piece, this.pacing, this.random));
         if (!await this.current(cfg, stream, item)) return end(item.receipts?.length ? 'partial' : 'dropped:stale');
-        sending = true; item.status = 'sending'; this.save();
+        sending = true; item.status = 'sending'; this.save(); report[index].status = 'unknown';
         let receipt;
         if (this.media) receipt = await this.media.send({ scope, userId, part: { type: 'text', text: piece } });
         else {
@@ -311,12 +327,15 @@ export class QQBridge {
           const messageId = String(sent.message_id); if (!/^-?\d{1,20}$/.test(messageId)) throw new Error('INVALID_SEND_RECEIPT');
           receipt = { messageId, type: 'text', text: piece };
         }
+        report[index].status = 'sent';
         await this.delivered(stream, item, receipt); sending = false;
       }
       end('sent');
     } catch (error) {
       // The spend tier stops this kind of work first: recorded, no notice to the owner, nothing retried.
       end(sending ? 'unknown' : item.receipts?.length ? 'partial' : error?.code === 'BUDGET_EXHAUSTED' ? 'deferred:budget' : error?.code === 'WORLD_PAUSED' ? 'dropped:paused' : 'failed');
+    } finally {
+      if (report) await this.tellDelivery(scope, requestId, report);
     }
   }
   /** As an ordinary turn begins: a finished background job of this conversation the person was not told about yet.
@@ -398,7 +417,7 @@ export class QQBridge {
     let { observation } = said().message, { item } = said();
     const scope = { streamId: observation.streamId, memoryEpoch: item.memoryEpoch };
     const end = status => { for (const entry of turn) entry.item.status = status; this.save(); };
-    let sending = false, prepared, carry = null;
+    let sending = false, prepared, carry = null, report = null;
     try {
       end('processing');
       // Observed one by one, in order. A forgotten one leaves the turn as a tombstone; the rest are still answered.
@@ -434,7 +453,10 @@ export class QQBridge {
       const input = { text: prepared.executionText, queryText: prepared.queryText, mediaRefs: prepared.mediaRefs, evidence, ...(carry ? { event: carry.event } : {}) };
       const requestId = said().requestId;
       // `[表情:词]` never reaches the chat: taken out here, its word picks a sticker below.
-      const { text, word } = takeStickerMarker(await executeConversation(this.executor, { scope, requestId, input, timeoutMs: this.media && (prepared.mediaRefs.length || /音频|语音|转写|识别|qwen/i.test(prepared.queryText)) ? 420000 : 120000 }));
+      const reply = await executeConversation(this.executor, { scope, requestId, input, timeoutMs: this.media && (prepared.mediaRefs.length || /音频|语音|转写|识别|qwen/i.test(prepared.queryText)) ? 420000 : 120000 });
+      const { text, word } = takeStickerMarker(reply), marks = markerParts(reply), chosen = marks.find(mark => mark.word)?.part;
+      // The executor has stored her reply: what becomes of it is reported when the turn ends (finally), wherever it ends.
+      report = { requestId, parts: [{ kind: 'text', status: 'unsent' }, ...marks.map(mark => mark.part)] };
       // She has the result now, in a stored turn: it counts as told, whatever becomes of sending the reply.
       if (carry) { carry.item.status = 'carried'; this.save(); }
       if (!await this.current(cfg, observation, item)) { end('paused'); return; }
@@ -445,15 +467,19 @@ export class QQBridge {
       const parts = planned.flatMap(part => part.type === 'text' && !prepared.voiceRequested ? splitReply(part.text).map((piece, index) => ({ type: 'text', text: piece, ...(index ? { follows: true } : {}) })) : [part]).filter(part => part.type !== 'text' || part.text.trim());
       // A library sticker close to her word goes last, as a message of its own with its own receipt. Not with a voice
       // reply. Not found, or the content service failing: no sticker, the text goes as it is.
-      const sticker = word && this.media && !prepared.voiceRequested ? await this.media.pickSticker(scope, word, observation.eventId).catch(() => null) : null;
-      if (sticker) parts.push(sticker);
+      let asked = false;
+      const sticker = word && this.media && !prepared.voiceRequested ? await this.media.pickSticker(scope, word, observation.eventId).then(found => { asked = true; return found; }).catch(() => null) : null;
+      const records = new Map(parts.map(part => [part, deliveryPart(part)]));
+      if (sticker) { parts.push(sticker); records.set(sticker, chosen); if (sticker.description) Object.assign(chosen, { description: sticker.description.slice(0, MAX_DELIVERY_DESCRIPTION_CHARS), ...(sticker.machine ? { machine: true } : {}) }); }
+      else if (asked && chosen) chosen.reason = 'none';
+      report.parts = [...parts.filter(part => part !== sticker).map(part => records.get(part)), ...marks.map(mark => mark.part)];
       if (this.media && !prepared.voiceRequested) this.noteSticker(observation.streamId, Boolean(sticker));
       for (const [index, part] of parts.entries()) {
         // A short random pause before a text reply, and one growing with its length before each following message.
         if (part.follows) await this.sleep(segmentGap(part.text, this.pacing, this.random));
         else if (!index && part.type === 'text' && !prepared.voiceRequested) await this.sleep(firstDelay(this.pacing, this.random));
         if (!await this.current(cfg, observation, item)) { end(item.receipts?.length ? 'partial' : 'paused'); return; }
-        sending = true; end('sending');
+        sending = true; end('sending'); records.get(part).status = 'unknown';
         let receipt;
         if (this.media) receipt = await this.media.send({ scope, userId, part });
         else {
@@ -461,6 +487,7 @@ export class QQBridge {
           const messageId = String(sent.message_id); if (!/^-?\d{1,20}$/.test(messageId)) throw new Error('INVALID_SEND_RECEIPT');
           receipt = { messageId, type: 'text', text: part.text };
         }
+        records.get(part).status = 'sent';
         await this.delivered(observation, item, receipt); sending = false;
       }
       end(item.unobserved ? 'sent_unobserved' : 'sent');
@@ -479,6 +506,7 @@ export class QQBridge {
         } catch { end('unknown'); }
       }
     } finally {
+      if (report?.parts.length) await this.tellDelivery(scope, report.requestId, report.parts);
       // The turn ended before she had the carried result: reported as failed, so it rides on a later message.
       if (carry?.item.status === 'processing') { carry.item.status = 'failed'; this.save(); }
       // What became of a hand-out for this turn is reported now rather than on the next poll (an open one holds others back).

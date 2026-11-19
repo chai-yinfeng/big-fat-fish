@@ -1041,11 +1041,12 @@
     },
     {
       "id": "K8",
-      "title": "marker-sends-library-sticker: the owner has her keep a mall sticker; her [表情:开心] to someone else arrives after her text as a sticker of its own, the marker never in the chat, the sticker recorded as a line of its own",
+      "title": "marker-sends-library-sticker: the owner has her keep a mall sticker; her [表情:开心] to someone else arrives after her text as a sticker of its own, the marker never in the chat, the sticker recorded as a line of its own; in her next turn that reply shows which sticker went out in place of the marker",
       "model": [
         { "match": "MOCK-K8-{run} 给你", "reply": "MOCK-REPLY-K8-{run} 收到图" },
         { "match": "MOCK-K8-{run} 收下这个", "reply": "MOCK-REPLY-K8-{run} 收好啦" },
-        { "match": "MOCK-K8B-{run}", "reply": "MOCK-REPLY-K8B-{run} 太好了[表情:开心]" }
+        { "match": "MOCK-K8B-{run}", "reply": "MOCK-REPLY-K8B-{run} 太好了[表情:开心]" },
+        { "match": "MOCK-K8C-{run}", "reply": "MOCK-REPLY-K8C-{run} 嘿嘿" }
       ],
       "steps": [
         { "say": { "from": "MOCK-OWNER", "text": "MOCK-K8-{run} 给你", "image": { "seed": "K8-{run}", "as": "mall", "name": "开心" } } },
@@ -1059,20 +1060,29 @@
         { "expectReply": { "to": "MOCK-A", "image": "sticker" } },
         { "expectSentCount": { "to": "MOCK-A", "contains": "[表情", "count": 0 } },
         { "expectMessages": { "person": "MOCK-A", "added": 3 } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-K8C-{run} 收到啦" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K8C-{run} 嘿嘿" } },
+        { "expectPrompt": { "userText": "MOCK-K8C-{run}", "contains": "MOCK-REPLY-K8B-{run} 太好了[表情包：商城表情「开心」]" } },
+        { "expectPrompt": { "userText": "MOCK-K8C-{run}", "absent": "太好了[表情:开心]" } },
+        { "expectPrompt": { "userText": "MOCK-K8C-{run}", "absent": "送达情况" } },
         { "expectSilence": { "to": "*", "afterMs": 3000 } }
       ]
     },
     {
       "id": "K9",
-      "title": "no-match-sends-nothing: her [表情:词] with no library sticker close to it sends her text and nothing else",
+      "title": "no-match-sends-nothing: her [表情:词] with no library sticker close to it sends her text and nothing else; in her next turn that reply says no sticker went out",
       "model": [
+        { "match": "MOCK-K9B-{run}", "reply": "MOCK-REPLY-K9B-{run} 嗯" },
         { "match": "MOCK-K9-{run}", "reply": "MOCK-REPLY-K9-{run} 好的[表情:犀牛潜水艇]" }
       ],
       "steps": [
         { "say": { "from": "MOCK-A", "text": "MOCK-K9-{run} 随便聊聊" } },
         { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K9-{run} 好的" } },
         { "expectSilence": { "to": "*", "afterMs": 3000 } },
-        { "expectSentCount": { "to": "MOCK-A", "contains": "[表情", "count": 0 } }
+        { "expectSentCount": { "to": "MOCK-A", "contains": "[表情", "count": 0 } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-K9B-{run} 然后呢" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K9B-{run} 嗯" } },
+        { "expectPrompt": { "userText": "MOCK-K9B-{run}", "contains": "MOCK-REPLY-K9-{run} 好的[表情包：没有挑出能发的，没发出]" } }
       ]
     },
     {

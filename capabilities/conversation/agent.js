@@ -2,7 +2,8 @@ import { Agent } from '@earendil-works/pi-agent-core';
 import { conversationSessionId } from './sessions.js';
 import { fitActiveWindow, activeDialogue, ACTIVE_CONTEXT_CHARS } from './window.js';
 import { createCompanionTools } from './tools.js';
-import { DECLINE_MARK } from './executor.js';
+import { DECLINE_MARK, validDelivery } from './executor.js';
+import { replayDelivered } from './delivery.js';
 import { channelPrompt } from '../channels/index.js';
 
 const fail = code => Object.assign(new Error(code), { code });
@@ -83,6 +84,9 @@ function validRequest({ scope, requestId, input, timeoutMs }) {
  * marked for the gateway, which counts them as proactive work.
  * `input.event` (also set only by the channel) is a background event that rides on a real message of the
  * person: an ordinary run in every respect, with the event block after their words and one more line in the note.
+ * After a run the channel may report what became of the reply (`delivered`): the record is stored with the run and
+ * the reply is replayed with it from the next request on. That reply was not in any request yet, so every request
+ * still extends the one before it; the system text and the tools are untouched.
  */
 export function createConversationExecutor({ authority, content, store, model, streamFn, limit = ACTIVE_CONTEXT_CHARS, clock = Date.now }) {
   const tails = new Map();
@@ -136,17 +140,20 @@ export function createConversationExecutor({ authority, content, store, model, s
       };
     }
     const persisted = store.load(sessionId);
+    // A reply the channel reported on is replayed with what became of it (delivery.js). The report comes before the
+    // next run of the conversation, so a request already sent is never rewritten.
+    const history = persisted.messages.map(message => message.delivery === undefined ? message : replayDelivered(message, neutralizeNoteMarkers));
     const typed = { type: 'text', text: (initiated ? EVENT_OPEN : '') + neutralizeNoteMarkers(input.text) + (carried ? `\n\n${EVENT_OPEN}${neutralizeNoteMarkers(input.event)}` : '') };
     // The window is measured here without the new note and before the persona revision is known; if
     // the request then drops more old runs, a memory only they carried is retrieved again on a later
     // run, never twice in one window.
-    const window = activeDialogue([...persisted.messages, { role: 'user', content: [typed] }], limit);
+    const window = activeDialogue([...history, { role: 'user', content: [typed] }], limit);
     // The first replayed message is a stored run's user message (it has a timestamp) or this run's own (now).
     const windowFromAt = window.length === 1 ? Date.now() : Number.isSafeInteger(window[0].timestamp) && window[0].timestamp >= 0 ? window[0].timestamp : undefined;
     const prompt = await runPrompt(injectedIds(window).slice(-MAX_EXCLUDED), windowFromAt);
     signal.throwIfAborted();
     const agent = new Agent({
-      initialState: { systemPrompt: BASE_PROMPT, model, thinkingLevel: 'high', messages: persisted.messages,
+      initialState: { systemPrompt: BASE_PROMPT, model, thinkingLevel: 'high', messages: history,
         tools: createCompanionTools({ authority, content, scope, windowFromAt, requestId, evidence, guard, turn: { text: initiated ? '' : input.text, initiated }, neutralize: neutralizeNoteMarkers }) },
       // The gateway's fixed error code (e.g. BUDGET_EXHAUSTED) is a side channel; the model never sees it.
       streamFn: (m, context, options) => streamFn(m, context, { ...options, gatewayFailure: code => { gatewayFailure = code; }, ...(initiated ? { initiated: true } : {}) }), sessionId, toolExecution: 'sequential',
@@ -190,6 +197,19 @@ export function createConversationExecutor({ authority, content, store, model, s
       const combined = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
       const sessionId = conversationSessionId(request.scope.streamId, request.scope.memoryEpoch);
       return serialize(sessionId, () => run({ ...request, signal: combined })).finally(() => clearTimeout(timer));
+    },
+    /** The channel's report of what became of a reply (executor.js `validDelivery`), stored with the run it belongs
+     * to. Only the latest run of the conversation takes one, and only once: an earlier reply has already been
+     * replayed to the provider as it stands and is never rewritten. Queued behind that conversation's runs. */
+    delivered(request) {
+      const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+      if (!object(request) || Object.keys(request).some(key => !['scope', 'requestId', 'delivery'].includes(key)) || !validRequest({ scope: request.scope, requestId: request.requestId, input: { text: '-' }, timeoutMs: 1 }) || !validDelivery(request.delivery)) return Promise.reject(fail('INVALID_DELIVERY_REPORT'));
+      const sessionId = conversationSessionId(request.scope.streamId, request.scope.memoryEpoch);
+      return serialize(sessionId, async () => {
+        const persisted = store.load(sessionId);
+        if (persisted.last?.requestId !== request.requestId || persisted.last.delivered) throw fail('DELIVERY_NOT_CURRENT');
+        store.append(sessionId, persisted.validBytes, { requestId: request.requestId, at: Date.now(), messages: [], delivery: request.delivery });
+      });
     },
   };
 }

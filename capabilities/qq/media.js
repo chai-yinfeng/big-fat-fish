@@ -77,17 +77,18 @@ export class QQMedia {
     if (voiceRequested) {
       // Face markers are QQ's written presentation: not spoken. The reply text itself (and its record) keeps them.
       try { const audio = await this.call(scope, 'synthesize', { sourceEventId, text: withoutFaceMarkers(text), ...(voiceProfile === undefined ? {} : { voiceProfile }) }); parts.push({ type: 'audio', ref: audio.id, text }); }
-      catch { parts.push({ type: 'text', text: text + '\n（本次语音合成未完成，已改用文字；没有发送残缺语音。）' }); }
+      catch { parts.push({ type: 'text', text: text + '\n（本次语音合成未完成，已改用文字；没有发送残缺语音。）', voiceFallback: true }); }
     } else parts.push({ type: 'text', text });
     for (const p of pending.parts || []) if (['image', 'sticker'].includes(p.type) && typeof p.ref === 'string') parts.push(p);
     return parts;
   }
   /** Add the owner's picture `ref` to her library (the content service checks it is the owner's own conversation). */
   keepSticker(scope, ref) { return this.call(scope, 'stickerKeep', { ref }); }
-  /** A part for a library sticker close to `word` (a picture of this conversation), or null when none is close enough. */
+  /** A part for a library sticker close to `word` (a picture of this conversation), or null when none is close enough.
+   * `description`: what the picture is, when the content service already knew it (`machine`: written by a model). */
   async pickSticker(scope, word, sourceEventId) {
     const picked = await this.call(scope, 'stickerPick', { query: word, sourceEventId });
-    return picked?.found === true && typeof picked.ref === 'string' && typeof picked.name === 'string' ? { type: 'image', ref: picked.ref, sticker: true, name: picked.name } : null;
+    return picked?.found === true && typeof picked.ref === 'string' && typeof picked.name === 'string' ? { type: 'image', ref: picked.ref, sticker: true, name: picked.name, ...(typeof picked.description === 'string' && picked.description ? { description: picked.description, machine: picked.machine === true } : {}) } : null;
   }
   async send({ scope, userId, part }) {
     let segment;

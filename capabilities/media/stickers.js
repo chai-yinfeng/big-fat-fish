@@ -109,7 +109,9 @@ export function createStickers({ root, clock = Date.now, random = Math.random, l
       return { kept: true, already: false, name };
     },
     /** One of the library stickers closest to `word` (the closest MATCH_POOL at or above MATCH_THRESHOLD, at random),
-     * counted as used; null when none is close enough or today's STICKERS_PER_DAY are sent. */
+     * counted as used, with what it is when the description cache knows (read only, never looked at for this;
+     * `machine`: a model wrote the description, i.e. it is not a mall sticker's platform name); null when none is
+     * close enough or today's STICKERS_PER_DAY are sent. */
     pick(word) {
       if (typeof word !== 'string' || !word.trim() || [...word].length > 12) throw fail('MEDIA_INPUT_INVALID');
       const value = index(), day = beijingDay(clock());
@@ -123,7 +125,8 @@ export function createStickers({ root, clock = Date.now, random = Math.random, l
       const data = fs.readFileSync(file(entry));
       Object.assign(value, value.day === day ? { sent: value.sent + 1 } : { day, sent: 1 });
       entry.uses++; entry.lastUsedAt = clock(); save();
-      return { name: entry.name, mime: entry.mime, data };
+      const known = descriptions().entries[entry.hash];
+      return { name: entry.name, mime: entry.mime, data, ...(typeof known?.description === 'string' && known.description ? { description: known.description, machine: known.kind !== 'mall' } : {}) };
     },
     /** Explicit forgetting by original source events (the same plan as ArtifactStore.forget): library stickers kept
      * from one of these messages go, with their files. The description cache holds no sender and stays. */

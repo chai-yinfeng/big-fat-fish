@@ -154,6 +154,23 @@ test('picking: the closest library stickers to her word, at random among the bes
   assert.equal((await fresh.call(OTHER, { action: 'stickerPick', query: '晚安', sourceEventId: event })).found, true);
 });
 
+test('a picked sticker carries what the description cache already says it is, and whether a model wrote that; never looked at again for it', async t => {
+  const f = fixture(t), seen = (await f.ingest(OWNER, png('MOCK-D'))).id, unseen = (await f.ingest(OWNER, png('MOCK-N'))).id, mall = (await f.ingest(OWNER, png('MOCK-L'))).id;
+  await f.service.call(OWNER, { action: 'describe', ref: seen, sticker: true });
+  await f.service.call(OWNER, { action: 'describe', ref: mall, sticker: true, name: '狗头' });
+  for (const ref of [seen, unseen, mall]) await f.service.call(OWNER, { action: 'stickerKeep', ref });
+  const asked = f.state.asked.length, pick = query => f.service.call(OTHER, { action: 'stickerPick', query, sourceEventId: 'event:reply' });
+  const described = await pick('哈哈');
+  assert.deepEqual([described.found, described.name, described.description, described.machine], [true, '开心', 'MOCK 一只猫在笑', true]);
+  // A mall sticker's description is the platform's name for it, not a model's words.
+  const named = await pick('狗头');
+  assert.deepEqual([named.found, named.name, named.description, named.machine], [true, '狗头', '商城表情「狗头」', false]);
+  // Kept without a first look: found, with no description.
+  const plain = await pick('表情包');
+  assert.deepEqual([plain.found, plain.name, 'description' in plain, 'machine' in plain], [true, '表情包', false, false]);
+  assert.equal(f.state.asked.length, asked, 'picking asks the vision model nothing');
+});
+
 test('forgetting the owner\'s message removes the sticker kept from it; an unreadable index is never overwritten', async t => {
   const f = fixture(t), ref = (await f.ingest(OWNER, png('MOCK-F'), 'event:forget')).id;
   await f.service.call(OWNER, { action: 'describe', ref, sticker: true });

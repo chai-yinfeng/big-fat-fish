@@ -22,6 +22,11 @@ export function takeStickerMarker(text, log = message => process.stderr.write(me
   const stripped = text.replace(MARKER, '').replace(/[ \t]+\n/g, '\n').replace(/[ \t]{2,}/g, ' ').trim();
   return { text: stripped, word: words[0] ?? null };
 }
+/** Every `[表情:词]` of her reply as she wrote it, in order (`word` null: no word in it). takeStickerMarker takes all
+ * of them out and sends at most the first with a word; the delivery report names each by these exact characters. */
+export function stickerMarkers(text) {
+  return [...text.matchAll(MARKER)].map(match => ({ marker: match[0], word: match[1].trim() ? match[1] : null }));
+}
 /** The owner asking her to keep a picture: a short message saying 收下这个 / 收下这张 / 收下它. */
 export function asksToKeep(text) {
   return typeof text === 'string' && [...text].length <= 40 && /收下(?:这个|这张|它)/.test(text);
