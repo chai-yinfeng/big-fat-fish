@@ -7,7 +7,8 @@ After=companion-authority.service companion-model.service
 # manager on home-agent silently skips mount/namespace options (ProtectSystem,
 # ReadWritePaths, PrivateNetwork, ...), so none are listed here. Only seccomp-
 # and prctl-based options take effect: network is restricted to Unix sockets.
-# The model can reach only companion_scope/companion_content, which have no
+# The model can reach only companion_scope/companion_content/companion_activity,
+# which have no
 # filesystem access.
 [Service]
 Type=exec

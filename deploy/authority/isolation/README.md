@@ -61,8 +61,8 @@ ReadWritePaths, InaccessiblePaths, PrivateTmp, PrivateNetwork, also with
 PrivateUsers), so the unit lists only options that take effect: `NoNewPrivileges`
 and seccomp/prctl-based `RestrictAddressFamilies=AF_UNIX` (network limited to Unix
 sockets), `SystemCallArchitectures=native`, `LockPersonality`, `RestrictRealtime`,
-`RestrictSUIDSGID`, plus `UMask`. The model can reach only `companion_scope` and
-`companion_content`, which have no filesystem access. `companion-qq.service` requires the conversation service. Ports:
+`RestrictSUIDSGID`, plus `UMask`. The model can reach only `companion_scope`,
+`companion_content` and `companion_activity`, which have no filesystem access. `companion-qq.service` requires the conversation service. Ports:
 3082 (`companion-world-public.socket`) and 4173 (`companion-room.service`) are the companion-owned TCP listeners, both
 on loopback.
 
