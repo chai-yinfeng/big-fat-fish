@@ -268,7 +268,7 @@ export class ConsolidationDomain extends MemoryDomain {
       // (`deferredAt`), or today's batches are used up.
       paused: deferredAt !== null && beijingDay(deferredAt) === day ? 'spend' : calls >= CONSOLIDATION.perDay ? 'daily' : null,
       streams,
-      // The two diaries (diary.js): the last Beijing day that is done, when, and how many days were given up.
+      // Her diary (diary.js): the last Beijing day that is done, when, and how many days were given up.
       diary: { lastDay: own?.diary?.lastDay ?? null, lastAt: own?.diary?.lastAt ?? null, skipped: own?.diary?.skipped ?? 0 },
       // What review() made of the facts consolidation extracted, by its own reason codes.
       extracted: this.store.db.prepare("SELECT status,json_extract(receipt,'$.reason') AS reason,COUNT(*) AS n FROM inbox WHERE entity_id=? AND proposal_id LIKE 'cons:%' GROUP BY status,reason").all(e.id)

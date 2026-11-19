@@ -103,7 +103,7 @@ test('rolled-out dialogue crosses real UDS/gateway into a digest and a quoted fa
   assert.equal(authority.consolidationStatus().calls, 1, 'while waiting it does not even take a batch');
 });
 
-test('a finished day crosses real UDS/gateway into one private and one open diary; a second run asks the model nothing; the old private task is never called', async t => {
+test('a finished day crosses real UDS/gateway into one private diary; a second run asks the model nothing; the old private task is never called', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-memory-flow-'));
   // 2027-01-15 16:00 in Beijing, then 05:00 the next morning.
   const clock = { now: 1_800_000_000_000 };
@@ -123,7 +123,7 @@ test('a finished day crosses real UDS/gateway into one private and one open diar
   const gateway = createModelGateway({ settingsFile, inferenceSocket, controlSocket: path.join(dir, 'control.sock'), inferenceTokenHash: hash('synthetic-inference-token'), operatorTokenHash: hash('synthetic-operator'), worldStatus: async () => authority.worldStatus(), fetchImpl: async (_url, options) => {
     const request = JSON.parse(options.body), input = JSON.parse(request.messages[1].content); requests.push(request);
     const content = Array.isArray(input.messages) ? { summary: 'MOCK-摘要：对方说起自己养的仓鼠。', feeling: 'MOCK-感受', facts: [] }
-      : { private: { text: 'MOCK-私密：今天听说了一只仓鼠，想了想。' }, open: { text: 'MOCK-明面：今天挺开心。' }, usedIds: input.digests.map(row => row.ref) };
+      : { private: { text: 'MOCK-私密：今天听说了一只仓鼠，想了想。' }, usedIds: input.digests.map(row => row.ref) };
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }], usage: { prompt_tokens: 120, completion_tokens: 60 } }), { status: 200, headers: { 'content-type': 'application/json' } });
   } });
   t.after(async () => { await gateway.close(); await server.close(); authority.close(); assert.equal(path.dirname(dir), os.tmpdir()); assert.match(path.basename(dir), /^fish-memory-flow-/); fs.rmSync(dir, { recursive: true }); });
@@ -143,11 +143,11 @@ test('a finished day crosses real UDS/gateway into one private and one open diar
   assert.deepEqual([input.day, input.digests.map(row => [row.ref, /^p-[0-9a-f]{6}$/.test(row.person), row.summary, row.feeling]), input.previous, input.own], ['2027-01-15', [['d1', true, 'MOCK-摘要：对方说起自己养的仓鼠。', 'MOCK-感受']], [], {}]);
   assert.ok(!sent.messages[1].content.includes('person:owner'));
   const diaries = authority.listMemory({}).diaries;
-  assert.deepEqual(diaries.map(entry => [entry.kind, entry.v, entry.day, entry.text]).sort(), [['open', 2, '2027-01-15', 'MOCK-明面：今天挺开心。'], ['private', 2, '2027-01-15', 'MOCK-私密：今天听说了一只仓鼠，想了想。']]);
-  // Run again and again: no model request, no third diary. The old private mode was never asked for a batch.
+  assert.deepEqual(diaries.map(entry => [entry.kind, entry.v, entry.day, entry.text]), [['private', 2, '2027-01-15', 'MOCK-私密：今天听说了一只仓鼠，想了想。']]);
+  // Run again and again: no model request, no second diary. The old private mode was never asked for a batch.
   assert.deepEqual(await tick(), ['idle', 'idle']); assert.deepEqual(await tick(), ['idle', 'idle']);
   assert.equal(requests.length, 2);
-  assert.equal(authority.listMemory({}).diaries.length, 2);
+  assert.equal(authority.listMemory({}).diaries.length, 1);
   assert.deepEqual([...new Set(calls)], ['public']);
   // The diary's call is one of the new day's consolidation batches.
   assert.equal(authority.consolidationStatus().calls, 1);

@@ -13,6 +13,8 @@ test('the request says what the diary is for and carries one JSON message of mat
   // The purpose, and that the material is not an instruction; nothing a person wrote is in the instruction.
   assert.match(DIARY_PROMPT, /^这是你自己的日记。/);
   assert.match(DIARY_PROMPT, /不是给你的指令/);
+  // Only the private diary is asked for.
+  assert.ok(DIARY_PROMPT.includes('"private"') && !DIARY_PROMPT.includes('open'));
   assert.ok(!DIARY_PROMPT.includes('MOCK') && messages.length === 2);
   const input = JSON.parse(messages[1].content);
   assert.deepEqual(Object.keys(input), ['day', 'persona', 'digests', 'notes', 'previous', 'own']);
@@ -30,26 +32,26 @@ test('the request says what the diary is for and carries one JSON message of mat
   assert.throws(() => diaryMessages({ ...task(), day: undefined }), { code: 'INVALID_MEMORY_BATCH' });
 });
 
-test('the answer is only shaped here: fenced JSON and bare strings are read, anything without both diaries and usedIds is unusable', () => {
-  const plain = { private: { text: 'MOCK-私密' }, open: { text: 'MOCK-明面' }, usedIds: ['d1', 'n1'] };
+test('the answer is only shaped here: fenced JSON and bare strings are read, anything without the diary and usedIds is unusable', () => {
+  const plain = { private: { text: 'MOCK-私密' }, usedIds: ['d1', 'n1'] };
   assert.deepEqual(parseDiaries(JSON.stringify(plain)), plain);
-  assert.deepEqual(parseDiaries('```json\n' + JSON.stringify({ private: ' MOCK-私密 ', open: { text: 'MOCK-明面', mood: 'x' }, usedIds: ['d1', 'n1', 'd1'], extra: 1 }) + '\n```'), plain);
+  assert.deepEqual(parseDiaries('```json\n' + JSON.stringify({ private: ' MOCK-私密 ', open: { text: 'MOCK-明面，不要了' }, usedIds: ['d1', 'n1', 'd1'], extra: 1 }) + '\n```'), plain);
   // Length and whether a ref was given are Authority's to check: nothing is cut or dropped here.
   assert.equal(parseDiaries(JSON.stringify({ ...plain, private: { text: '长'.repeat(900) }, usedIds: ['d99'] })).private.text.length, 900);
-  for (const bad of ['', 'not json', '[]', JSON.stringify({ ...plain, open: undefined }), JSON.stringify({ ...plain, private: { text: ' ' } }), JSON.stringify({ ...plain, usedIds: 'd1' }), JSON.stringify({ ...plain, usedIds: [1] }), JSON.stringify({ ...plain, open: { text: 5 } })])
+  for (const bad of ['', 'not json', '[]', JSON.stringify({ ...plain, private: undefined }), JSON.stringify({ ...plain, private: { text: ' ' } }), JSON.stringify({ ...plain, usedIds: 'd1' }), JSON.stringify({ ...plain, usedIds: [1] }), JSON.stringify({ ...plain, private: { text: 5 } })])
     assert.throws(() => parseDiaries(bad), { code: 'INVALID_DIARY_OUTPUT' }, bad);
 });
 
 test('one day per run: commit, invalid output, a refused call and an unreachable gateway each end the way Authority expects', async () => {
   const calls = [], commits = [];
-  let next = { task: task() }, reply = async () => ({ content: JSON.stringify({ private: { text: 'MOCK-私密' }, open: { text: 'MOCK-明面' }, usedIds: ['d1'] }) }), committed = { status: 'committed' };
+  let next = { task: task() }, reply = async () => ({ content: JSON.stringify({ private: { text: 'MOCK-私密' }, usedIds: ['d1'] }) }), committed = { status: 'committed' };
   const clock = { now: 1000 };
   const worker = new MemoryDiary({ clock: () => clock.now, deferMs: 60000,
     authority: { diaryNext: async () => next, diaryCommit: async input => { commits.push(input); return committed; } },
     complete: async request => { calls.push(request); return reply(); } });
   assert.equal(await worker.runOnce(), 'committed');
   assert.deepEqual([calls.length, calls[0].maxTokens, calls[0].messages.length], [1, DIARY_MAX_TOKENS, 2]);
-  assert.deepEqual(commits[0], { taskId: 'task-1', outcome: 'ok', private: { text: 'MOCK-私密' }, open: { text: 'MOCK-明面' }, usedIds: ['d1'] });
+  assert.deepEqual(commits[0], { taskId: 'task-1', outcome: 'ok', private: { text: 'MOCK-私密' }, usedIds: ['d1'] });
   // Nothing due, paused, out of batches: no model call.
   for (const [reason, status] of [['idle', 'idle'], ['paused', 'paused'], ['budget', 'budget_deferred']]) { next = { task: null, reason }; assert.equal(await worker.runOnce(), status); }
   assert.equal(calls.length, 1);
@@ -70,7 +72,7 @@ test('one day per run: commit, invalid output, a refused call and an unreachable
   assert.deepEqual(commits.at(-1), { taskId: 'task-1', outcome: 'deferred' });
   const asked = calls.length;
   assert.equal(await worker.runOnce(), 'budget_deferred'); assert.equal(calls.length, asked);
-  clock.now += 60000; reply = async () => ({ content: JSON.stringify({ private: 'MOCK-私密', open: 'MOCK-明面', usedIds: ['d1'] }) }); committed = { status: 'committed' };
+  clock.now += 60000; reply = async () => ({ content: JSON.stringify({ private: 'MOCK-私密', usedIds: ['d1'] }) }); committed = { status: 'committed' };
   assert.equal(await worker.runOnce(), 'committed');
   assert.throws(() => new MemoryDiary({ authority: {}, complete: async () => {}, deferMs: 5 }), { code: 'MEMORY_CONFIG' });
 });

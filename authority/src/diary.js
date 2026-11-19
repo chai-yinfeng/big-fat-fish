@@ -1,17 +1,18 @@
-// The two diaries: once a Beijing day she writes about the day that just ended, in one model call:
-// a private diary (hers and the owner's alone: it may be about particular people, and it carries her line of
-// thought from one day to the next) and an open diary (only her own life and mood; nobody can be told from it).
-// The worker only carries text: Authority decides when, builds the input, validates the answer and writes.
+// Her diary: once a Beijing day she writes about the day that just ended, in one model call: a private diary
+// (hers and the owner's alone: it may be about particular people, and it carries her line of thought from one
+// day to the next). The worker only carries text: Authority decides when, builds the input, validates the
+// answer and writes. The second, open diary of the design (written per person, for the people the owner picks)
+// is not written yet: a commit's `open` is accepted and ignored.
 //
 // A diary is subjective memory: it carries the id of the persona card it was written under, and the earlier
 // private diaries she reads while writing are those of that same card only (a diary without a card id belongs
 // to the default card, as in cards.js). A private diary is read nowhere else: no conversation, no memory tool.
 //
 // Storage (no schema change): `diaries` rows of kind 'private' / 'open' with body
-// `{v:2, day, text, cardId, readDiaryIds, taskId, at}` (an open diary also `readback` and `readbackReasons`);
+// `{v:2, day, text, cardId, readDiaryIds, taskId, at}` (kind 'open' is reserved for the open diary);
 // `diary_sources` links a diary to the digests and notes it used; the marker "last Beijing day that is done"
 // lives under the metadata key 'consolidation' (`<entity>.diary`), written in the transaction that writes the
-// diaries; an admitted request is a maintenance_tasks row (mode 'diary'); a commit leaves a diary_receipts row
+// diary; an admitted request is a maintenance_tasks row (mode 'diary'); a commit leaves a diary_receipts row
 // (kind 'diary') holding a hash only. A diary's call is one of the entity's daily consolidation batches.
 import { createHash, randomUUID } from 'node:crypto';
 import { canonical, closed, enumeration, fail, identifier } from './identity.js';
@@ -30,12 +31,11 @@ export const DIARY = Object.freeze({
   catchUpDays: 2,
   /** The input: the day's digests (serialized rows), her own notes of the day, her earlier private diaries, the persona. */
   digestChars: 4500, noteChars: 800, previousChars: 1000, previousDiaries: 2, personaChars: 1000,
-  /** Each diary's text. */
+  /** The diary's text. */
   textChars: 500,
   /** Unusable model answers for a day before that day is given up. */
   maxInvalid: 3,
 });
-const LABEL = /p-[0-9a-f]{6}/u, DIGITS = /\d{5,}/u;
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const beijingClock = at => new Date(at + 8 * 3600000).toISOString().slice(11, 16);
 const dayStart = day => Date.parse(`${day}T00:00:00+08:00`);
@@ -152,34 +152,24 @@ export class DiaryDomain extends ConsolidationDomain {
         this.saveConsolidationState(all);
         return { status: skipped ? 'skipped' : 'invalid' };
       }
-      // The only checks on what she wrote: the sensitive lexicon refuses one diary and leaves the other; an open
-      // diary someone could be told from is kept, marked as not to be read back to anyone.
-      const rejected = Object.fromEntries(['private', 'open'].filter(kind => SENSITIVE.test(answer[kind])).map(kind => [kind, 'sensitive']));
-      const reasons = rejected.open ? [] : this.#identifying(e, answer.open), sourceIds = answer.usedIds.map(ref => task.refs[ref]), written = {};
-      for (const kind of ['private', 'open']) {
-        if (rejected[kind]) continue;
-        const id = written[kind] = randomUUID();
-        this.store.db.prepare('INSERT INTO diaries(id,entity_id,kind,status,revision,world_at,body) VALUES(?,?,?,?,?,?,?)').run(id, e.id, kind, kind, this.store.nextRevision(), world.worldNow, JSON.stringify({
-          v: 2, day: task.day, text: answer[kind], cardId: task.cardId, readDiaryIds: task.readDiaryIds, taskId: input.taskId, at: now,
-          ...(kind === 'open' ? { readback: reasons.length ? 'blocked' : 'clear', readbackReasons: reasons } : {}),
+      // The only check on what she wrote: a diary matching the sensitive lexicon is refused (the day is done all the same).
+      const rejected = SENSITIVE.test(answer.private) ? 'sensitive' : null, sourceIds = answer.usedIds.map(ref => task.refs[ref]);
+      let privateId = null;
+      if (!rejected) {
+        privateId = randomUUID();
+        this.store.db.prepare('INSERT INTO diaries(id,entity_id,kind,status,revision,world_at,body) VALUES(?,?,?,?,?,?,?)').run(privateId, e.id, 'private', 'private', this.store.nextRevision(), world.worldNow, JSON.stringify({
+          v: 2, day: task.day, text: answer.private, cardId: task.cardId, readDiaryIds: task.readDiaryIds, taskId: input.taskId, at: now,
         }));
-        for (const sourceId of sourceIds) this.store.db.prepare('INSERT INTO diary_sources(diary_id,memory_id) VALUES(?,?)').run(id, sourceId);
+        for (const sourceId of sourceIds) this.store.db.prepare('INSERT INTO diary_sources(diary_id,memory_id) VALUES(?,?)').run(privateId, sourceId);
       }
       close(); delete own.deferredAt;
       this.store.db.prepare('INSERT INTO diary_receipts(task_id,kind,diary_id,canonical) VALUES(?,?,?,?)').run(input.taskId, 'diary', '', encoding);
-      const result = { day: task.day, privateId: written.private ?? null, openId: written.open ?? null, ...(Object.keys(rejected).length ? { rejected } : {}), ...(written.open ? { readback: reasons.length ? 'blocked' : 'clear' } : {}) };
+      const result = { day: task.day, privateId, ...(rejected ? { rejected } : {}) };
       // IDs, the day, the card and counts only: no diary text.
       this.store.audit({ type: 'diary.committed', entityId: e.id, ...result, cardId: task.cardId, sources: sourceIds.length, read: task.readDiaryIds.length, revision: this.store.nextRevision(), at: now });
       this.saveConsolidationState(all);
       return { status: 'committed', ...result };
     });
-  }
-  /** Why someone could be told from an open diary: a person label, the value of a fact recorded about a person
-   * (2 characters or more), or a number of 5 digits or more. Empty when nothing was found. */
-  #identifying(e, text) {
-    const values = this.store.db.prepare("SELECT DISTINCT json_extract(body,'$.value') AS value FROM memory_items WHERE entity_id=? AND collection='facts' AND person_id IS NOT NULL").all(e.id)
-      .map(row => typeof row.value === 'string' ? row.value.trim() : '').filter(value => value.length >= 2);
-    return [...(LABEL.test(text) ? ['label'] : []), ...(values.some(value => text.includes(value)) ? ['fact'] : []), ...(DIGITS.test(text) ? ['digits'] : [])];
   }
   /** Staging and tests only (the operator route exists only with `allowDiaryTrigger`): the running Beijing day is
    * written as if it had ended, once, the next time the worker asks. Production writes finished days only. */
@@ -197,7 +187,7 @@ export class DiaryDomain extends ConsolidationDomain {
 /** The model's answer in bounded form, or null: structure, length, and `usedIds` out of what was given. */
 function validAnswer(input, refs) {
   const text = value => value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 1 && typeof value.text === 'string' && value.text.trim() && value.text.length <= DIARY.textChars && !value.text.includes('\0');
-  if (!text(input.private) || !text(input.open)) return null;
+  if (!text(input.private)) return null;
   if (!Array.isArray(input.usedIds) || !input.usedIds.length || input.usedIds.length > 200 || input.usedIds.some(ref => typeof ref !== 'string' || !Object.hasOwn(refs, ref))) return null;
-  return { private: input.private.text.trim(), open: input.open.text.trim(), usedIds: [...new Set(input.usedIds)] };
+  return { private: input.private.text.trim(), usedIds: [...new Set(input.usedIds)] };
 }

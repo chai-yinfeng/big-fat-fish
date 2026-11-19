@@ -103,7 +103,7 @@ export class AuthorityClient {
     if (!text(value.taskId) || !['ok', 'invalid', 'deferred'].includes(value.outcome)) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/maintenance/consolidation/commit', value);
   }
-  /** Maintenance credential: the day Authority wants the two diaries written for, or `task: null` with a reason. */
+  /** Maintenance credential: the day Authority wants her diary written for, or `task: null` with a reason. */
   diaryNext() { return this.#request('POST', '/v1/maintenance/diary/next', {}); }
   async diaryCommit(value) {
     closed(value, ['taskId', 'outcome', 'private', 'open', 'usedIds'], ['taskId', 'outcome']);

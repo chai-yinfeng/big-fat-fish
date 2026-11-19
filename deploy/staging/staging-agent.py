@@ -545,7 +545,7 @@ def mock_authority_config(config, token_hash):
 
 def scenario_authority_config(config):
     """authority.json while scenarios replay: the staging-only switch behind the operator's diary trigger, so a replay
-    can have the running day's two diaries written now (production writes a day only after it has ended). Like
+    can have the running day's diary written now (production writes a day only after it has ended). Like
     `allowTestChannels` it stays afterwards; an older release ignores it. Idempotent."""
     config['operator']['allowDiaryTrigger'] = True
     return config

@@ -380,20 +380,16 @@ export const STEPS = {
     if (count === undefined ? !selected.length : selected.length !== count) fail(`${selected.length} consolidation request(s) contain ${JSON.stringify(contains)}, expected ${count ?? 'at least 1'}`);
     if (absent !== undefined && selected.some(entry => entry.maintenance.includes(absent))) fail(`a consolidation request containing ${JSON.stringify(contains)} also contains ${JSON.stringify(absent)}`);
   },
-  /** Staging only (operator POST /memory/diary/trigger, which exists only with `operator.allowDiaryTrigger`): the two
-   * diaries of the running Beijing day are written now, as production writes them for a day that has ended. */
+  /** Staging only (operator POST /memory/diary/trigger, which exists only with `operator.allowDiaryTrigger`): the
+   * diary of the running Beijing day is written now, as production writes it for a day that has ended. */
   async triggerDiary(run) { await run.operator('POST', '/memory/diary/trigger', {}); },
-  /** Exactly one private and one open diary (operator GET /memory, two-diary format) whose text contains `contains`:
-   * of one Beijing day, each carrying the persona card it was written under; only the open one carries the
-   * de-identification result, `readback` when given ("clear" or "blocked"). */
-  async expectDiary(run, _ctx, { contains, readback, timeoutMs = 90000 }) {
-    const found = await run.poll(async () => { const diaries = (await run.diaries()).filter(diary => diary.text.includes(contains)); return diaries.length >= 2 ? diaries : null; }, timeoutMs, `Authority has no pair of diaries containing ${JSON.stringify(contains)}`);
-    if (found.map(diary => diary.kind).sort().join() !== 'open,private') fail(`the diaries containing ${JSON.stringify(contains)} are ${JSON.stringify(found.map(diary => diary.kind))}, expected one private and one open`);
-    const own = found.find(diary => diary.kind === 'private'), open = found.find(diary => diary.kind === 'open');
-    if (own.day !== open.day || !/^\d{4}-\d{2}-\d{2}$/.test(own.day)) fail('the two diaries are not of one Beijing day');
-    if (![own, open].every(diary => typeof diary.cardId === 'string' && diary.cardId)) fail('a diary does not carry its persona card');
-    if (own.readback !== undefined || !['clear', 'blocked'].includes(open.readback)) fail('only the open diary carries the de-identification result');
-    if (readback !== undefined && open.readback !== readback) fail(`the open diary is marked ${JSON.stringify(open.readback)}, expected ${JSON.stringify(readback)}`);
+  /** Exactly one diary (operator GET /memory, the current format) whose text contains `contains`: a private one,
+   * of a Beijing day, carrying the persona card it was written under. No open diary is written. */
+  async expectDiary(run, _ctx, { contains, timeoutMs = 90000 }) {
+    const found = await run.poll(async () => { const diaries = (await run.diaries()).filter(diary => diary.text.includes(contains)); return diaries.length ? diaries : null; }, timeoutMs, `Authority has no diary containing ${JSON.stringify(contains)}`);
+    if (found.length !== 1 || found[0].kind !== 'private') fail(`the diaries containing ${JSON.stringify(contains)} are ${JSON.stringify(found.map(diary => diary.kind))}, expected one private diary`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(found[0].day)) fail('the diary is not of a Beijing day');
+    if (typeof found[0].cardId !== 'string' || !found[0].cardId) fail('the diary does not carry its persona card');
   },
   async expectNoDiary(run, _ctx, { contains }) {
     if ((await run.diaries()).some(diary => diary.text.includes(contains))) fail(`Authority has a diary containing ${JSON.stringify(contains)}`);
@@ -760,7 +756,7 @@ export class Runner {
       before = Math.min(...page.items.map(item => item.revision));
     }
   }
-  /** The newest diaries of the two-diary format (operator GET /memory, first page). */
+  /** The newest diaries of the current format (operator GET /memory, first page). */
   async diaries() { return (await this.operator('GET', '/memory?limit=100')).diaries.filter(diary => diary.v === 2 && typeof diary.text === 'string'); }
   /** The active machine digests of a person (operator GET /memory, every page). */
   async digests(name) {

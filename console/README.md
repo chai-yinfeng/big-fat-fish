@@ -50,7 +50,7 @@ The editor is the same form as before (all persona fields, examples, server-side
 
 ## Diaries
 
-On the memory page, after the memory items (read only on the explicit "read" click, like the rest of the page). The diaries of the two-diary format are grouped by Beijing day, newest first, one card a day with the private diary on the left and the open diary on the right (one column on a narrow screen); a book that was not written for that day says so. Each diary shows the persona card it was written under (its name, or its id once the card is deleted); the open diary shows the result of Authority's de-identification check (passed, or blocked with what was found). Diaries of the old format follow one by one, the private ones marked "old automatic diary". The forget preview says how many diaries will be removed and how many of them also hold other content, and lists the diaries that stay but may still speak of what is forgotten, each with a button that asks for a new preview with that diary added.
+On the memory page, after the memory items (read only on the explicit "read" click, like the rest of the page). Her private diaries of the current format are grouped by Beijing day, newest first, one card a day; each shows the persona card it was written under (its name, or its id once the card is deleted). No open diary is written yet, so none is shown. Diaries of the old format follow one by one, the private ones marked "old automatic diary". The forget preview says how many diaries will be removed and how many of them also hold other content, and lists the diaries that stay but may still speak of what is forgotten, each with a button that asks for a new preview with that diary added.
 
 ## Provider keys
 

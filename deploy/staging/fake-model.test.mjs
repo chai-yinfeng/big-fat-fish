@@ -173,15 +173,15 @@ test('scripted model: a diary request is answered by a `diary` rule with the ref
     digests: [{ ref: 'd1', person: 'p-aaaaaa', time: '21:03', summary: 'MOCK-甲 摘要' }, { ref: 'd2', person: 'p-bbbbbb', time: '21:09', summary: 'MOCK-别的 摘要', feeling: 'MOCK-甲 感受' }, { ref: 'd3', person: 'p-cccccc', time: '22:00', summary: 'MOCK-丙 摘要' }],
     notes: [{ ref: 'n1', kind: 'inner', text: 'MOCK-甲 内心话' }] };
   const body = { stream: false, messages: diaryMessages(task) };
-  const scripted = [{ match: 'MOCK-甲', reply: 'MOCK-聊天回复' }, { match: 'MOCK-乙', diary: { private: 'MOCK-别人的', open: 'MOCK-别人的' } }, { match: 'MOCK-甲', consolidate: { summary: 'MOCK-DIGEST' } },
-    { match: 'MOCK-甲', diary: { private: 'MOCK-DIARY 私密甲', open: 'MOCK-DIARY 明面甲' } }];
+  const scripted = [{ match: 'MOCK-甲', reply: 'MOCK-聊天回复' }, { match: 'MOCK-乙', diary: { private: 'MOCK-别人的' } }, { match: 'MOCK-甲', consolidate: { summary: 'MOCK-DIGEST' } },
+    { match: 'MOCK-甲', diary: { private: 'MOCK-DIARY 私密甲' } }];
   const plan = planReply(body, scripted);
   // The rows that contain the rule's `match` (in any of their fields) are the ones "used"; an earlier diary is not a row.
-  assert.deepEqual(parseDiaries(plan.text), { private: { text: 'MOCK-DIARY 私密甲' }, open: { text: 'MOCK-DIARY 明面甲' }, usedIds: ['d1', 'd2', 'n1'] });
+  assert.deepEqual(parseDiaries(plan.text), { private: { text: 'MOCK-DIARY 私密甲' }, usedIds: ['d1', 'd2', 'n1'] });
   // Logged apart from chats and consolidation: no `userText`, the whole input under `maintenance`.
   assert.deepEqual([plan.diary, plan.consolidation, plan.userText, plan.stream, plan.maintenance], [true, undefined, '', false, body.messages[1].content]);
-  // Without a rule: a plain valid pair that used every row.
-  assert.deepEqual(parseDiaries(planReply(body, []).text), { private: { text: DEFAULT_DIARY.private }, open: { text: DEFAULT_DIARY.open }, usedIds: ['d1', 'd2', 'd3', 'n1'] });
+  // Without a rule: a plain valid diary that used every row.
+  assert.deepEqual(parseDiaries(planReply(body, []).text), { private: { text: DEFAULT_DIARY.private }, usedIds: ['d1', 'd2', 'd3', 'n1'] });
   // A chat or a consolidation batch is never answered by a `diary` rule, and neither is a diary request.
   assert.equal(planReply({ stream: true, messages: [{ role: 'user', content: 'MOCK-乙 在吗' }] }, scripted).text, DEFAULT_REPLY);
   assert.equal(planReply({ stream: true, messages: [{ role: 'user', content: 'MOCK-甲 在吗' }] }, [scripted[3], scripted[0]]).text, 'MOCK-聊天回复');

@@ -25,8 +25,8 @@
 // It is logged with `consolidation: true`, its user message as `maintenance`, and an empty `userText`.
 // A diary request of the memory worker (not streamed; its user message is JSON with `day`, `digests` and `notes`)
 // is answered by the first rule that has `diary` and whose `match` occurs in one of its digest or note rows:
-// { match, diary: { private, open } }; `usedIds` are the refs of the rows containing `match`. Without such a rule
-// the answer is a plain valid pair of diaries using every row. Rules with `diary` answer nothing else. It is logged
+// { match, diary: { private } }; `usedIds` are the refs of the rows containing `match`. Without such a rule
+// the answer is a plain valid diary using every row. Rules with `diary` answer nothing else. It is logged
 // with `diary: true`, its user message as `maintenance`, and an empty `userText`.
 // A web search (the gateway's /v1/web/search) gets one fixed MOCK result and is logged with `search: true`
 // and the query as `userText`. A vision request is a non-streamed chat completion and is answered like one.
@@ -41,7 +41,7 @@ import { FAKE_CAPABILITY, FAKE_PROVIDER, createFakeProviderUpstream } from './fa
 export const DEFAULT_REPLY = 'MOCK-REPLY';
 export const DEFAULT_USAGE = Object.freeze({ prompt_tokens: 100, completion_tokens: 20 });
 export const DEFAULT_DIGEST = Object.freeze({ summary: 'MOCK-DIGEST 一段没有编排的闲聊', feeling: '', facts: [] });
-export const DEFAULT_DIARY = Object.freeze({ private: 'MOCK-DIARY 私密：没有编排的一天', open: 'MOCK-DIARY 明面：没有编排的一天' });
+export const DEFAULT_DIARY = Object.freeze({ private: 'MOCK-DIARY 私密：没有编排的一天' });
 
 /** The rows of a consolidation request ([ref, speaker, time, text]), or null for any other request. */
 export function consolidationRows(body, userText) {
@@ -92,7 +92,7 @@ export function planReply(body, rules = []) {
     const holds = (row, text) => Object.values(row).some(value => typeof value === 'string' && value.includes(text));
     const scripted = rules.find(item => typeof item?.match === 'string' && item.match && item.diary && material.some(row => holds(row, item.match)));
     const usage = { ...DEFAULT_USAGE, total_tokens: DEFAULT_USAGE.prompt_tokens + DEFAULT_USAGE.completion_tokens };
-    const answer = { private: { text: scripted?.diary.private ?? DEFAULT_DIARY.private }, open: { text: scripted?.diary.open ?? DEFAULT_DIARY.open }, usedIds: material.filter(row => !scripted || holds(row, scripted.match)).map(row => row.ref) };
+    const answer = { private: { text: scripted?.diary.private ?? DEFAULT_DIARY.private }, usedIds: material.filter(row => !scripted || holds(row, scripted.match)).map(row => row.ref) };
     return { kind: 'text', diary: true, maintenance: userText, userText: '', system, context: '', rest: '', notes: [], turns: 1, hashes: [], afterTool: false, usage, stream: false, text: JSON.stringify(answer) };
   }
   const rule = rules.find(item => typeof item?.match === 'string' && item.match && !item.consolidate && !item.diary && userText.includes(item.match)) ?? {};

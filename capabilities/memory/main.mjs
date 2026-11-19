@@ -21,7 +21,7 @@ async function main() {
   const worker = new MemoryMaintenance({ authority, complete: completeDiary(cfg.gateway), stateFile: cfg.stateFile, maxCallsPerDay: cfg.maxCallsPerDay ?? 4, modes: ['public'] });
   // Per-person consolidation: Authority picks the conversation and keeps the cursor and the daily budget.
   const consolidation = new MemoryConsolidation({ authority, complete: completeDiary(cfg.gateway), ...(cfg.consolidationDeferMs === undefined ? {} : { deferMs: cfg.consolidationDeferMs }) });
-  // The two diaries of a finished Beijing day: Authority decides when and keeps the marker; a call is one of the
+  // Her private diary of a finished Beijing day: Authority decides when and keeps the marker; a call is one of the
   // entity's daily consolidation batches.
   const diary = new MemoryDiary({ authority, complete: completeDiary(cfg.gateway), ...(cfg.consolidationDeferMs === undefined ? {} : { deferMs: cfg.consolidationDeferMs }) });
   // Optional memory-worker.json `tickMs` / `consolidationDeferMs` (staging shortens both).

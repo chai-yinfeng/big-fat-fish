@@ -46,11 +46,11 @@ function fixture(t) {
   };
   const next = () => a.diaryNext(DEFAULT_ENTITY_ID);
   const commit = input => a.diaryCommit(DEFAULT_ENTITY_ID, input);
-  /** Both diaries of the day now due, written from every source given. Returns the task and the commit's result. */
-  const write = (privateText, openText = 'MOCK-明面：今天过得挺安静。') => {
+  /** The diary of the day now due, written from every source given. Returns the task and the commit's result. */
+  const write = privateText => {
     const { task } = next();
     assert.ok(task, 'a diary is due');
-    return { task, result: commit({ taskId: task.taskId, outcome: 'ok', private: { text: privateText }, open: { text: openText }, usedIds: [...task.digests, ...task.notes].map(row => row.ref) }) };
+    return { task, result: commit({ taskId: task.taskId, outcome: 'ok', private: { text: privateText }, usedIds: [...task.digests, ...task.notes].map(row => row.ref) }) };
   };
   const diaries = () => a.listMemory({ limit: 100 }).diaries.filter(diary => diary.v === 2);
   const digests = uid => a.listMemory({ limit: 100 }).items.filter(item => item.kind === 'digest' && item.personId === person(uid));
@@ -58,7 +58,7 @@ function fixture(t) {
   return { a, file, clock, say, chat, next, commit, write, diaries, digests, state };
 }
 
-test('one private and one open diary for the day that ended, from opaque labels; asking again makes no second request; the old private task is not involved', t => {
+test('one private diary for the day that ended (no open one), from opaque labels; asking again makes no second request; the old private task is not involved', t => {
   const { a, clock, chat, next, commit, diaries, state } = fixture(t);
   const lineA = chat(A, '我周末去了MOCK-海边', 'MOCK-摘要甲：对方说周末去了海边。', { feeling: 'MOCK-感受甲' });
   chat(B, '我在学MOCK-大提琴', 'MOCK-摘要乙：对方说在学大提琴。');
@@ -79,15 +79,12 @@ test('one private and one open diary for the day that ended, from opaque labels;
   assert.match(sent, /p-[0-9a-f]{6}/);
   // The same request again while it is out: the same task (a second batch is counted, as for a consolidation batch).
   assert.equal(next().task.taskId, task.taskId);
-  const answer = { taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-私密：今天和两个人聊了，想明白了一件事。' }, open: { text: 'MOCK-明面：今天过得挺安静。' }, usedIds: ['d1', 'd2'] };
+  const answer = { taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-私密：今天和两个人聊了，想明白了一件事。' }, usedIds: ['d1', 'd2'] };
   const result = commit(answer);
-  assert.deepEqual([result.status, result.day, result.readback, result.rejected], ['committed', dayName(0), 'clear', undefined]);
-  const written = diaries();
-  assert.deepEqual(written.map(diary => [diary.kind, diary.status, diary.day, diary.text, diary.cardId, diary.cardTitle, diary.readDiaryIds]).sort(), [
-    ['open', 'open', dayName(0), 'MOCK-明面：今天过得挺安静。', DEFAULT_CARD_ID, '默认卡', []],
-    ['private', 'private', dayName(0), 'MOCK-私密：今天和两个人聊了，想明白了一件事。', DEFAULT_CARD_ID, '默认卡', []]]);
-  assert.deepEqual([written.find(diary => diary.kind === 'open').readback, written.find(diary => diary.kind === 'open').readbackReasons, written.find(diary => diary.kind === 'private').readback], ['clear', [], undefined]);
-  for (const id of [result.privateId, result.openId]) assert.equal(a.store.db.prepare('SELECT COUNT(*) AS n FROM diary_sources WHERE diary_id=?').get(id).n, 2);
+  assert.deepEqual(result, { status: 'committed', day: dayName(0), privateId: result.privateId });
+  assert.deepEqual(diaries().map(diary => [diary.id, diary.kind, diary.status, diary.day, diary.text, diary.cardId, diary.cardTitle, diary.readDiaryIds, diary.readback]),
+    [[result.privateId, 'private', 'private', dayName(0), 'MOCK-私密：今天和两个人聊了，想明白了一件事。', DEFAULT_CARD_ID, '默认卡', [], undefined]]);
+  assert.equal(a.store.db.prepare('SELECT COUNT(*) AS n FROM diary_sources WHERE diary_id=?').get(result.privateId).n, 2);
   // The marker moved in the same transaction; nothing more is handed out for that day, now or later.
   assert.equal(state().diary.lastDay, dayName(0));
   assert.deepEqual(next(), { entityId: DEFAULT_ENTITY_ID, task: null, reason: 'idle' });
@@ -95,12 +92,12 @@ test('one private and one open diary for the day that ended, from opaque labels;
   assert.throws(() => commit({ ...answer, private: { text: 'MOCK-改了' } }), { code: 'CONFLICT' });
   clock.now = at(1, 5.5); assert.equal(next().task, null);
   clock.now = at(2, 5.5); assert.equal(next().task, null, 'a day without material is never handed out');
-  assert.equal(diaries().length, 2);
+  assert.equal(diaries().length, 1);
   // The receipt holds a hash only; the audit trail IDs, the day and counts.
   const receipt = a.store.db.prepare("SELECT diary_id,canonical FROM diary_receipts WHERE task_id=? AND kind='diary'").get(task.taskId);
   assert.deepEqual([receipt.diary_id, /^[a-f0-9]{64}$/.test(receipt.canonical)], ['', true]);
   const audit = a.store.db.prepare("SELECT body FROM audit WHERE json_extract(body,'$.type')='diary.committed'").all().map(row => row.body).join('\n');
-  assert.ok(audit.includes(result.privateId) && !audit.includes('MOCK-私密') && !audit.includes('MOCK-明面'));
+  assert.ok(audit.includes(result.privateId) && !audit.includes('MOCK-私密'));
   // The old automatic private diary: no task of that kind was admitted, and none of its diaries exists.
   assert.equal(a.store.db.prepare("SELECT COUNT(*) AS n FROM maintenance_tasks WHERE mode IN ('private','public')").get().n, 0);
   assert.equal(a.listMemory({ limit: 100 }).diaries.filter(diary => diary.v !== 2).length, 0);
@@ -147,12 +144,12 @@ test('a word of a diary reaches no conversation: no context, search, read or rec
   const { a, clock, chat, write } = fixture(t);
   chat(A, '我周末去了MOCK-海边', 'MOCK-摘要甲');
   clock.now = at(1, 5);
-  const { result } = write('MOCK-私密独特词甲 今天想了很多。', 'MOCK-明面独特词乙 今天过得不错。');
+  const { result } = write('MOCK-私密独特词甲 今天想了很多。');
   clock.now += 1000;
   for (const uid of [A, B, OWNER]) {
-    const scope = { streamId: stream(uid), windowFromAt: clock.now }, query = 'MOCK-私密独特词甲 MOCK-明面独特词乙 独特词 今天';
+    const scope = { streamId: stream(uid), windowFromAt: clock.now }, query = 'MOCK-私密独特词甲 独特词 今天';
     const seen = JSON.stringify([a.context('qq', { ...scope, query, profile: true }), a.memorySearch('qq', { ...scope, query }), a.memoryRecall('qq', { ...scope, fromAt: 0, toAt: clock.now + DAY }),
-      a.memoryRead('qq', { ...scope, id: result.privateId }), a.memoryRead('qq', { ...scope, id: result.openId })]);
+      a.memoryRead('qq', { ...scope, id: result.privateId })]);
     assert.ok(!seen.includes('独特词'), `conversation of ${uid}`);
     assert.equal(a.memoryRead('qq', { ...scope, id: result.privateId }).item, null);
   }
@@ -161,7 +158,7 @@ test('a word of a diary reaches no conversation: no context, search, read or rec
   assert.ok(!JSON.stringify(a.store.db.prepare('SELECT source_ids FROM maintenance_tasks').all()).includes('独特词'));
 });
 
-test('forgetting one line of A removes its digest and the diaries of two days (the day that used it, the day that read that diary); B and a third day stay', t => {
+test('forgetting one line of A removes its digest and the diaries that used it or read such a diary (one hop); B and a later day stay', t => {
   const { a, clock, chat, write, diaries, digests } = fixture(t);
   const line = chat(A, '我周末去了MOCK-海边潜水', 'MOCK-摘要甲：对方说周末去潜水。');
   chat(B, '我在学MOCK-大提琴', 'MOCK-摘要乙：对方说在学大提琴。');
@@ -180,8 +177,8 @@ test('forgetting one line of A removes its digest and the diaries of two days (t
   const preview = a.forgetPreview({ entityId: DEFAULT_ENTITY_ID, ids: [line] });
   const digestA = digests(A)[0].id;
   assert.deepEqual(preview.digestIds, [digestA]);
-  // Both diaries of day 0 (they used A's digest) and of days 1 and 2 (written after reading day 0's private diary): one hop.
-  assert.deepEqual([...preview.diaryIds].sort(), [day0.privateId, day0.openId, second.result.privateId, second.result.openId, third.privateId, third.openId].sort());
+  // The diary of day 0 (it used A's digest) and those of days 1 and 2 (written after reading day 0's diary): one hop.
+  assert.deepEqual([...preview.diaryIds].sort(), [day0.privateId, second.result.privateId, third.privateId].sort());
   // Every one of them also holds other content (B's): the preview says so.
   assert.deepEqual([...preview.mixedDiaryIds].sort(), [...preview.diaryIds].sort());
   // Day 3's private diary stays but speaks of what is being forgotten: listed for the owner to decide.
@@ -189,8 +186,8 @@ test('forgetting one line of A removes its digest and the diaries of two days (t
   a.setWorldPaused({ paused: true });
   a.forgetApply({ entityId: DEFAULT_ENTITY_ID, ids: [line], expectedMemoryEpoch: preview.memoryEpoch });
   assert.deepEqual(digests(A), []);
-  assert.deepEqual(diaries().map(diary => diary.id).sort(), [fourth.privateId, fourth.openId].sort());
-  assert.equal(a.store.db.prepare('SELECT COUNT(*) AS n FROM diary_sources WHERE diary_id IN (?,?)').get(day0.privateId, day0.openId).n, 0);
+  assert.deepEqual(diaries().map(diary => diary.id), [fourth.privateId]);
+  assert.equal(a.store.db.prepare('SELECT COUNT(*) AS n FROM diary_sources WHERE diary_id=?').get(day0.privateId).n, 0);
   // B keeps every digest; nothing of the removed days is written again.
   assert.equal(digests(B).length, 4);
   a.cleanupPending().forEach(job => a.cleanupComplete({ id: job.id, memoryEpoch: job.memoryEpoch, report: { sdkPurged: true, localSourcesPurged: true, platform: 'outside-control' } }));
@@ -201,43 +198,35 @@ test('forgetting one line of A removes its digest and the diaries of two days (t
   assert.deepEqual([only.diaryIds, only.memoryIds], [[fourth.privateId], []]);
 });
 
-test('an open diary someone could be told from is kept and marked blocked: a fact value of a person, a person label, a long number', t => {
-  const { a, clock, chat, write, diaries } = fixture(t);
-  const openOf = id => diaries().find(diary => diary.id === id);
-  chat(A, '我家的猫叫MOCK-煤球', 'MOCK-摘要甲', { facts: [{ key: '猫的名字', value: 'MOCK-煤球', quote: '我家的猫叫MOCK-煤球' }] });
-  assert.equal(a.listMemory({ limit: 100 }).items.filter(item => item.type === 'facts').length, 1);
+test('the open diary is not written yet: an `open` in the answer is accepted and ignored, and no open row exists', t => {
+  const { a, clock, chat, next, commit, diaries } = fixture(t);
+  chat(A, '我家的猫叫MOCK-煤球', 'MOCK-摘要甲');
   clock.now = at(1, 5);
-  const fact = write('MOCK-私密：MOCK-煤球 是个好名字。', 'MOCK-明面：今天听说了一只叫MOCK-煤球的猫。').result;
-  assert.equal(fact.readback, 'blocked');
-  assert.deepEqual([openOf(fact.openId).readback, openOf(fact.openId).readbackReasons, openOf(fact.openId).text], ['blocked', ['fact'], 'MOCK-明面：今天听说了一只叫MOCK-煤球的猫。']);
-  // The private diary may speak of people: it carries no such mark.
-  assert.equal(openOf(fact.privateId).readback, undefined);
-  clock.now = at(1, 12); chat(A, 'MOCK-第1天', 'MOCK-摘要第1天'); clock.now = at(2, 5);
-  const label = write('MOCK-私密', `MOCK-明面：${opaquePerson(person(A))} 今天来过，号码 123456。`).result;
-  assert.deepEqual(openOf(label.openId).readbackReasons, ['label', 'digits']);
-  clock.now = at(2, 12); chat(A, 'MOCK-第2天', 'MOCK-摘要第2天'); clock.now = at(3, 5);
-  const clear = write('MOCK-私密', 'MOCK-明面：今天 1234 步，心情不错。').result;
-  assert.deepEqual([clear.readback, openOf(clear.openId).readbackReasons], ['clear', []]);
+  const { task } = next();
+  const result = commit({ taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-私密：今天听说了一只猫。' }, open: { text: 'MOCK-明面：不会被保存。' }, usedIds: ['d1'] });
+  assert.deepEqual(result, { status: 'committed', day: dayName(0), privateId: result.privateId });
+  assert.deepEqual(diaries().map(diary => [diary.kind, diary.text]), [['private', 'MOCK-私密：今天听说了一只猫。']]);
+  assert.equal(a.store.db.prepare("SELECT COUNT(*) AS n FROM diaries WHERE kind='open'").get().n, 0);
+  assert.ok(!JSON.stringify(a.store.db.prepare('SELECT body FROM diaries').all()).includes('MOCK-明面'));
 });
 
-test('the sensitive lexicon refuses one diary and keeps the other; an answer out of shape is invalid, and three of them give the day up', t => {
+test('a diary matching the sensitive lexicon is refused and the day is done; an answer out of shape is invalid, and three of them give the day up', t => {
   const { a, clock, chat, next, commit, diaries, state } = fixture(t);
   chat(A, 'MOCK-第0天', 'MOCK-摘要第0天');
   clock.now = at(1, 5);
   let { task } = next();
-  const result = commit({ taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-私密：他说了密码。' }, open: { text: 'MOCK-明面：今天挺好。' }, usedIds: ['d1'] });
-  assert.deepEqual([result.status, result.privateId, result.rejected, result.readback], ['committed', null, { private: 'sensitive' }, 'clear']);
-  assert.deepEqual(diaries().map(diary => diary.kind), ['open']);
-  assert.equal(state().diary.lastDay, dayName(0));
-  // The other way round, and both: the day is done either way.
+  const result = commit({ taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-私密：他说了密码。' }, usedIds: ['d1'] });
+  assert.deepEqual(result, { status: 'committed', day: dayName(0), privateId: null, rejected: 'sensitive' });
+  assert.deepEqual(diaries(), []);
+  assert.deepEqual([state().diary.lastDay, next().task], [dayName(0), null]);
   clock.now = at(1, 12); chat(A, 'MOCK-第1天', 'MOCK-摘要第1天'); clock.now = at(2, 5);
   task = next().task;
-  assert.deepEqual(commit({ taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-私密第1天' }, open: { text: 'MOCK-明面：银行卡丢了。' }, usedIds: ['d1'] }).rejected, { open: 'sensitive' });
-  assert.deepEqual(diaries().map(diary => [diary.kind, diary.day]).sort(), [['open', dayName(0)], ['private', dayName(1)]]);
-  // Out of shape: too long, a missing diary, an extra key, usedIds empty or outside what was given.
+  assert.equal(commit({ taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-私密第1天' }, usedIds: ['d1'] }).status, 'committed');
+  assert.deepEqual(diaries().map(diary => [diary.kind, diary.day]), [['private', dayName(1)]]);
+  // Out of shape: too long, no diary, an extra key, usedIds empty or outside what was given.
   clock.now = at(2, 12); chat(A, 'MOCK-第2天', 'MOCK-摘要第2天'); clock.now = at(3, 5);
-  const good = { private: { text: 'MOCK-私密' }, open: { text: 'MOCK-明面' }, usedIds: ['d1'] };
-  const bad = [{ ...good, private: { text: 'x'.repeat(DIARY.textChars + 1) } }, { ...good, open: undefined }, { ...good, open: { text: 'MOCK', title: 'x' } }, { ...good, usedIds: [] }, { ...good, usedIds: ['d9'] }, { ...good, usedIds: ['n1'] }, { ...good, private: { text: '  ' } }];
+  const good = { private: { text: 'MOCK-私密' }, usedIds: ['d1'] };
+  const bad = [{ ...good, private: { text: 'x'.repeat(DIARY.textChars + 1) } }, { ...good, private: undefined }, { ...good, private: { text: 'MOCK', title: 'x' } }, { ...good, usedIds: [] }, { ...good, usedIds: ['d9'] }, { ...good, usedIds: ['n1'] }, { ...good, private: { text: '  ' } }];
   for (const [index, answer] of bad.slice(0, 2).entries()) {
     task = next().task;
     assert.deepEqual(commit({ taskId: task.taskId, outcome: 'ok', ...answer }), { status: 'invalid' }, String(index));
@@ -285,7 +274,7 @@ test('a diary call is one of the day\'s consolidation batches: counted when hand
   a.context('qq', { streamId: stream(B), query: 'MOCK', windowFromAt: clock.now });
   assert.deepEqual(a.consolidationNext(DEFAULT_ENTITY_ID), { entityId: DEFAULT_ENTITY_ID, task: null, reason: 'budget' });
   const kept = next().task;
-  assert.equal(commit({ taskId: kept.taskId, outcome: 'ok', private: { text: 'MOCK-私密' }, open: { text: 'MOCK-明面' }, usedIds: ['d1'] }).status, 'committed');
+  assert.equal(commit({ taskId: kept.taskId, outcome: 'ok', private: { text: 'MOCK-私密' }, usedIds: ['d1'] }).status, 'committed');
   assert.deepEqual([state().calls, a.consolidationStatus().diary.lastDay, a.consolidationStatus().diary.skipped], [CONSOLIDATION.perDay, dayName(0), 0]);
   // By day the last batch is consolidation's again.
   const later = a.consolidationState(); later[DEFAULT_ENTITY_ID].calls = CONSOLIDATION.perDay - 1; a.saveConsolidationState(later);
@@ -311,7 +300,7 @@ test('the input is bounded: over the budget the pinned and the newer digests sta
   assert.deepEqual(task.notes, [{ ref: 'n1', kind: 'inner', text: 'MOCK-内心话：我其实有点怕冷场。' }]);
   assert.ok(JSON.stringify(task.notes).length <= DIARY.noteChars);
   // A note used by a diary is one of its sources.
-  const result = a.diaryCommit(DEFAULT_ENTITY_ID, { taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-私密' }, open: { text: 'MOCK-明面' }, usedIds: ['n1'] });
+  const result = a.diaryCommit(DEFAULT_ENTITY_ID, { taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-私密' }, usedIds: ['n1'] });
   const note = a.listMemory({ limit: 100 }).items.find(item => item.type === 'notes');
   assert.deepEqual(a.store.db.prepare('SELECT memory_id FROM diary_sources WHERE diary_id=?').all(result.privateId).map(row => row.memory_id), [note.id]);
 });
@@ -322,7 +311,7 @@ test('a diary belongs to the persona card it was written under: it carries the c
   chat(A, 'MOCK-第0天', 'MOCK-摘要第0天', { feeling: 'MOCK-默认卡的感受' });
   clock.now = at(1, 5);
   const first = write('MOCK-默认卡的私密日记第0天').result;
-  assert.deepEqual([body(first.privateId).cardId, body(first.openId).cardId], [DEFAULT_CARD_ID, DEFAULT_CARD_ID]);
+  assert.equal(body(first.privateId).cardId, DEFAULT_CARD_ID);
   // Another card becomes current. Day 1 under it: the default card's private diary and feeling are not in the input.
   const { id: other } = a.createPersonaCard({ title: 'MOCK-乙卡' });
   a.updatePersonaCard({ id: other, patch: { name: 'MOCK-乙' }, reason: REASON });
@@ -334,8 +323,8 @@ test('a diary belongs to the persona card it was written under: it carries the c
   assert.deepEqual(second.task.previous, []);
   assert.deepEqual(second.task.digests.map(row => [row.summary, row.feeling]), [['MOCK-摘要第1天', undefined], ['MOCK-摘要乙第1天', 'MOCK-乙卡的感受']]);
   assert.ok(second.task.personaText.includes('MOCK-乙') && !JSON.stringify(second.task).includes('默认卡的'));
-  assert.deepEqual([body(second.result.privateId).cardId, body(second.result.openId).cardId, body(second.result.privateId).readDiaryIds], [other, other, []]);
-  assert.deepEqual(diaries().filter(diary => diary.day === dayName(1)).map(diary => diary.cardTitle), ['MOCK-乙卡', 'MOCK-乙卡']);
+  assert.deepEqual([body(second.result.privateId).cardId, body(second.result.privateId).readDiaryIds], [other, []]);
+  assert.deepEqual(diaries().filter(diary => diary.day === dayName(1)).map(diary => diary.cardTitle), ['MOCK-乙卡']);
   // Day 2, still the other card: its own diary of day 1 is read, the default card's is not.
   clock.now = at(2, 12); chat(A, 'MOCK-第2天', 'MOCK-摘要第2天'); clock.now = at(3, 5);
   const third = write('MOCK-乙卡的私密日记第2天');
@@ -344,7 +333,7 @@ test('a diary belongs to the persona card it was written under: it carries the c
   clock.now = at(3, 12); chat(A, 'MOCK-第3天', 'MOCK-摘要第3天'); clock.now = at(4, 5);
   const { task } = next();
   a.activatePersonaCard({ id: DEFAULT_CARD_ID, reason: REASON });
-  assert.throws(() => commit({ taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-私密' }, open: { text: 'MOCK-明面' }, usedIds: ['d1'] }), { code: 'CONFLICT' });
+  assert.throws(() => commit({ taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-私密' }, usedIds: ['d1'] }), { code: 'CONFLICT' });
   // Back on the default card: its own diary (and one of this format without a card id, which is the default card's)
   // is read, newest two, oldest first; the other card's are not. A diary of the old format is never read.
   a.store.db.prepare('INSERT INTO diaries(id,entity_id,kind,status,revision,world_at,body) VALUES(?,?,?,?,?,?,?)').run('MOCK-no-card', DEFAULT_ENTITY_ID, 'private', 'private', a.store.nextRevision(), 0, JSON.stringify({ v: 2, day: dayName(2), text: 'MOCK-没有卡号的私密日记', readDiaryIds: [] }));
@@ -356,7 +345,7 @@ test('a diary belongs to the persona card it was written under: it carries the c
   // Listed with the card: a title while the card exists, the id alone once it is deleted; the old format has neither.
   a.deletePersonaCard({ id: other });
   const listed = a.listMemory({ limit: 100 }).diaries;
-  assert.deepEqual(listed.filter(diary => diary.cardId === other).map(diary => diary.cardTitle), [null, null, null, null]);
+  assert.deepEqual(listed.filter(diary => diary.cardId === other).map(diary => diary.cardTitle), [null, null]);
   assert.deepEqual(listed.filter(diary => diary.text === 'MOCK-旧版私密日记').map(diary => [diary.v, diary.cardId, diary.cardTitle]), [[undefined, undefined, undefined]]);
   assert.deepEqual(listed.filter(diary => diary.id === 'MOCK-no-card').map(diary => [diary.cardId, diary.cardTitle]), [[DEFAULT_CARD_ID, '默认卡']]);
 });
@@ -373,7 +362,7 @@ test('no schema change: a database with diaries of this release has the shape it
   assert.equal(a.maintenanceBatch(DEFAULT_ENTITY_ID, { mode: 'private' }).world.paused, false);
 });
 
-test('routes: the two diary calls need the maintenance credential; the operator trigger exists only when the private configuration allows it', async t => {
+test('routes: the diary calls need the maintenance credential; the operator trigger exists only when the private configuration allows it', async t => {
   const { a, clock, chat, diaries } = fixture(t);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-diary-routes-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -410,17 +399,17 @@ test('routes: the two diary calls need the maintenance credential; the operator 
   assert.deepEqual([triggered.status, triggered.body.value.day], [200, dayName(0)]);
   const { task } = await clients.maintenance.diaryNext();
   assert.deepEqual([task.day, task.digests.map(row => row.summary)], [dayName(0), ['MOCK-摘要今天']]);
-  const result = await clients.maintenance.diaryCommit({ taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-私密今天' }, open: { text: 'MOCK-明面今天' }, usedIds: ['d1'] });
+  const result = await clients.maintenance.diaryCommit({ taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-私密今天' }, usedIds: ['d1'] });
   assert.equal(result.status, 'committed');
-  await assert.rejects(clients.maintenance.diaryCommit({ taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-改了' }, open: { text: 'MOCK-明面今天' }, usedIds: ['d1'] }), { status: 409 });
+  await assert.rejects(clients.maintenance.diaryCommit({ taskId: task.taskId, outcome: 'ok', private: { text: 'MOCK-改了' }, usedIds: ['d1'] }), { status: 409 });
   // Triggered again: the day is done, no second request; and the next night does not write it again.
   await operator('POST', '/memory/diary/trigger');
   assert.equal((await clients.maintenance.diaryNext()).task, null);
   clock.now = at(1, 5);
   assert.equal((await clients.maintenance.diaryNext()).task, null);
-  assert.equal(diaries().length, 2);
-  // The operator listing shows both, and the consolidation status the marker.
+  assert.equal(diaries().length, 1);
+  // The operator listing shows it, and the consolidation status the marker.
   const listed = await operator('GET', '/memory');
-  assert.deepEqual(listed.body.value.diaries.map(diary => [diary.kind, diary.day, diary.cardTitle]).sort(), [['open', dayName(0), '默认卡'], ['private', dayName(0), '默认卡']]);
+  assert.deepEqual(listed.body.value.diaries.map(diary => [diary.kind, diary.day, diary.cardTitle]), [['private', dayName(0), '默认卡']]);
   assert.equal((await operator('GET', '/memory/consolidation')).body.value.diary.lastDay, dayName(0));
 });

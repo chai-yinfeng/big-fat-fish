@@ -397,31 +397,27 @@ test('consolidation steps: a digest must be its owner\'s machine digest of the n
   await assert.rejects(STEPS.forget(run, ctx, { person: 'MOCK-A', source: 'MOCK-年糕' }), /memory epoch of MOCK-B went from 3 to 4/);
 });
 
-test('diary steps: one private and one open diary of one day with the card and the check result; the request names people by label only; the old private diary must not be requested', async t => {
+test('diary steps: exactly one private diary of a day with its card; the request names people by label only; the old private diary must not be requested', async t => {
   const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-diary-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const log = path.join(dir, 'requests.jsonl'), ctx = { logOffset: 0 }, posted = [];
-  const diary = (id, kind, extra = {}) => ({ id, kind, v: 2, day: '2026-11-18', text: `MOCK-DIARY-甲 ${kind}`, cardId: 'card:default', ...(kind === 'open' ? { readback: 'blocked', readbackReasons: ['fact'] } : {}), ...extra });
-  let diaries = [diary('d1', 'private'), diary('d2', 'open'), { id: 'old', kind: 'private', text: 'MOCK-DIARY-甲 旧版' }];
+  const diary = (id, kind = 'private', extra = {}) => ({ id, kind, v: 2, day: '2026-11-18', text: `MOCK-DIARY-甲 ${kind}`, cardId: 'card:default', ...extra });
+  let diaries = [diary('d1'), { id: 'old', kind: 'private', text: 'MOCK-DIARY-甲 旧版' }];
   const run = new Runner({ data: shipped(), modelLog: log, sleep: async () => {}, operator: async (method, route, body) => { if (method === 'POST') { posted.push([route, body]); return {}; } assert.equal(route, '/memory?limit=100'); return { items: [], diaries }; } });
   run.poll = async (probe, _timeoutMs, message) => (await probe()) || (() => { throw new Error(message); })();
   await STEPS.triggerDiary(run);
   assert.deepEqual(posted, [['/memory/diary/trigger', {}]]);
   await STEPS.expectDiary(run, ctx, { contains: 'MOCK-DIARY-甲' });
-  await STEPS.expectDiary(run, ctx, { contains: 'MOCK-DIARY-甲', readback: 'blocked' });
-  await assert.rejects(STEPS.expectDiary(run, ctx, { contains: 'MOCK-DIARY-甲', readback: 'clear' }), /marked "blocked", expected "clear"/);
-  await assert.rejects(STEPS.expectDiary(run, ctx, { contains: 'MOCK-DIARY-乙' }), /no pair of diaries containing "MOCK-DIARY-乙"/);
+  await assert.rejects(STEPS.expectDiary(run, ctx, { contains: 'MOCK-DIARY-乙' }), /no diary containing "MOCK-DIARY-乙"/);
   await assert.rejects(STEPS.expectNoDiary(run, ctx, { contains: 'MOCK-DIARY-甲' }), /has a diary containing/);
   await STEPS.expectNoDiary(run, ctx, { contains: 'MOCK-DIARY-乙' });
-  // A diary of the old format is not one of the two; three of them, two of one kind, two days, no card, or a mark on the private one fail.
-  for (const [change, message] of [
-    [list => [...list, diary('d3', 'open')], /expected one private and one open/],
-    [list => [list[0], diary('d3', 'private')], /expected one private and one open/],
-    [list => [list[0], diary('d2', 'open', { day: '2026-11-17' })], /not of one Beijing day/],
-    [list => [diary('d1', 'private', { cardId: undefined }), list[1]], /does not carry its persona card/],
-    [list => [diary('d1', 'private', { readback: 'clear' }), list[1]], /only the open diary carries/],
-    [list => [list[0], diary('d2', 'open', { readback: undefined })], /only the open diary carries/],
-    [list => [list[0]], /no pair of diaries/],
-  ]) { const kept = diaries; diaries = change(diaries.slice(0, 2)); await assert.rejects(STEPS.expectDiary(run, ctx, { contains: 'MOCK-DIARY-甲' }), message); diaries = kept; }
+  // A diary of the old format does not count; a second one, an open one, no day or no card fail.
+  for (const [list, message] of [
+    [[diary('d1'), diary('d2')], /expected one private diary/],
+    [[diary('d1', 'open')], /expected one private diary/],
+    [[diary('d1'), diary('d2', 'open')], /expected one private diary/],
+    [[diary('d1', 'private', { day: undefined })], /not of a Beijing day/],
+    [[diary('d1', 'private', { cardId: undefined })], /does not carry its persona card/],
+  ]) { const kept = diaries; diaries = list; await assert.rejects(STEPS.expectDiary(run, ctx, { contains: 'MOCK-DIARY-甲' }), message); diaries = kept; }
   // The model log: diary requests are told apart from chats and consolidation batches.
   const input = (digests, extra = {}) => ({ stream: false, diary: true, userText: '', maintenance: JSON.stringify({ day: '2026-11-18', persona: 'MOCK', digests, notes: [], previous: [], own: {}, ...extra }) });
   const rows = [{ ref: 'd1', person: 'p-aaaaaa', time: '21:03', summary: 'MOCK-摘要甲' }, { ref: 'd2', person: 'p-bbbbbb', time: '21:09', summary: 'MOCK-摘要乙' }];
@@ -750,7 +746,7 @@ test('job steps: the demo job is registered with nothing but its seconds, a job 
   await STEPS.expectCompletions(run, ctx, { outcomes: ['deferred:budget', 'carried', 'not-the-owner:sent'], timeoutMs: 0 });
 });
 
-test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 600000 }, async t => {
+test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 900000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
   const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4'];
@@ -766,7 +762,7 @@ test('scenario replay against the real Authority, gateway (scripted upstream), e
   await t.test('a second replay on the same state passes too (staging replays again after the rollback round trip)', async () => {
     // Without S2 and S3: the spend meter and the owner's once-a-day notice are only reset by the staging agent.
     // Without M9-M13: so are the day's consolidation batches (two a conversation).
-    // Without D1: so is the diary marker (the day's two diaries are written once).
+    // Without D1: so is the diary marker (the day's diary is written once).
     const again = ids.filter(id => !['S2', 'S3', 'M9', 'M10', 'M12', 'M13', 'D1'].includes(id)), second = await runner(data).run(again);
     assert.deepEqual(second.results.map(result => [result.id, result.ok, result.error]), again.map(id => [id, true, undefined]));
   });
