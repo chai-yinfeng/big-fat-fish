@@ -249,6 +249,9 @@ export async function preflight({ base = path.join(os.homedir(), '.local/share/c
     result.checked.push(spec.label);
     if (spec.label === 'authority.json') authority = config;
   }
+  // The operator's diary trigger is for staging and tests; no prepare script writes the switch. A warning, not a
+  // refusal: staging runs this same preflight with the switch on, and the route only has the day's diary written early.
+  if (authority?.operator.allowDiaryTrigger !== undefined) report.warn('authority.json', 'DIARY_TRIGGER_ENABLED', 'operator.allowDiaryTrigger');
   await checkRoom(base, authority, report, result);
   if (authority && await checkDatabase(base, release, authority, { migrations, freeBytes }, report)) result.checked.push('authority-db');
   return result;

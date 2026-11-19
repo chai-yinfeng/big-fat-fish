@@ -218,10 +218,10 @@ class ConsolidationResetTests(unittest.TestCase):
                 CREATE TABLE maintenance_tasks(id TEXT PRIMARY KEY,mode TEXT);''')
             db.executemany('INSERT INTO streams VALUES(?,?,?,?,?)', [('qq', 'MOCK-a', 'p1', 'private', 'e'), ('qq', 'MOCK-b', 'p2', 'private', 'e'), ('qq', 'MOCK-group', 'p1', 'shared', 'e')])
             db.executemany('INSERT INTO observations VALUES(?,?,?)', [('o1', 'qq', 'MOCK-a'), ('o2', 'qq', 'MOCK-a'), ('o3', 'qq', 'MOCK-b'), ('o4', 'qq', 'MOCK-group')])
-            db.executemany('INSERT INTO maintenance_tasks VALUES(?,?)', [('t1', 'consolidation'), ('t2', 'private')])
+            db.executemany('INSERT INTO maintenance_tasks VALUES(?,?)', [('t1', 'consolidation'), ('t2', 'private'), ('t3', 'diary')])
             db.commit()
             self.assertEqual(sa.reset_consolidation(database), 0)  # the release before consolidation left no state
-            state = {'e': {'since': 5, 'day': '2026-11-10', 'calls': 7, 'deferredAt': 9, 'streams': {'qq\0MOCK-a': {'calls': 2, 'invalid': 2, 'issued': 't1', 'skipped': 1, 'digests': 3, 'lastObservationId': 'o1'}}}}
+            state = {'e': {'since': 5, 'day': '2026-11-10', 'calls': 7, 'deferredAt': 9, 'diary': {'lastDay': '2026-11-10', 'issued': 't3'}, 'streams': {'qq\0MOCK-a': {'calls': 2, 'invalid': 2, 'issued': 't1', 'skipped': 1, 'digests': 3, 'lastObservationId': 'o1'}}}}
             db.execute("INSERT INTO metadata VALUES('consolidation',?)", (json.dumps(state),))
             db.commit()
             self.assertEqual(sa.reset_consolidation(database), 2)
@@ -284,6 +284,10 @@ class InitiationReplayTests(unittest.TestCase):
         self.assertEqual(once['credentials'], [config['credentials'][0], {'hash': 'b' * 64, 'role': 'capability', 'capabilityId': 'mock'}])
         self.assertEqual(once['capabilities'], [{'id': 'qq', 'policy': 'conversation.v1'}, {'id': 'mock', 'policy': 'conversation.v1'}])
         self.assertIs(once['operator']['allowTestChannels'], True)
+        # The diary trigger is its own switch, written for every replay.
+        self.assertNotIn('allowDiaryTrigger', once['operator'])
+        self.assertEqual(sa.scenario_authority_config({'operator': {'origins': []}}), {'operator': {'origins': [], 'allowDiaryTrigger': True}})
+        self.assertIn("    second_channel = prepare_mock_channel(release)\n    edit('authority.json', scenario_authority_config)\n", (HERE / 'staging-agent.py').read_text())
         self.assertEqual(sa.mock_authority_config(json.loads(json.dumps(once)), 'b' * 64), once)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'mock-channel'

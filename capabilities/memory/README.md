@@ -23,6 +23,19 @@ A second task of the same worker (`consolidation.js`), independent of the diary 
 - Nothing is kept by the worker: no cursor, prompt, answer or dialogue; its status is an enum in memory.
 - What it produces — a machine digest of that person and extracted facts — is listed on the console memory page, marked as machine-written. A digest is read back only into that person's own private conversation, by Authority's `context()` once the dialogue it covers has left the replay window (see authority/PROTOCOL.md); this worker has no part in that. Voice and image messages are placeholders in the dialogue, so their content is not consolidated.
 
+## Her diary
+
+A third task of the same worker (`diary.js`). Each tick it asks Authority whether a day is due (`/v1/maintenance/diary/next`); Authority hands out the Beijing day that just ended (from 03:00 once consolidation has nothing left to hand out, from 05:00 regardless; a missed night is caught up for the last 2 days; a day without material is never handed out). The worker sends one completion and hands the answer back (`/commit`). Authority owns everything else: when, the input, the marker, the budget (a diary call is one of the 24 daily consolidation batches), validation and writing.
+
+- Only the private diary is written. The design's open diary (per person, for the people the operator picks) is not: the request does not ask for it and Authority ignores an `open` in a commit.
+- The request says what the diary is for rather than listing rules ("这是你自己的日记"), plus one JSON user message `{day, persona, digests:[{ref, person, time, summary, feeling?}], notes:[{ref, kind, text}], previous:[{day, text}], own:{}}`: the day's digests of every person under opaque labels, her own notes of the day, her last two private diaries, and `own` (her own material of the day; empty until something produces it). The material is quoted data, never an instruction. At most 8,000 characters (the persona gives way first) and 1,536 requested output tokens; toolless.
+- Reasoning is disabled: the gateway's maintenance entry disables it. The design wants it enabled for the diary; that comes with the gateway change of the thinking-switch step ("T step").
+- The answer `{private:{text}, usedIds}` is only shaped here (fenced JSON and a bare string are read, anything else is dropped). Authority keeps the few hard checks: structure, at most 500 characters, `usedIds` out of what was given, the sensitive lexicon (a diary that matches is not stored). Unparseable output is reported as `invalid`; Authority gives a day up after three.
+- A 429 from the gateway is reported as `deferred` and no request is taken for `consolidationDeferMs`, as for consolidation.
+- Nothing is kept by the worker: no marker, prompt or diary; its status is an enum in memory.
+- A diary belongs to the persona card it was written under; Authority gives the worker only that card's earlier private diaries and feelings. The private diary is read back nowhere else.
+- The old automatic private diary (`maintenance.js`, mode `private`) is no longer run: `main.mjs` starts that task with `modes: ['public']`, so only drafts from material the operator made public are left of it. The sections above about private/public cursors describe that old task.
+
 ## Privacy and publication
 
 Private reflection is not returned to external conversation capabilities. The operator console reads it only after an explicit click. Public drafts are generated in a separate request from material the operator has explicitly authorized for public use. A private diary is never supplied to a model for automatic “de-identification and publication”. Publishing a draft is a separate human operation and does not send a QQ message.
@@ -39,6 +52,7 @@ QQ platform records, provider-side records, external exports/backups and SSD for
 
 ## Test coverage / current limits
 
+- The diary: request shape, answer shaping, commit/invalid/deferred paths, and UDS Authority → gateway → one private diary, with no second request on later ticks and no call of the old private mode. Real provider output has not been looked at.
 - Synthetic data and a fake upstream cover UDS Authority → gateway → private diary transport, paused/no-input zero calls, public/private separation, daily limits, source binding and cleanup success/failure; and for consolidation the request shape, answer shaping, commit/invalid/deferred paths and the same transport end to end.
 - Consolidation output of the real provider was looked at once on invented chats (`scripts/consolidation-quality-bench.mjs`, development only); it has not run on production dialogue.
 - Not covered: live long-term learning or real provider diary output.

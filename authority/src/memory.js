@@ -2,10 +2,10 @@ import { randomUUID, createHash } from 'node:crypto';
 import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, text } from './identity.js';
 import { DEFAULT_ENTITY_ID } from './store.js';
 import { normalizePersona, renderPersona } from './persona.js';
-import { tokenize } from './util.js';
+import { tokenize, uniqueTokens } from './util.js';
 import { memoryContent, opaquePerson, CONTINUATION_ITEMS, DIGEST_LABEL, beijingDated } from './context.js';
 import { SENSITIVE } from './policies.js';
-import { feelingFor } from './cards.js';
+import { DEFAULT_CARD_ID, feelingFor } from './cards.js';
 
 const DAY=86400000;
 /** A machine digest as a memory tool returns it: its ID, the label, the summary (cut to `chars`), her feeling and
@@ -251,9 +251,14 @@ export class MemoryDomain {
         personLabel:r.person_id?opaquePerson(r.person_id):null,personIsOwner:r.person_id==='person:owner',source:sourceOf(entry)
       };
     }).filter(r=>input.includeArchived!==false||(!r.archived&&r.status==='active'));
-    const diaries=input.person!==undefined?[]:this.store.db.prepare('SELECT * FROM diaries WHERE entity_id=? AND revision<? ORDER BY revision DESC LIMIT ?').all(e.id,before,limit).map(r=>({
-      id:r.id,type:'diary',kind:r.kind,status:r.status,revision:r.revision,entityId:e.id,...JSON.parse(r.body)
-    }));
+    // A diary of the two-diary format (body.v 2) is shown with the persona card it was written under.
+    const cardTitles=Object.fromEntries(this.listPersonaCards({entityId:e.id}).cards.map(card=>[card.id,card.title]));
+    const diaries=input.person!==undefined?[]:this.store.db.prepare('SELECT * FROM diaries WHERE entity_id=? AND revision<? ORDER BY revision DESC LIMIT ?').all(e.id,before,limit).map(r=>{
+      const body=JSON.parse(r.body),cardId=body.cardId??DEFAULT_CARD_ID;
+      return{
+        id:r.id,type:'diary',kind:r.kind,status:r.status,revision:r.revision,entityId:e.id,...body,...(body.v===2?{cardId,cardTitle:cardTitles[cardId]??null}:{})
+      };
+    });
     return{
       entityId:e.id,
       memoryEpoch:e.memory_epoch,
@@ -458,6 +463,20 @@ export class MemoryDomain {
       for(const id of memoryIds)for(const r of this.store.db.prepare('SELECT d.id FROM diaries d JOIN diary_sources s ON s.diary_id=d.id WHERE d.entity_id=? AND s.memory_id=?').all(e.id,id))diaryIds.add(r.id);
       changed=n!==memoryIds.size+sources.size+diaryIds.size;
     }
+    // A diary that holds more than what is being forgotten (it used other material too) is removed whole.
+    const mixedDiaryIds=new Set([...diaryIds].filter(id=>this.store.db.prepare('SELECT memory_id FROM diary_sources WHERE diary_id=?').all(id).some(source=>!memoryIds.has(source.memory_id))));
+    // A diary written after reading a removed diary goes too: one hop, no further.
+    for(const reader of this.store.db.prepare("SELECT DISTINCT d.id,j.value AS readId FROM diaries d,json_each(d.body,'$.readDiaryIds') j WHERE d.entity_id=?").all(e.id).filter(row=>diaryIds.has(row.readId)).map(row=>row.id))mixedDiaryIds.add(reader);
+    for(const id of mixedDiaryIds)diaryIds.add(id);
+    // Diaries that stay but may still speak of what is forgotten: the retrieval tokens of the forgotten text,
+    // looked for in every remaining diary. A hint for the owner, who decides diary by diary; nothing is removed.
+    const forgotten=uniqueTokens([...[...memoryIds].map(id=>memoryContent(JSON.parse(this.store.db.prepare('SELECT body FROM memory_items WHERE id=?').get(id).body))),
+      ...[...sources].map(id=>JSON.parse(this.store.db.prepare('SELECT body FROM observations WHERE id=?').get(id).body).text??'')].join('\n')).filter(token=>token.length>=2),
+    mentionDiaryIds=!forgotten.length?[]:this.store.db.prepare('SELECT id,body FROM diaries WHERE entity_id=? ORDER BY revision DESC').all(e.id).filter(row=>{
+      if(diaryIds.has(row.id))return false;
+      const text=String(JSON.parse(row.body).text??'').normalize('NFKC').toLowerCase();
+      return forgotten.filter(token=>text.includes(token)).length>=Math.min(2,forgotten.length);
+    }).slice(0,50).map(row=>row.id);
     const sourceEvents=[...sources].map(id=>this.store.db.prepare('SELECT capability_id AS capabilityId,stream_id AS streamId,event_id AS eventId FROM observations WHERE id=?').get(id));
     // Scope: a person-private memory could only have reached that person's own
     // conversations (and its source streams). Public/unowned material, or a
@@ -484,6 +503,9 @@ export class MemoryDomain {
       // Of those, the machine digests (for the preview: "digests removed along").
       digestIds:[...memoryIds].filter(id=>this.store.db.prepare("SELECT 1 FROM memory_items WHERE id=? AND kind='digest'").get(id)),
       diaryIds:[...diaryIds],
+      // Of those, the diaries that also hold other content (other people's, or other days'): removed whole.
+      mixedDiaryIds:[...mixedDiaryIds],
+      mentionDiaryIds,
       sourceObservationIds:[...sources],
       sourceEvents,
       affectedStreams:(entityWide?allStreams:scoped).map(({capabilityId,streamId})=>({capabilityId,streamId})),

@@ -246,6 +246,14 @@ test('a test-only channel in authority.json refuses the deploy, as Authority wou
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), []);
 });
 
+test('the staging-only diary trigger in authority.json is warned about, not refused (staging runs this preflight with it on)', async t => {
+  const w = world(t);
+  assert.ok(!codes((await preflight({ base: w.base, release: w.release })).warnings).some(code => code.includes('DIARY_TRIGGER')));
+  w.edit('authority.json', c => { c.operator.allowDiaryTrigger = true; });
+  const result = await preflight({ base: w.base, release: w.release });
+  assert.deepEqual([codes(result.failures), result.warnings.filter(row => row.code === 'DIARY_TRIGGER_ENABLED')], [[], [{ label: 'authority.json', code: 'DIARY_TRIGGER_ENABLED', field: 'operator.allowDiaryTrigger' }]]);
+});
+
 test('the room credential: prepare-room writes its own two private files and leaves authority.json alone; preflight checks the pair', async t => {
   const { prepareRoom } = await import('./prepare-room.mjs');
   const w = world(t), hashFile = path.join(w.base, 'operator/room-credential.json'), tokenFile = path.join(w.base, 'room-config/room.token');
