@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { CAPABILITIES } from './index.js';
+import { CAPABILITIES, ACTIVITIES } from './index.js';
 import { CATEGORIES } from '../../model-gateway/spend.mjs';
 
 test('the registry lists every declared capability once, as frozen dependency-free data', () => {
-  assert.deepEqual(CAPABILITIES.map(item => item.id), ['chat', 'consolidation', 'vision', 'sticker', 'web', 'speech-tts', 'speech-asr', 'proactive', 'demo']);
+  assert.deepEqual(CAPABILITIES.map(item => item.id), ['chat', 'consolidation', 'vision', 'sticker', 'web', 'speech-tts', 'speech-asr', 'proactive', 'demo', 'video', 'video-note']);
   // One directory per capability, and none that the index forgot.
   const directories = fs.readdirSync(fileURLToPath(new URL('./', import.meta.url)), { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
   assert.deepEqual(directories, CAPABILITIES.map(item => item.id).sort());
@@ -41,5 +41,14 @@ test('metering as it is today: vision 12 and web 20 a day on the legacy counters
   assert.deepEqual([meter.chat.spendCategory, meter.chat.stopTier, meter.consolidation.spendCategory, meter.consolidation.stopTier], ['conversation', 'exhausted', 'maintenance', 'restricted']);
   assert.deepEqual([meter.chat.dailyLimit, meter.consolidation.dailyLimit], [null, null]);
   assert.deepEqual([meter['speech-tts'].source, meter['speech-tts'].units, meter['speech-asr'].source, meter['speech-asr'].units], ['reported', ['chars', 'audioSeconds'], 'reported', ['audioSeconds']]);
-  assert.deepEqual(CAPABILITIES.filter(item => item.meter.source === 'gateway').map(item => item.id), ['chat', 'consolidation', 'vision', 'sticker', 'web', 'proactive']);
+  assert.deepEqual(CAPABILITIES.filter(item => item.meter.source === 'gateway').map(item => item.id), ['chat', 'consolidation', 'vision', 'sticker', 'web', 'proactive', 'video-note']);
+});
+
+test('companion_activity offers exactly the actions declared for it: watching a video, its status and its pages', () => {
+  assert.deepEqual(JSON.parse(JSON.stringify(ACTIVITIES)), [{ capability: 'video', title: '看视频', actions: ['watch', 'status', 'page'] }]);
+  const meter = Object.fromEntries(CAPABILITIES.map(item => [item.id, item.meter]));
+  // A new video takes one of six daily slots of a local row; the summary's money is its own paid row, stopped at the restricted tier.
+  assert.deepEqual([meter.video.kind, meter.video.source, meter.video.dailyLimit, meter['video-note'].spendCategory, meter['video-note'].stopTier, meter['video-note'].dailyLimit], ['local', 'reported', 6, 'activity', 'restricted', null]);
+  // Nothing of a particular site is in the declaration: it only points at the operator's file.
+  assert.equal(CAPABILITIES.find(item => item.id === 'video').operatorConfig, 'operator/providers/video.json');
 });

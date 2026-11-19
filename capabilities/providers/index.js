@@ -13,7 +13,8 @@
 // `proactive` is not something the model calls: it is the usage row and spend category of a run she starts herself.
 //
 // Today the declarations are read by the usage ledger (model-gateway/usage-ledger.mjs) and, through
-// it, the console's quota page. The model tools, Authority's /v1/content allowlist and the content
+// it, the console's quota page, and by the executor for the choices of the model tool `companion_activity`
+// (ACTIVITIES below). The two older model tools, Authority's /v1/content allowlist and the content
 // service still carry their own action lists.
 import chat from './chat/manifest.js';
 import consolidation from './consolidation/manifest.js';
@@ -24,7 +25,14 @@ import speechTts from './speech-tts/manifest.js';
 import speechAsr from './speech-asr/manifest.js';
 import proactive from './proactive/manifest.js';
 import demo from './demo/manifest.js';
+import video from './video/manifest.js';
+import videoNote from './video-note/manifest.js';
 
 const frozen = value => { if (value && typeof value === 'object') { Object.values(value).forEach(frozen); Object.freeze(value); } return value; };
 /** Every declared capability, in the order the quota page lists them. */
-export const CAPABILITIES = frozen([chat, consolidation, vision, sticker, web, speechTts, speechAsr, proactive, demo]);
+export const CAPABILITIES = frozen([chat, consolidation, vision, sticker, web, speechTts, speechAsr, proactive, demo, video, videoNote]);
+
+/** The model tool `companion_activity`: what it may name, generated from the declarations (an action carries
+ * `tool: 'companion_activity'`). -> [{ capability, title, actions: [name...] }] */
+export const ACTIVITY_TOOL = 'companion_activity';
+export const ACTIVITIES = frozen(CAPABILITIES.map(item => ({ capability: item.id, title: item.title, actions: item.actions.filter(action => action.model && action.tool === ACTIVITY_TOOL).map(action => action.name) })).filter(item => item.actions.length));

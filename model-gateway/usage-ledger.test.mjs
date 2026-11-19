@@ -26,7 +26,7 @@ test('ledger: one row per declared capability; outcomes, denials by reason, unit
   const open = async () => { const ledger = createUsageLedger({ directory, capabilities: CAPABILITIES, defaults: { vision: 12, web: 20 }, external: () => counters, clock: () => Date.parse('2026-11-12T04:00:00Z') }); await ledger.start(); return ledger; };
   let ledger = await open();
   let status = await ledger.status();
-  assert.deepEqual([status.day, status.timezone, status.rows.map(row => row.id)], ['2026-11-12', 'Asia/Shanghai', ['chat', 'consolidation', 'vision', 'sticker', 'web', 'speech-tts', 'speech-asr', 'proactive', 'demo']]);
+  assert.deepEqual([status.day, status.timezone, status.rows.map(row => row.id)], ['2026-11-12', 'Asia/Shanghai', ['chat', 'consolidation', 'vision', 'sticker', 'web', 'speech-tts', 'speech-asr', 'proactive', 'demo', 'video', 'video-note']]);
   assert.deepEqual(rowsOf(status).chat, { id: 'chat', title: '聊天', kind: 'paid', unit: 'requests', used: 0, limit: null, calls: 0, ok: 0, failed: 0, denied: {}, units: {}, busyMs: 0, limitDefault: null, costYuan: 0, spendCategory: 'conversation', stopTier: 'exhausted' });
   await ledger.record('chat', { outcome: 'ok', busyMs: 1200, costMicros: 2500 });
   await ledger.record('chat', { outcome: 'failed', busyMs: 300 });
@@ -182,16 +182,24 @@ async function gateway(t, overrides = {}) {
   return { directory, calls, state, control, inference, usage, restart: async () => { await instance.close(); instance = await start(); },
     chat: () => inference('/v1/chat/completions', { model: 'deepseek', messages: [{ role: 'user', content: 'MOCK synthetic test' }], stream: true }),
     memory: () => inference('/v1/memory/completions', { model: 'deepseek', messages: [{ role: 'user', content: 'MOCK synthetic material' }], stream: false }),
+    // An activity's own model work (the summary of a video): the same bounded shape, its own row and spend category.
+    activity: body => inference('/v1/activity/completions', { model: 'deepseek', messages: [{ role: 'system', content: 'MOCK instructions' }, { role: 'user', content: 'MOCK synthetic transcript' }], stream: false, ...body }),
     vision: () => inference('/v1/vision/describe', { imageBase64: PNG, mime: 'image/png' }), search: () => inference('/v1/web/search', { query: 'MOCK' }) };
 }
 
 test('gateway: every exit lands in its row, and the rows add up to what the spend meter charged', async t => {
   const f = await gateway(t);
-  for (const call of [f.chat, f.chat, f.memory, f.vision, f.search]) assert.equal((await call()).status, 200);
-  const rows = await f.usage(seen => seen.web.ok === 1 && seen.chat.ok === 2);
+  for (const call of [f.chat, f.chat, f.memory, f.vision, f.search, f.activity]) assert.equal((await call()).status, 200);
+  const rows = await f.usage(seen => seen.web.ok === 1 && seen.chat.ok === 2 && seen['video-note'].ok === 1);
   assert.deepEqual(Object.fromEntries(Object.entries(rows).map(([id, row]) => [id, [row.used, row.limit, row.calls, row.ok, row.failed, row.denied]])), {
     chat: [2, null, 2, 2, 0, {}], consolidation: [1, null, 1, 1, 0, {}], vision: [1, 12, 1, 1, 0, {}], sticker: [0, 20, 0, 0, 0, {}], web: [1, 20, 1, 1, 0, {}], 'speech-tts': [0, null, 0, 0, 0, {}], 'speech-asr': [0, null, 0, 0, 0, {}], proactive: [0, null, 0, 0, 0, {}], demo: [0, 10, 0, 0, 0, {}],
+    // Watching a video: the local row has a daily count and no money; the summary's request is the paid row.
+    video: [0, 6, 0, 0, 0, {}], 'video-note': [1, null, 1, 1, 0, {}],
   });
+  // The summary is charged to `activity`, not to maintenance, and is sent like a maintenance completion: thinking off, no tools.
+  assert.deepEqual([rows['video-note'].spendCategory, rows['video-note'].stopTier, rows['video-note'].costYuan > 0, rows.consolidation.calls], ['activity', 'restricted', true, 1]);
+  const sent = f.calls.at(-1).body;
+  assert.deepEqual([sent.thinking, sent.tools, sent.stream, sent.messages.map(message => message.role)], [{ type: 'disabled' }, undefined, false, ['system', 'user']]);
   const spend = (await f.control('/spend')).json().value;
   // The rows of one spend category (vision and sticker share `vision`) add up to what that category was charged.
   const byCategory = {};
@@ -200,7 +208,7 @@ test('gateway: every exit lands in its row, and the rows add up to what the spen
   assert.ok(rows.chat.costYuan > 0 && rows.consolidation.costYuan > 0);
   // Tokens as the provider reported them, per row; together they are the spend meter's totals.
   assert.deepEqual([rows.chat.units, rows.consolidation.units], [{ inputTokens: 2000, outputTokens: 200 }, { inputTokens: 40, outputTokens: 20 }]);
-  assert.deepEqual([spend.tokens.cacheHit + spend.tokens.cacheMiss, spend.tokens.output], [2040, 220]);
+  assert.deepEqual([spend.tokens.cacheHit + spend.tokens.cacheMiss, spend.tokens.output], [2080, 240]);
   assert.deepEqual([rows.vision.costYuan, rows.web.costYuan], [0.01, 0.005]);
   assert.equal(Math.round(Object.values(rows).reduce((sum, row) => sum + row.costYuan * 1e6, 0)), Math.round(spend.spentYuan * 1e6));
   assert.equal(Object.values(rows).reduce((sum, row) => sum + row.ok + row.failed, 0), spend.calls);
@@ -218,14 +226,17 @@ test('gateway: a refusal is counted by its reason and never reaches the provider
   assert.deepEqual([rows.vision.used, rows.vision.limit, rows.vision.calls, rows.vision.denied, f.calls.length], [1, 1, 1, { daily_limit: 1 }, 1]);
   // Paused: chat, maintenance, vision and web are each refused before anything is sent.
   f.state.paused = true;
-  for (const call of [f.chat, f.memory, f.vision, f.search]) assert.equal((await call()).status, 409);
-  rows = await f.usage(seen => seen.web.denied.paused === 1 && seen.chat.denied.paused === 1);
+  for (const call of [f.chat, f.memory, f.vision, f.search, f.activity]) assert.equal((await call()).status, 409);
+  rows = await f.usage(seen => seen.web.denied.paused === 1 && seen.chat.denied.paused === 1 && seen['video-note'].denied.paused === 1);
   assert.deepEqual([rows.chat.denied, rows.consolidation.denied, rows.vision.denied, rows.web.denied], [{ paused: 1 }, { paused: 1 }, { daily_limit: 1, paused: 1 }, { paused: 1 }]);
   f.state.paused = false;
   // Spend tiers: maintenance, vision and web stop at "restricted", chat only at 100%.
   assert.equal((await f.control('/spend/settings', { dailyCapYuan: 0.01, reducedPercent: 1, restrictedPercent: 2 })).status, 200);
-  assert.equal((await f.search()).status, 429); assert.equal((await f.memory()).status, 429); assert.equal((await f.chat()).status, 429);
-  rows = await f.usage(seen => seen.chat.denied.spend_tier === 1 && seen.web.denied.spend_tier === 1);
+  assert.equal((await f.search()).status, 429); assert.equal((await f.memory()).status, 429); assert.equal((await f.activity()).status, 429); assert.equal((await f.chat()).status, 429);
+  rows = await f.usage(seen => seen.chat.denied.spend_tier === 1 && seen.web.denied.spend_tier === 1 && seen['video-note'].denied.spend_tier === 1);
+  assert.deepEqual([rows['video-note'].denied, rows['video-note'].calls], [{ paused: 1, spend_tier: 1 }, 0]);
+  // An activity completion takes no tools, no stream and no more text than a maintenance one.
+  for (const body of [{ tools: [] }, { stream: true }, { messages: [{ role: 'assistant', content: 'x' }] }, { messages: [{ role: 'user', content: 'x'.repeat(8001) }] }]) assert.equal((await f.activity(body)).status, 400, JSON.stringify(body).slice(0, 40));
   assert.deepEqual([rows.chat.denied.spend_tier, rows.consolidation.denied.spend_tier, rows.web.denied.spend_tier, rows.web.calls, rows.chat.calls], [1, 1, 1, 0, 0]);
   assert.equal(f.calls.length, 1, 'only the first vision call was sent');
   // A provider error is a failed call, not a refusal; a malformed request is neither.

@@ -428,12 +428,15 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     if (['/v1/vision/describe', '/v1/web/search', '/v1/web/fetch'].includes(req.url)) { await capability(req, res); return; }
     if (['/v1/usage/reserve', '/v1/usage/record'].includes(req.url)) { await usageReport(req, res); return; }
     if (['/v1/provider/submit', '/v1/provider/status', '/v1/provider/fetch'].includes(req.url)) { await provider(req, res); return; }
-    const maintenance = req.url === '/v1/memory/completions';
+    // An activity's own model work (the content service's summary of a video): the bounded shape of a maintenance
+    // completion (no tools, thinking off), but its own usage row and the `activity` spend category.
+    const activity = req.url === '/v1/activity/completions';
+    const maintenance = activity || req.url === '/v1/memory/completions';
     if (req.method !== 'POST' || (!maintenance && req.url !== '/v1/chat/completions')) throw failure('NOT_FOUND');
     // A run she starts herself (the executor marks its requests; the model cannot) is `proactive` work: its own usage
     // row and spend category, refused from the reduced tier on.
     const proactive = !maintenance && req.headers[INITIATED_HEADER] === 'initiated';
-    await metered(maintenance ? 'consolidation' : proactive ? 'proactive' : 'chat', 'spend_tier', note => completion(req, res, maintenance, note, proactive));
+    await metered(activity ? 'video-note' : maintenance ? 'consolidation' : proactive ? 'proactive' : 'chat', 'spend_tier', note => completion(req, res, maintenance, note, proactive, activity));
   }
   /** A provider adapter's operation (model-gateway/providers.mjs): submit it, ask how it is doing, fetch a result file. */
   async function provider(req, res) {
@@ -453,7 +456,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     await ledger.reserve(body.capability);
     send(res, 200, { ok: true, value: { reserved: true } });
   }
-  async function completion(req, res, maintenance, note, proactive = false) {
+  async function completion(req, res, maintenance, note, proactive = false, activity = false) {
     // Check before reading a potentially large prompt and again immediately before fetch.
     if ((await world()).paused) throw failure('WORLD_PAUSED');
     if (!settings.apiKey) throw failure('UNCONFIGURED');
@@ -462,7 +465,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     if (maintenance) {
       closed(body, ['model', 'messages', 'max_tokens', 'stream']);
       if (body.stream !== false || body.messages.length > 3 || body.messages.some(message => !object(message) || !['system', 'user'].includes(message.role) || typeof message.content !== 'string' || Object.keys(message).some(key => !['role', 'content'].includes(key))) || body.messages.reduce((sum, message) => sum + message.content.length, 0) > 8000) throw failure('INVALID_REQUEST');
-      await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 600, MAINTENANCE_MAX_TOKENS), thinking: { type: 'disabled' } }, 'inference', res, 'maintenance', note);
+      await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 600, MAINTENANCE_MAX_TOKENS), thinking: { type: 'disabled' } }, 'inference', res, activity ? 'activity' : 'maintenance', note);
     } else {
       await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 4096, 4096), thinking: { type: 'enabled' }, reasoning_effort: 'high' }, 'inference', res, proactive ? 'proactive' : 'conversation', note);
     }
