@@ -3,7 +3,8 @@ import { Store, DEFAULT_ENTITY_ID } from './store.js';
 import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
 import { POLICIES, validatePayload, review } from './policies.js';
 import { normalizePersona, validatePersonaPatch } from './persona.js';
-import { renderContextParts, renderProfile, RETRIEVED_ITEMS, DEFAULT_CONTEXT_CHARS, personaBudget, personaContextText, opaquePerson, opaqueStream } from './context.js';
+import { tokenize } from './util.js';
+import { renderContextParts, renderProfile, renderContinuation, RETRIEVED_ITEMS, DEFAULT_CONTEXT_CHARS, personaBudget, personaContextText, opaquePerson, opaqueStream } from './context.js';
 import { BACKGROUND_PROPOSAL } from './consolidation.js';
 import { InitiationDomain } from './initiations.js';
 import { channel } from '../../capabilities/channels/index.js';
@@ -437,18 +438,25 @@ export class Authority extends InitiationDomain {
     query=input.query===undefined?'':input.query;
     text(query,2000,true);
     // `windowFromAt`: when the oldest run the executor still replays for this conversation began. Dialogue
-    // before it has left the window and may be consolidated. It changes nothing in this response.
-    if(input.windowFromAt!==undefined&&scope.audience==='private'&&registered.policy==='conversation.v1')this.windows.set(`${capabilityId}\u0000${input.streamId}`,Math.min(input.windowFromAt,this.now()));
+    // before it has left the window and may be consolidated; a digest of this person is only read back when the
+    // dialogue it covers ended before it (without it no digest is returned: the original may still be replayed).
+    const windowFromAt=input.windowFromAt!==undefined&&scope.audience==='private'&&registered.policy==='conversation.v1'?Math.min(input.windowFromAt,this.now()):undefined;
+    if(windowFromAt!==undefined)this.windows.set(`${capabilityId}\u0000${input.streamId}`,windowFromAt);
     // `exclude`: IDs the caller already shows the model (the executor's persisted notes); never retrieved again.
     const exclude=input.exclude??[];
     if(!Array.isArray(exclude)||exclude.length>MAX_CONTEXT_EXCLUDE)fail('VALIDATION_ERROR','exclude must be a bounded list of memory IDs');
     exclude.forEach(identifier);
     // `profile`: also return this person's standing profile (outside `budgetChars`); what it shows is not retrieved.
     const profile=renderProfile(input.profile?this.profileEntries(scope,registered.policy):[]);
+    // Continuation: this person's newest digests of dialogue outside the window, for the run's note. Outside
+    // `budgetChars` and the retrieval cap; what it shows is not retrieved as well.
+    const continuation=renderContinuation(this.continuationEntries(scope,registered.policy,windowFromAt,exclude));
     const budget=integer(input.budgetChars===undefined?DEFAULT_CONTEXT_CHARS:input.budgetChars,0,16000),
-    rows=this.candidates(scope,registered.policy,query,64,{exclude:[...exclude,...profile.ids]}),
+    rows=this.candidates(scope,registered.policy,query,64,{exclude:[...exclude,...profile.ids,...continuation.ids],digestsBefore:windowFromAt}),
     // The best-ranked few only; what is left out was not injected and can come in on a later call.
-    {sections,...rendered}=renderContextParts(JSON.parse(e.persona),rows.slice(0,RETRIEVED_ITEMS),budget),
+    shown=rows.slice(0,RETRIEVED_ITEMS),
+    {sections,...rendered}=renderContextParts(JSON.parse(e.persona),shown,budget),
+    injected=new Set(sections.flatMap(section=>section.ids)),
     result={
       revision:this.store.get('revision'),
       entityId:e.id,
@@ -459,9 +467,13 @@ export class Authority extends InitiationDomain {
       // `text` is the whole context; personaText/memoryText are the same content apart (stable / per-query).
       ...rendered,
       // The entries rendered into memoryText, so the caller can pass them back as `exclude`.
-      memoryIds:sections.flatMap(section=>section.ids),
+      memoryIds:[...injected],
       // Stable for a person until their pinned items or facts change; '' unless `profile` was asked for.
       profileText:profile.text,
+      // '' unless this is the person's own private conversation and `windowFromAt` was given. The caller keeps
+      // `continuationIds` with the note it shows them in and passes them back as `exclude`, like `memoryIds`.
+      continuationText:continuation.text,
+      continuationIds:continuation.ids,
       scope,
       world:this.worldStatus()
     };
@@ -473,8 +485,10 @@ export class Authority extends InitiationDomain {
         seq:++this.traceSeq,at:this.now(),capabilityId,stream:opaqueStream(capabilityId,input.streamId),person:opaquePerson(scope.personId),owner:scope.personId==='person:owner',audience:scope.audience,
         entityId:e.id,memoryEpoch:result.memoryEpoch,revision:result.revision,personaRevision:result.personaRevision,
         queryChars:query.length,budgetChars:budget,candidates:rows.length,
-        chars:{total:rendered.text.length,persona:rendered.personaText.length,memory:rendered.memoryText.length,profile:profile.text.length},
-        sections,profile:profile.ids
+        chars:{total:rendered.text.length,persona:rendered.personaText.length,memory:rendered.memoryText.length,profile:profile.text.length,continuation:continuation.text.length},
+        sections,profile:profile.ids,continuation:continuation.ids,
+        // How well each injected entry matched: the distinct query tokens, and how many of them each entry holds.
+        queryTokens:Math.min(64,new Set(tokenize(query)).size),hits:Object.fromEntries(shown.filter(row=>injected.has(row.id)).map(row=>[row.id,row.hits]))
       });
       if(this.traces.length>TRACE_LIMIT)this.traces.shift();
     }

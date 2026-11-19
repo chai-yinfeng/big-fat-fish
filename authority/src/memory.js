@@ -3,7 +3,7 @@ import { capability, canonical, closed, contextScope, enumeration, fail, identif
 import { DEFAULT_ENTITY_ID } from './store.js';
 import { normalizePersona, renderPersona } from './persona.js';
 import { tokenize } from './util.js';
-import { memoryContent, opaquePerson } from './context.js';
+import { memoryContent, opaquePerson, CONTINUATION_ITEMS } from './context.js';
 import { SENSITIVE } from './policies.js';
 
 const DAY=86400000;
@@ -78,9 +78,10 @@ export class MemoryDomain {
       });
     });
   }
-  /** What a conversation may read. Machine digests (kind 'digest') are written but not read back yet:
-   * like 'inner' notes they are in no retrieval, read, recall or profile. */
-  visibility(scope,policy){
+  /** What a conversation may read. Machine digests (kind 'digest') are, like 'inner' notes, in no search,
+   * read, recall or profile. `digestsBefore` (context() only) lets the person's own private conversation
+   * retrieve that person's digests whose dialogue ended before that time, i.e. has left the replay window. */
+  visibility(scope,policy,{digestsBefore}={}){
     if(scope.audience==='shared')return{
       sql:"m.visibility='public' AND COALESCE(m.kind,'') NOT IN ('inner','digest')",
       args:[]
@@ -89,15 +90,20 @@ export class MemoryDomain {
       sql:"COALESCE(m.kind,'') NOT IN ('inner','digest') AND m.collection='notes' AND m.kind='learning'",
       args:[]
     };
+    if(digestsBefore!==undefined&&scope.audience==='private'&&policy==='conversation.v1')return{
+      sql:"COALESCE(m.kind,'')<>'inner' AND (COALESCE(m.kind,'')<>'digest' OR (m.person_id=? AND m.visibility='private' AND json_extract(m.body,'$.toAt')<?)) AND (m.visibility='public' OR m.person_id=? OR (m.collection='notes' AND m.kind='learning'))",
+      args:[scope.personId,digestsBefore,scope.personId]
+    };
     return{
       sql:"COALESCE(m.kind,'') NOT IN ('inner','digest') AND (m.visibility='public' OR m.person_id=? OR (m.collection='notes' AND m.kind='learning'))",
       args:[scope.personId]
     };
   }
-  /** `exclude`: memory IDs that are never candidates (already in front of the model). */
-  candidates(scope,policy,query,limit,{ includeArchived = false, exclude = [] } = {}){
+  /** `exclude`: memory IDs that are never candidates (already in front of the model).
+   * `digestsBefore`: see visibility(). Each entry carries `hits`, the number of query tokens it matched. */
+  candidates(scope,policy,query,limit,{ includeArchived = false, exclude = [], digestsBefore } = {}){
     const e=this.entity(scope.entityId),
-    v=this.visibility(scope,policy),
+    v=this.visibility(scope,policy,{digestsBefore}),
     tokens=[...new Set(tokenize(query))].slice(0,64),
     now=this.worldStatus().worldNow,
     cutoff=now-e.retention_days*DAY*4;
@@ -116,9 +122,21 @@ export class MemoryDomain {
     return ranked.map(({
       row
     })=>{
-      const entry = { ...this.store.memory(row), archived: !row.pinned && row.created_world_at < cutoff };
+      const entry = { ...this.store.memory(row), archived: !row.pinned && row.created_world_at < cutoff, hits: row.hits };
       return row.visibility==='public'?publicEntry(entry):entry;
     });
+  }
+  /** The continuation of a private conversation: the newest digests (at most CONTINUATION_ITEMS) of the
+   * person it is with whose dialogue ended before `before` (the start of the replay window), newest
+   * first, minus the ones in `exclude`. Nobody else's conversation, and no shared one, gets any. */
+  continuationEntries(scope,policy,before,exclude=[]){
+    if(before===undefined||scope.audience!=='private'||policy!=='conversation.v1')return[];
+    const e=this.entity(scope.entityId),
+    cutoff=this.worldStatus().worldNow-e.retention_days*DAY*4;
+    return this.store.db.prepare(`SELECT m.* FROM memory_items m WHERE m.entity_id=? AND m.kind='digest' AND m.collection='experiences'
+      AND m.status='active' AND m.visibility='private' AND m.person_id=? AND json_extract(m.body,'$.toAt')<? AND (m.pinned=1 OR m.created_world_at>=?)
+      ORDER BY json_extract(m.body,'$.toAt') DESC,m.revision DESC LIMIT ?`).all(e.id,scope.personId,before,cutoff,CONTINUATION_ITEMS)
+      .filter(row=>!exclude.includes(row.id)).map(row=>this.store.memory(row));
   }
   /** The facts of the person this private conversation is with, for their standing profile: pinned
    * first, then by importance, newest first. The order never depends on a query or on the time. */

@@ -21,7 +21,7 @@ A second task of the same worker (`consolidation.js`), independent of the diary 
 - The answer `{summary, feeling, facts:[{key,value,quote,ref}]}` is only shaped here (fenced JSON is read, over-long text is cut, malformed facts are dropped); Authority requires each fact's `ref` to be the person's own words in this batch; the value is the model's normalised reading (a relative date resolved from the line's time and `date`), and a quote that is not word for word in that line is stored marked `evidence.quoteVerbatim:false` rather than refused. Unparseable output is reported as `invalid`; Authority skips a batch after three.
 - A 429 from the gateway (spend tier at "restricted" or above) is reported as `deferred`: Authority uncounts the batch, nothing moves, and the worker takes no batch for 30 minutes (`consolidationDeferMs` in memory-worker.json; `tickMs` sets the tick, default 60 s).
 - Nothing is kept by the worker: no cursor, prompt, answer or dialogue; its status is an enum in memory.
-- What it produces — a machine digest of that person and extracted facts — is listed on the console memory page, marked as machine-written. Digests are not read back into any conversation yet. Voice and image messages are placeholders in the dialogue, so their content is not consolidated.
+- What it produces — a machine digest of that person and extracted facts — is listed on the console memory page, marked as machine-written. A digest is read back only into that person's own private conversation, by Authority's `context()` once the dialogue it covers has left the replay window (see authority/PROTOCOL.md); this worker has no part in that. Voice and image messages are placeholders in the dialogue, so their content is not consolidated.
 
 ## Privacy and publication
 
