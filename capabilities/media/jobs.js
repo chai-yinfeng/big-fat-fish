@@ -80,7 +80,8 @@ export function createGate() {
  * and each stage in slices: `await stage(name, timeoutMs, step => ...)`, inside it `await step.slice(signal => ...)`
  * and `step.progress(percent)`. It fails with a fixed lowercase code (`fail('no_speech')`); anything else is `failed`.
  * `usage`: `{ reserve(capability), record(body) }`, the gateway's usage ledger (a slot of the day before the job
- * exists; how it ended afterwards). `worldStatus()` -> `{ paused, revision }`.
+ * exists; how it ended afterwards). A runner with `ledger: false` takes no slot and reports nothing: what it costs is
+ * counted elsewhere (a video's stills, one gateway slot each). `worldStatus()` -> `{ paused, revision }`.
  */
 export function createJobs({ file, runners, gate = createGate(), worldStatus, usage, clock = Date.now, worldCheckMs = JOBS.worldCheckMs }) {
   if (!path.isAbsolute(file)) throw fail('MEDIA_JOB_CONFIG');
@@ -91,6 +92,7 @@ export function createJobs({ file, runners, gate = createGate(), worldStatus, us
     const temporary = file + '.tmp'; fs.writeFileSync(temporary, JSON.stringify(state) + '\n', { mode: 0o600 }); fs.renameSync(temporary, file);
   };
   const report = body => { try { Promise.resolve(usage.record(body)).catch(() => {}); } catch {} };
+  const metered = capability => runners[capability]?.ledger !== false;
   const pause = ms => new Promise(resolve => { const wake = () => { clearTimeout(timer); sleepers.delete(wake); resolve(); }, timer = setTimeout(wake, ms); sleepers.add(wake); });
   const world = async () => { try { const value = await worldStatus(); return typeof value?.paused === 'boolean' && Number.isSafeInteger(value.revision) ? value : null; } catch { return null; } };
 
@@ -118,7 +120,7 @@ export function createJobs({ file, runners, gate = createGate(), worldStatus, us
     Object.assign(job, { status, failureCode, result, endedAt: now, progress: null });
     if (FINISHED.includes(status)) { job.notice = { state: 'pending', at: now }; job.doneWorldRevision = worldRevision; job.expiresAt = now + JOBS.resultTtlMs; }
     else job.notice = { state: 'none', at: now };
-    if (job.startedAt) report({ capability: job.capability, outcome: status === 'done' ? 'ok' : 'failed', busyMs: Math.min(86400000, Math.max(0, now - job.startedAt)) });
+    if (job.startedAt && metered(job.capability)) report({ capability: job.capability, outcome: status === 'done' ? 'ok' : 'failed', busyMs: Math.min(86400000, Math.max(0, now - job.startedAt)) });
   }
   /** Housekeeping: untold results past their time are dropped, queued jobs past their deadline expire, old records go. */
   function sweep() {
@@ -226,12 +228,14 @@ export function createJobs({ file, runners, gate = createGate(), worldStatus, us
         const reject = code => { settle(job, 'rejected', { failureCode: code }); state.jobs.push(job); save(); return brief(job); };
         const waiting = active();
         if (waiting.length >= JOBS.queued || waiting.filter(entry => entry.scope.entityId === owner.entityId && entry.scope.personId === owner.personId).length >= JOBS.perPerson) {
-          report({ capability, outcome: 'denied', reason: 'busy' });
+          if (metered(capability)) report({ capability, outcome: 'denied', reason: 'busy' });
           return reject('busy');
         }
         // The ledger counts a refused slot itself. Without the ledger nothing is started: the daily limit is its to keep.
-        try { await usage.reserve(capability); }
-        catch (error) { if (error?.code === 'CONTENT_BUDGET_EXHAUSTED') return reject('daily_limit'); throw fail('MEDIA_JOB_UNAVAILABLE'); }
+        if (metered(capability)) {
+          try { await usage.reserve(capability); }
+          catch (error) { if (error?.code === 'CONTENT_BUDGET_EXHAUSTED') return reject('daily_limit'); throw fail('MEDIA_JOB_UNAVAILABLE'); }
+        }
         state.jobs.push(job); save(); kick();
         return brief(job);
       });

@@ -495,11 +495,11 @@ def scenario_content_config(config, content_source, replaying):
 
 
 def video_scenario_config(site, node, tools, runtime):
-    """operator/providers/video.json for scenario replay: the MOCK site only, answered by tools/fake-ytdlp.mjs (no
-    network is used), run inside bubblewrap as production runs yt-dlp: the node runtime and the tools read-only, the
-    job's work directory the only writable place. ffmpeg is never started here (staging has no speech model, so
-    nothing is downloaded)."""
-    return {'schemaVersion': 1, 'ytdlp': [str(node), str(tools / 'fake-ytdlp.mjs')], 'ffmpeg': ['/usr/bin/ffmpeg'],
+    """operator/providers/video.json for scenario replay: the MOCK site only, answered by tools/fake-ytdlp.mjs and
+    tools/fake-ffmpeg.mjs (no network is used, nothing is decoded), run inside bubblewrap as production runs yt-dlp and
+    ffmpeg: the node runtime and the tools read-only, the job's work directory the only writable place. Staging has no
+    speech model, so no audio is downloaded; the stand-in ffmpeg only finds the cuts of a video and takes its stills."""
+    return {'schemaVersion': 1, 'ytdlp': [str(node), str(tools / 'fake-ytdlp.mjs')], 'ffmpeg': [str(node), str(tools / 'fake-ffmpeg.mjs')],
             'sandbox': {'kind': 'bwrap', 'bwrap': '/usr/bin/bwrap', 'readOnly': [str(runtime), str(tools)]}, 'sites': [site]}
 
 

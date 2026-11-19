@@ -180,6 +180,16 @@ test('her feeling in a digest is read back to the card it was written under only
   a.activatePersonaCard({ id: DEFAULT_CARD_ID, reason: REASON });
   assert.deepEqual(lines(), [['MOCK-摘要2', 'MOCK-感受2'], ['MOCK-摘要3', undefined]]);
   assert.deepEqual([feelingFor(body(old), DEFAULT_CARD_ID), feelingFor(body(old), id), feelingFor(body(own), id), feelingFor(body(own), DEFAULT_CARD_ID), feelingFor({}, id)], ['MOCK-感受1', '', 'MOCK-感受3', '', '']);
+  // The three memory tools follow the same rule: every summary, a feeling only of the card now current.
+  const tools = () => {
+    const window = { streamId: STREAM, windowFromAt: clock.now }, pick = items => Object.fromEntries(items.filter(item => item.kind === 'digest').map(item => [item.summary, item.feeling]));
+    return [pick(a.memorySearch('qq', { ...window, query: 'MOCK-摘要1 MOCK-摘要2 MOCK-摘要3' }).items), pick([old, late, own].map(digest => a.memoryRead('qq', { ...window, id: digest }).item)), pick(a.memoryRecall('qq', { ...window, fromAt: 0, toAt: clock.now }).items)];
+  };
+  const underDefault = { 'MOCK-摘要1': 'MOCK-感受1', 'MOCK-摘要2': 'MOCK-感受2', 'MOCK-摘要3': undefined }, underOther = { 'MOCK-摘要1': undefined, 'MOCK-摘要2': undefined, 'MOCK-摘要3': 'MOCK-感受3' };
+  assert.deepEqual(tools(), [underDefault, underDefault, underDefault]);
+  a.activatePersonaCard({ id, reason: REASON });
+  assert.deepEqual(tools(), [underOther, underOther, underOther]);
+  a.activatePersonaCard({ id: DEFAULT_CARD_ID, reason: REASON });
   // Without a card named, the block is rendered for the default card (what callers before cards got).
   assert.ok(renderContinuation([{ id: 'x', summary: 'MOCK-s', feeling: 'MOCK-f', toAt: 0 }]).text.includes('MOCK-f'));
   // Retrieval shows a digest's summary only, whatever the card.

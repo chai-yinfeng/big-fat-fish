@@ -3,10 +3,18 @@ import { capability, canonical, closed, contextScope, enumeration, fail, identif
 import { DEFAULT_ENTITY_ID } from './store.js';
 import { normalizePersona, renderPersona } from './persona.js';
 import { tokenize } from './util.js';
-import { memoryContent, opaquePerson, CONTINUATION_ITEMS } from './context.js';
+import { memoryContent, opaquePerson, CONTINUATION_ITEMS, DIGEST_LABEL, beijingDated } from './context.js';
 import { SENSITIVE } from './policies.js';
+import { feelingFor } from './cards.js';
 
 const DAY=86400000;
+/** A machine digest as a memory tool returns it: its ID, the label, the summary (cut to `chars`), her feeling and
+ * the Beijing day the dialogue ended. Nothing else of the body (stream, observation IDs, account numbers).
+ * `cardId`: the persona card now current; a feeling written under another card is left out (cards.js). */
+const digestItem=(memory,chars,cardId)=>({
+  id:memory.id,kind:'digest',label:DIGEST_LABEL,summary:String(memory.summary??'').slice(0,chars),
+  ...(feelingFor(memory,cardId)?{feeling:memory.feeling}:{}),...beijingDated(memory.toAt)
+});
 const placeholders=values=>values.map(()=>'?').join(',');
 const uniqueIds=ids=>{
   if(!Array.isArray(ids)||!ids.length||ids.length>100)fail('VALIDATION_ERROR','Select 1 to 100 source IDs');
@@ -79,8 +87,9 @@ export class MemoryDomain {
     });
   }
   /** What a conversation may read. Machine digests (kind 'digest') are, like 'inner' notes, in no search,
-   * read, recall or profile. `digestsBefore` (context() only) lets the person's own private conversation
-   * retrieve that person's digests whose dialogue ended before that time, i.e. has left the replay window. */
+   * read, recall or profile. `digestsBefore` (context(), and the memory tools given `windowFromAt`) lets the person's
+   * own private conversation retrieve that person's digests whose dialogue ended before that time, i.e. has left the
+   * replay window. */
   visibility(scope,policy,{digestsBefore}={}){
     if(scope.audience==='shared')return{
       sql:"m.visibility='public' AND COALESCE(m.kind,'') NOT IN ('inner','digest')",
@@ -152,18 +161,33 @@ export class MemoryDomain {
       return row.visibility==='public'?publicEntry(entry):entry;
     });
   }
+  /** The memory tools' `windowFromAt` (when the oldest run the executor replays began): in the person's own private
+   * conversation.v1 chat, their digests of dialogue that ended before it (capped at now) may be returned; otherwise,
+   * or without it, none. It does not change the window Authority keeps for consolidation (context() reports that). */
+  toolDigestsBefore(scope,policy,windowFromAt){
+    if(windowFromAt===undefined)return undefined;
+    integer(windowFromAt);
+    return scope.audience==='private'&&policy==='conversation.v1'?Math.min(windowFromAt,this.now()):undefined;
+  }
   memorySearch(capabilityId,input){
-    closed(input,['streamId','query','limit','budgetChars'],['streamId','query']);
+    closed(input,['streamId','query','limit','budgetChars','windowFromAt'],['streamId','query']);
     const policy=capability(this.store,capabilityId).policy,
     scope=contextScope(this.store,capabilityId,input.streamId),
     e=this.entity(scope.entityId);
     text(input.query,2000,true);
     const limit=integer(input.limit??8,1,32),
     budget=integer(input.budgetChars??2400,0,16000),
-    rows=this.candidates(scope,policy,input.query,limit,{ includeArchived: true });
+    rows=this.candidates(scope,policy,input.query,limit,{ includeArchived: true, digestsBefore: this.toolDigestsBefore(scope,policy,input.windowFromAt) });
     let remaining=budget;
     const items=[];
     for(const row of rows){
+      if(row.kind==='digest'){
+        const item=digestItem(row,Math.min(remaining,1000),this.currentCardId(scope.entityId));
+        if(!item.summary)continue;
+        items.push(item);
+        remaining-=item.summary.length;
+        continue;
+      }
       const content=memoryContent(row),
       excerpt=content.slice(0,Math.min(remaining,1000));
       if(!excerpt)continue;
@@ -176,22 +200,26 @@ export class MemoryDomain {
       entityId:e.id,
       memoryEpoch:this.streamEpoch(e,capabilityId,scope.streamId),
       items,
-      text:items.map(i=>JSON.stringify({
+      text:items.map(i=>JSON.stringify(i.kind==='digest'?{
+        id:i.id,label:i.label,text:i.summary,...(i.feeling?{feeling:i.feeling}:{}),...(i.date?{date:i.date}:{})
+      }:{
         id:i.id,text:i.excerpt
       })).join('\n').slice(0,budget),
       world:this.worldStatus()
     };
   }
   memoryRead(capabilityId,input){
-    closed(input,['streamId','id']);
+    closed(input,['streamId','id','windowFromAt'],['streamId','id']);
     identifier(input.id);
     const policy=capability(this.store,capabilityId).policy,
     scope=contextScope(this.store,capabilityId,input.streamId),
     e=this.entity(scope.entityId),
-    v=this.visibility(scope,policy),
+    v=this.visibility(scope,policy,{digestsBefore:this.toolDigestsBefore(scope,policy,input.windowFromAt)}),
     cutoff=this.worldStatus().worldNow-e.retention_days*DAY*4;
     const row=this.store.db.prepare(`SELECT m.* FROM memory_items m WHERE m.id=? AND m.entity_id=? AND ${v.sql} AND m.status='active' AND m.collection IN ('facts','notes','experiences')`).get(input.id,e.id,...v.args);
     const memory = row ? this.store.memory(row) : null;
+    // A digest is read as its safe fields only.
+    if(memory?.kind==='digest')return{entityId:e.id,memoryEpoch:this.streamEpoch(e,capabilityId,scope.streamId),item:digestItem(memory,1000,this.currentCardId(e.id))};
     // Model-facing read: the person is an opaque label, never a raw person ID.
     const item = memory ? { ...memory, ...(memory.personId ? { personId: opaquePerson(memory.personId) } : {}), archived: !row.pinned && row.created_world_at < cutoff } : null;
     return{
@@ -556,11 +584,11 @@ export class MemoryDomain {
   }
   /** Date recall: pinned items, important facts (>=0.8) and experiences from their default importance (0.65) up. */
   memoryRecall(capabilityId, input) {
-    closed(input, ['streamId', 'fromAt', 'toAt', 'limit', 'budgetChars'], ['streamId', 'fromAt', 'toAt']);
+    closed(input, ['streamId', 'fromAt', 'toAt', 'limit', 'budgetChars', 'windowFromAt'], ['streamId', 'fromAt', 'toAt']);
     const policy = capability(this.store, capabilityId).policy;
     const scope = contextScope(this.store, capabilityId, input.streamId);
     const entity = this.entity(scope.entityId),
-    visible = this.visibility(scope, policy);
+    visible = this.visibility(scope, policy, { digestsBefore: this.toolDigestsBefore(scope, policy, input.windowFromAt) });
     integer(input.fromAt);
     integer(input.toAt, input.fromAt);
     const limit = integer(input.limit ?? 8, 1, 16),
@@ -572,12 +600,15 @@ export class MemoryDomain {
       ORDER BY m.pinned DESC,m.importance DESC,m.revision DESC LIMIT ?`) .all(entity.id, ...visible.args, input.fromAt, input.toAt, limit);
     let remaining = budget;
     const items = rows.map(row => {
-      const memory = this.store.memory(row), content = memoryContent(memory).slice(0, Math.min(1000, remaining));
+      const memory = this.store.memory(row);
+      // A digest (dated by the end of its dialogue, which is its eventAt): its safe fields only.
+      if (memory.kind === 'digest') { const item = digestItem(memory, Math.min(1000, remaining), this.currentCardId(entity.id)); remaining -= item.summary.length; return item.summary ? item : null; }
+      const content = memoryContent(memory).slice(0, Math.min(1000, remaining));
        remaining -= content.length;
        return {
         id: row.id, text: content, recordedAt: memory.recordedAt, eventAt: memory.eventAt, dateBasis: memory.eventAt === null ? 'recordedAt' : 'eventAt', importance: row.importance, pinned: Boolean(row.pinned)
       };
-    }).filter(item => item.text);
+    }).filter(item => item?.text || item?.summary);
     return {
       entityId: entity.id,
       memoryEpoch: this.streamEpoch(entity, capabilityId, scope.streamId),
