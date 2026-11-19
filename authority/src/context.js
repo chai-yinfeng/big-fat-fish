@@ -41,7 +41,9 @@ export function opaqueStream(capabilityId, streamId) {
   return `s-${createHash('sha256').update(`${capabilityId}\0${streamId}`).digest('hex').slice(0, 6)}`;
 }
 /** Memory blocks of the context, in the order they are first seen: trace key -> header label. */
-const KINDS = { reported: '归属陈述（非独立核验）', digest: '经历摘要（机器整理，不是原话）', experience: '会话经验', learning: '私有学习', self: '私有自省' };
+/** How a machine digest is labelled wherever the model sees one (context blocks and memory tools). */
+export const DIGEST_LABEL = '经历摘要（机器整理，不是原话）';
+const KINDS = { reported: '归属陈述（非独立核验）', digest: DIGEST_LABEL, experience: '会话经验', learning: '私有学习', self: '私有自省' };
 function memoryLine(entry) {
   const content = entry.attribution === 'reported'
     ? `Reported by ${opaquePerson(entry.personId)} (unverified): ${entry.key}: ${entry.value}`

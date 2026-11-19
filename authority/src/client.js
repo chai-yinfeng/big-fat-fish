@@ -6,6 +6,8 @@ import { isAbsolute } from 'node:path';
 const fail = code => Object.assign(new Error(code), { code });
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const text = (value, max = 256) => typeof value === 'string' && value.length > 0 && value.length <= max;
+/** The memory tools' optional `windowFromAt` (ms). */
+const windowFrom = value => value.windowFromAt === undefined || Number.isSafeInteger(value.windowFromAt) && value.windowFromAt >= 0;
 function closed(value, allowed, required) {
   if (!object(value) || Object.keys(value).some(key => !allowed.includes(key)) || required.some(key => !Object.hasOwn(value, key))) throw fail('INVALID_REQUEST');
 }
@@ -45,17 +47,19 @@ export class AuthorityClient {
     return this.#request('POST', '/v1/context', value);
   }
   async memorySearch(value) {
-    closed(value, ['streamId', 'query', 'limit', 'budgetChars'], ['streamId', 'query']);
+    closed(value, ['streamId', 'query', 'limit', 'budgetChars', 'windowFromAt'], ['streamId', 'query']);
+    if (!windowFrom(value)) throw fail('INVALID_REQUEST');
     if (!text(value.streamId) || typeof value.query !== 'string' || value.query.length > 2000 || (value.limit !== undefined && (!Number.isInteger(value.limit) || value.limit < 1 || value.limit > 32)) || (value.budgetChars !== undefined && (!Number.isInteger(value.budgetChars) || value.budgetChars < 0 || value.budgetChars > 2400))) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/memory/search', value);
   }
   async memoryRead(value) {
-    closed(value, ['streamId', 'id'], ['streamId', 'id']);
-    if (!text(value.streamId) || !text(value.id)) throw fail('INVALID_REQUEST');
+    closed(value, ['streamId', 'id', 'windowFromAt'], ['streamId', 'id']);
+    if (!text(value.streamId) || !text(value.id) || !windowFrom(value)) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/memory/read', value);
   }
   async memoryRecall(value) {
-    closed(value, ['streamId', 'fromAt', 'toAt', 'limit', 'budgetChars'], ['streamId', 'fromAt', 'toAt']);
+    closed(value, ['streamId', 'fromAt', 'toAt', 'limit', 'budgetChars', 'windowFromAt'], ['streamId', 'fromAt', 'toAt']);
+    if (!windowFrom(value)) throw fail('INVALID_REQUEST');
     if (!text(value.streamId) || !Number.isSafeInteger(value.fromAt) || !Number.isSafeInteger(value.toAt) || value.fromAt < 0 || value.toAt < value.fromAt) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/memory/recall', value);
   }
