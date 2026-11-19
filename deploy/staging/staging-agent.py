@@ -7,7 +7,8 @@ code) with a staging Config/System: everything lives below
 ~/companion-staging, which acts as the service HOME. Units are renamed
 companion-staging-*, the operator socket listens on 127.0.0.1:13082, and the
 memory and QQ units are limited to Unix sockets, so no release (old ones have
-3082/3001 hard-coded) can reach production ports. No sudo, no QQ login, no
+3082/3001 hard-coded) can reach production ports. The room page listens on
+127.0.0.1:14173. No sudo, no QQ login, no
 model key, no provider call.
 
 The scenarios in tools/scenarios.json are replayed against the upgraded release: a fake
@@ -21,6 +22,11 @@ scenarios, tools/migration-drill.mjs drills a schema migration on a copy of the
 database (new release migrates behind a backup, old release still opens and writes it),
 `companion-deploy rollback` returns to the from-release on the data root the new one
 used, and a second rollback rolls forward again before the from-release is pruned.
+
+The room page (companion-room unit) is followed through all of it: unprepared after the
+upgrade (page up, state 503), prepared by the release's ops/prepare-room.mjs, gone after
+the rollback while its credential files stay in the data root (the old Authority must
+start with them there), back after the roll-forward and after a manager restart.
 
   staging-agent.py lifecycle --from <tarball> --to <tarball>
   staging-agent.py scenarios [--only S1,S3]
@@ -49,11 +55,11 @@ TOOLS, INBOX = ROOT / 'tools', ROOT / 'inbox'
 UNITS_DIR = Path.home() / '.config/systemd/user'  # where the agent's user manager reads units
 NODE_CACHE = Path.home() / '.cache/companion-staging'  # outside ROOT: survives --reset
 PREFIX = 'companion-staging-'
-OPERATOR_PORT, ONEBOT_PORT = 13082, 13001
+OPERATOR_PORT, ONEBOT_PORT, ROOM_PORT = 13082, 13001, 14173
 INITIATION_POLL_MS = 3000  # scenario replay: how often the QQ bridge asks for an initiated run (production: 60 s)
 # scenario replay: the QQ bridge still merges a burst, but waits briefly and sends split replies without pauses
 SCENARIO_PACING = {'burstQuietMs': 500, 'burstMaxWaitMs': 1500, 'gapBaseMs': 0, 'gapPerLogMs': 0, 'gapJitterMs': 0, 'gapMinMs': 0, 'gapMaxMs': 0, 'firstMinMs': 0, 'firstMaxMs': 0}
-PROD_PORTS = (3001, 3082, 6099)
+PROD_PORTS = (3001, 3082, 6099, 4173)
 UNIX_ONLY = ('memory', 'qq')  # their old code dials 127.0.0.1:3082 / :3001
 PROXY = 'http://127.0.0.1:7890'
 BASE = ROOT / '.local/share/companion-world-v1'
@@ -81,6 +87,8 @@ def staging_unit(name, text, root=ROOT):
     role = name[len('companion-'):].rsplit('.', 1)[0]
     text = re.sub(r'\bcompanion-([A-Za-z0-9-]+\.(?:service|socket))\b', lambda m: PREFIX + m.group(1), text)
     text = text.replace('%h/', str(root) + '/').replace('127.0.0.1:3082', '127.0.0.1:%d' % OPERATOR_PORT)
+    for production in ('/room/serve.mjs 4173 ', '127.0.0.1:4173'):  # the room page's loopback port: its argument, and prose about it
+        text = text.replace(production, production.replace('4173', str(ROOM_PORT)))
     extra = 'Environment=HOME=%s\n' % root
     if role in UNIX_ONLY:
         extra += 'RestrictAddressFamilies=AF_UNIX\n'
@@ -248,6 +256,124 @@ def unix_post(path, route, token=None):
     status = client.recv(64).decode('latin1').split(' ')
     client.close()
     return int(status[1])
+
+
+def unix_get(path, route, token=None):
+    """HTTP GET over a Unix socket; returns (status, body text)."""
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(15)
+    client.connect(str(path))
+    headers = 'GET %s HTTP/1.1\r\nHost: staging\r\nConnection: close\r\n' % route
+    if token:
+        headers += 'Authorization: Bearer %s\r\n' % token
+    client.sendall((headers + '\r\n').encode())
+    data = b''
+    while len(data) < 65536:
+        chunk = client.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    client.close()
+    head, _, body = data.decode('utf8', 'replace').partition('\r\n\r\n')
+    return int(head.split(' ')[1]), body
+
+
+def room_page(route):
+    connection = http.client.HTTPConnection('127.0.0.1', ROOM_PORT, timeout=15)
+    connection.request('GET', route)
+    response = connection.getresponse()
+    text = response.read().decode('utf8', 'replace')
+    connection.close()
+    return response.status, text
+
+
+ROOM_KEYS = {'version', 'source', 'at', 'since', 'clock', 'weather', 'lamp', 'activity', 'pose'}
+ROOM_FILES = ('operator/room-credential.json', 'room-config/room.token')
+
+
+def room_listener():
+    """Local addresses listening on the room port; the unit must bind loopback only."""
+    out = subprocess.run(['ss', '-Hltn', 'sport = :%d' % ROOM_PORT], capture_output=True, text=True, timeout=10).stdout
+    return sorted(line.split()[3] for line in out.splitlines() if len(line.split()) > 3)
+
+
+def room_unprepared():
+    """Right after the upgrade of a world that never had a room: the unit runs, the page is served, and the
+    state route says unavailable (no reason) because there is no credential yet."""
+    if any((BASE / name).exists() for name in ROOM_FILES):
+        raise RuntimeError('the from-release left a room credential; this step expects none')
+    page, state = room_page('/'), room_page('/state')
+    if page[0] != 200 or '<html' not in page[1].lower() or state != (503, '{}'):
+        raise RuntimeError('page %d, state %d %s' % (page[0], state[0], state[1][:40]))
+    if room_listener() != ['127.0.0.1:%d' % ROOM_PORT]:
+        raise RuntimeError('room listener is %s' % room_listener())
+    return 'page 200, state 503 {} (no credential yet); listening on 127.0.0.1:%d only' % ROOM_PORT
+
+
+def room_prepare(release):
+    """The owner's one-time step, run by the release itself: token and hash in their own private files, nothing
+    added to authority.json (an older Authority refuses a room credential listed there)."""
+    out = json.loads(run([str(NODE), str(ROOT / 'src/companion' / release / 'ops/prepare-room.mjs')]))
+    again = json.loads(run([str(NODE), str(ROOT / 'src/companion' / release / 'ops/prepare-room.mjs')]))
+    if out.get('prepared') is not True or out.get('authorityRestartRequired') is not True or again.get('credentialPreserved') is not True:
+        raise RuntimeError('unexpected prepare-room result')
+    for name in ROOM_FILES:
+        if (BASE / name).stat().st_mode & 0o777 != 0o600:
+            raise RuntimeError('%s is not 0600' % name)
+    if any(row.get('role') == 'room' for row in json.loads((BASE / 'operator/authority.json').read_text())['credentials']):
+        raise RuntimeError('a room credential was written into authority.json')
+    return 'prepare-room: token and hash files 0600, authority.json untouched, second run kept the credential'
+
+
+def room_check():
+    """The page, its state from Authority, and what the room credential may and may not do on the Authority socket."""
+    token = (BASE / 'room-config/room.token').read_text().strip()
+    other = (BASE / 'service-config/health.token').read_text().strip()
+    sock = BASE / 'ipc/authority/authority.sock'
+    seen = []
+    for route in ('/', '/manifest.json', '/room.js', '/state'):
+        status, text = room_page(route)
+        if status != 200 or token in text:
+            raise RuntimeError('room page %s -> %d' % (route, status))
+        seen.append(text)
+    state = json.loads(seen[-1])
+    if set(state) != ROOM_KEYS or state.get('source') != 'authority' or state.get('version') != 1:
+        raise RuntimeError('room state is outside the contract: %s' % sorted(state))
+    for route in ('/room.token', '/../room-config/room.token', '/.env'):
+        if room_page(route)[0] != 404:
+            raise RuntimeError('room page answered %s' % route)
+    status, body = unix_get(sock, '/v1/room', token)
+    if status != 200 or set(json.loads(body).get('value', {})) != ROOM_KEYS:
+        raise RuntimeError('GET /v1/room with the room credential -> %d' % status)
+    refused = {route: unix_get(sock, route, token)[0] for route in ('/v1/health', '/v1/admin/state', '/v1/receipts/x')}
+    refused['POST /v1/observations'] = unix_post(sock, '/v1/observations', token)
+    refused['POST /v1/room'] = unix_post(sock, '/v1/room', token)
+    refused['POST /v1/context'] = unix_post(sock, '/v1/context', token)
+    if any(code != 403 for code in refused.values()):
+        raise RuntimeError('the room credential was not refused everywhere else: %s' % refused)
+    if unix_get(sock, '/v1/room', other)[0] != 403 or unix_get(sock, '/v1/room')[0] != 401 or unix_get(sock, '/v1/health', other)[0] != 200:
+        raise RuntimeError('GET /v1/room is open to another credential, or the health credential stopped working')
+    if unix_get(BASE / 'ipc/operator/operator.sock', '/world', token)[0] == 200:
+        raise RuntimeError('the operator socket accepted the room credential')
+    if room_listener() != ['127.0.0.1:%d' % ROOM_PORT]:
+        raise RuntimeError('room listener is %s' % room_listener())
+    return 'page+state 200 activity=%s; room credential: GET /v1/room 200, %d other routes 403; other credential 403, none 401; loopback %d only' % (
+        state.get('activity'), len(refused), ROOM_PORT)
+
+
+def room_after_rollback(release):
+    """After `rollback` to the from-release. One without the room: its unit is gone and nothing listens, while the
+    credential files stay in the data root (that this Authority started with them there is the point of the step)."""
+    if (ROOT / 'src/companion' / release / 'room/serve.mjs').is_file():
+        return 'from-release has the room too: ' + room_check()
+    if (UNITS_DIR / (PREFIX + 'room.service')).exists() or room_listener():
+        raise RuntimeError('the room unit or its listener survived the rollback')
+    if not all((BASE / name).is_file() for name in ROOM_FILES):
+        raise RuntimeError('the rollback removed a room credential file')
+    status = unix_get(BASE / 'ipc/authority/authority.sock', '/v1/room', (BASE / 'room-config/room.token').read_text().strip())[0]
+    if status == 200:
+        raise RuntimeError('the from-release answered the room credential')
+    return 'no room unit, nothing on %d; old Authority healthy with the credential files in place and does not know the credential (%d)' % (ROOM_PORT, status)
 
 
 def smoke():
@@ -757,21 +883,28 @@ def lifecycle(from_tarball, to_tarball):
     step('upgrade (preflight, switch, health)', lambda: deployer.deploy(to_tarball) and 'current %s' % deployer.active_release())
     # Both directions, while the from-release is still installed: the new release uses the data root
     # (smoke, scenarios), then the old one must run on it again, then the new one after that.
+    step('room-unprepared', room_unprepared)
+    step('room-prepare', lambda: room_prepare(to_name))
+    step('room-restart', restart)
+    step('room-upgraded', room_check)
     step('smoke-upgraded', smoke)
     step('scenarios-upgraded', lambda: scenarios(deployer))
     ledger = []
     step('ledger-before-rollback', lambda: ledger.append(usage_rows()) or 'day %s: %d capabilities used' % (ledger[0][0], sum(1 for row in ledger[0][1].values() if row['calls'])))
     step('migration-drill (copy)', lambda: migration_drill(deployer, from_name, to_name))
     step('rollback (to from)', lambda: switch_back(from_name))
+    step('room-after-rollback', lambda: room_after_rollback(from_name))
     step('smoke-from', smoke)
     declared = []
     step('ledger-rows-of-from', lambda: declared.append(declared_rows()) or ('no usage ledger in the from-release' if declared[0] is None else 'declares %s' % ', '.join(declared[0])))
     step('roll-forward (rollback again)', lambda: switch_back(to_name))
+    step('room-after-roll-forward', room_check)
     step('Q3 ledger-survives-rollback', lambda: ledger_survives(ledger[0] if ledger else None, declared[0] if declared else None))
     step('prune-from', prune)
     step('restart-all', restart)
     step('manager-restart (default.target)', manager_restart)
     step('smoke', smoke)
+    step('room', room_check)
     step('scenarios', lambda: scenarios(deployer))
     step('prod-untouched', prod_untouched, always=True)
 

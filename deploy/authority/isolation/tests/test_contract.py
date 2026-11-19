@@ -66,6 +66,16 @@ class ContractTests(unittest.TestCase):
         self.assertIn(('--ro-bind', str(self.root / 'base/operator/authority.json'), '/authority/config.json'), self.mounts(command))
         self.assertEqual(command[-4:], [launch.NODE, '/opt/companion/release/authority/src/main.js', '--config', '/authority/config.json'])
 
+    def test_room_credential_hash_is_mounted_only_when_prepared_and_never_the_token(self):
+        mount = ('--ro-bind', str(self.root / 'base/operator/room-credential.json'), '/authority/room-credential.json')
+        self.assertNotIn(mount, self.mounts(self.command('authority')))
+        (self.root / 'base/operator/room-credential.json').write_text('{}')
+        (self.root / 'base/room-config').mkdir()
+        (self.root / 'base/room-config/room.token').write_text('synthetic\n')
+        command = self.command('authority')
+        self.assertIn(mount, self.mounts(command))
+        self.assertNotIn('room-config', ' '.join(command))
+
     def test_lib64_symlink_only_when_host_has_usr_lib64(self):
         isdir = os.path.isdir
         for present in (True, False):
@@ -112,6 +122,15 @@ class ContractTests(unittest.TestCase):
             self.assertNotIn(option, conversation)
         self.assertIn('Requires=companion-authority.service companion-conversation.service', units['companion-qq.service'])
         self.assertNotIn('ExecStartPre', units['companion-qq.service'])
+        # The room page: after Authority, loopback TCP and Unix sockets only, the room credential and nothing else.
+        room = units['companion-room.service']
+        for line in ['Requires=companion-authority.service', 'After=companion-authority.service', 'NoNewPrivileges=true',
+                     'RestrictAddressFamilies=AF_UNIX AF_INET', 'WantedBy=default.target',
+                     '/room/serve.mjs 4173 --authority-socket %h/.local/share/companion-world-v1/ipc/authority/authority.sock '
+                     '--credential-file %h/.local/share/companion-world-v1/room-config/room.token']:
+            self.assertIn(line, room)
+        for secret in ['console.token', 'admin.token', 'operator.sock', 'inference', '0.0.0.0']:
+            self.assertNotIn(secret, room)
 
 if __name__ == '__main__':
     unittest.main()

@@ -26,7 +26,7 @@ class UnitTransformTests(unittest.TestCase):
         self.assertEqual(sorted(units), sorted('companion-staging-' + u.name[len('companion-'):] for u in UNITS.iterdir()))
         for name, text in units.items():
             self.assertNotIn('%h', text, name)
-            self.assertNotRegex(text, r'\b(3001|3082|6099)\b', name)
+            self.assertNotRegex(text, r'\b(3001|3082|6099|4173)\b', name)
             self.assertNotRegex(text, r'\bcompanion-(?!staging-)[A-Za-z0-9-]+\.(service|socket)\b', name)
             self.assertNotIn('/home/companion', text, name)
             if '[Service]' in text:
@@ -36,6 +36,12 @@ class UnitTransformTests(unittest.TestCase):
         self.assertIn('%s/.local/share/companion-world-v1/ipc/operator/operator.sock' % ROOT, units['companion-staging-world-public.service'])
         self.assertIn('Requires=companion-staging-authority.service companion-staging-conversation.service', units['companion-staging-qq.service'])
         self.assertIn('ExecStart=/usr/bin/python3 %s/src/companion/current/ops/isolation/launch.py authority' % ROOT, units['companion-staging-authority.service'])
+        # The room page: its own loopback port, the staging Authority socket and the staging credential file.
+        self.assertIn('ExecStart=%s/.local/opt/companion/bin/node %s/src/companion/current/room/serve.mjs 14173 '
+                      '--authority-socket %s/.local/share/companion-world-v1/ipc/authority/authority.sock '
+                      '--credential-file %s/.local/share/companion-world-v1/room-config/room.token\n' % ((ROOT,) * 4), units['companion-staging-room.service'])
+        self.assertIn('Requires=companion-staging-authority.service', units['companion-staging-room.service'])
+        self.assertEqual((sa.ROOM_PORT, 4173 in sa.PROD_PORTS), (14173, True))
 
     def test_workers_with_hard_coded_production_ports_get_unix_sockets_only(self):
         units = self.units()
@@ -58,6 +64,8 @@ class UnitTransformTests(unittest.TestCase):
             sa.staging_unit('companion-staging-x.service', '[Service]\n', ROOT)
         with self.assertRaises(ValueError):
             sa.staging_unit('companion-x.service', '[Service]\nExecStart=/bin/true 127.0.0.1:6099\n', ROOT)
+        with self.assertRaises(ValueError):  # a room unit whose port is not where the transform expects it
+            sa.staging_unit('companion-room.service', '[Service]\nExecStart=/bin/node serve.mjs --port 4173\n', ROOT)
 
 
 class ScenarioUnitTests(unittest.TestCase):
@@ -121,8 +129,8 @@ class ReuseTests(unittest.TestCase):
 class LifecycleOrderTests(unittest.TestCase):
     def test_rollback_round_trip_happens_after_the_upgrade_was_used_and_before_the_from_release_is_pruned(self):
         steps = re.findall(r"^    step\('([^']+)'", (HERE / 'staging-agent.py').read_text(), re.M)
-        order = ['upgrade (preflight, switch, health)', 'smoke-upgraded', 'scenarios-upgraded', 'ledger-before-rollback', 'migration-drill (copy)', 'rollback (to from)',
-                 'smoke-from', 'ledger-rows-of-from', 'roll-forward (rollback again)', 'Q3 ledger-survives-rollback', 'prune-from', 'restart-all', 'manager-restart (default.target)', 'smoke', 'scenarios', 'prod-untouched']
+        order = ['upgrade (preflight, switch, health)', 'room-unprepared', 'room-prepare', 'room-restart', 'room-upgraded', 'smoke-upgraded', 'scenarios-upgraded', 'ledger-before-rollback', 'migration-drill (copy)', 'rollback (to from)',
+                 'room-after-rollback', 'smoke-from', 'ledger-rows-of-from', 'roll-forward (rollback again)', 'room-after-roll-forward', 'Q3 ledger-survives-rollback', 'prune-from', 'restart-all', 'manager-restart (default.target)', 'smoke', 'room', 'scenarios', 'prod-untouched']
         self.assertEqual(steps[steps.index(order[0]):], order)
 
     def test_the_drill_tool_is_uploaded_and_only_ever_given_a_copy(self):

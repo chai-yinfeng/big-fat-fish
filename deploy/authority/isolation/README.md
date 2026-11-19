@@ -28,6 +28,8 @@ read-only `/usr` runtime tree also needs an operator secret audit.
 | `ipc/authority/`, `ipc/operator/` | `/authority/ipc`, `/authority/operator`, RW |
 | `ipc/model-control/`, `ipc/qq-control/` | RO (connect only) |
 | `ipc/content/`, `authority-content/` | RO, only once content is prepared |
+| `operator/room-credential.json` | `/authority/room-credential.json`, RO file, only once `prepare-room.mjs` has run |
+| `room-config/room.token` | absent |
 
 The Authority sees the read-only release at `/opt/companion/release` and the
 pinned runtime at `/opt/companion/runtime`. The authority JSON must use
@@ -61,7 +63,14 @@ and seccomp/prctl-based `RestrictAddressFamilies=AF_UNIX` (network limited to Un
 sockets), `SystemCallArchitectures=native`, `LockPersonality`, `RestrictRealtime`,
 `RestrictSUIDSGID`, plus `UMask`. The model can reach only `companion_scope` and
 `companion_content`, which have no filesystem access. `companion-qq.service` requires the conversation service. Ports:
-3082 is the only companion-owned TCP listener (`companion-world-public.socket`).
+3082 (`companion-world-public.socket`) and 4173 (`companion-room.service`) are the companion-owned TCP listeners, both
+on loopback.
+
+The room page (`companion-room.service`) runs `room/serve.mjs` as the companion user, after the Authority, with the
+same seccomp/prctl options and `RestrictAddressFamilies=AF_UNIX AF_INET`. It is given two paths only: the Authority
+socket and `room-config/room.token`, a credential that may `GET /v1/room` and nothing else. Its hash is kept in
+`operator/room-credential.json`, not in `authority.json`, so a release from before the room role (which refuses such
+a credential and never reads that file) still starts after a rollback.
 
 ## Validation (no deployment)
 

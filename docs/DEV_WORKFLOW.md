@@ -112,7 +112,9 @@ node deploy/qq/open-login.mjs        # NapCat WebUI 扫码登录（默认 home-a
 用户单元：/home/companion/.config/systemd/user/companion-*
 会话记录：/home/companion/.local/share/companion-world-v1/conversation-data/sessions（每会话一个 JSONL）
 执行器：companion-conversation（UDS ipc/conversation/execute.sock，无 TCP 端口；以 companion 用户运行、无文件系统隔离，网络经 seccomp 只允许 Unix socket，模型只能用三个不访问文件系统的工具）
-3082 独立世界控制台与 operator API（唯一由 companion 单元监听的 TCP 端口）
+3082 独立世界控制台与 operator API
+4173 房间页面（companion-room.service，只读 room 凭据；对外只经主人配置的 tailscale serve，见 room/README.md“部署”）
+room 凭据：令牌 <数据根>/room-config/room.token，哈希 <数据根>/operator/room-credential.json（ops/prepare-room.mjs 生成，不在 authority.json 里）
 NapCat WebUI 6099 / OneBot WS 3001（部署后核查第 3 步用 ss 看它们是否在监听）
 ```
 
@@ -166,14 +168,17 @@ staging 以 home-agent 上无 sudo 的 `agent` 账号（`ssh home-agent-dev`，�
 直接调用 companion-deploy 本身的 deploy/预检/单元/健康检查/保留代码：全新安装 from 包 →
 用该包的 bootstrap、prepare-memory、prepare-content、QQ prepare 初始化（无模型 Key、
 不登录 QQ）→ start → disable 全部单元（模拟旧版 companion-deploy 留下的未 enable 状态）→
-升级到 to 包（预检、切换、健康检查、enable）→ 冒烟与场景回放（让新版本先用过这个数据根）→
+升级到 to 包（预检、切换、健康检查、enable）→ 房间（`room-unprepared`：页面 200、`/state` 503；`room-prepare`：to 包的
+`ops/prepare-room.mjs` 写出两个 0600 文件且不动 `authority.json`；`room-restart`；`room-upgraded`：页面与 `/state` 200，
+room 凭据在 Authority socket 上 `GET /v1/room` 200、其余路由和写入 403，别的凭据读 `/v1/room` 403，operator socket 不认它，
+只监听 127.0.0.1:14173）→ 冒烟与场景回放（让新版本先用过这个数据根）→
 记下额度账本当天各行（`ledger-before-rollback`；回退后再记下旧包声明了哪些行 `ledger-rows-of-from`，旧包不认识的行不参与 Q3 比较并在结果里点名）→ 迁移演练（见「数据库迁移」）→ `companion-deploy rollback` 回到 from 包并冒烟（旧版本在新版本用过的
-数据根上健康启动、能读能写）→ 再 rollback 一次回到 to 包 → `Q3 ledger-survives-rollback`（账本当天的数字一项不少；跨了北京时间零点则要求那一天成为历史里的一行）→ 删除 from 包 → 重启全部单元 →
+数据根上健康启动、能读能写；`room-after-rollback`：from 包没有房间时，房间单元已删除、14173 无监听、room 凭据的两个文件仍在而旧 Authority 照常健康）→ 再 rollback 一次回到 to 包（`room-after-roll-forward`：房间用原来的凭据恢复）→ `Q3 ledger-survives-rollback`（账本当天的数字一项不少；跨了北京时间零点则要求那一天成为历史里的一行）→ 删除 from 包 → 重启全部单元 →
 manager 重启代理（确认均已 enable，停掉全部单元但不 disable，daemon-reload 后确认
 default.target 的依赖树覆盖全部单元，再 `systemctl --user start default.target sockets.target`
 并做健康检查；已激活的 sockets.target 不会因 start default.target 被重新拉起，故单独启动）→ operator API 冒烟（/world、/runtime、/qq、/memory、人格预览与保存、对话执行器鉴权）→
-场景回放（见下）→ 确认生产端口没有 staging 监听。全部位于 `~/companion-staging`（作为服务的 HOME），单元
-改名为 `companion-staging-*`，operator 端口 13082；memory、qq 单元限制为 Unix socket，
+房间再查一次（`room`）→ 场景回放（见下）→ 确认生产端口没有 staging 监听。全部位于 `~/companion-staging`（作为服务的 HOME），单元
+改名为 `companion-staging-*`，operator 端口 13082，房间端口 14173；memory、qq 单元限制为 Unix socket，
 旧 release 里写死的 3082/3001 连不到生产。`--reset` 只删除这个目录、staging 单元及其 enable 链接。
 staging 不校验提交是否在 origin main（生产 companion-deploy 仍校验），不跑真实模型对话。
 
@@ -286,7 +291,8 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    daemon-reload → 原子切换 current → 启动 → 健康检查（全部单元无 failed、
    3082 在监听、约 20 秒内无重启）。全新主机（没有任何 release 与 companion 单元）
    首次 deploy 只安装 release、单元与 current，不启动服务；完成下文一次性初始化后由用户执行
-   `sudo companion-deploy start` 启动并做同样的健康检查（失败则再次停止服务）。失败则自动恢复上一个 release 及其 unit
+   `sudo companion-deploy start` 启动并做同样的健康检查（失败则再次停止服务）。房间单元 `companion-room.service` 和其他
+   单元一样在检查之内（须 active 且窗口内无重启）；端口检查仍只有 3082。失败则自动恢复上一个 release 及其 unit
    快照，删除失败的 release 目录（同一个包修好环境后可直接重新 deploy），并以非零退出；
    若恢复后的 release 也不健康，则停止全部 companion 服务和 socket，不留在重启循环里
    （rollback 失败同理），排除原因后用 `sudo companion-deploy start`。
@@ -318,7 +324,7 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    ssh home-agent 'cat /var/log/companion-deploy.status.json'   # current/previous、last.ok
    ssh home-agent 'tail -n 20 /var/log/companion-deploy.log'
    ssh home-agent 'journalctl _UID=$(id -u companion) --since -15min --no-pager | tail -n 80'
-   ssh home-agent "ss -Hltn | grep -E ':(3001|3082|6099) '"
+   ssh home-agent "ss -Hltn | grep -E ':(3001|3082|4173|6099) '"   # 4173 是房间，只应在 127.0.0.1 上
    ```
 
    last.ok 为 false 表示部署已被拒绝或健康检查失败并自动恢复了 previous：从日志
@@ -340,6 +346,12 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
    release 目录清单在 companion 的 0700 目录下，只能由用户 sudo 查看。
 
    再次 rollback 会切回刚才的版本。
+
+5. 房间（第一次升级到带 `companion-room.service` 的版本时做一次，命令和核查见 room/README.md“部署”）：部署后以 companion
+   身份运行 `ops/prepare-room.mjs` 生成 room 凭据 → `sudo companion-deploy start` 重启让 Authority 读到 →
+   `sudo tailscale serve --bg --https=8443 http://127.0.0.1:4173` 只在 tailnet 内开放（不要用 funnel）。没做这一步时
+   房间单元照常运行，只是 `/state` 回 503。回退到没有房间的版本不需要任何手工步骤：room 凭据在单独的文件里
+   （`operator/room-credential.json`，不在 `authority.json`），旧 Authority 不读它；旧单元快照里没有房间单元，它随回退被删除。
 
 数据库迁移只有一种：`authority/src/migrations.js` 里登记的加法式迁移，由新版本的 Authority
 启动时自动备份后应用（见下节「数据库迁移」）。authority SCHEMA_VERSION（SQLite user_version）
@@ -414,6 +426,8 @@ ssh -t home-agent 'sudo companion-deploy start'      # 健康检查失败已自�
 ```sh
 # 已在 home-agent 验证：
 sudo -u companion -H bash -c 'cd ~ && N=~/.local/opt/companion/bin/node R=~/src/companion/current/ops && $N $R/bootstrap.mjs && $N $R/prepare-memory.mjs && $N $R/prepare-content.mjs'
+# 房间凭据（未在 home-agent 上运行过；staging 每次都跑）。已有世界补这一步后须 sudo companion-deploy start 重启：
+sudo -u companion -H bash -c 'cd ~ && ~/.local/opt/companion/bin/node ~/src/companion/current/ops/prepare-room.mjs'
 # NapCat prepare：只写配置/token（含 qq-runtime/private/onebot.token），不启动容器；首次 start 前必须运行
 sudo -u companion -H bash -c 'cd ~ && ~/.local/opt/companion/bin/node ~/src/companion/current/deploy/qq/prepare.mjs'
 ```
@@ -427,11 +441,12 @@ sudo -u companion -H bash -c 'cd ~ && ~/.local/opt/companion/bin/node ~/src/comp
 /home/companion/.local/opt/companion/bin/node /home/companion/src/companion/current/ops/prepare-memory.mjs
 /home/companion/.local/opt/companion/bin/node /home/companion/src/companion/current/ops/prepare-content.mjs
 /home/companion/.local/opt/companion/bin/node /home/companion/src/companion/current/ops/prepare-conversation.mjs
+/home/companion/.local/opt/companion/bin/node /home/companion/src/companion/current/ops/prepare-room.mjs
 ```
 
 全新主机顺序：用户安装私有 Node（deploy/vm/install-runtime.sh，不再安装 DSH/pnpm）→
 首次 `companion-deploy deploy`（不启动服务）→ 以 companion 身份运行 bootstrap、prepare-memory、
-prepare-content 和 NapCat prepare（`deploy/qq/prepare.mjs`，否则 companion-qq 因缺 onebot.token
+prepare-content、prepare-room（可选，不跑则房间没有数据）和 NapCat prepare（`deploy/qq/prepare.mjs`，否则 companion-qq 因缺 onebot.token
 反复退出）→ `sudo companion-deploy start`。旧 DSH 会话历史不迁移，长期记忆在 Authority。
 
 首次安装（用户在生产主机上执行一次）：

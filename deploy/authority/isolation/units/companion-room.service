@@ -1,0 +1,25 @@
+[Unit]
+Description=Companion room page on loopback (read-only room credential only)
+Requires=companion-authority.service
+After=companion-authority.service
+
+# Serves the static room page and its one data route on 127.0.0.1:4173. It holds only the
+# room credential (GET /v1/room on the Authority socket); no operator token, no provider key.
+# Loopback only: the owner exposes it inside the tailnet with `tailscale serve`.
+[Service]
+Type=exec
+ExecStart=%h/.local/opt/companion/bin/node %h/src/companion/current/room/serve.mjs 4173 --authority-socket %h/.local/share/companion-world-v1/ipc/authority/authority.sock --credential-file %h/.local/share/companion-world-v1/room-config/room.token
+UMask=0077
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+SystemCallArchitectures=native
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+KillMode=control-group
+TimeoutStopSec=10s
+Restart=on-failure
+RestartSec=3s
+
+[Install]
+WantedBy=default.target

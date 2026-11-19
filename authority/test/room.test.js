@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { randomBytes, createHash } from 'node:crypto';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { Authority } from '../src/engine.js';
 import { INITIATION } from '../src/initiations.js';
 import { createAuthorityServer } from '../src/server.js';
@@ -141,4 +143,34 @@ test('room projection: malformed input degrades to idle and carries nothing over
   assert.deepEqual([odd.activity, odd.since], ['working', now]); assert.deepEqual(Object.keys(odd), KEYS);
   assert.equal(roomProjection({ now, quiet: { now: true, fromMinute: 'late' } }).since, now);
   assert.throws(() => roomProjection({})); assert.throws(() => roomProjection());
+});
+
+test('the entry point takes the room credential from its own private file beside the configuration, and refuses a loose or malformed one', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'authority-room-file-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const config = path.join(root, 'authority.json'), roomFile = path.join(root, 'room-credential.json'), socketPath = path.join(root, 'a.sock');
+  const main = fileURLToPath(new URL('../src/main.js', import.meta.url));
+  const token = randomBytes(32).toString('base64url'), other = randomBytes(32).toString('base64url');
+  // What every release so far reads: no room credential in `credentials` (an older release would refuse one).
+  fs.writeFileSync(config, JSON.stringify({ schemaVersion: 1, databasePath: path.join(root, 'w.sqlite'), socketPath, credentials: [{ hash: hash(other), role: 'capability', capabilityId: 'health' }], capabilities: [{ id: 'health', policy: 'learning.v1' }], actors: [], streams: [], operator: { socketPath: path.join(root, 'o.sock'), tokenHash: 'b'.repeat(64), origins: [] } }), { mode: 0o600 });
+  const refused = () => spawnSync(process.execPath, [main, '--config', config], { env: { PATH: process.env.PATH }, encoding: 'utf8', timeout: 5000, killSignal: 'SIGTERM' });
+  for (const [text, mode] of [[JSON.stringify({ schemaVersion: 1, hash: hash(token) }), 0o644], ['{', 0o600], [JSON.stringify({ schemaVersion: 2, hash: hash(token) }), 0o600], [JSON.stringify({ schemaVersion: 1, hash: 'short' }), 0o600], [JSON.stringify({ schemaVersion: 1, hash: hash(token), role: 'admin' }), 0o600], [JSON.stringify({ schemaVersion: 1, hash: hash(other) }), 0o600]]) {
+    fs.rmSync(roomFile, { force: true });
+    fs.writeFileSync(roomFile, text, { mode });
+    const result = refused();
+    assert.equal(result.status, 1, text); assert.match(result.stderr, /could not start/);
+  }
+  fs.rmSync(roomFile);
+  fs.writeFileSync(roomFile, JSON.stringify({ schemaVersion: 1, hash: hash(token) }), { mode: 0o600 });
+  const child = spawn(process.execPath, [main, '--config', config], { env: { PATH: process.env.PATH }, stdio: ['ignore', 'pipe', 'ignore'] });
+  t.after(() => child.kill('SIGTERM'));
+  await new Promise((resolve, reject) => { child.stdout.on('data', chunk => { if (String(chunk).includes('ready')) resolve(); }); child.on('exit', () => reject(new Error('Authority exited'))); });
+  const get = (route, bearer) => new Promise((resolve, reject) => {
+    const req = http.request({ socketPath, path: route, method: 'GET', agent: false, headers: { authorization: 'Bearer ' + bearer } }, res => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    req.on('error', reject); req.end();
+  });
+  assert.equal(await get('/v1/room', token), 200);
+  assert.equal(await get('/v1/health', token), 403);
+  assert.equal(await get('/v1/room', other), 403);
+  assert.equal(await get('/v1/health', other), 200);
 });

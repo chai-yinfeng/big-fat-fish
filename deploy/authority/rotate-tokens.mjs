@@ -55,6 +55,9 @@ export const INVENTORY = [
   { glob: 'memory-config/*.token', format: 'base64url', optional: true,
     hashes: [{ file: 'operator/authority.json', field: 'credentials[role=maintenance].hash', check: credentialCount(row => row.role === 'maintenance') }],
     readers: ['memory-worker.json authority.tokenFile'] },
+  { file: 'room-config/room.token', format: 'base64url', optional: true,
+    hashes: [{ file: 'operator/room-credential.json', field: 'hash', check: (json, hash) => json.hash === hash }],
+    readers: ['room page server (companion-room.service --credential-file, read per request)'] },
   { file: 'authority-content/control.token', format: 'base64url', optional: true, hashes: [],
     readers: ['content service control.tokenFile (hashed at start)', 'authority content.tokenFile (mounted, read per request)'] },
   { file: 'qq-runtime/private/onebot.token', format: 'hex', optional: true, hashes: [],
@@ -66,9 +69,9 @@ export const INVENTORY = [
 ];
 
 // Directories whose files must not retain any old value afterwards (top level only).
-const SCAN_DIRS = ['operator', 'service-config', 'qq-worker', 'conversation-config', 'memory-config', 'authority-content', 'qq-runtime', 'qq-runtime/private', 'qq-runtime/data/config'];
+const SCAN_DIRS = ['operator', 'service-config', 'qq-worker', 'conversation-config', 'memory-config', 'room-config', 'authority-content', 'qq-runtime', 'qq-runtime/private', 'qq-runtime/data/config'];
 const SOCKETS = ['ipc/authority/authority.sock', 'ipc/operator/operator.sock', 'ipc/model/inference.sock', 'ipc/model-control/control.sock', 'ipc/qq-control/control.sock', 'ipc/content/content.sock', 'ipc/conversation/execute.sock'];
-const PORTS = [3001, 6099, 3082];
+const PORTS = [3001, 6099, 3082, 4173];
 
 const fail = code => { throw Object.assign(new Error(code), { rotation: true }); };
 const count = (text, value) => value ? text.split(value).length - 1 : 0;

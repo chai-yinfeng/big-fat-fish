@@ -245,3 +245,59 @@ test('a test-only channel in authority.json refuses the deploy, as Authority wou
   w.edit('authority.json', c => { c.operator.allowTestChannels = true; });
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), []);
 });
+
+test('the room credential: prepare-room writes its own two private files and leaves authority.json alone; preflight checks the pair', async t => {
+  const { prepareRoom } = await import('./prepare-room.mjs');
+  const w = world(t), hashFile = path.join(w.base, 'operator/room-credential.json'), tokenFile = path.join(w.base, 'room-config/room.token');
+  const authorityBefore = fs.readFileSync(path.join(w.base, 'operator/authority.json'), 'utf8');
+  assert.deepEqual(prepareRoom(w.base), { prepared: true, credentialPreserved: false, authorityRestartRequired: true, worldNotReset: true });
+  assert.equal(fs.readFileSync(path.join(w.base, 'operator/authority.json'), 'utf8'), authorityBefore);
+  for (const file of [hashFile, tokenFile]) assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(path.dirname(tokenFile)).mode & 0o777, 0o700);
+  const token = fs.readFileSync(tokenFile, 'utf8').trim(), stored = JSON.parse(fs.readFileSync(hashFile, 'utf8'));
+  assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(Object.keys(stored), ['schemaVersion', 'hash']);
+  assert.ok(!fs.readFileSync(hashFile, 'utf8').includes(token));
+  // A second run keeps the credential (services holding it keep working).
+  assert.deepEqual(prepareRoom(w.base), { prepared: true, credentialPreserved: true, authorityRestartRequired: false, worldNotReset: true });
+  assert.equal(fs.readFileSync(tokenFile, 'utf8').trim(), token);
+  const ok = await preflight({ base: w.base, release: w.release });
+  assert.deepEqual(codes(ok.failures), []);
+  assert.ok(ok.checked.includes('room-credential.json'));
+
+  const failures = async () => codes((await preflight({ base: w.base, release: w.release })).failures);
+  fs.writeFileSync(tokenFile, 'x'.repeat(43) + '\n');
+  assert.deepEqual(await failures(), ['room-credential.json ROOM_TOKEN_MISMATCH']);
+  assert.throws(() => prepareRoom(w.base), /ROOM_CREDENTIAL_CONFLICT/);
+  fs.writeFileSync(tokenFile, token + '\n');
+  fs.chmodSync(tokenFile, 0o644);
+  assert.deepEqual(await failures(), ['room-credential.json CONFIG_PERMISSIONS']);
+  fs.chmodSync(tokenFile, 0o600); fs.chmodSync(hashFile, 0o640);
+  assert.deepEqual(await failures(), ['room-credential.json CONFIG_PERMISSIONS']);
+  fs.chmodSync(hashFile, 0o600);
+  fs.renameSync(tokenFile, tokenFile + '.away');
+  assert.deepEqual(await failures(), ['room-credential.json ROOM_TOKEN_MISSING']);
+  fs.renameSync(tokenFile + '.away', tokenFile);
+  for (const bad of [{ schemaVersion: 2, hash: stored.hash }, { schemaVersion: 1, hash: 'short' }, { ...stored, role: 'admin' }]) {
+    fs.writeFileSync(hashFile, JSON.stringify(bad));
+    assert.deepEqual(await failures(), ['room-credential.json CONFIG_INVALID'], JSON.stringify(Object.keys(bad)));
+  }
+  fs.writeFileSync(hashFile, JSON.stringify(stored));
+  // The same hash listed in authority.json would make Authority refuse to start (duplicate credential).
+  w.edit('authority.json', c => { c.credentials.push({ hash: stored.hash, role: 'capability', capabilityId: 'health' }); });
+  assert.deepEqual(await failures(), ['room-credential.json ROOM_CREDENTIAL_DUPLICATE']);
+  w.edit('authority.json', c => { c.credentials.pop(); });
+  fs.rmSync(hashFile);
+  assert.deepEqual(await failures(), ['room-credential.json ROOM_CREDENTIAL_MISSING']);
+  assert.deepEqual(prepareRoom(w.base).credentialPreserved, false);
+  assert.deepEqual(await failures(), []);
+});
+
+test('a room credential listed in authority.json refuses the deploy and the prepare: an older release could not start after a rollback', async t => {
+  const { prepareRoom } = await import('./prepare-room.mjs');
+  const w = world(t);
+  w.edit('authority.json', c => { c.credentials.push({ hash: 'd'.repeat(64), role: 'room' }); });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['authority.json ROOM_CREDENTIAL_INLINE credentials']);
+  assert.throws(() => prepareRoom(w.base), /ROOM_CREDENTIAL_INLINE/);
+  assert.ok(!fs.existsSync(path.join(w.base, 'room-config')));
+});
