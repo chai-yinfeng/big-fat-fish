@@ -932,6 +932,23 @@
       ]
     },
     {
+      "id": "B1",
+      "title": "burst-answered-once: two messages sent back to back are each recorded but answered with one reply; the model reads both, in order, in one turn",
+      "model": [
+        { "match": "MOCK-B1-{run} 第二句", "reply": "MOCK-REPLY-B1-{run} 两句都看到了" }
+      ],
+      "steps": [
+        { "noteMessages": { "person": "MOCK-A" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-B1-{run} 第一句" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-B1-{run} 第二句" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-B1-{run} 两句都看到了" } },
+        { "expectMessages": { "person": "MOCK-A", "added": 3 } },
+        { "expectModelCalls": { "userText": "MOCK-B1-{run}", "count": 1 } },
+        { "expectPrompt": { "userText": "MOCK-B1-{run}", "contains": "MOCK-B1-{run} 第一句\nMOCK-B1-{run} 第二句" } },
+        { "expectSilence": { "to": "*", "afterMs": 3000 } }
+      ]
+    },
+    {
       "id": "MOCK-1",
       "title": "second-channel-admits-and-talks: on a second channel that is not QQ a friend is admitted as a person of that channel and talks normally; the system message carries that channel's own part and nothing about QQ; what they said there is remembered for them; a non-friend there is ignored; nothing goes out on QQ",
       "model": [

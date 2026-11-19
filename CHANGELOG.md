@@ -4,7 +4,7 @@
 
 ## Unreleased
 
-- QQ 私聊少一点“机器人感”（只改 `capabilities/qq/`；不迁移数据，执行器、工具定义和提示未改）。①连发合并：同一个人连发几条，等对方停 2.5 秒（从第一条起最多 8 秒）再回一次；一回合最多 8 条、6 个附件、4000 字，超出的进下一回合。每条消息仍各自落 observation、各有记录和去重，执行器一次收到按顺序拼接的文字、全部附件引用和每条一个证据引用；回复挂在最后一条上，各条记录结局相同。回复正在生成时到的消息不并进去，攒成下一回合；那一回合排队未开始前到的也并进去。她先开口的请求在对方有消息待回时照旧作废。②拆条间隔：固定 1.2 秒改为按下一条字数的对数加随机抖动，0.8–3.5 秒；文字回复首条前随机 0.4–1.5 秒；语音回复不停。她先开口的回合用同样的拆条间隔、首条不停。数字都在 `capabilities/qq/pacing.js`，`qq-bridge.json` 可选 `pacing` 覆盖（越界则桥拒绝启动；预检尚未检查这一项）。③收到图片时每个图片段写一行日志到 stderr（字段名、`sub_type`、有没有 `emoji_id`、`summary`），用来确认 NapCat 实际上报的表情字段；不写文件名、URL、QQ 号或文字。已验证：`test:qq`、`test:conversation`。未验证：真实 QQ 上的节奏与合并效果。
+- QQ 私聊少一点“机器人感”（只改 `capabilities/qq/`；不迁移数据，执行器、工具定义和提示未改）。①连发合并：同一个人连发几条，等对方停 2.5 秒（从第一条起最多 8 秒）再回一次；一回合最多 8 条、6 个附件、4000 字，超出的进下一回合。每条消息仍各自落 observation、各有记录和去重，执行器一次收到按顺序拼接的文字、全部附件引用和每条一个证据引用；回复挂在最后一条上，各条记录结局相同。回复正在生成时到的消息不并进去，攒成下一回合；那一回合排队未开始前到的也并进去。她先开口的请求在对方有消息待回时照旧作废。②拆条间隔：固定 1.2 秒改为按下一条字数的对数加随机抖动，0.8–3.5 秒；文字回复首条前随机 0.4–1.5 秒；语音回复不停。她先开口的回合用同样的拆条间隔、首条不停。数字都在 `capabilities/qq/pacing.js`，`qq-bridge.json` 可选 `pacing` 覆盖（越界则桥拒绝启动，预检用同一个 `pacingFrom` 检查）。③收到图片时每个图片段写一行日志到 stderr（字段名、`sub_type`、有没有 `emoji_id`、`summary`），用来确认 NapCat 实际上报的表情字段；不写文件名、URL、QQ 号或文字。④场景回放与 staging agent 往 `qq-bridge.json` 写短 `pacing`（等 0.5 秒、最多 1.5 秒、拆条不停），否则整套回放超时；新场景 B1 `burst-answered-once`（连发两条，两条都记下、只回一次、模型一个回合读到两句）。已验证：`test:qq`、`test:conversation`、预检与 deploy 测试、本机场景回放。未验证：staging 实机、真实 QQ 上的节奏与合并效果。
 
 - 默认人格的 `speechStyle` 不再提 QQ、不用颜文字和 emoji，改为偶尔用括号写小动作（如“（歪头）”）。只改默认值；生产上用的是控制台里填的人格，不迁移数据。
 - 删除 DSH 时代的遗留目录（plugin、adapter-plugin、asr-plugin、tts-plugin、preset、ui、adapters、asr、tts、voice-runtime、experiments、core）和 `test:legacy*` 脚本；Authority 复用的 `persona.js`、`util.js`（连同 `util.test.js`）移入 `authority/`，发行包不再单独复制 `core/src/`。行为不变。

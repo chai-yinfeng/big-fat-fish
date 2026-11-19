@@ -51,6 +51,8 @@ NODE_CACHE = Path.home() / '.cache/companion-staging'  # outside ROOT: survives 
 PREFIX = 'companion-staging-'
 OPERATOR_PORT, ONEBOT_PORT = 13082, 13001
 INITIATION_POLL_MS = 3000  # scenario replay: how often the QQ bridge asks for an initiated run (production: 60 s)
+# scenario replay: the QQ bridge still merges a burst, but waits briefly and sends split replies without pauses
+SCENARIO_PACING = {'burstQuietMs': 500, 'burstMaxWaitMs': 1500, 'gapBaseMs': 0, 'gapPerLogMs': 0, 'gapJitterMs': 0, 'gapMinMs': 0, 'gapMaxMs': 0, 'firstMinMs': 0, 'firstMaxMs': 0}
 PROD_PORTS = (3001, 3082, 6099)
 UNIX_ONLY = ('memory', 'qq')  # their old code dials 127.0.0.1:3082 / :3001
 PROXY = 'http://127.0.0.1:7890'
@@ -345,9 +347,12 @@ def reset_initiations(database):
 
 def scenario_bridge_config(config, bridge_source):
     """qq-bridge.json for scenario replay: a release whose bridge fetches initiated runs asks every few seconds
-    (production: every minute), so those scenarios do not wait minutes. Other releases are left alone. Idempotent."""
+    (production: every minute), so those scenarios do not wait minutes; one that paces its replies (`pacing`) waits
+    briefly for a burst and sends without pauses. Other releases are left alone. Idempotent."""
     if 'initiationPollMs' in bridge_source:
         config['initiationPollMs'] = INITIATION_POLL_MS
+    if 'cfg.pacing' in bridge_source:
+        config['pacing'] = dict(SCENARIO_PACING)
     return config
 
 

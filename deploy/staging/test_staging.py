@@ -285,6 +285,7 @@ class InitiationReplayTests(unittest.TestCase):
         self.assertEqual(sa.scenario_bridge_config(dict(config), "cfg.onebotPort"), config)
         self.assertEqual(sa.scenario_bridge_config(dict(config), "cfg.initiationPollMs ?? INITIATION_POLL_MS"), {**config, 'initiationPollMs': 3000})
         self.assertTrue(1000 <= sa.INITIATION_POLL_MS <= 600000)
+        self.assertEqual(sa.scenario_bridge_config(dict(config), "const pacing = pacingFrom(cfg.pacing);"), {**config, 'pacing': sa.SCENARIO_PACING})
         source = (HERE / 'staging-agent.py').read_text()
         self.assertIn("edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_source))", source)
         self.assertIn("reset_initiations(BASE / 'authority-data/authority.sqlite')", source)
