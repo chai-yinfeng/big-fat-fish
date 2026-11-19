@@ -197,7 +197,7 @@ export function createStickers({ root, clock = Date.now, random = Math.random, l
     /** Explicit forgetting by original source events (the same plan as ArtifactStore.forget). A forgotten message no
      * longer counts: the owner's keeping from it is undone, and whoever sent the picture only in forgotten messages
      * is no longer one of its senders. A picture left with nobody (no sender, not kept by the owner from another
-     * message, not put there on the console) goes: its entry, its file and what the description cache says of it.
+     * message, not put there on the console, not approved by the owner) goes: its entry, its file and what the description cache says of it.
      * One that others also sent stays, with its level worked out from who is left. `removed`: pictures gone;
      * `detached`: pictures that stay without this message. */
     forget({ entityId, sourceEvents, dryRun = false }) {
@@ -210,7 +210,7 @@ export function createStickers({ root, clock = Date.now, random = Math.random, l
         const senders = object(entry.senders) ? Object.fromEntries(Object.entries(entry.senders).map(([who, list]) => [who, (Array.isArray(list) ? list : []).filter(event => !events.has(event))])) : null;
         const left = senders ? Object.fromEntries(Object.entries(senders).filter(([, list]) => list.length)) : null;
         if (!kept && (!senders || Object.entries(senders).every(([who, list]) => list.length === entry.senders[who].length))) continue;
-        if ((!entry.origin || kept) && entry.uploaded !== true && !(left && Object.keys(left).length)) gone.push(entry);
+        if ((!entry.origin || kept) && entry.uploaded !== true && entry.approved !== true && !(left && Object.keys(left).length)) gone.push(entry);
         else changed.push({ entry, kept, left });
       }
       for (const entry of gone) sound(entry);
