@@ -22,7 +22,7 @@ test('every declaration has the same closed shape', () => {
   for (const item of DECLARATIONS) {
     assert.deepEqual(Object.keys(item).sort(), ['actions', 'config', 'credentials', 'forget', 'id', 'meter', 'operatorConfig', 'outputs', 'runtime', 'title', 'visibility'], item.id);
     assert.match(item.id, /^[a-z][a-z0-9-]{1,31}$/); assert.ok(item.title.length > 0 && item.title.length <= 12);
-    assert.ok(item.actions.length && item.actions.every(action => /^[a-z]+$/.test(action.name) && ['sync', 'background'].includes(action.mode) && (action.model === false || typeof action.model === 'object') && Object.keys(action).sort().join() === 'content,mode,model,name'), item.id);
+    assert.ok(item.actions.length && item.actions.every(action => /^[a-z]+$/.test(action.name) && ['sync', 'background'].includes(action.mode) && (action.model === false || typeof action.model === 'object') && Object.keys(action).filter(key => key !== 'job').sort().join() === 'content,mode,model,name' && (action.job === undefined || action.mode === 'background' && /^[a-z]+(-[a-z]+)*$/.test(action.job))), item.id);
     assert.equal(item.visibility, 'private');
     assert.ok(item.outputs.length && item.outputs.every(output => typeof output.type === 'string' && (output.derived === null || typeof output.derived === 'string')), item.id);
     assert.ok(typeof item.runtime.process === 'string' && typeof item.runtime.subprocess === 'boolean', item.id);

@@ -61,6 +61,13 @@ test('a friend is admitted in the channel\'s own terms and answered through the 
   assert.equal((await f.control('POST', '/friends', { friends: ['999900000011'] })).status, 400);
 });
 
+test(`an ordinary reply that is ${DECLINE_MARK} (nothing left after the executor's output guard) sends nothing`, async t => {
+  const f = await fixture(t);
+  await f.control('POST', '/friends', { friends: ['MOCK-A'] });
+  f.state.reply = DECLINE_MARK; await f.say('MOCK-A', 'MOCK 你好');
+  assert.deepEqual([f.fake.turns.map(turn => turn.status), f.fake.sent.length, f.calls.filter(call => call[0] === 'observe' && call[1] === 'assistant').length], [['declined'], 0, 0]);
+});
+
 test('a send without a receipt is unknown: not recorded as hers and never sent again; the next message is answered as usual', async t => {
   const f = await fixture(t);
   await f.control('POST', '/friends', { friends: ['MOCK-A'] });
