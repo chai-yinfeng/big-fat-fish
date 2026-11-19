@@ -8,6 +8,11 @@ import { vulkanProbe, TTS_BACKENDS, FALLBACK_CODES } from './llama-tts.js';
 const workerDefault = fileURLToPath(new URL('./worker.mjs', import.meta.url));
 const publicErrors = new Set(['SPEECH_CANCELLED', 'SPEECH_NOT_CONFIGURED', 'SPEECH_CONFIG_SCHEMA', 'SPEECH_MODEL_DISABLED', 'SPEECH_REQUEST', 'SPEECH_PATH', 'SPEECH_AUDIO_FORMAT', 'SPEECH_AUDIO_LIMIT', 'SPEECH_INCOMPLETE', 'SPEECH_REFERENCE_REQUIRED', 'SPEECH_VOICE_UNKNOWN', 'SPEECH_TIMEOUT']);
 
+/** Most bytes one worker answer may be. It must hold every answer the checks below accept: a transcript of 12000
+ * characters is 36 KB as UTF-8 Chinese, which the earlier 32 KiB cap cut off (a long, dense recording then failed as
+ * SPEECH_WORKER_FAILED); with segments the text is there twice, plus the times of each segment. */
+export const OUTPUT_BYTES = Object.freeze({ plain: 65536, timed: 262144 });
+
 /** Trusted host interface only. The model-facing layer uses artifact IDs, never these paths. */
 export function createLocalSpeechRunner({ configFile, workerFile = workerDefault, log = line => process.stderr.write(line + '\n') }) {
   if (!path.isAbsolute(configFile) || !path.isAbsolute(workerFile)) throw failure('SPEECH_CONFIG');
@@ -65,7 +70,7 @@ export function createLocalSpeechRunner({ configFile, workerFile = workerDefault
         const timer = setTimeout(() => { timedOut = true; kill(); }, c.timeoutMs);
         const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); };
         child.stdout.setEncoding('utf8');
-        child.stdout.on('data', chunk => { output += chunk; if (Buffer.byteLength(output) > (job.segments ? 98304 : 32768)) { overflow = true; output = ''; kill(); } });
+        child.stdout.on('data', chunk => { output += chunk; if (Buffer.byteLength(output) > (job.segments ? OUTPUT_BYTES.timed : OUTPUT_BYTES.plain)) { overflow = true; output = ''; kill(); } });
         child.on('error', () => { cleanup(); reject(failure('SPEECH_WORKER_FAILED')); });
         child.on('close', code => {
           cleanup();
