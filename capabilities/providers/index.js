@@ -15,10 +15,11 @@
 //
 // Today the declarations are read by the usage ledger (model-gateway/usage-ledger.mjs) and, through
 // it, the console's quota page, and by the executor for the choices of the model tool `companion_activity`
-// (ACTIVITIES below). The two older model tools, Authority's /v1/content allowlist, the content service, the
-// gateway's purposes and stop tiers and the console's spend card still carry their own lists; the tables derived
-// below say what those lists should be, and consistency.test.js holds the two against each other. Nothing reads the
-// derived tables yet.
+// (ACTIVITIES below), and by the content service, which refuses to start unless its registry of actions is
+// CONTENT_ACTIONS (capabilities/media/service.js checkContentActions). The two older model tools, Authority's
+// /v1/content allowlist, the gateway's purposes and stop tiers and the console's spend card still carry their own
+// lists; the tables derived below say what those lists should be, and consistency.test.js holds the two against each
+// other.
 import chat from './chat/manifest.js';
 import consolidation from './consolidation/manifest.js';
 import vision from './vision/manifest.js';
