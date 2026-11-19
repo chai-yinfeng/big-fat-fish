@@ -198,7 +198,7 @@ test('forgetting one line of A removes its digest and the diaries that used it o
   assert.deepEqual([only.diaryIds, only.memoryIds], [[fourth.privateId], []]);
 });
 
-test('the open diary is not written yet: an `open` in the answer is accepted and ignored, and no open row exists', t => {
+test('an `open` sent along with a private diary is ignored, and nobody off the open diary list gets an open row', t => {
   const { a, clock, chat, next, commit, diaries } = fixture(t);
   chat(A, '我家的猫叫MOCK-煤球', 'MOCK-摘要甲');
   clock.now = at(1, 5);

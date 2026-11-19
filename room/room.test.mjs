@@ -9,12 +9,13 @@ import { randomBytes, createHash } from 'node:crypto';
 import { ACTIVITIES, ALL_POSES, POSES, WEATHERS, LAMPS, PHASES, MOODS, SOURCES, TIMEZONE, beijingMinute, phaseOf, roomState, validateRoomState, isRoomState } from './state.js';
 import { TIMELINE, STEP_MS, fakeState, fixture, FIXTURES } from './providers/fake.js';
 import { acceptLive, POLL_MS } from './providers/authority.js';
-import { createRoomServer, authorityReader } from './serve.mjs';
+import { createRoomServer, authorityReader, authorityDiaryReader, DIARY_LIMITS } from './serve.mjs';
+import { readDiaries, acceptDiaries, DIARY_ERRORS, FAKE_CODE, FAKE_DIARIES } from './providers/diary.js';
 import { roomProjection, PHONE_MS } from '../authority/src/room.js';
 import { Authority } from '../authority/src/engine.js';
-import { createAuthorityServer } from '../authority/src/server.js';
-import { validateManifest, placement, HOTSPOT_SHOWS } from './manifest.js';
-import { caption, drawer, ACTIVITY_TEXT } from './view.js';
+import { createAuthorityServer, ROOM_DIARY_PER_MINUTE } from '../authority/src/server.js';
+import { validateManifest, placement, HOTSPOT_SHOWS, HOTSPOT_NOTEBOOK } from './manifest.js';
+import { caption, drawer, ACTIVITY_TEXT, NOTEBOOK_TEXT } from './view.js';
 
 const root = new URL('./', import.meta.url);
 const manifest = JSON.parse(await readFile(new URL('manifest.json', root), 'utf8'));
@@ -160,7 +161,7 @@ test('manifest: video slots are accepted, bad files and positions are refused', 
     m => { m.poses.bed.src = 'https://example.org/a.png'; }, m => { m.poses.bed.src = '../secret.png'; }, m => { m.poses.bed.src = '/etc/a.png'; }, m => { m.poses.bed.src = 'assets/a.png?x=1'; },
     m => { m.poses.bed.src = 'assets/a.html'; }, m => { m.poses.bed.poster = 'assets/a.png'; }, m => { m.poses.bed.anchor.x = 1601; }, m => { m.poses.bed.width = 0; }, m => { m.poses.bed.caption = 'x'; },
     m => { m.base.src = 'assets/base.webm'; }, m => { m.window = [[0, 0], [1, 1]]; }, m => { m.lamp.radius = -1; },
-    m => { m.hotspots[0].shows = 'diary'; }, m => { m.hotspots[1].id = m.hotspots[0].id; }, m => { m.hotspots[0].polygon[0] = [5000, 0]; }, m => { m.hotspots[0].text = '她在和谁聊'; },
+    m => { m.hotspots[0].shows = 'chat'; }, m => { m.hotspots[1].id = m.hotspots[0].id; }, m => { m.hotspots[0].polygon[0] = [5000, 0]; }, m => { m.hotspots[0].text = '她在和谁聊'; },
   ]) assert.throws(() => validateManifest(change(edit)), bad, edit.toString());
 });
 
@@ -261,4 +262,86 @@ test('serve: a capability credential is refused by Authority, an answer outside 
   for (const answer of answers) assert.deepEqual(answer, good);
   assert.equal((await cached('state')).status, 200);
   assert.equal(calls, 1);
+});
+
+test('notebook: the manifest has it on the desk, its words are fixed, and the page keeps the passcode and the pages in memory only', async () => {
+  const spot = manifest.hotspots.find(item => item.shows === HOTSPOT_NOTEBOOK);
+  assert.equal(spot.id, 'notebook');
+  // It is not a drawer of the room state: the state has no word about any diary.
+  assert.ok(!HOTSPOT_SHOWS.includes(HOTSPOT_NOTEBOOK));
+  assert.throws(() => drawer(HOTSPOT_NOTEBOOK, FIXTURES.idle));
+  assert.deepEqual(Object.keys(NOTEBOOK_TEXT), ['title', 'hint', 'label', 'open', 'empty']);
+  const html = await readFile(new URL('index.html', root), 'utf8'), provider = await readFile(new URL('providers/diary.js', root), 'utf8'), script = await readFile(new URL('room.js', root), 'utf8');
+  assert.match(html, /<aside id="notebook"[^>]*hidden>/);
+  assert.match(html, /<input name="code" type="text" autocomplete="off"/);
+  // One request, to the page's own server; no storage, no address, no credential.
+  assert.deepEqual([...provider.matchAll(/fetch\(([^,)]+)/g)].map(match => match[1]), ["'diary'"]);
+  for (const source of [provider, script]) assert.ok(!/innerHTML|localStorage|sessionStorage|indexedDB|document\.cookie|location\.(hash|search|href) *=|history\.|Authorization|Bearer|\.sock|3082/.test(source.replace(/^\s*(\/\/|\/\*\*|\*).*$/gm, '')));
+  // Every wrong passcode gets one sentence; the fake preview opens only with its own made-up passcode.
+  assert.deepEqual(Object.keys(DIARY_ERRORS), ['wrong', 'limited', 'unavailable']);
+  for (const code of ['', 'aaaaaaaa', 'demo2346', '日记口令']) await assert.rejects(readDiaries(code, { fake: true }), { message: DIARY_ERRORS.wrong });
+  assert.deepEqual(await readDiaries(` ${FAKE_CODE.toUpperCase()} `, { fake: true }), FAKE_DIARIES);
+  assert.ok(FAKE_DIARIES.every(entry => entry.text.startsWith('（假数据）')));
+  // An answer is held to its shape, and only day and text are kept.
+  assert.deepEqual(acceptDiaries({ diaries: [{ day: '2026-11-18', text: 'MOCK-明面', personId: SECRETS[0], cardId: 'card:default' }] }), [{ day: '2026-11-18', text: 'MOCK-明面' }]);
+  for (const bad of [null, {}, { diaries: 'x' }, { diaries: [{ day: 'today', text: 'x' }] }, { diaries: [{ day: '2026-11-18', text: '' }] }, { diaries: [{ day: '2026-11-18' }] }]) assert.throws(() => acceptDiaries(bad), { message: DIARY_ERRORS.unavailable });
+});
+
+test('serve: POST /diary reads one person\'s open diaries with their passcode through the room credential; every wrong passcode is the same empty 404; the room state says nothing of it', async t => {
+  const fake = await serving(t);
+  const post = (get, body, headers = { 'content-type': 'application/json' }) => get('').then(response => fetch(new URL('diary', response.url), { method: 'POST', headers, body: typeof body === 'string' ? body : JSON.stringify(body) }));
+  // Fake mode has no diary route at all.
+  assert.equal((await post(fake, { code: FAKE_CODE })).status, 404);
+  const { socketPath, credentialFile, token, authority } = await liveAuthority(t);
+  // The owner's dialogue of today, consolidated; then today's diaries written as staging does (private, then the owner's open one).
+  const said = Date.now() - 2000;
+  authority.observe('qq', { eventId: 'e2', streamId: 'qq:1:private:2', actorId: 'qq:1:user:2', role: 'user', text: '我今天去MOCK-钓鱼了', at: said });
+  authority.observe('qq', { eventId: 'e3', streamId: 'qq:1:private:2', actorId: 'qq:model', role: 'assistant', text: 'MOCK-REPLY 钓到了吗', at: said + 1 });
+  authority.context('qq', { streamId: 'qq:1:private:2', query: 'MOCK', windowFromAt: Date.now() });
+  const entityId = authority.health().entityId, batch = authority.consolidationNext(entityId).task;
+  authority.consolidationCommit(entityId, { taskId: batch.taskId, outcome: 'ok', digest: { summary: 'MOCK-摘要：对方去钓鱼了。', feeling: '' }, facts: [] });
+  authority.diaryTrigger({});
+  const secret = authority.diaryNext(entityId).task;
+  authority.diaryCommit(entityId, { taskId: secret.taskId, outcome: 'ok', private: { text: 'MOCK-私密：只有主人能看。' }, usedIds: ['d1'] });
+  const mine = authority.diaryNext(entityId).task;
+  assert.equal(mine.kind, 'open');
+  authority.diaryCommit(entityId, { taskId: mine.taskId, outcome: 'ok', open: { text: 'MOCK-明面：谢谢你告诉我钓鱼的事。' }, usedIds: ['d1'] });
+  const { code } = authority.diaryCode('qq', { streamId: 'qq:1:private:2' });
+  const clock = { now: 1_000_000 };
+  const get = await serving(t, { live: authorityReader({ socketPath, credentialFile, cacheMs: 0 }), diary: authorityDiaryReader({ socketPath, credentialFile }), clock: () => clock.now });
+  const minute = () => { clock.now += DIARY_LIMITS.windowMs; };
+  const ok = await post(get, { code }), text = await ok.text();
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(JSON.parse(text), { diaries: [{ day: mine.day, text: 'MOCK-明面：谢谢你告诉我钓鱼的事。' }] });
+  for (const secretText of [token, 'MOCK-私密', 'person', 'card:', 'qq:1']) assert.ok(!text.includes(secretText), secretText);
+  // Wrong, malformed, missing, not JSON: one answer.
+  const wrong = [];
+  for (const [body, headers] of [[{ code: 'aaaaaaaa' }], [{ code: '' }], [{ code: 5 }], [{}], ['not json'], [{ code }, { 'content-type': 'text/plain' }]]) {
+    minute();
+    const response = await post(get, body, headers);
+    wrong.push([response.status, await response.text()]);
+  }
+  assert.deepEqual([...new Set(wrong.map(item => JSON.stringify(item)))], [JSON.stringify([404, '{}'])]);
+  // Reading it by any other method or path is not possible, and the room state has no trace of a diary or a passcode.
+  for (const name of ['diary', 'diary?code=' + code, 'diary/' + code]) assert.equal((await get(name)).status, 404, name);
+  const state = await (await get('state')).text();
+  assert.deepEqual(Object.keys(JSON.parse(state)), ['version', 'source', 'at', 'since', 'clock', 'weather', 'lamp', 'activity', 'pose']);
+  assert.ok(!state.includes('MOCK') && !state.includes(code) && !/diar/i.test(state));
+  // Attempts are limited: per client (as the proxy in front names it), and overall whoever asks.
+  minute();
+  const from = address => post(get, { code: 'aaaaaaaa' }, { 'content-type': 'application/json', 'x-forwarded-for': address });
+  for (let made = 0; made < DIARY_LIMITS.perClient; made++) assert.equal((await from('100.64.0.1')).status, 404);
+  const limited = await post(get, { code }, { 'content-type': 'application/json', 'x-forwarded-for': '100.64.0.1' });
+  assert.deepEqual([limited.status, await limited.text()], [429, '{}']);
+  assert.equal((await from('100.64.0.2')).status, 404, 'another client is not held back yet');
+  for (let made = DIARY_LIMITS.perClient + 1; made < DIARY_LIMITS.overall; made++) assert.equal((await from('100.64.1.' + made)).status, 404);
+  assert.equal((await from('100.64.2.1')).status, 429, 'everyone together is limited too');
+  minute();
+  assert.equal((await post(get, { code })).status, 200);
+  // The credential gone or wrong: 503, empty, and still no detail.
+  writeFileSync(credentialFile, randomBytes(32).toString('hex')); minute();
+  const failed = await post(get, { code });
+  assert.deepEqual([failed.status, await failed.text()], [503, '{}']);
+  assert.ok(DIARY_LIMITS.overall < ROOM_DIARY_PER_MINUTE);
 });

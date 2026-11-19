@@ -27,7 +27,14 @@ export function caption(state) {
   validateRoomState(state);
   return `${ACTIVITY_TEXT[state.activity][0]} · ${clockText(state.clock.minute)} ${PHASE_TEXT[state.clock.phase]} · ${WEATHER_TEXT[state.weather]}`;
 }
-/** A hotspot's drawer: `{ title, lines }` for one of the manifest's `shows` kinds. */
+/** The notebook on the desk (hotspot `shows: 'diary'`): fixed words only. What it shows after a passcode is one
+ * person's own open diaries, which are not part of the room state and are never drawn anywhere else. */
+export const NOTEBOOK_TEXT = Object.freeze({
+  title: '笔记本',
+  hint: '这是她写给你的日记。在和她的私聊里发“日记口令”，她会告诉你口令。',
+  label: '日记口令', open: '翻开', empty: '最近 30 天还没有写给你的日记。',
+});
+/** A hotspot's drawer: `{ title, lines }` for one of the manifest's `shows` kinds (the notebook is not a drawer). */
 export function drawer(shows, state) {
   validateRoomState(state);
   if (shows === 'activity') return { title: ACTIVITY_TEXT[state.activity][0], lines: [ACTIVITY_TEXT[state.activity][1], durationText(state.at - state.since), ...(state.mood ? ['看起来' + MOOD_TEXT[state.mood] + '。'] : [])] };

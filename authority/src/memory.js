@@ -251,12 +251,14 @@ export class MemoryDomain {
         personLabel:r.person_id?opaquePerson(r.person_id):null,personIsOwner:r.person_id==='person:owner',source:sourceOf(entry)
       };
     }).filter(r=>input.includeArchived!==false||(!r.archived&&r.status==='active'));
-    // A diary of the two-diary format (body.v 2) is shown with the persona card it was written under.
+    // A diary of the two-diary format (body.v 2) is shown with the persona card it was written under; an open one
+    // with whose it is (the opaque label the people listing uses, never the person ID, which may hold an account).
     const cardTitles=Object.fromEntries(this.listPersonaCards({entityId:e.id}).cards.map(card=>[card.id,card.title]));
     const diaries=input.person!==undefined?[]:this.store.db.prepare('SELECT * FROM diaries WHERE entity_id=? AND revision<? ORDER BY revision DESC LIMIT ?').all(e.id,before,limit).map(r=>{
-      const body=JSON.parse(r.body),cardId=body.cardId??DEFAULT_CARD_ID;
+      const {personId,...body}=JSON.parse(r.body),cardId=body.cardId??DEFAULT_CARD_ID;
       return{
-        id:r.id,type:'diary',kind:r.kind,status:r.status,revision:r.revision,entityId:e.id,...body,...(body.v===2?{cardId,cardTitle:cardTitles[cardId]??null}:{})
+        id:r.id,type:'diary',kind:r.kind,status:r.status,revision:r.revision,entityId:e.id,...body,...(body.v===2?{cardId,cardTitle:cardTitles[cardId]??null}:{}),
+        ...(typeof personId==='string'?{personLabel:opaquePerson(personId),personIsOwner:personId==='person:owner'}:{})
       };
     });
     return{

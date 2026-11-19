@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createModelGateway } from '../../model-gateway/server.mjs';
-import { consolidationRows, diaryRows, DEFAULT_DIARY, DEFAULT_DIGEST, planReply, renderReply, evidenceRef, createFakeUpstream, DEFAULT_REPLY } from './fake-model.mjs';
+import { consolidationRows, diaryRows, openDiaryRows, DEFAULT_DIARY, DEFAULT_DIGEST, planReply, renderReply, evidenceRef, createFakeUpstream, DEFAULT_REPLY } from './fake-model.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 const system = 'persona';
@@ -188,4 +188,23 @@ test('scripted model: a diary request is answered by a `diary` rule with the ref
   for (const content of ['Reply OK.', JSON.stringify({ persona: '', sources: [] }), JSON.stringify({ messages: [['o1', '对方', '21:03', 'x']] }), JSON.stringify({ day: '2026-11-18', digests: [] })]) assert.equal(diaryRows({ stream: false }, content), null, content);
   assert.equal(diaryRows({ stream: true }, body.messages[1].content), null);
   assert.equal(consolidationRows(body, body.messages[1].content), null);
+});
+
+test('scripted model: an open diary request (one person\'s digests, no notes) is answered in `open` by a `diary` rule, and logged apart from the private diary', async () => {
+  const { openDiaryMessages, diaryMessages, parseDiaries } = await import('../../capabilities/memory/diary.js');
+  const task = { kind: 'open', taskId: 't', day: '2026-11-18', personaText: 'MOCK 人设', digests: [{ ref: 'd1', time: '21:03', summary: 'MOCK-甲 摘要' }, { ref: 'd2', time: '21:09', summary: 'MOCK-别的 摘要' }] };
+  const body = { stream: false, messages: openDiaryMessages(task) };
+  const scripted = [{ match: 'MOCK-甲', reply: 'MOCK-聊天回复' }, { match: 'MOCK-乙', diary: { private: 'MOCK-别人的', open: 'MOCK-别人的明面' } }, { match: 'MOCK-甲', diary: { private: 'MOCK-DIARY 私密甲', open: 'MOCK-OPEN 明面甲' } }];
+  const plan = planReply(body, scripted);
+  assert.deepEqual(parseDiaries(plan.text, 'open'), { open: { text: 'MOCK-OPEN 明面甲' }, usedIds: ['d1'] });
+  assert.ok(!plan.text.includes('private'));
+  assert.deepEqual([plan.openDiary, plan.diary, plan.consolidation, plan.userText, plan.stream, plan.maintenance], [true, undefined, undefined, '', false, body.messages[1].content]);
+  // Without a rule, or with a rule that scripts no open text: a plain valid open diary.
+  assert.deepEqual(parseDiaries(planReply(body, []).text, 'open'), { open: { text: DEFAULT_DIARY.open }, usedIds: ['d1', 'd2'] });
+  assert.deepEqual(parseDiaries(planReply(body, [{ match: 'MOCK-甲', diary: { private: 'MOCK-只有私密' } }]).text, 'open'), { open: { text: DEFAULT_DIARY.open }, usedIds: ['d1'] });
+  // A private diary request is not an open one, and the other way round; a chat is neither.
+  const secret = { stream: false, messages: diaryMessages({ ...task, digests: task.digests.map(row => ({ ...row, person: 'p-aaaaaa' })), notes: [], previous: [], own: {} }) };
+  assert.deepEqual([openDiaryRows(secret, secret.messages[1].content), diaryRows(body, body.messages[1].content), planReply(secret, scripted).diary, planReply(secret, scripted).openDiary], [null, null, true, undefined]);
+  for (const content of ['Reply OK.', JSON.stringify({ persona: '', sources: [] }), JSON.stringify({ messages: [['o1', '对方', '21:03', 'x']] }), JSON.stringify({ day: '2026-11-18', digests: [] })]) assert.equal(openDiaryRows({ stream: false }, content), null, content);
+  assert.equal(openDiaryRows({ stream: true }, body.messages[1].content), null);
 });

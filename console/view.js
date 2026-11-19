@@ -157,6 +157,10 @@ export function WorldConsole({ t, standalone = false }) {
   const [stickerShown, setStickerShown] = useState(STICKER_PAGE);
   const stickerFileInput = useRef(null);
   const stickerLoaded = useRef(new Set());
+  // The open diary's list (who gets one; read on request), and a passcode just made for someone: shown once, kept
+  // only in this page's state until the memory page is left.
+  const [openDiary, setOpenDiary] = useState(null);
+  const [openDiaryCode, setOpenDiaryCode] = useState(null);
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -328,7 +332,7 @@ export function WorldConsole({ t, standalone = false }) {
   const effectiveTheme = theme === 'system' ? (systemDark() ? 'dark' : 'light') : theme;
   const toggleTheme = () => setTheme(effectiveTheme === 'dark' ? 'light' : 'dark');
   function go(key) {
-    if (key !== 'memory') { setMemory(null); setForgetPreview(null); setMemoryFilter(''); setConsolidation(null); setMemorySources({}); }
+    if (key !== 'memory') { setMemory(null); setForgetPreview(null); setMemoryFilter(''); setConsolidation(null); setMemorySources({}); setOpenDiary(null); setOpenDiaryCode(null); }
     if (key !== 'quota') { setQuotaOpen(null); setQuotaHistory(null); setLimitDraft({}); }
     if (key !== 'persona') setCardConfirm(null);
     setTab(key); setDrawer(false);
@@ -944,12 +948,36 @@ export function WorldConsole({ t, standalone = false }) {
       `${['user', 'assistant', 'external'].includes(line.role) ? t(`memoryPanel.role.${line.role}`) : ''} · ${time(line.at)}: ${line.forgotten ? t('memoryPanel.sourceForgotten') : line.text}`))) : null;
     // The quote she noted is not word for word in the observation it cites: marked, with the source one click away.
     const looseQuote = item => item.evidence?.quoteVerbatim === false;
-    // Her private diaries of the current format (body.v 2), one card a Beijing day; any other diary is of the old format.
-    const dated = diary => diary.v === 2 && typeof diary.day === 'string' && diary.kind === 'private';
+    // Her diaries of the current format (body.v 2), one card a Beijing day: the private one, and the open ones, each
+    // written for one person (shown with whose it is). Any other diary is of the old format.
+    const dated = diary => diary.v === 2 && typeof diary.day === 'string' && (diary.kind === 'private' || diary.kind === 'open');
+    const kindKey = diary => diary.kind === 'open' ? 'diaryPanel.open' : 'diaryPanel.private';
     const diaryDays = memory ? [...new Set(memory.diaries.filter(dated).map(diary => diary.day))].sort().reverse() : [];
     // The persona card a diary was written under: its name, or its id once the card is gone.
     const diaryCard = diary => badge(`${t('diaryPanel.card')}: ${typeof diary.cardTitle === 'string' && diary.cardTitle ? diary.cardTitle : diary.cardId}`);
-    const diaryLine = id => { const diary = memory?.diaries.find(entry => entry.id === id); return diary ? `${diary.day || ''} ${dated(diary) ? t('diaryPanel.private') : t('diaryPanel.legacy')}: ${String(diary.text || '').slice(0, 80)}` : id; };
+    const diaryLine = id => { const diary = memory?.diaries.find(entry => entry.id === id); return diary ? `${diary.day || ''} ${dated(diary) ? t(kindKey(diary)) : t('diaryPanel.legacy')}: ${String(diary.text || '').slice(0, 80)}` : id; };
+    // The open diary: who gets one (the owner alone until the list is changed), and each listed person's passcode.
+    // A passcode is never listed; a new one is shown here once, right after it is made.
+    const validOpenDiary = value => value && Array.isArray(value.people) && value.people.every(person => typeof person?.personId === 'string' && typeof person.label === 'string');
+    const loadOpenDiary = async () => { const value = await request('/diary/open'); if (!validOpenDiary(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' }); setOpenDiary(value); };
+    const openDiaryCard = h('section', { className: 'bff-card' }, cardHead(h('h2', null, t('openDiary.title')),
+      button('openDiary.read', () => run(loadOpenDiary), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
+      text('openDiary.hint'),
+      openDiaryCode && alert('info', `${t('openDiary.newCode')} ${openDiaryCode.owner ? t('peoplePanel.owner') : openDiaryCode.label}: ${openDiaryCode.code}`, { key: 'code' }),
+      openDiary && h('div', { className: 'bff-table' }, h('table', null,
+        h('thead', null, h('tr', null, ...['peoplePanel.person', 'openDiary.listed', 'openDiary.code', 'openDiary.written', 'openDiary.lastDay', 'openDiary.action'].map(key => h('th', { key, scope: 'col' }, t(key))))),
+        h('tbody', null, ...openDiary.people.map(person => h('tr', { key: person.label },
+          h('td', null, person.owner ? badge(t('peoplePanel.owner'), 'primary', icon('star')) : h('code', null, person.label)),
+          h('td', null, h('input', { type: 'checkbox', name: 'openDiaryListed', 'aria-label': t('openDiary.listed'), checked: person.listed === true, disabled: busy,
+            onChange: event => { const listed = event.target.checked; return run(async () => { const value = await request('/diary/open/listed', { personId: person.personId, listed }); if (!validOpenDiary(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' }); setOpenDiary(value); setOpenDiaryCode(null); setNotice(t('saved')); }); } })),
+          h('td', null, person.hasCode ? `${t('openDiary.hasCode')}${Number.isFinite(person.codeAt) ? ` · ${time(person.codeAt)}` : ''}` : '—'),
+          h('td', { className: 'bff-mono' }, String(person.diaries ?? 0)),
+          h('td', null, person.lastDay || '—'),
+          h('td', null, person.listed === true ? button('openDiary.reset', () => run(async () => {
+            const value = await request('/diary/open/code', { personId: person.personId });
+            if (typeof value?.code !== 'string') throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
+            setOpenDiaryCode({ label: person.label, owner: person.owner === true, code: value.code }); await loadOpenDiary();
+          }), { className: 'bff-ghost bff-sm', icon: 'refresh' }) : null)))))));
     const validConsolidation = value => value && Array.isArray(value.streams) && Array.isArray(value.staleDigestIds) && Number.isFinite(value.calls) && Number.isFinite(value.limits?.perDay) && Number.isFinite(value.limits?.perStreamPerDay);
     const refused = consolidation ? Object.values(consolidation.extracted?.rejected || {}).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0) : 0;
     const consolidationCard = h('section', { className: 'bff-card' }, cardHead(h('h2', null, t('consolidation.title')),
@@ -979,6 +1007,7 @@ export function WorldConsole({ t, standalone = false }) {
         memory && text('memoryPanel.hint'),
         memory && h('p', { className: 'bff-small bff-muted' }, `${t('memoryPanel.shown')}: ${memory.items.length}`)),
       consolidationCard,
+      openDiaryCard,
       memory && h(React.Fragment, null,
         ...memory.items.map(item => h('article', { className: 'bff-card bff-memory', key: item.id },
           h('div', { className: 'bff-actions' }, badge(item.type, 'primary'), badge(item.status), item.pinned ? badge(t('memoryPinned'), 'primary', icon('pin')) : null,
@@ -1000,12 +1029,13 @@ export function WorldConsole({ t, standalone = false }) {
         ...diaryDays.map(day => h('article', { className: 'bff-card bff-memory', key: 'diary:' + day },
           h('h3', null, `${t('diaryPanel.day')} ${day}`),
           ...memory.diaries.filter(diary => dated(diary) && diary.day === day).map(diary => h('div', { key: diary.id },
-            h('div', { className: 'bff-actions' }, badge(t('diaryPanel.private'), '', icon('note')), diaryCard(diary)),
+            h('div', { className: 'bff-actions' }, badge(t(kindKey(diary)), diary.kind === 'open' ? 'ok' : '', icon('note')),
+              diary.kind === 'open' ? h(React.Fragment, null, h('span', { className: 'bff-small bff-muted' }, t('diaryPanel.for')), belongs(diary)) : null, diaryCard(diary)),
             h('p', { style: { whiteSpace: 'pre-wrap' } }, diary.text),
             h('div', { className: 'bff-actions' }, preview(diary.id)))))),
         ...memory.diaries.filter(diary => !dated(diary)).map(diary => h('article', { className: 'bff-card bff-memory', key: diary.id },
           h('div', { className: 'bff-actions' }, badge(t(diary.kind === 'private' ? 'memoryPrivateDiary' : diary.status === 'published' ? 'memoryPublishedDiary' : 'memoryPublicDraft'), diary.kind === 'private' ? '' : 'primary', icon('note')),
-            diary.kind === 'private' ? badge(t('diaryPanel.legacy')) : null),
+            badge(t(diary.kind === 'private' ? 'diaryPanel.legacy' : 'diaryPanel.legacyPublic'))),
           h('p', { style: { whiteSpace: 'pre-wrap' } }, diary.text),
           h('div', { className: 'bff-actions' },
             diary.kind === 'public' && diary.status === 'draft' && button('memoryPublishDraft', () => mutate('/diary/publish', { entityId: memory.entityId, id: diary.id }), { className: 'bff-sm', icon: 'check' }),

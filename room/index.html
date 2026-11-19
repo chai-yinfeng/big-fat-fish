@@ -21,6 +21,17 @@
       <h2></h2>
       <div class="lines"></div>
     </aside>
+    <aside id="notebook" class="drawer notebook" hidden>
+      <button type="button" class="close" aria-label="关闭">×</button>
+      <h2></h2>
+      <p class="hint"></p>
+      <form>
+        <label><span></span> <input name="code" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="16" required></label>
+        <button type="submit"></button>
+      </form>
+      <p class="error" role="alert" hidden></p>
+      <div class="pages"></div>
+    </aside>
   </div>
   <p id="caption" class="caption" role="status"></p>
   <p id="notice" class="notice" hidden></p>

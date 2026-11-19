@@ -13,7 +13,8 @@ import { prepareConversation } from '../authority/prepare-conversation.mjs';
 import { prepareMemory } from '../authority/prepare-memory.mjs';
 import { prepareContent } from '../authority/prepare-content.mjs';
 import { createFakeOneBot } from './fake-onebot.mjs';
-import { Runner, STEPS, validateScenarios, summaryLine, gatewayCaller, gatewayReader, MOCK_PROVIDER_KEY } from './scenarios.mjs';
+import { Runner, STEPS, validateScenarios, summaryLine, gatewayCaller, gatewayReader, roomCaller, MOCK_PROVIDER_KEY } from './scenarios.mjs';
+import { createRoomServer, authorityReader, authorityDiaryReader } from '../../room/serve.mjs';
 import { planReply } from './fake-model.mjs';
 import { MOCK_SITE } from './fake-ytdlp.mjs';
 
@@ -23,7 +24,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -444,8 +445,114 @@ test('diary steps: exactly one private diary of a day with its card; the request
   const listed = { digestIds: ['g1'], sourceObservationIds: ['o1'], memoryEpoch: 0 };
   await assert.rejects(STEPS.forget(forgetting(listed), ctx, { person: 'MOCK-A', source: '想被忘掉', diaries: 2 }), /lists undefined diaries \(undefined with other content\), expected 2/);
   await assert.rejects(STEPS.forget(forgetting({ ...listed, diaryIds: ['d1', 'd2'], mixedDiaryIds: ['d1'] }), ctx, { person: 'MOCK-A', source: '想被忘掉', diaries: 2 }), /lists 2 diaries \(1 with other content\), expected 2/);
+  // The old public draft is no longer written either.
   write([input(rows), { stream: false, userText: '{"persona":"","sources":[]}', system: '你为一个独立实体维护日记。只用这些已经获准公开的素材写一条简短公开日记草稿。' }]);
-  await STEPS.expectDiaryInput(run, ctx, { contains: 'MOCK-摘要甲', count: 1 });
+  await assert.rejects(STEPS.expectDiaryInput(run, ctx, { contains: 'MOCK-摘要甲', count: 1 }), /the old public diary draft was requested/);
+});
+
+test('open diary steps: one open diary of the right person; its request holds that person\'s digests only; the passcode is asked without the model and opens the notebook', async t => {
+  const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-open-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const log = path.join(dir, 'requests.jsonl'), ctx = { logOffset: 0, matched: new Set(), observed: new Map() }, posted = [], data = shipped();
+  const T = data.people['MOCK-T'], U = data.people['MOCK-U'];
+  const diary = (id, extra = {}) => ({ id, kind: 'open', status: 'open', v: 2, day: '2026-11-18', text: 'MOCK-OPEN-甲 明面', cardId: 'card:default', personLabel: 'p-aaaaaa', personIsOwner: false, ...extra });
+  let diaries = [diary('o1')], listed = true, sent = [], messages = 4, rooms = [];
+  const run = new Runner({ data, modelLog: log, sleep: async () => {},
+    operator: async (method, route, body) => {
+      if (method === 'POST') { posted.push([route, body]); return { people: [{ personId: 'person:qq:' + T.qq, listed }] }; }
+      if (route === '/people') return { people: [{ personId: 'person:qq:' + T.qq, label: 'p-aaaaaa' }, { personId: 'person:qq:' + U.qq, label: 'p-bbbbbb' }] };
+      if (route === '/conversations') return [{ streamId: `qq:${data.bot.qq}:private:${T.qq}`, messages }];
+      assert.equal(route, '/memory?limit=100'); return { items: [], diaries };
+    },
+    onebot: async (method, route, body) => { if (method === 'POST') { posted.push([route, body]); return { message_id: 1 }; } return { sent }; },
+    room: async code => { rooms.push(code); return code === 'mockcd33' ? { status: 200, text: JSON.stringify({ diaries: [{ day: '2026-11-18', text: 'MOCK-OPEN-甲 明面' }] }) } : { status: 404, text: '{}' }; },
+    roomState: async () => ({ status: 200, text: JSON.stringify({ version: 1, source: 'authority', at: 1, since: 1, clock: {}, weather: 'clear', lamp: 'off', activity: 'idle', pose: 'sitting' }) }) });
+  run.poll = async (probe, _timeoutMs, message) => (await probe()) || (() => { throw new Error(message); })();
+  await STEPS.openDiaryList(run, ctx, { person: 'MOCK-T', listed: true });
+  assert.deepEqual(posted, [['/diary/open/listed', { personId: 'person:qq:' + T.qq, listed: true }]]);
+  listed = false;
+  await assert.rejects(STEPS.openDiaryList(run, ctx, { person: 'MOCK-T', listed: true }), /MOCK-T is not on the open diary list/);
+  // The diary: one, open, this person's, of a day, with its card, without an account number.
+  await STEPS.expectOpenDiary(run, ctx, { person: 'MOCK-T', contains: 'MOCK-OPEN-甲' });
+  await assert.rejects(STEPS.expectOpenDiary(run, ctx, { person: 'MOCK-U', contains: 'MOCK-OPEN-甲' }), /is not MOCK-U's/);
+  for (const [list, message] of [
+    [[diary('o1'), diary('o2')], /expected one open diary/],
+    [[diary('o1', { kind: 'private' })], /expected one open diary/],
+    [[diary('o1', { day: undefined })], /not of a Beijing day/],
+    [[diary('o1', { cardId: undefined })], /does not carry its persona card/],
+    [[diary('o1', { personId: 'person:qq:' + T.qq })], /carries an account number/],
+  ]) { const kept = diaries; diaries = list; await assert.rejects(STEPS.expectOpenDiary(run, ctx, { person: 'MOCK-T', contains: 'MOCK-OPEN-甲' }), message); diaries = kept; }
+  // The request: told apart from the private diary's; one person's digests, nothing else.
+  const OPEN = '这是你写给这个人看的日记。……';
+  const input = (digests, extra = {}, system = OPEN) => ({ stream: false, openDiary: true, userText: '', system, maintenance: JSON.stringify({ day: '2026-11-18', persona: 'MOCK', digests, ...extra }) });
+  const rows = [{ ref: 'd1', time: '21:03', summary: 'MOCK-摘要甲' }];
+  const write = entries => fs.writeFileSync(log, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+  write([{ stream: false, diary: true, userText: '', system: 'S', maintenance: JSON.stringify({ day: '2026-11-18', persona: 'MOCK', digests: [{ ref: 'd1', person: 'p-aaaaaa', summary: 'MOCK-摘要甲 MOCK-摘要乙' }], notes: [], previous: [], own: {} }) }, input(rows)]);
+  await STEPS.expectOpenDiaryInput(run, ctx, { contains: 'MOCK-摘要甲', absent: ['MOCK-摘要乙', 'MOCK-原话'], count: 1 });
+  await STEPS.expectOpenDiaryInput(run, ctx, { contains: 'MOCK-摘要丙', count: 0 });
+  await assert.rejects(STEPS.expectOpenDiaryInput(run, ctx, { contains: 'MOCK-摘要甲', count: 2 }), /1 open diary request\(s\) contain "MOCK-摘要甲", expected 2/);
+  for (const [entry, message] of [
+    [input([...rows, { ref: 'd2', time: '21:09', summary: 'MOCK-摘要乙' }]), /also contains "MOCK-摘要乙"/],
+    [input(rows, { notes: [] }), /expected day, persona and digests only/],
+    [input(rows, { previous: [] }), /expected day, persona and digests only/],
+    [input([{ ...rows[0], person: 'p-aaaaaa' }]), /names a person/],
+    [input([{ ...rows[0], summary: 'MOCK-摘要甲 p-0a1b2c 说的' }]), /names a person/],
+    [input(rows, { persona: 'MOCK ' + T.qq }), /contains the account number 999900000035/],
+    [input(rows, {}, '这是你自己的日记。'), /does not say what the diary is for/],
+  ]) { write([entry]); await assert.rejects(STEPS.expectOpenDiaryInput(run, ctx, { contains: 'MOCK-摘要甲', absent: 'MOCK-摘要乙' }), message); }
+  for (const purpose of ['依据这些已记录的新增事实或事件，写一条简短私密日记。', '只用这些已经获准公开的素材写一条简短公开日记草稿。']) {
+    write([input(rows), { stream: false, userText: '{}', system: '你为一个独立实体维护日记。' + purpose }]);
+    await assert.rejects(STEPS.expectOpenDiaryInput(run, ctx, { contains: 'MOCK-摘要甲' }), /an old automatic diary task \(private diary or public draft\) was requested/);
+  }
+  // Asking for the passcode: answered without Authority recording a line and without a chat request.
+  write([input(rows)]); posted.length = 0;
+  sent = [{ user_id: T.qq, message_id: 'm1', text: '你的日记口令是：mockcd33\n在房间页面里点书桌上的笔记本……' }];
+  await STEPS.askDiaryCode(run, ctx, { from: 'MOCK-T', listed: true });
+  assert.deepEqual(posted, [['/message', { user_id: T.qq, nickname: 'MOCK-T', text: '日记口令' }]]);
+  assert.equal(ctx.diaryCodes.get('MOCK-T'), 'mockcd33');
+  sent.push({ user_id: T.qq, message_id: 'm2', text: '还没有给你写日记。' });
+  await assert.rejects(STEPS.askDiaryCode(run, ctx, { from: 'MOCK-T', listed: true }), /expected a passcode/);
+  sent.push({ user_id: T.qq, message_id: 'm3', text: '你的日记口令是：mockcd44\n……' });
+  await assert.rejects(STEPS.askDiaryCode(run, ctx, { from: 'MOCK-T', listed: false }), /received "你的日记口令是：\*{8}.*expected to be told there is no diary/);
+  sent.push({ user_id: T.qq, message_id: 'm4', text: '还没有给你写日记。' });
+  await STEPS.askDiaryCode(run, ctx, { from: 'MOCK-T', listed: false });
+  // The request or the answer was recorded as a line of the conversation.
+  sent.push({ user_id: T.qq, message_id: 'm5', text: '还没有给你写日记。' });
+  const count = run.messageCount; let asked = 0;
+  run.messageCount = async () => messages + (asked++ >= 2 ? 2 : 0);
+  await assert.rejects(STEPS.askDiaryCode(run, ctx, { from: 'MOCK-T', listed: false }), /Authority holds 2 more line\(s\) of MOCK-T, expected 0/);
+  run.messageCount = count;
+  // A chat request was made for it, or the phrase or the passcode reached the model.
+  ctx.diaryCodes.set('MOCK-T', 'mockcd33');
+  for (const [entry, message] of [[{ stream: true, userText: 'MOCK-别的', system: 'S' }, /1 chat request\(s\) were made while MOCK-T asked/], [{ stream: false, consolidation: true, maintenance: '对方说：日记口令' }, /contains the passcode phrase or the passcode/], [{ stream: false, consolidation: true, maintenance: '她说口令是 mockcd55' }, /contains the passcode phrase or the passcode/]]) {
+    write([input(rows)]);
+    sent.push({ user_id: T.qq, message_id: 'x' + sent.length, text: '你的日记口令是：mockcd55\n……' });
+    const post = run.onebot; run.onebot = async (...args) => { if (args[0] === 'POST') fs.appendFileSync(log, JSON.stringify(entry) + '\n'); return post(...args); };
+    await assert.rejects(STEPS.askDiaryCode(run, ctx, { from: 'MOCK-T', listed: true }), message);
+    run.onebot = post;
+  }
+  // The notebook: the passcode opens this person's pages; a replaced one is answered like a made-up one (asked once).
+  ctx.diaryCodes.set('MOCK-T', 'mockcd33'); rooms = [];
+  await STEPS.readDiary(run, ctx, { as: 'MOCK-T', contains: 'MOCK-OPEN-甲', absent: ['MOCK-DIARY', '独特词乙'] });
+  await assert.rejects(STEPS.readDiary(run, ctx, { as: 'MOCK-T', contains: 'MOCK-OPEN-乙' }), /has no diary containing "MOCK-OPEN-乙"/);
+  await assert.rejects(STEPS.readDiary(run, ctx, { as: 'MOCK-T', contains: 'MOCK-OPEN-甲', absent: '明面' }), /the notebook of MOCK-T contains "明面"/);
+  await assert.rejects(STEPS.readDiary(run, ctx, { as: 'MOCK-T' }), /was answered 200, expected the same answer as a made-up one/);
+  await assert.rejects(STEPS.readDiary(run, ctx, { as: 'MOCK-U', contains: 'x' }), /MOCK-U was given no passcode/);
+  ctx.staleDiaryCodes = new Map([['MOCK-T', 'mockcd22']]);
+  await STEPS.readDiary(run, ctx, { as: 'MOCK-T', stale: true });
+  assert.equal(rooms.filter(code => code === 'zzzzzzzz').length, 1);
+  await assert.rejects(STEPS.readDiary(new Runner({ data, sleep: async () => {} }), ctx, { as: 'MOCK-T', contains: 'x' }), /this replay has no room page/);
+  // Asking again: a new passcode, the old one remembered as stale.
+  sent.push({ user_id: T.qq, message_id: 'm9', text: '你的日记口令是：mockcd33\n……' }); write([input(rows)]);
+  await assert.rejects(STEPS.renewDiaryCode(run, ctx, { from: 'MOCK-T' }), /did not make a new passcode/);
+  sent.push({ user_id: T.qq, message_id: 'm10', text: '你的日记口令是：mockcd66\n……' });
+  await STEPS.renewDiaryCode(run, ctx, { from: 'MOCK-T' });
+  assert.deepEqual([ctx.diaryCodes.get('MOCK-T'), ctx.staleDiaryCodes.get('MOCK-T')], ['mockcd66', 'mockcd33']);
+  // The room state: its contract's keys, no passcode, none of the given texts.
+  await STEPS.expectRoomState(run, ctx, { absent: ['MOCK-OPEN', '日记'] });
+  await assert.rejects(STEPS.expectRoomState(run, ctx, { absent: ['idle'] }), /the room state contains "idle"/);
+  run.roomState = async () => ({ status: 200, text: JSON.stringify({ version: 1, source: 'authority', at: 1, since: 1, clock: {}, weather: 'clear', lamp: 'off', activity: 'idle', pose: 'sitting', diary: 'mockcd66' }) });
+  await assert.rejects(STEPS.expectRoomState(run, ctx, {}), /holds more than its contract/);
+  assert.throws(() => roomCaller(4173), /refusing room port/);
 });
 
 // The real services of this checkout, as processes, on a throwaway data root: Authority, the model
@@ -494,6 +601,10 @@ async function stack(t) {
   edit('authority.json', c => { c.credentials.push({ hash: hash(mockToken), role: 'capability', capabilityId: 'mock' }); c.capabilities.push({ id: 'mock', policy: 'conversation.v1' }); c.operator.allowTestChannels = true; });
   // The operator's diary trigger exists only with this switch (staging and here): D1 has the running day written.
   edit('authority.json', c => { c.operator.allowDiaryTrigger = true; });
+  // The room page's credential, as ops/prepare-room.mjs leaves it: its hash in a private file beside authority.json.
+  const roomToken = token();
+  fs.mkdirSync(path.join(base, 'room-config'), { mode: 0o700 });
+  write('room-config/room.token', roomToken); write('operator/room-credential.json', { schemaVersion: 1, hash: hash(roomToken) });
   const conversation = JSON.parse(fs.readFileSync(path.join(base, 'operator/conversation.json'), 'utf8'));
   write('mock-channel/conversation.json', { ...conversation, socketPath: path.join(base, 'ipc/mock-channel/execute.sock'), callerTokenHash: hash(mockCaller), sessionsDir: path.join(base, 'mock-channel/sessions'), authority: { ...conversation.authority, tokenFile: path.join(base, 'mock-channel/capability.token') } });
   const data = shipped(), files = { control: path.join(base, 'scenario/onebot.sock'), mockControl: path.join(base, 'scenario/mock.sock'), script: path.join(base, 'scenario/script.json'), log: path.join(base, 'scenario/requests.jsonl') };
@@ -517,6 +628,11 @@ async function stack(t) {
   start(path.join(project, 'deploy/staging/fake-channel.mjs'), '--release', project, '--control', files.mockControl, '--authority-socket', path.join(base, 'ipc/authority/authority.sock'), '--authority-token-file', path.join(base, 'mock-channel/capability.token'),
     '--executor-config', path.join(base, 'mock-channel/conversation.json'), '--caller-token-file', path.join(base, 'mock-channel/caller.token'), '--poll-ms', '1000');
   await ready(files.mockControl);
+  // The room page's server (in this process), in real mode against the stack's Authority: D2 reads the notebook through it.
+  const reading = { socketPath: path.join(base, 'ipc/authority/authority.sock'), credentialFile: path.join(base, 'room-config/room.token') };
+  const room = createRoomServer({ live: authorityReader({ ...reading, cacheMs: 0 }), diary: authorityDiaryReader(reading) });
+  await new Promise(resolve => room.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { room.closeAllConnections(); room.close(resolve); }));
   const call = (socketPath, headers) => (method, route, body) => new Promise((resolve, reject) => {
     const req = http.request({ socketPath, method, path: route, agent: false, headers: { ...headers, ...(body === undefined ? {} : { 'content-type': 'application/json' }) } }, res => {
       let raw = ''; res.setEncoding('utf8'); res.on('data', chunk => { raw += chunk; });
@@ -525,7 +641,7 @@ async function stack(t) {
     req.on('error', reject); req.end(body === undefined ? undefined : JSON.stringify(body));
   });
   // Silence windows are shortened here; staging waits the full time.
-  const runner = input => new Runner({ data: input, modelScript: files.script, modelLog: files.log, operator: call(path.join(base, 'ipc/operator/operator.sock'), { authorization: 'Bearer ' + operatorToken }), onebot: call(files.control, {}), mock: call(files.mockControl, {}), gateway: gatewayCaller(path.join(base, 'ipc/model/inference.sock'), fs.readFileSync(path.join(base, 'service-config/inference.token'), 'utf8').trim()), gatewayAnswer: gatewayReader(path.join(base, 'ipc/model/inference.sock'), fs.readFileSync(path.join(base, 'service-config/inference.token'), 'utf8').trim()), sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 1500))) });
+  const runner = input => new Runner({ ...roomCaller(room.address().port), data: input, modelScript: files.script, modelLog: files.log, operator: call(path.join(base, 'ipc/operator/operator.sock'), { authorization: 'Bearer ' + operatorToken }), onebot: call(files.control, {}), mock: call(files.mockControl, {}), gateway: gatewayCaller(path.join(base, 'ipc/model/inference.sock'), fs.readFileSync(path.join(base, 'service-config/inference.token'), 'utf8').trim()), gatewayAnswer: gatewayReader(path.join(base, 'ipc/model/inference.sock'), fs.readFileSync(path.join(base, 'service-config/inference.token'), 'utf8').trim()), sleep: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 1500))) });
   return { runner, data, files, fake, base };
 }
 
@@ -769,9 +885,9 @@ test('sticker steps: a library sticker is found by its description with its leve
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 900000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '54/54 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '55/55 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));
@@ -782,8 +898,8 @@ test('scenario replay against the real Authority, gateway (scripted upstream), e
   await t.test('a second replay on the same state passes too (staging replays again after the rollback round trip)', async () => {
     // Without S2 and S3: the spend meter and the owner's once-a-day notice are only reset by the staging agent.
     // Without M9-M13: so are the day's consolidation batches (two a conversation).
-    // Without D1: so is the diary marker (the day's diary is written once).
-    const again = ids.filter(id => !['S2', 'S3', 'M9', 'M10', 'M12', 'M13', 'D1'].includes(id)), second = await runner(data).run(again);
+    // Without D1 and D2: so are the diary markers (the day's diary, and a person's open diary of it, are written once).
+    const again = ids.filter(id => !['S2', 'S3', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2'].includes(id)), second = await runner(data).run(again);
     assert.deepEqual(second.results.map(result => [result.id, result.ok, result.error]), again.map(id => [id, true, undefined]));
   });
 

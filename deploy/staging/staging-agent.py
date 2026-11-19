@@ -298,6 +298,13 @@ def room_listener():
     return sorted(line.split()[3] for line in out.splitlines() if len(line.split()) > 3)
 
 
+def room_ready(release):
+    """Whether scenario replay can read the notebook through the room page: the release has the room's diary route
+    and the owner's one-time room step has been done on this data root (its credential files exist)."""
+    serve = release / 'room/serve.mjs'
+    return serve.exists() and 'v1/room/diary' in serve.read_text() and all((BASE / name).exists() for name in ROOM_FILES)
+
+
 def room_unprepared():
     """Right after the upgrade of a world that never had a room: the unit runs, the page is served, and the
     state route says unavailable (no reason) because there is no credential yet."""
@@ -428,9 +435,9 @@ def scenario_unit(name, text, root=ROOT):
 def reset_consolidation(database):
     """Deterministic reruns of the consolidation scenarios, while Authority is stopped: every private
     conversation starts the replay with nothing waiting (its cursor at its newest observation) and with
-    today's batches unused; no day's diaries count as written (the diary marker goes, so the day an earlier
-    replay had written can be triggered again). Digests, facts and diaries already written stay. Returns the
-    number of conversations."""
+    today's batches unused; no day's diaries count as written (the diary markers go, the private one and each
+    person's open one, so the day an earlier replay had written can be triggered again). Digests, facts and
+    diaries already written stay, and so does the open diary's list. Returns the number of conversations."""
     if not Path(database).exists():
         return 0
     db = sqlite3.connect(str(database))
@@ -443,6 +450,7 @@ def reset_consolidation(database):
             own['calls'] = 0
             own.pop('deferredAt', None)
             own.pop('diary', None)
+            own.pop('openDiary', None)
             streams = own.setdefault('streams', {})
             for capability, stream in db.execute("SELECT capability_id,stream_id FROM streams WHERE entity_id=? AND audience='private'", (entity,)).fetchall():
                 entry = streams.setdefault(capability + '\0' + stream, {})
@@ -453,7 +461,7 @@ def reset_consolidation(database):
                     entry['lastObservationId'] = newest[0]
                 count += 1
         db.execute("UPDATE metadata SET value=? WHERE key='consolidation'", (json.dumps(state),))
-        db.execute("DELETE FROM maintenance_tasks WHERE mode IN ('consolidation','diary')")
+        db.execute("DELETE FROM maintenance_tasks WHERE mode IN ('consolidation','diary','diary.open')")
         db.commit()
         return count
     finally:
@@ -662,7 +670,7 @@ def scenarios(deployer, only=None):
         command = [str(NODE), str(TOOLS / 'scenarios.mjs'), '--operator-port', str(OPERATOR_PORT), '--operator-token-file', str(BASE / 'operator/console.token'),
                    '--onebot-control', str(control), '--model-script', str(SCENARIO / 'model-script.json'), '--model-log', str(SCENARIO / 'model-requests.jsonl'),
                    '--scenarios', str(TOOLS / 'scenarios.json'),
-                   '--inference-socket', str(BASE / 'ipc/model/inference.sock'), '--inference-token-file', str(BASE / 'service-config/inference.token')] + (['--mock-control', str(mock_control)] if second_channel else []) + (['--only', only] if only else [])
+                   '--inference-socket', str(BASE / 'ipc/model/inference.sock'), '--inference-token-file', str(BASE / 'service-config/inference.token')] + (['--mock-control', str(mock_control)] if second_channel else []) + (['--room-port', str(ROOM_PORT)] if room_ready(release) else []) + (['--only', only] if only else [])
         result = subprocess.run(command, cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=1800)
     finally:
         for process in (fake, mock):

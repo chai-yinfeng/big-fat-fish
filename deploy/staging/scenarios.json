@@ -17,6 +17,8 @@
     "MOCK-Q": { "qq": "999900000032", "friend": true },
     "MOCK-R": { "qq": "999900000033", "friend": true },
     "MOCK-S": { "qq": "999900000034", "friend": true },
+    "MOCK-T": { "qq": "999900000035", "friend": true },
+    "MOCK-U": { "qq": "999900000036", "friend": true },
     "MOCK-STRANGER": { "qq": "999900000099", "friend": false },
     "MOCK-M": { "qq": "999900000021", "friend": false, "channel": "mock" }
   },
@@ -432,6 +434,50 @@
       ],
       "finally": [
         { "resume": {} }
+      ]
+    },
+    {
+      "id": "D2",
+      "title": "open-diary: the listed person gets one open diary of the day from their own digests only (the other person's word is in no open request, and that person gets none); \"日记口令\" is answered by the bridge without the model, only for someone on the list; the passcode opens that person's diary in the room's notebook, a replaced or made-up one opens nothing, and the room state shows none of it; neither old automatic diary task is requested",
+      "model": [
+        { "match": "MOCK-D2", "reply": "MOCK-REPLY-D2 好" },
+        { "match": "MOCK-D2-{run} 甲", "consolidate": { "summary": "MOCK-DIGEST-D2-{run} 摘要正文甲 独特词甲{run}", "feeling": "MOCK-D2 感受甲" } },
+        { "match": "MOCK-D2-{run} 乙", "consolidate": { "summary": "MOCK-DIGEST-D2-{run} 摘要正文乙 独特词乙{run}" } },
+        { "match": "独特词甲{run}", "diary": { "private": "MOCK-DIARY-D2-{run} 私密 两个人都聊了", "open": "MOCK-OPEN-D2-{run} 明面 写给甲的一天" } },
+        { "match": "独特词乙{run}", "diary": { "private": "MOCK-DIARY-D2-{run} 私密 只有乙", "open": "MOCK-OPEN-D2-{run} 明面 不该出现的乙" } }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-T", "text": "MOCK-D2-{run} 甲 的一句：我周末去潜水" } },
+        { "expectReply": { "to": "MOCK-T", "contains": "MOCK-REPLY-D2 好" } },
+        { "say": { "from": "MOCK-U", "text": "MOCK-D2-{run} 乙 的一句：我在学大提琴" } },
+        { "expectReply": { "to": "MOCK-U", "contains": "MOCK-REPLY-D2 好" } },
+        { "askDiaryCode": { "from": "MOCK-T", "listed": false } },
+        { "openDiaryList": { "person": "MOCK-T", "listed": true } },
+        { "converse": { "from": "MOCK-T", "text": "MOCK-D2-{run} 甲 第{n}轮", "times": 3, "reply": "MOCK-REPLY-D2 好", "pad": 6000 } },
+        { "converse": { "from": "MOCK-U", "text": "MOCK-D2-{run} 乙 第{n}轮", "times": 3, "reply": "MOCK-REPLY-D2 好", "pad": 6000 } },
+        { "expectDigest": { "person": "MOCK-T", "contains": "MOCK-DIGEST-D2-{run} 摘要正文甲", "covers": "我周末去潜水" } },
+        { "expectDigest": { "person": "MOCK-U", "contains": "MOCK-DIGEST-D2-{run} 摘要正文乙", "covers": "我在学大提琴" } },
+        { "expectOpenDiaryInput": { "contains": "MOCK-DIGEST-D2-{run}", "count": 0, "afterMs": 4000 } },
+        { "triggerDiary": {} },
+        { "expectOpenDiary": { "person": "MOCK-T", "contains": "MOCK-OPEN-D2-{run} 明面 写给甲的一天" } },
+        { "expectOpenDiaryInput": { "contains": "独特词甲{run}", "absent": ["独特词乙{run}", "摘要正文乙", "我周末去潜水", "MOCK-DIARY"], "count": 1 } },
+        { "triggerDiary": {} },
+        { "expectOpenDiaryInput": { "contains": "MOCK-DIGEST-D2-{run}", "count": 1, "afterMs": 6000 } },
+        { "expectNoDiary": { "contains": "不该出现的乙" } },
+        { "askDiaryCode": { "from": "MOCK-T", "listed": true } },
+        { "askDiaryCode": { "from": "MOCK-U", "listed": false } },
+        { "readDiary": { "as": "MOCK-T", "contains": "MOCK-OPEN-D2-{run} 明面 写给甲的一天", "absent": ["独特词乙{run}", "MOCK-DIARY-D2-{run} 私密", "MOCK-DIGEST"] } },
+        { "renewDiaryCode": { "from": "MOCK-T" } },
+        { "readDiary": { "as": "MOCK-T", "stale": true } },
+        { "readDiary": { "as": "MOCK-T", "contains": "MOCK-OPEN-D2-{run} 明面 写给甲的一天" } },
+        { "expectRoomState": { "absent": ["MOCK-OPEN", "MOCK-D2", "独特词", "日记"] } },
+        { "say": { "from": "MOCK-T", "text": "MOCK-D2 本人追问：MOCK-OPEN-D2-{run} 你给我写的日记里写了什么" } },
+        { "expectReply": { "to": "MOCK-T", "contains": "MOCK-REPLY-D2 好" } },
+        { "expectNoChatContains": { "text": "写给甲的一天", "minRequests": 9 } },
+        { "expectNoChatContains": { "text": "你的日记口令是" } },
+        { "openDiaryList": { "person": "MOCK-T", "listed": false } },
+        { "readDiary": { "as": "MOCK-T" } },
+        { "askDiaryCode": { "from": "MOCK-T", "listed": false } }
       ]
     },
     {

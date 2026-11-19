@@ -11,7 +11,7 @@ import { createModelGateway } from '../../model-gateway/server.mjs';
 import { MemoryMaintenance } from './maintenance.js';
 import { completeDiary } from './model-client.js';
 import { MemoryConsolidation } from './consolidation.js';
-import { MemoryDiary, DIARY_PROMPT } from './diary.js';
+import { MemoryDiary, DIARY_PROMPT, OPEN_DIARY_PROMPT } from './diary.js';
 
 test('accepted incremental memories cross real UDS/gateway into a private diary without reprocessing or public leakage', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-memory-flow-'));
@@ -103,7 +103,7 @@ test('rolled-out dialogue crosses real UDS/gateway into a digest and a quoted fa
   assert.equal(authority.consolidationStatus().calls, 1, 'while waiting it does not even take a batch');
 });
 
-test('a finished day crosses real UDS/gateway into one private diary; a second run asks the model nothing; the old private task is never called', async t => {
+test('a finished day crosses real UDS/gateway into one private diary and the owner\'s open diary, each its own call; a friend\'s words are in no open request; further runs ask the model nothing', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-memory-flow-'));
   // 2027-01-15 16:00 in Beijing, then 05:00 the next morning.
   const clock = { now: 1_800_000_000_000 };
@@ -112,7 +112,12 @@ test('a finished day crosses real UDS/gateway into one private diary; a second r
   authority.bindActor({ capabilityId: 'source', externalActorId: 'owner', personId: 'person:owner' });
   authority.bindStream({ capabilityId: 'source', streamId: 'private', personId: 'person:owner', audience: 'private' });
   const say = (eventId, text, she = false) => authority.observe('source', { eventId, streamId: 'private', actorId: she ? 'model' : 'owner', role: she ? 'assistant' : 'user', text, at: clock.now }).observationId;
-  say('event-1', '我养了一只叫MOCK-年糕的仓鼠'); say('reply-1', 'MOCK-REPLY 好可爱', true); clock.now += 1000;
+  say('event-1', '我养了一只叫MOCK-年糕的仓鼠'); say('reply-1', 'MOCK-REPLY 好可爱', true);
+  // A friend, who is not on the open diary's list (by default it holds the owner alone).
+  authority.bindActor({ capabilityId: 'source', externalActorId: 'friend', personId: 'person:friend' });
+  authority.bindStream({ capabilityId: 'source', streamId: 'friend', personId: 'person:friend', audience: 'private' });
+  authority.observe('source', { eventId: 'event-2', streamId: 'friend', actorId: 'friend', role: 'user', text: '我在学MOCK-大提琴', at: clock.now });
+  authority.observe('source', { eventId: 'reply-2', streamId: 'friend', actorId: 'model', role: 'assistant', text: 'MOCK-REPLY 真好', at: clock.now }); clock.now += 1000;
   const hash = value => createHash('sha256').update(value).digest('hex');
   const coreSocket = path.join(dir, 'core.sock'), inferenceSocket = path.join(dir, 'infer.sock'), tokenFile = path.join(dir, 'maintenance.token'), inferenceTokenFile = path.join(dir, 'inference.token');
   fs.writeFileSync(tokenFile, 'synthetic-maintenance-token-not-a-real-credential', { mode: 0o600 }); fs.writeFileSync(inferenceTokenFile, 'synthetic-inference-token', { mode: 0o600 });
@@ -122,36 +127,50 @@ test('a finished day crosses real UDS/gateway into one private diary; a second r
   const requests = [];
   const gateway = createModelGateway({ settingsFile, inferenceSocket, controlSocket: path.join(dir, 'control.sock'), inferenceTokenHash: hash('synthetic-inference-token'), operatorTokenHash: hash('synthetic-operator'), worldStatus: async () => authority.worldStatus(), fetchImpl: async (_url, options) => {
     const request = JSON.parse(options.body), input = JSON.parse(request.messages[1].content); requests.push(request);
-    const content = Array.isArray(input.messages) ? { summary: 'MOCK-摘要：对方说起自己养的仓鼠。', feeling: 'MOCK-感受', facts: [] }
+    const content = Array.isArray(input.messages) ? { summary: request.messages[1].content.includes('大提琴') ? 'MOCK-摘要：对方说在学MOCK-大提琴。' : 'MOCK-摘要：对方说起自己养的仓鼠。', feeling: 'MOCK-感受', facts: [] }
+      : request.messages[0].content === OPEN_DIARY_PROMPT ? { open: { text: 'MOCK-明面：谢谢你告诉我仓鼠的事。' }, usedIds: input.digests.map(row => row.ref) }
       : { private: { text: 'MOCK-私密：今天听说了一只仓鼠，想了想。' }, usedIds: input.digests.map(row => row.ref) };
     return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }], usage: { prompt_tokens: 120, completion_tokens: 60 } }), { status: 200, headers: { 'content-type': 'application/json' } });
   } });
   t.after(async () => { await gateway.close(); await server.close(); authority.close(); assert.equal(path.dirname(dir), os.tmpdir()); assert.match(path.basename(dir), /^fish-memory-flow-/); fs.rmSync(dir, { recursive: true }); });
   await server.start(); await gateway.start();
-  const calls = [];
   const client = new AuthorityClient({ socketPath: coreSocket, tokenFile }), complete = completeDiary({ socketPath: inferenceSocket, tokenFile: inferenceTokenFile });
-  // The worker's tick as main.mjs wires it: of the old task only public drafts are left.
-  const old = new MemoryMaintenance({ authority: { maintenanceBatch: async input => { calls.push(input.mode); return client.maintenanceBatch(input); }, writeDiary: input => client.writeDiary(input) }, complete, stateFile: path.join(dir, 'progress.json'), modes: ['public'] });
+  // The worker's tick as main.mjs wires it: neither of the old task's diaries is asked for any more.
   const consolidation = new MemoryConsolidation({ authority: client, complete }), diary = new MemoryDiary({ authority: client, complete });
-  const tick = async () => { await old.runOnce(); return [await consolidation.runOnce(), await diary.runOnce()]; };
+  const tick = async () => [await consolidation.runOnce(), await diary.runOnce()];
   authority.context('source', { streamId: 'private', query: 'MOCK', windowFromAt: clock.now });
+  authority.context('source', { streamId: 'friend', query: 'MOCK', windowFromAt: clock.now });
   assert.deepEqual(await tick(), ['committed', 'idle'], 'the day has not ended');
+  assert.deepEqual(await tick(), ['committed', 'idle']);
   clock.now += 13 * 3600000;
   assert.deepEqual(await tick(), ['idle', 'committed']);
   const sent = requests.at(-1), input = JSON.parse(sent.messages[1].content);
-  assert.deepEqual([requests.length, sent.max_tokens, sent.thinking, sent.tools, sent.messages.length, sent.messages[0].content], [2, 4096, { type: 'enabled' }, undefined, 2, DIARY_PROMPT]);
-  assert.deepEqual([input.day, input.digests.map(row => [row.ref, /^p-[0-9a-f]{6}$/.test(row.person), row.summary, row.feeling]), input.previous, input.own], ['2027-01-15', [['d1', true, 'MOCK-摘要：对方说起自己养的仓鼠。', 'MOCK-感受']], [], {}]);
-  assert.ok(!sent.messages[1].content.includes('person:owner'));
+  assert.deepEqual([requests.length, sent.max_tokens, sent.thinking, sent.tools, sent.messages.length, sent.messages[0].content], [3, 4096, { type: 'enabled' }, undefined, 2, DIARY_PROMPT]);
+  assert.deepEqual([input.day, input.digests.map(row => [/^p-[0-9a-f]{6}$/.test(row.person), row.summary, row.feeling]).sort(), input.previous, input.own], ['2027-01-15', [[true, 'MOCK-摘要：对方说在学MOCK-大提琴。', 'MOCK-感受'], [true, 'MOCK-摘要：对方说起自己养的仓鼠。', 'MOCK-感受']], [], {}]);
+  assert.ok(!sent.messages[1].content.includes('person:'));
+  // The next run: the owner's open diary, from the owner's own digest alone. The friend's word is not in the request.
+  assert.deepEqual(await tick(), ['idle', 'committed']);
+  const open = requests.at(-1), mine = JSON.parse(open.messages[1].content);
+  assert.deepEqual([requests.length, open.max_tokens, open.thinking, open.messages.length, open.messages[0].content], [4, 4096, { type: 'enabled' }, 2, OPEN_DIARY_PROMPT]);
+  assert.deepEqual([Object.keys(mine), mine.day, mine.digests.map(row => [row.ref, row.summary, row.feeling])], [['day', 'persona', 'digests'], '2027-01-15', [['d1', 'MOCK-摘要：对方说起自己养的仓鼠。', 'MOCK-感受']]]);
+  for (const foreign of ['大提琴', 'person:', 'p-', 'MOCK-私密']) assert.ok(!open.messages[1].content.includes(foreign), foreign);
   const diaries = authority.listMemory({}).diaries;
-  assert.deepEqual(diaries.map(entry => [entry.kind, entry.v, entry.day, entry.text]), [['private', 2, '2027-01-15', 'MOCK-私密：今天听说了一只仓鼠，想了想。']]);
-  // Run again and again: no model request, no second diary. The old private mode was never asked for a batch.
+  assert.deepEqual(diaries.map(entry => [entry.kind, entry.v, entry.day, entry.text, entry.personIsOwner]).sort(), [['open', 2, '2027-01-15', 'MOCK-明面：谢谢你告诉我仓鼠的事。', true], ['private', 2, '2027-01-15', 'MOCK-私密：今天听说了一只仓鼠，想了想。', undefined]]);
+  // Run again and again: no model request, no further diary; the friend, who is not on the list, got none.
   assert.deepEqual(await tick(), ['idle', 'idle']); assert.deepEqual(await tick(), ['idle', 'idle']);
-  assert.equal(requests.length, 2);
-  assert.equal(authority.listMemory({}).diaries.length, 1);
-  assert.deepEqual([...new Set(calls)], ['public']);
-  // The diary's call is one of the new day's consolidation batches.
-  assert.equal(authority.consolidationStatus().calls, 1);
-  assert.ok(!authority.context('source', { streamId: 'private', query: 'MOCK-私密 仓鼠 想了想', windowFromAt: clock.now }).text.includes('MOCK-私密'));
+  assert.equal(requests.length, 4);
+  assert.equal(authority.listMemory({}).diaries.length, 2);
+  // Neither old task's instruction ever reached the model.
+  assert.ok(requests.every(request => !request.messages[0].content.includes('你为一个独立实体维护日记')));
+  // Each diary's call is one of the new day's consolidation batches.
+  assert.equal(authority.consolidationStatus().calls, 2);
+  for (const streamId of ['private', 'friend']) { const text = authority.context('source', { streamId, query: 'MOCK-私密 MOCK-明面 仓鼠 想了想 谢谢你', windowFromAt: clock.now }).text; assert.ok(!text.includes('MOCK-私密') && !text.includes('MOCK-明面')); }
+});
+
+test('the worker\'s entry point runs neither old diary task: no automatic private diary, no public draft', () => {
+  const source = fs.readFileSync(new URL('./main.mjs', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, '');
+  for (const gone of ['MemoryMaintenance', 'maintenance.js', 'maintenanceBatch', 'writeDiary', "'public'"]) assert.ok(!source.includes(gone), gone);
+  assert.ok(source.includes('consolidation.runOnce()') && source.includes('diary.runOnce()'));
 });
 
 test('memory work thinks: an answer cut at the cap is retried, never counted invalid, never moves the cursor; the reasoning is stored nowhere', async t => {
