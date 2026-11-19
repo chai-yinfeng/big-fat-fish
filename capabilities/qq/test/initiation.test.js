@@ -73,6 +73,17 @@ test('delivery report: an initiated run reports each message it sent and the sti
   assert.deepEqual([reports.length, f.record('mock-d3').status], [2, 'declined']);
 });
 
+test('delivery echo: an initiated run sends none of it, and nothing at all when nothing else was written', async t => {
+  const f = await fixture(t), logs = []; f.bridge.log = line => logs.push(line);
+  f.reply = 'MOCK 在忙吗？[表情包：一只猫（机器描述）]\n[送达情况：这条是用语音发出的]'; f.offers.push(offer('mock-e1'));
+  await f.bridge.pollInitiations();
+  assert.deepEqual(f.sends.map(send => send.message), [[{ type: 'text', data: { text: 'MOCK 在忙吗？' } }]]);
+  assert.deepEqual([f.record('mock-e1').status, logs.filter(line => line === 'qq delivery echo stripped').length], ['sent', 1]);
+  f.reply = '［送达情况：这条回复没有发出］'; f.offers.push(offer('mock-e2'));
+  await f.bridge.pollInitiations();
+  assert.deepEqual([f.sends.length, f.record('mock-e2').status], [1, 'failed']);
+});
+
 test('the target is the conversation Authority named and nothing else: anyone but the owner is dropped unrun, and the reply text cannot redirect a send', async t => {
   const f = await fixture(t);
   const others = ['qq:100:private:201', 'qq:101:private:200', 'qq:100:group:200', 'qq:100:private:200:1', 'qq:100:private:0200', ' qq:100:private:200', 'native:owner', '', undefined, 200, ['qq:100:private:200'], { toString: () => OWNER_STREAM }];

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { takeStickerMarker, asksToKeep, asksToKeepMany, frequencyLine, MAX_KEEP_PER_REQUEST } from '../stickers.js';
+import { takeStickerMarker, stripDeliveryEcho, asksToKeep, asksToKeepMany, frequencyLine, MAX_KEEP_PER_REQUEST } from '../stickers.js';
 import { channel } from '../../channels/index.js';
 
 test('[表情:词] is taken out of her reply; only the first word counts, more are dropped and logged', () => {
@@ -24,6 +24,14 @@ test('收下这个 is a short request; the frequency line counts her latest repl
   const example = /\[表情:[^\]]+\]/.exec(channel('qq').prompt)[0];
   assert.deepEqual(takeStickerMarker('好' + example), { text: '好', word: example.slice(4, -1) });
   assert.ok(channel('qq').expression.stickers);
+});
+
+test('delivery echo: bracketed pieces that imitate the delivery lines are taken out whole; everything else is left as written', () => {
+  for (const text of ['好呀', '  原样  保留\n', '[表情:开心]好[微笑]', '表情包：没有括号', '[表情包]', '[送达情况]', '【表情包：别的括号】', '[表情包：没有\n收尾]']) assert.deepEqual(stripDeliveryEcho(text), { text, stripped: false });
+  const cases = [['好呀[表情包：一只猫（机器描述）] 嘿', '好呀 嘿'], ['一\n[送达情况：这条是用语音发出的]', '一'], ['［表情包:没发出］', ''], ['[ 表情包 ： 开心 ]好', '好'], ['甲\n\n[送达情况:x]\n\n乙', '甲\n\n乙'], ['[表情包：甲][送达情况：乙]丙[表情包：丁］', '丙']];
+  for (const [text, left] of cases) assert.deepEqual(stripDeliveryEcho(text), { text: left, stripped: true }, text);
+  // The same call twice gives the same answer (no state kept between calls).
+  assert.deepEqual([stripDeliveryEcho('[表情包：x]好'), stripDeliveryEcho('[表情包：x]好')].map(result => result.text), ['好', '好']);
 });
 
 test('收下这些 names several pictures: a short message; the singular and other words stay what they were', () => {
