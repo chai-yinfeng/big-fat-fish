@@ -4,14 +4,21 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Transform } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
+import { SPEND_CATEGORIES, SPEND_STOP } from '../capabilities/providers/index.js';
 
 // Money is kept in integer micro-yuan (1 CNY = 1e6) to avoid float drift.
 const MICROS = 1_000_000;
 const BEIJING_MS = 8 * 3600000; // Asia/Shanghai has no DST; independent of the host TZ.
-// `generation`: what a provider adapter makes (model-gateway/providers.mjs: pictures, video, converted voice).
-// `proactive`: the chat completions of a run she starts herself (an initiated run).
-// `activity`: model work for something she does besides talking (today: the summary of a video she watched).
-export const CATEGORIES = Object.freeze(['conversation', 'maintenance', 'vision', 'web', 'generation', 'proactive', 'activity']);
+// The spend categories and the tier that stops each come from the capability declarations
+// (capabilities/providers/index.js: SPEND_CATEGORIES, SPEND_STOP), e.g. `proactive`: the chat completions of a run she
+// starts herself; `activity`: model work for something she does besides talking.
+/** Categories no declaration is charged to yet, each with its stop tier. `generation`: what a provider adapter makes
+ * (model-gateway/providers.mjs: pictures, video, converted voice); reserved here until a declaration for picture
+ * generation claims it. */
+export const RESERVED_STOP = Object.freeze({ generation: 'restricted' });
+export const CATEGORIES = Object.freeze([...SPEND_CATEGORIES.map(row => row.category), ...Object.keys(RESERVED_STOP)]);
+/** Spend category -> the first tier at which it is refused. */
+export const STOP = Object.freeze({ ...SPEND_STOP, ...RESERVED_STOP });
 export const DEFAULT_SPEND_SETTINGS = Object.freeze({ dailyCapYuan: 5, reducedPercent: 60, restrictedPercent: 80 });
 const days = (first, count) => Array.from({ length: count }, (_, i) => new Date(Date.parse(first + 'T00:00:00Z') + i * 86400000).toISOString().slice(0, 10));
 /** Chinese statutory holidays (the days off) from the State Council General Office notices.
@@ -169,8 +176,6 @@ export function createSpendMeter({ stateFile, settingsFile, pricingFile, clock =
     return used >= 100 ? 'exhausted' : used >= settings.restrictedPercent ? 'restricted' : used >= settings.reducedPercent ? 'reduced' : 'normal';
   }
   const ORDER = ['normal', 'reduced', 'restricted', 'exhausted'];
-  // The first tier at which each kind of work is refused.
-  const STOP = { proactive: 'reduced', maintenance: 'restricted', vision: 'restricted', web: 'restricted', generation: 'restricted', activity: 'restricted', conversation: 'exhausted' };
   async function loadPricing() {
     // A price file written before the holiday data existed (offPeakDates: []) still gets the built-in holidays.
     const withHolidays = value => ({ ...value, peak: { ...value.peak, offPeakDates: [...new Set([...(value.peak.offPeakDates || []), ...HOLIDAYS])] } });
