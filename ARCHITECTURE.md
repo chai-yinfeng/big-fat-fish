@@ -66,7 +66,7 @@ companion-conversation QQ delivery adapter → 实际回执
 - DSH 时代的遗留目录（`plugin/`、`adapter-plugin/`、`asr-plugin/`、`tts-plugin/`、`preset/`、`ui/`、`adapters/`、`asr/`、`tts/`、`voice-runtime/`、`experiments/`、`core/`）已删除，`test:legacy*` 脚本随之去掉；需要时查 git 历史。
 
 当前限制：
-- Live2D/房间视觉未实施。
+- Live2D 未实施；房间视觉是 `room/` 里的原型（契约、素材清单、静态页），不在发行包里，也没有 systemd 单元、端口或对外入口。Authority 有给它用的只读出口 `GET /v1/room`（`authority/src/room.js` 在进程内算好房间状态，只返回契约字段；专用的 `room` 凭据只能读这一个路由，见 PROTOCOL.md），但生产上还没有配这个凭据，也没有进程在用它；`room/serve.mjs` 的真实模式只在本机 127.0.0.1 上用过。
 
 ## 媒体不是平台动作
 

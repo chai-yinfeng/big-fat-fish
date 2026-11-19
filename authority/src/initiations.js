@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto';
 import { capability, closed, fail, identifier } from './identity.js';
 import { ConsolidationDomain } from './consolidation.js';
 import { opaquePerson } from './context.js';
+import { roomProjection } from './room.js';
 
 const MINUTE = 60000, BEIJING = 8 * 3600000;
 export const INITIATION = Object.freeze({
@@ -265,6 +266,15 @@ export class InitiationDomain extends ConsolidationDomain {
   jobList(listing) {
     const jobs = Array.isArray(listing?.jobs) ? listing.jobs : [];
     return { limits: listing?.limits ?? null, jobs: jobs.map(({ scope, ...job }) => ({ ...job, person: typeof scope?.personId === 'string' ? opaquePerson(scope.personId) : null, owner: scope?.personId === OWNER })) };
+  }
+  /** The room's read-only projection (room.js): a category of activity and its times, nothing of anyone. Unlike
+   * `initiationLog()` it settles and saves nothing, so it may be polled. The newest message time is taken from the
+   * last 64 observations to arrive, which bounds the read whatever the history's size. */
+  roomState(listing) {
+    this.store.check();
+    const now = this.now(), quiet = this.#quiet(this.#state());
+    const lastAts = this.store.db.prepare("SELECT json_extract(body,'$.at') AS at FROM observations ORDER BY rowid DESC LIMIT 64").all().map(row => row.at);
+    return roomProjection({ now, paused: this.worldStatus().paused, quiet: { now: quietHours(now, quiet), fromMinute: quiet.fromMinute }, jobs: listing?.jobs, lastAts });
   }
   /** Operator only: the newest requests and how each ended. Opaque labels and times, no text, no account.
    * Reading it also closes what can no longer go out, so the list never shows a dead request as waiting. */
