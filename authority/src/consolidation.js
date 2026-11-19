@@ -124,6 +124,8 @@ export class ConsolidationDomain extends MemoryDomain {
         const taskId = sha256(canonical({ entityId: e.id, capabilityId: stream.capabilityId, streamId: stream.streamId, base, ids, epoch, worldRevision: world.revision }));
         this.store.db.prepare('INSERT OR IGNORE INTO maintenance_tasks(id,entity_id,epoch,cursor,world_revision,mode,source_ids) VALUES(?,?,?,?,?,?,?)').run(taskId, e.id, epoch, 0, world.revision, 'consolidation', JSON.stringify({
           capabilityId: stream.capabilityId, streamId: stream.streamId, base, ids, refs: Object.fromEntries(shown.filter(row => !row.omitted).map(row => [row.ref, row.id])),
+          // The persona card this batch is written under (its persona sets the tone of `feeling`).
+          cardId: this.currentCardId(e.id),
         }));
         // Counted when handed out: a worker that dies after the model call has still spent it.
         own.calls++; state.calls++; state.issued = taskId; own.lastIssuedAt = now;
@@ -200,7 +202,8 @@ export class ConsolidationDomain extends MemoryDomain {
         // the digest, see forgetPreview); it never joins the evidence closure and is never evidence itself.
         this.store.insertMemory(e.id, 'experiences', {
           id: digestId, personId: stream.personId, visibility: 'private', kind: 'digest', via: 'consolidation',
-          summary: answer.summary, ...(answer.feeling ? { feeling: answer.feeling } : {}),
+          // Her feeling is subjective: it carries the card it was written under and is read back to that card only.
+          summary: answer.summary, ...(answer.feeling ? { feeling: answer.feeling, cardId: task.cardId ?? this.currentCardId(e.id) } : {}),
           derivedFrom: shown.map(source => source.id), fromAt: Math.min(...shown.map(source => source.at)), toAt, eventAt: toAt,
           capabilityId: task.capabilityId, streamId: task.streamId, taskId: input.taskId, scope: { kind: 'person' }, revision, at: now,
         }, world.worldNow);
