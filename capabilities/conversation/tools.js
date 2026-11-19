@@ -134,6 +134,8 @@ const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value)
  * @param authority AuthorityClient bound to this channel's capability credential
  * @param content   ContentClient for the same credential (optional)
  * @param scope     {streamId, memoryEpoch} from the trusted execution request
+ * @param windowFromAt when the oldest run the executor replays for this conversation began (optional): sent with
+ *                  search/read/recall so Authority may return the person's machine digests of dialogue before it
  * @param evidence  [{ref,eventId,role}] observed by the channel for this run
  * @param guard     re-checks Authority pause/entity/epoch before scoped work
  * @param turn      {text, initiated}: what the person wrote in this run (never a background event), and whether she
@@ -141,8 +143,9 @@ const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value)
  * @param neutralize the executor's replacement of memory-hub note delimiters, applied to the external text an
  *                  activity returns (a video's title or description can be written by anybody)
  */
-export function createCompanionTools({ authority, content, scope, requestId, evidence, guard, turn = { text: '', initiated: false }, neutralize = text => text, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+export function createCompanionTools({ authority, content, scope, windowFromAt, requestId, evidence, guard, turn = { text: '', initiated: false }, neutralize = text => text, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
   const refs = new Set(evidence.map(item => item.ref));
+  const windowed = windowFromAt === undefined ? {} : { windowFromAt };
   async function scopeAction(args) {
     if (!isObject(args) || !['propose', 'receipt', 'evidence', 'search', 'read', 'recall'].includes(args.action)) throw invalid('action 必须是 evidence、propose、receipt、search、read、recall 之一');
     if (args.action !== 'receipt') await guard();
@@ -151,14 +154,14 @@ export function createCompanionTools({ authority, content, scope, requestId, evi
       closed(args, ['action', 'from', 'to']);
       const fromAt = isoTime(args.from), toAt = isoTime(args.to);
       if (!Number.isSafeInteger(fromAt) || fromAt < 0 || !Number.isSafeInteger(toAt) || toAt < fromAt) throw invalid('from、to 必须是带秒和时区的 ISO 时间（如 2026-11-11T08:00:00+08:00），且 to 不早于 from');
-      return bounded(await authority.memoryRecall({ streamId: scope.streamId, fromAt, toAt, limit: 4, budgetChars: 1600 }));
+      return bounded(await authority.memoryRecall({ streamId: scope.streamId, fromAt, toAt, limit: 4, budgetChars: 1600, ...windowed }));
     }
     if (args.action === 'search' || args.action === 'read') {
       closed(args, args.action === 'search' ? ['action', 'query'] : ['action', 'id']);
       if (!string(args.action === 'search' ? args.query : args.id, 512) || args.action === 'search' && !args.query.trim()) throw invalid(args.action === 'search' ? 'query 必须是 1–512 个字符的非空字符串' : 'id 必须是 search 返回的记忆 ID');
       return bounded(args.action === 'search'
-        ? await authority.memorySearch({ streamId: scope.streamId, query: args.query, limit: 4, budgetChars: 1600 })
-        : await authority.memoryRead({ streamId: scope.streamId, id: args.id }));
+        ? await authority.memorySearch({ streamId: scope.streamId, query: args.query, limit: 4, budgetChars: 1600, ...windowed })
+        : await authority.memoryRead({ streamId: scope.streamId, id: args.id, ...windowed }));
     }
     if (args.action === 'receipt') {
       closed(args, ['action', 'id'], ['action', 'id'], 'receipt');

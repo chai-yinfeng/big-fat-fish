@@ -156,3 +156,13 @@ test('scripted model: `activity` is a companion_activity call with the scripted 
   // A release whose executor does not offer the tool (or a request that is not a chat turn) just gets the reply.
   assert.deepEqual([planReply({ stream: true, tools, messages: turn }, script).kind, planReply({ stream: false, tools: offered, messages: turn }, script).kind], ['text', 'text']);
 });
+
+test('scripted model: `scope` is a companion_scope call with the scripted arguments, then the reply', () => {
+  const scope = { action: 'search', query: 'MOCK 仓鼠' };
+  const script = [{ match: '查一查', scope, reply: 'MOCK-查到了' }];
+  const turn = [{ role: 'system', content: system }, user('查一查')];
+  const first = planReply({ stream: true, tools, messages: turn }, script);
+  assert.deepEqual([first.kind, first.call], ['tool', { name: 'companion_scope', arguments: scope }]);
+  const second = planReply({ stream: true, tools, messages: [...turn, { role: 'assistant', tool_calls: [] }, { role: 'tool', content: '{"items":[]}' }] }, script);
+  assert.deepEqual([second.kind, second.text, second.toolResult], ['text', 'MOCK-查到了', '{"items":[]}']);
+});

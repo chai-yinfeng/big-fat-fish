@@ -100,7 +100,7 @@ test('read-back: the person\'s own private conversation gets their newest digest
   const ask = (uid, extra = {}) => a.context('qq', { streamId: stream(uid), query: 'MOCK-摘要 周末 海边', profile: true, ...extra });
   const before = ask(A), own = ask(A, { windowFromAt: clock.now });
   // Summary and feeling, labelled as machine text, dated by the end of the dialogue; outside the retrieved memory.
-  assert.equal(own.continuationText, `${CONTINUATION}\n${JSON.stringify({ summary: 'MOCK-摘要：对方说起周末去了海边。', feeling: 'MOCK-感受：听着很开心。', date: new Date(toAt).toISOString().slice(0, 10) })}`);
+  assert.equal(own.continuationText, `${CONTINUATION}\n${JSON.stringify({ summary: 'MOCK-摘要：对方说起周末去了海边。', feeling: 'MOCK-感受：听着很开心。', date: '2027-01-15' })}`);
   assert.deepEqual(own.continuationIds, [id]);
   assert.ok(!own.memoryIds.includes(id) && !own.memoryText.includes('MOCK-摘要') && !own.text.includes('MOCK-摘要'), 'what the block shows is not retrieved as well');
   // The stable parts are the same bytes with and without it: the digest is in no persona or profile text.
@@ -145,8 +145,55 @@ test('read-back isolation: nobody else\'s request carries the digest, by continu
   assert.deepEqual([study.continuationText, study.memoryIds.includes(id), JSON.stringify(study).includes('MOCK-摘要')], ['', false, false]);
 });
 
+test('memory tools: the person\'s own private chat finds their digests by search, read and recall, as safe fields only, once the dialogue left the window', t => {
+  const f = fixture(t), { a, clock } = f;
+  // 01:00 Beijing on 2027-01-16 is still 2027-01-15 in UTC: the tools date a digest by the Beijing day.
+  clock.now += 9 * HOUR;
+  const { id, toAt } = digested(f, A, '我周末去了MOCK-海边');
+  const windowFromAt = clock.now, own = { streamId: stream(A), windowFromAt };
+  const expected = { id, kind: 'digest', label: '经历摘要（机器整理，不是原话）', summary: 'MOCK-摘要：对方说起周末去了海边。', feeling: 'MOCK-感受：听着很开心。', date: '2027-01-16' };
+  const search = a.memorySearch('qq', { ...own, query: 'MOCK-摘要 周末 海边' });
+  assert.deepEqual(search.items.filter(item => item.id === id), [expected]);
+  assert.ok(search.text.split('\n').includes(JSON.stringify({ id, label: expected.label, text: expected.summary, feeling: expected.feeling, date: expected.date })));
+  const read = a.memoryRead('qq', { ...own, id });
+  assert.deepEqual(read.item, expected);
+  // The continuation block dates it the same way.
+  assert.ok(a.context('qq', { ...own, query: 'MOCK' }).continuationText.endsWith(`"date":"2027-01-16"}`));
+  const recall = a.memoryRecall('qq', { ...own, fromAt: 0, toAt: 2_000_000_000_000 });
+  assert.deepEqual(recall.items.filter(item => item.id === id), [expected]);
+  // Nothing else of the body: no stream, observation, task or capability ID, no account number, no raw times.
+  const digest = f.digests(A)[0];
+  for (const response of [search, read, recall]) {
+    const sent = JSON.stringify(response);
+    for (const hidden of ['99990000', 'person:', 'derivedFrom', 'streamId', 'fromAt', 'toAt', 'taskId', 'capabilityId', ...digest.derivedFrom, digest.taskId, String(toAt)]) assert.ok(!sent.includes(hidden), hidden);
+  }
+  // The window: while the dialogue it covers may still be replayed, or with no window reported, none.
+  for (const extra of [{ windowFromAt: toAt }, { windowFromAt: toAt - 5000 }, {}]) {
+    const scope = { streamId: stream(A), ...extra };
+    assert.deepEqual(a.memorySearch('qq', { ...scope, query: 'MOCK-摘要 周末 海边' }).items.filter(item => item.id === id), [], JSON.stringify(extra));
+    assert.equal(a.memoryRead('qq', { ...scope, id }).item, null, JSON.stringify(extra));
+    assert.deepEqual(a.memoryRecall('qq', { ...scope, fromAt: 0, toAt: 2_000_000_000_000 }).items.filter(item => item.id === id), [], JSON.stringify(extra));
+  }
+  // A window reported in the future is capped at now (the dialogue still has to have ended).
+  assert.deepEqual(a.memoryRead('qq', { streamId: stream(A), id, windowFromAt: clock.now + DAY }).item, expected);
+  // A malformed window start is refused.
+  assert.throws(() => a.memoryRead('qq', { streamId: stream(A), id, windowFromAt: -1 }), { code: 'VALIDATION_ERROR' });
+  // Nobody else: another person's private chat, the owner, a shared conversation of A's person, a learning capability.
+  a.bindStream({ capabilityId: 'qq', streamId: `qq:${SELF}:group:999900000099`, personId: person(A), audience: 'shared' });
+  a.registerCapability({ id: 'study', policy: 'learning.v1' });
+  a.bindStream({ capabilityId: 'study', streamId: 'study:a', personId: person(A), audience: 'private' });
+  const far = clock.now + DAY;
+  for (const [capabilityId, streamId] of [['qq', stream(B)], ['qq', stream(OWNER)], ['qq', `qq:${SELF}:group:999900000099`], ['study', 'study:a']]) {
+    assert.ok(!JSON.stringify(a.memorySearch(capabilityId, { streamId, query: 'MOCK-摘要 周末 海边', windowFromAt: far })).includes('MOCK-摘要'), streamId);
+    assert.equal(a.memoryRead(capabilityId, { streamId, id, windowFromAt: far }).item, null, streamId);
+    assert.deepEqual(a.memoryRecall(capabilityId, { streamId, fromAt: 0, toAt: 2_000_000_000_000, windowFromAt: far }).items.filter(item => item.id === id), [], streamId);
+  }
+});
+
 test('read-back bounds: the two newest digests continue, older ones are retrieved by the query as machine text (summary only) within the retrieval cap', t => {
   const f = fixture(t), { a, clock } = f;
+  // 01:00 Beijing on 2027-01-16 is still 2027-01-15 in UTC: a digest is dated by the Beijing day.
+  clock.now += 9 * HOUR;
   const first = digested(f, A, '我周末去了MOCK-海边', { summary: 'MOCK-摘要一：对方说起周末去了海边。', feeling: 'MOCK-感受一' });
   const second = digested(f, A, '我今天吃了MOCK-火锅', { summary: 'MOCK-摘要二：对方说起吃了火锅。', feeling: 'MOCK-感受二' });
   clock.now += DAY;   // two batches a conversation a day
@@ -157,7 +204,8 @@ test('read-back bounds: the two newest digests continue, older ones are retrieve
   assert.ok(context.continuationText.indexOf('MOCK-摘要二') < context.continuationText.indexOf('MOCK-摘要三') && !context.continuationText.includes('MOCK-摘要一'));
   // It is retrieved by the query instead: its own block, the summary only (no feeling), dated by the dialogue.
   assert.deepEqual(context.memoryIds, [first.id]);
-  assert.equal(context.memoryText, `${RETRIEVED}\n${JSON.stringify({ content: 'MOCK-摘要一：对方说起周末去了海边。', date: new Date(first.toAt).toISOString().slice(0, 10) })}`);
+  assert.equal(context.memoryText, `${RETRIEVED}\n${JSON.stringify({ content: 'MOCK-摘要一：对方说起周末去了海边。', date: '2027-01-16' })}`);
+  assert.ok(context.continuationText.includes(`"feeling":"MOCK-感受二","date":"2027-01-16"`) && context.continuationText.includes(`"feeling":"MOCK-感受三","date":"2027-01-17"`));
   assert.ok(!context.memoryText.includes('MOCK-感受') && context.memoryText.length <= RETRIEVED_CHARS);
   assert.deepEqual(a.contextTrace().traces[0].sections.map(section => [section.kind, section.ids]), [['digest', [first.id]]]);
   // Retrieval obeys the window as well: with the window starting before the oldest digest's dialogue ended, none comes back.
@@ -440,6 +488,12 @@ test('transport: consolidation is the maintenance credential only, a commit is r
   const plain = await clients.conversation.context({ streamId: stream(A), query: 'MOCK' });
   const reported = await clients.conversation.context({ streamId: stream(A), query: 'MOCK', windowFromAt: clock.now });
   assert.deepEqual(reported, plain);
+  // The memory tools' window start passes through the client and the server; a malformed one is refused before sending.
+  for (const call of [value => clients.conversation.memorySearch({ streamId: stream(A), query: 'MOCK', ...value }), value => clients.conversation.memoryRead({ streamId: stream(A), id: 'm-none', ...value }), value => clients.conversation.memoryRecall({ streamId: stream(A), fromAt: 0, toAt: 1, ...value })]) {
+    await call({ windowFromAt: clock.now });
+    await assert.rejects(call({ windowFromAt: -1 }), { code: 'INVALID_REQUEST' });
+    await assert.rejects(call({ windowFromAt: 'x' }), { code: 'INVALID_REQUEST' });
+  }
   await assert.rejects(clients.conversation.consolidationNext(), { status: 403 });
   await assert.rejects(clients.conversation.consolidationCommit({ taskId: 'x', outcome: 'invalid' }), { status: 403 });
   const { task } = await clients.maintenance.consolidationNext();

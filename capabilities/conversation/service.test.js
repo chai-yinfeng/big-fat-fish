@@ -99,6 +99,16 @@ test('tool loop replays reasoning_content and reuses the same query for every re
   assert.deepEqual(f.gateway.state.bodies[2].messages.filter(m => m.role === 'user').map(said), ['我喜欢红茶', '还记得吗']);
 });
 
+test('a memory tool call carries the window start the run reported to context()', async t => {
+  const f = await setup(t);
+  f.gateway.state.script.push(toolCall('companion_scope', { action: 'search', query: '海边' }, 'r', 'call_a'), reply('好'));
+  await f.executor.execute(request('还记得海边吗'));
+  const [reported] = contexts(f.authority.state).filter(r => r.body.budgetChars === 4000).map(r => r.body.windowFromAt);
+  const [search] = f.authority.state.requests.filter(r => r.route === '/v1/memory/search');
+  assert.ok(Number.isSafeInteger(reported));
+  assert.equal(search.body.windowFromAt, reported);
+});
+
 test('the model cannot widen scope: extra selectors and unobserved refs are refused, calls stay bound', async t => {
   const f = await setup(t);
   f.gateway.state.script.push(
