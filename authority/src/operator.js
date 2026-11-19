@@ -17,7 +17,7 @@ async function json(req, limit = 98304) {
 }
 
 /** Human control plane. Its socket/token are never mounted to the model worker. */
-export function createOperatorServer({ authority, socketPath, tokenHash, origins, modelControl, qqControl, contentOperator, contentControl, contentJobs, assetsDir, onResume = () => {} }) {
+export function createOperatorServer({ authority, socketPath, tokenHash, origins, modelControl, qqControl, contentOperator, contentControl, contentJobs, assetsDir, allowDiaryTrigger = false, onResume = () => {} }) {
   if (!path.isAbsolute(socketPath) || !/^[a-f0-9]{64}$/.test(tokenHash) || !Array.isArray(origins)) throw new Error('Invalid operator configuration');
   const expected = Buffer.from(tokenHash, 'hex');
   // Control sockets of channel bridges, by channel id (only the QQ bridge has one).
@@ -181,6 +181,10 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         if (typeof body.id !== 'string' || !/^job:[a-f0-9-]{36}$/.test(body.id)) throw Object.assign(new Error('Invalid job'), { statusCode: 400, code: 'INVALID_REQUEST' });
         if (!contentJobs) throw Object.assign(new Error('Content runtime unavailable'), { statusCode: 503 });
         value = await contentJobs({ action: 'cancel', id: body.id });
+      } else if (req.url === '/memory/diary/trigger' && allowDiaryTrigger === true) {
+        // Staging and tests only (private configuration `operator.allowDiaryTrigger`; no prepare script of a release
+        // writes it): the running day's diaries are written now instead of after the day has ended.
+        value = authority.diaryTrigger(object(body, []));
       } else if (req.url === '/initiative/settings') {
         value = authority.initiationSettings(object(body, ['quietHours']));
       } else if (req.url === '/spend/settings') {

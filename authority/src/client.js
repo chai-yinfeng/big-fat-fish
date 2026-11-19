@@ -103,6 +103,13 @@ export class AuthorityClient {
     if (!text(value.taskId) || !['ok', 'invalid', 'deferred'].includes(value.outcome)) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/maintenance/consolidation/commit', value);
   }
+  /** Maintenance credential: the day Authority wants her diary written for, or `task: null` with a reason. */
+  diaryNext() { return this.#request('POST', '/v1/maintenance/diary/next', {}); }
+  async diaryCommit(value) {
+    closed(value, ['taskId', 'outcome', 'private', 'open', 'usedIds'], ['taskId', 'outcome']);
+    if (!text(value.taskId) || !['ok', 'invalid', 'deferred'].includes(value.outcome)) throw fail('INVALID_REQUEST');
+    return this.#request('POST', '/v1/maintenance/diary/commit', value);
+  }
   async #request(method, path, value) {
     let body;
     try { body = value === undefined ? undefined : Buffer.from(JSON.stringify(value)); } catch { throw fail('INVALID_REQUEST'); }

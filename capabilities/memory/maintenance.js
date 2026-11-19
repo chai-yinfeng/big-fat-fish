@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const failure = code => Object.assign(new Error(code), { code });
-const modes = ['private', 'public'];
 
 export function diaryMessages(batch, mode) {
   const sources = batch.items.map(item => {
@@ -28,7 +27,11 @@ export function parseDiary(content, batch) {
 
 /** Bounded, incremental housekeeping. This is not a second conversation brain. */
 export class MemoryMaintenance {
-  constructor({ authority, complete, stateFile, clock = Date.now, maxCallsPerDay = 4, minItems = 2, maxDelayWorldMs = 1800000 }) {
+  /** `modes`: which of the two old tasks run. The worker runs only 'public' (drafts from material the operator
+   * made public); the old automatic private diary is no longer written (diary.js writes her diary). */
+  constructor({ authority, complete, stateFile, clock = Date.now, maxCallsPerDay = 4, minItems = 2, maxDelayWorldMs = 1800000, modes = ['private', 'public'] }) {
+    if (!Array.isArray(modes) || modes.some(mode => !['private', 'public'].includes(mode))) throw failure('MEMORY_CONFIG');
+    this.modes = modes;
     if (!path.isAbsolute(stateFile) || !Number.isInteger(maxCallsPerDay) || maxCallsPerDay < 1 || maxCallsPerDay > 24) throw failure('MEMORY_CONFIG');
     this.authority = authority; this.complete = complete; this.file = path.resolve(stateFile); this.clock = clock;
     this.maxCalls = maxCallsPerDay; this.minItems = minItems; this.maxDelay = maxDelayWorldMs;
@@ -53,7 +56,7 @@ export class MemoryMaintenance {
     try {
       const day = new Date(this.clock()).toISOString().slice(0, 10);
       if (day !== this.state.day) Object.assign(this.state, { day, calls: 0, inputTokens: 0, outputTokens: 0 });
-      for (const mode of modes) {
+      for (const mode of this.modes) {
         const batch = await this.authority.maintenanceBatch({ afterRevision: this.state.cursors[mode], limit: 16, mode });
         if (!batch || batch.world?.paused) { this.state.status = 'paused'; this.save(); continue; }
         if (!batch.items.length) {
