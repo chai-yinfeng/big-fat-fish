@@ -68,6 +68,34 @@ test('a scoped forget plan retires only each affected stream’s own earlier epo
   for (const memoryEpoch of [0, 3, 'x']) await assert.rejects(purgeExecution({ base: f.base, plan: { ...f.plan, affectedStreams: [{ capabilityId: 'qq', streamId: target, memoryEpoch }] }, checkStopped: () => {} }), /PLAN_INVALID/);
 });
 
+test('forgetting cancels and removes background job records: jobs asked for by a forgotten message and jobs of a retired epoch go, the rest stay', async t => {
+  const f = fixture(t), mediaRoot = path.join(f.base, 'media-data'), file = path.join(mediaRoot, 'jobs.json');
+  new ArtifactStore({ root: mediaRoot });
+  const layoutFile = path.join(f.base, 'operator/execution-storage.json'), layout = JSON.parse(fs.readFileSync(layoutFile));
+  layout.media = { root: 'media-data', workRoot: 'speech-data' }; fs.writeFileSync(layoutFile, JSON.stringify(layout));
+  const job = (id, extra = {}) => ({ id, capability: 'video', status: 'done', scope: { entityId: 'e', streamId: target, personId: 'person:owner', audience: 'private', memoryEpoch: 2 }, source: { requestId: null, sourceEventId: null }, result: { text: 'MOCK note ' + id }, notice: { state: 'pending', at: 1 }, ...extra });
+  const write = () => fs.writeFileSync(file, JSON.stringify({ schema: 1, jobs: [
+    job('job:asked-by-forgotten', { source: { requestId: null, sourceEventId: 'onebot:v11:message:7' } }),
+    job('job:waiting-old-epoch', { status: 'queued', result: null, scope: { entityId: 'e', streamId: target, personId: 'person:owner', audience: 'private', memoryEpoch: 1 } }),
+    job('job:current-epoch'), job('job:other-stream', { scope: { entityId: 'e', streamId: other, personId: 'person:qq:300', audience: 'private', memoryEpoch: 0 }, source: { requestId: null, sourceEventId: 'onebot:v11:message:7' } }),
+    job('job:other-entity', { scope: { entityId: 'entity:other', streamId: target, personId: 'person:owner', audience: 'private', memoryEpoch: 0 } }),
+  ] }) + '\n', { mode: 0o600 });
+  write();
+  const result = await purgeExecution({ base: f.base, plan: f.plan, checkStopped: () => {} });
+  assert.equal(result.jobRecordsRemoved, 2);
+  const kept = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.deepEqual([kept.schema, kept.jobs.map(entry => entry.id)], [1, ['job:current-epoch', 'job:other-stream', 'job:other-entity']]);
+  assert.ok(!fs.readFileSync(file, 'utf8').includes('MOCK note job:asked-by-forgotten'));
+  // The same plan again finds nothing more; without a job file there is nothing to do.
+  assert.equal((await purgeExecution({ base: f.base, plan: f.plan, checkStopped: () => {} })).jobRecordsRemoved, 0);
+  fs.rmSync(file);
+  assert.equal((await purgeExecution({ base: f.base, plan: f.plan, checkStopped: () => {} })).jobRecordsRemoved, 0);
+  // Records that cannot be read are not guessed at: the purge stops before it erases anything.
+  fs.writeFileSync(file, '{broken'); f.sessions.again = path.join(f.base, 'conversation-data/sessions', conversationSessionId(target, 0) + '.jsonl'); fs.writeFileSync(f.sessions.again, '{}\n');
+  await assert.rejects(purgeExecution({ base: f.base, plan: f.plan, checkStopped: () => {} }), { code: 'MEDIA_JOB_STATE' });
+  assert.equal(fs.existsSync(f.sessions.again), true);
+});
+
 test('non-product root, live writers, old layouts and symlink targets are refused before erasure', async t => {
   const f = fixture(t), checkStopped = () => {};
   await assert.rejects(purgeExecution({ base: path.dirname(f.base), plan: f.plan, checkStopped }), /ROOT_REFUSED/);

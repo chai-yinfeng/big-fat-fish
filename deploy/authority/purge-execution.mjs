@@ -80,7 +80,7 @@ export async function purgeExecution({ base, plan, checkStopped = stopped }) {
     }
     if (changed) writes.push([dispatchFile, state]);
   }
-  let mediaStore, stickers, mediaRemoved = 0, stickersRemoved = 0;
+  let mediaStore, stickers, forgetJobs, jobsPlan, mediaRemoved = 0, stickersRemoved = 0, jobsRemoved = 0;
   const speechScratch = [];
   if (layout.media) {
     if (layout.media.root !== 'media-data' || layout.media.workRoot !== 'speech-data' || typeof plan.entityId !== 'string' || !Array.isArray(plan.sourceEvents)) throw fail('EXECUTION_STORAGE_UNVERIFIED');
@@ -93,6 +93,11 @@ export async function purgeExecution({ base, plan, checkStopped = stopped }) {
       const { createStickers } = await import(path.basename(path.dirname(fileURLToPath(import.meta.url))) === 'ops' ? '../capabilities/media/stickers.js' : '../../capabilities/media/stickers.js');
       stickers = createStickers({ root: mediaStore.root });
       stickers.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents, dryRun: true });
+      // Background jobs (capabilities/media/jobs.js): the records of jobs a forgotten message asked for, and of jobs
+      // registered in a retired epoch of an affected conversation, go with their results; a waiting one never starts.
+      ({ forgetJobs } = await import(path.basename(path.dirname(fileURLToPath(import.meta.url))) === 'ops' ? '../capabilities/media/jobs.js' : '../../capabilities/media/jobs.js'));
+      jobsPlan = { file: inside(base, path.join(mediaRoot, 'jobs.json')), entityId: plan.entityId, sourceEvents: plan.sourceEvents, affectedStreams: plan.affectedStreams.map(entry => ({ streamId: entry.streamId, memoryEpoch: entry.memoryEpoch ?? plan.memoryEpoch })) };
+      forgetJobs({ ...jobsPlan, dryRun: true });
     }
     if (fs.existsSync(workRoot)) for (const name of fs.readdirSync(workRoot)) if (/^tts-[a-f0-9-]{36}\.wav$|^speech-job-[A-Za-z0-9]+$/.test(name)) {
       const target = inside(base, path.join(workRoot, name)); if (fs.statSync(target).isDirectory()) noLinks(target); speechScratch.push(target);
@@ -104,8 +109,9 @@ export async function purgeExecution({ base, plan, checkStopped = stopped }) {
   for (const [file, value] of writes) { inside(base, file); rewrite(file, value); }
   if (mediaStore) mediaRemoved = mediaStore.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents }).removed;
   if (stickers) stickersRemoved = stickers.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents }).removed;
+  if (jobsPlan) jobsRemoved = forgetJobs(jobsPlan).removed;
   for (const target of speechScratch) { inside(base, target); if (fs.statSync(target).isDirectory()) { noLinks(target); fs.rmSync(target, { recursive: true }); } else fs.unlinkSync(target); }
-  return { sdkPurged: true, localSourcesPurged: true, platform: 'outside-control', executionSessionsRemoved: sessions.length, mediaArtifactsRemoved: mediaRemoved, stickersRemoved, speechScratchRemoved: speechScratch.length };
+  return { sdkPurged: true, localSourcesPurged: true, platform: 'outside-control', executionSessionsRemoved: sessions.length, mediaArtifactsRemoved: mediaRemoved, stickersRemoved, jobRecordsRemoved: jobsRemoved, speechScratchRemoved: speechScratch.length };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
