@@ -152,6 +152,15 @@ test(`she may answer a poke with ${DECLINE_MARK}: nothing is sent and nothing ob
   assert.deepEqual(f.records().map(r => r.status), ['declined']);
 });
 
+test(`an ordinary reply that is ${DECLINE_MARK} (the executor's output guard left nothing to say): nothing is sent and nothing observed`, async t => {
+  const f = await fixture(t);
+  f.executor.reply = () => DECLINE_MARK;
+  await f.answered(f.say('在吗'));
+  assert.equal(f.requests.length, 1);
+  assert.deepEqual([f.sends.length, f.observations.filter(o => o.role === 'assistant').length], [0, 0]);
+  assert.deepEqual(f.records().map(r => r.status), ['declined']);
+});
+
 test('one poke per conversation in pokeCooldownMs (10 minutes by default; qq-bridge.json pacing may change it)', async t => {
   const f = await fixture(t);
   await f.answered(f.poke());
