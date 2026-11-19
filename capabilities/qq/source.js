@@ -24,6 +24,45 @@ function stickerOf(data) {
   const name = mall && typeof data.summary === 'string' ? data.summary.trim().replace(/^\[(.*)\]$/s, '$1').trim() : '';
   return { sticker: mall || data.sub_type === 1 || data.sub_type === '1', ...(name && name.length <= 12 && !/[\n\0[\]]/.test(name) && !['动画表情', '图片', '表情'].includes(name) ? { stickerName: name } : {}) };
 }
+/** Share cards (`json` and `xml` segments) read from one message, the longest card read, link and title kept. */
+export const CARD = Object.freeze({ perMessage: 2, chars: 16384, url: 1024, title: 40 });
+const CQ_ESCAPES = { '&#44;': ',', '&#91;': '[', '&#93;': ']', '&amp;': '&' }, XML_ESCAPES = { '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': '\'', '&amp;': '&' };
+const unescaped = (value, table) => value.replace(/&(?:#44|#91|#93|amp|lt|gt|quot|apos);/g, found => table[found] ?? found);
+const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+/** Only a whole http(s) link in printable ASCII is a link; it is kept exactly as the card has it. */
+const cardLink = value => typeof value === 'string' && value.length <= CARD.url && /^https?:\/\/[\x21-\x7e]+$/.test(value) && URL.canParse(value) ? value : null;
+/** A card's title is the platform's or a third party's text, not the person's: one short line without brackets. */
+const cardTitle = value => typeof value === 'string' ? [...value.replace(/[\[\]\p{Cc}\u2028\u2029]/gu, ' ').replace(/\s+/g, ' ').trim()].slice(0, CARD.title).join('').trim() : '';
+/** What a share card says, as one line of the person's message: `[分享] <title> <link>`, or null when the card
+ * carries no usable link. A phone app usually shares a mini-app or link card instead of typing the link; which
+ * fields carry it is NapCat's rendering of QQ's card (known second-hand, like the sticker fields): in a `json` card
+ * `qqdocurl`, `jumpUrl` or `url` of an item directly under `meta`, in an `xml` card the `url` attribute of `<msg>`.
+ * Nothing else of the card is read, nothing is fetched or followed, and another card shape is ignored. */
+function cardText(type, data) {
+  let raw = data?.data, link = null, title = '';
+  if (type === 'json') {
+    if (typeof raw === 'string') {
+      if (raw.length > CARD.chars) return null;
+      const text = raw;
+      try { raw = JSON.parse(text); } catch { try { raw = JSON.parse(unescaped(text, CQ_ESCAPES)); } catch { return null; } }
+    }
+    if (!plain(raw) || !plain(raw.meta)) return null;
+    for (const item of Object.values(raw.meta).slice(0, 8)) {
+      if (!plain(item)) continue;
+      const key = ['qqdocurl', 'jumpUrl', 'url'].find(name => cardLink(item[name]));
+      if (!key) continue;
+      // A mini-app card names the app in `title` and what was shared in `desc`; a link card has its title in `title`.
+      link = item[key]; title = key === 'qqdocurl' ? cardTitle(item.desc) || cardTitle(item.title) : cardTitle(item.title);
+      break;
+    }
+  } else {
+    if (typeof raw !== 'string' || raw.length > CARD.chars) return null;
+    const head = /<msg\b[^>]*>/.exec(raw)?.[0] ?? '', attribute = name => unescaped(new RegExp(`\\s${name}="([^"]*)"`).exec(head)?.[1] ?? '', XML_ESCAPES);
+    link = cardLink(attribute('url'));
+    title = cardTitle(unescaped(/<title>([^<]*)<\/title>/.exec(raw)?.[1] ?? '', XML_ESCAPES)) || cardTitle(attribute('brief'));
+  }
+  return link ? `[分享] ${title ? title + ' ' : ''}${link}` : null;
+}
 /** One log line per image segment of an inbound message, to see which NapCat-only fields really arrive: the names of
  * the segment's data fields, `sub_type`, whether `emoji_id` is there and the `summary` string. Never a value of any
  * other field (no file name, URL, account number or message text). */
@@ -51,13 +90,15 @@ export function messageFromOneBot(event, { expectedSelfId }) {
   if (typeof event.message === 'string') authoredText = event.message; // CQ-looking text remains literal text.
   else if (Array.isArray(event.message) && event.message.length <= 32) {
     // Text segments joined by line breaks; a small face is its name (`[微笑]`) where it stands, not an attachment.
-    const pieces = [];
+    // A share card is the line `[分享] <title> <link>` (cardText), at most CARD.perMessage of them.
+    const pieces = []; let cards = 0;
     for (const [segmentIndex, segment] of event.message.entries()) {
       const data = segment?.data;
       if (segment?.type === 'text' && typeof data?.text === 'string') pieces.push({ text: data.text, line: true });
       else if (segment?.type === 'face' && /^\d{1,10}$/.test(String(data?.id))) pieces.push({ text: faceText(String(data.id)) });
       else if (segment?.type === 'record' && mediaFile(data?.file)) { audio++; if (media.length < MAX_MEDIA) media.push({ kind: 'audio', file: data.file, segmentIndex }); else skippedMedia++; }
       else if (segment?.type === 'image' && mediaFile(data?.file)) { if (media.length < MAX_MEDIA) media.push({ kind: 'image', file: data.file, segmentIndex, ...stickerOf(data) }); else skippedMedia++; }
+      else if ((segment?.type === 'json' || segment?.type === 'xml') && cards < CARD.perMessage) { const shared = cardText(segment.type, data); if (shared) { cards++; pieces.push({ text: shared, line: true }); } }
     }
     authoredText = pieces.map((piece, index) => (piece.line && pieces[index - 1]?.line ? '\n' : '') + piece.text).join('');
   } else throw new Error('INVALID_ONEBOT_MESSAGE');
