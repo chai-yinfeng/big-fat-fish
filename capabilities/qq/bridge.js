@@ -7,7 +7,7 @@ import { splitReply } from './split.js';
 import { PACING, BURST_MAX_MEDIA, BURST_MAX_CHARS, segmentGap, firstDelay } from './pacing.js';
 import { replySegments } from './faces.js';
 import { channel } from '../channels/index.js';
-import { takeStickerMarker, asksToKeep, frequencyLine, RECENT_REPLIES, KEEP_WINDOW_MS } from './stickers.js';
+import { takeStickerMarker, asksToKeep, asksToKeepMany, frequencyLine, RECENT_REPLIES, KEEP_WINDOW_MS, MAX_KEEP_PER_REQUEST } from './stickers.js';
 
 const identifier = value => typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value);
 export const FRIEND_REFRESH_MS = 10 * 60 * 1000;
@@ -58,6 +58,8 @@ export class QQBridge {
     // Per conversation, in memory only (a restart forgets both): whether each of her latest replies carried a sticker
     // (for the frequency line), and the last picture received (what "收下这个" refers to).
     this.recentStickers = new Map(); this.lastPicture = new Map();
+    // Per conversation, in memory only: the pictures received lately, in order (what "收下这些" refers to).
+    this.recentPictures = new Map();
     // In memory only: the text of her latest delivered messages by platform message id (what a quote of one says),
     // and per conversation when a poke was last taken (pacing.pokeCooldownMs).
     this.sentTexts = new Map(); this.lastPoke = new Map();
@@ -349,12 +351,24 @@ export class QQBridge {
     while (this.recentStickers.size > 200) this.recentStickers.delete(this.recentStickers.keys().next().value);
   }
   /** The line added after a message of the turn when the owner says 收下这个 in the owner's own conversation: whether
-   * the picture went into her library. Anyone else saying it changes nothing. (How often she sent a sticker lately is
-   * added once per turn, in process.) */
+   * the picture went into her library; for 收下这些, the pictures of the last KEEP_WINDOW_MS (this message's too, the
+   * latest MAX_KEEP_PER_REQUEST, oldest first), each kept like one, and how many were kept, already there or failed.
+   * Anyone else saying it changes nothing. (How often she sent a sticker lately is added once per turn, in process.) */
   async stickerFacts({ cfg, message, scope, userId, prepared }) {
     const streamId = message.observation.streamId, picture = prepared.mediaRefs.find(ref => ref.kind === 'image');
+    const pictures = prepared.mediaRefs.filter(ref => ref.kind === 'image').map(ref => ({ ref: ref.id, at: this.clock() }));
+    const lately = [...(this.recentPictures.get(streamId) ?? []).filter(item => this.clock() - item.at <= KEEP_WINDOW_MS), ...pictures];
     let kept = '';
-    if (userId === cfg.allowedCallerUID && asksToKeep(message.authoredText)) {
+    if (userId === cfg.allowedCallerUID && asksToKeepMany(message.authoredText)) {
+      const refs = [...new Set(lately.map(item => item.ref))], chosen = refs.slice(-MAX_KEEP_PER_REQUEST), names = [];
+      let already = 0, failed = 0;
+      for (const ref of chosen) {
+        try { const result = await this.media.keepSticker(scope, ref); if (result.already) already++; else names.push(result.name); }
+        catch { failed++; }
+      }
+      kept = !chosen.length ? '\n[渠道事实：主人让你收下最近的几张图，但最近没有收到图，表情库没有变化。]'
+        : `\n[渠道事实：主人让你收下最近的 ${chosen.length} 张图：收进表情库 ${names.length} 张${names.length ? `（名字：${names.join('、')}）` : ''}，本来就在库里 ${already} 张，没能收进 ${failed} 张${refs.length > chosen.length ? `；一次最多收 ${MAX_KEEP_PER_REQUEST} 张，更早的 ${refs.length - chosen.length} 张没有收` : ''}。]`;
+    } else if (userId === cfg.allowedCallerUID && asksToKeep(message.authoredText)) {
       const last = this.lastPicture.get(streamId), ref = picture?.id ?? (last && this.clock() - last.at <= KEEP_WINDOW_MS ? last.ref : null);
       if (!ref) kept = '\n[渠道事实：主人让你收下一张图，但最近没有收到图，表情库没有变化。]';
       else {
@@ -362,6 +376,7 @@ export class QQBridge {
         catch { kept = '\n[渠道事实：这张图没能收进你的表情库。]'; }
       }
     }
+    if (pictures.length) { this.recentPictures.delete(streamId); this.recentPictures.set(streamId, lately.slice(-MAX_KEEP_PER_REQUEST * 2)); while (this.recentPictures.size > 200) this.recentPictures.delete(this.recentPictures.keys().next().value); }
     if (picture) { this.lastPicture.delete(streamId); this.lastPicture.set(streamId, { ref: picture.id, at: this.clock() }); while (this.lastPicture.size > 200) this.lastPicture.delete(this.lastPicture.keys().next().value); }
     return kept;
   }

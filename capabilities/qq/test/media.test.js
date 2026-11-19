@@ -200,6 +200,72 @@ test('her library: the owner says 收下这个 after a picture; her [表情:词]
   assert.doesNotMatch(f.executions[4].input.text, /渠道事实/);
 });
 
+/** Distinct one-pixel GIFs by file name (`pic-<n>`), so each picture is its own hash; keepSticker calls are recorded. */
+function pictures(f) {
+  const call = f.bridge.onebot.call, kept = [];
+  f.bridge.onebot.call = async (action, params) => {
+    const n = /^pic-(\d+)$/.exec(params?.file ?? '')?.[1];
+    if (action !== 'get_image' || n === undefined) return call(action, params);
+    const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64'); gif[13] = Number(n); return { base64: gif.toString('base64') };
+  };
+  const keep = f.bridge.media.keepSticker.bind(f.bridge.media);
+  f.bridge.media.keepSticker = (scope, ref) => { kept.push(ref); return keep(scope, ref); };
+  const picture = (id, n) => f.event(id, [{ type: 'image', data: { file: `pic-${n}`, sub_type: 1 } }]);
+  return { kept, picture };
+}
+
+test('收下这些: the owner keeps every picture of the last 10 minutes, oldest first, each like one; already kept ones are counted, not added', async t => {
+  const f = fixture(t), { kept, picture } = pictures(f); await f.bridge.connection(true);
+  let now = Date.parse('2026-11-19T04:00:00Z'); f.bridge.clock = () => now;
+  await f.bridge.receive(picture(101, 1));
+  await f.bridge.receive(f.event(102, [{ type: 'text', data: { text: '收下这张' } }]));
+  assert.equal(kept.length, 1, 'the one picture, as before');
+  now += 60000; await f.bridge.receive(picture(103, 2));
+  now += 60000; await f.bridge.receive(picture(104, 3));
+  const before = kept.length;
+  await f.bridge.receive(f.event(105, [{ type: 'text', data: { text: '这些都收下' } }]));
+  const refs = kept.slice(before);
+  assert.equal(refs.length, 3);
+  assert.deepEqual(refs.map(ref => f.store.metadata(ref).sourceEventId.match(/\d+$/)[0]), ['101', '103', '104'], 'oldest first');
+  assert.match(f.executions.at(-1).input.text, /\[渠道事实：主人让你收下最近的 3 张图：收进表情库 2 张（名字：[^）]+、[^）]+），本来就在库里 1 张，没能收进 0 张。\]/);
+  // A picture failing to go in is counted as failed; the others still go in.
+  now += 60000; await f.bridge.receive(picture(106, 4));
+  const keep = f.bridge.media.keepSticker; let calls = 0;
+  f.bridge.media.keepSticker = (scope, ref) => ++calls === 4 ? Promise.reject(new Error('content down')) : keep(scope, ref);
+  await f.bridge.receive(f.event(107, [{ type: 'text', data: { text: '把刚才的都收了' } }]));
+  assert.match(f.executions.at(-1).input.text, /收下最近的 4 张图：收进表情库 0 张，本来就在库里 3 张，没能收进 1 张。\]/);
+  // Ten minutes after the last picture, nothing is left to keep.
+  now += 10 * 60000 + 1;
+  await f.bridge.receive(f.event(108, [{ type: 'text', data: { text: '收下这几张' } }]));
+  assert.match(f.executions.at(-1).input.text, /\[渠道事实：主人让你收下最近的几张图，但最近没有收到图，表情库没有变化。\]/);
+});
+
+test('收下这些 keeps at most the latest 10 and says so; the singular still keeps only the last picture', async t => {
+  const f = fixture(t), { kept, picture } = pictures(f); await f.bridge.connection(true);
+  for (let n = 1; n <= 12; n++) await f.bridge.receive(picture(110 + n, n));
+  await f.bridge.receive(f.event(130, [{ type: 'text', data: { text: '收下它' } }]));
+  assert.equal(kept.length, 1);
+  const last = kept[0];
+  await f.bridge.receive(f.event(131, [{ type: 'text', data: { text: '收下它们' } }]));
+  assert.equal(kept.length, 11);
+  assert.equal(kept.at(-1), last, 'the latest ten end with the last picture');
+  assert.match(f.executions.at(-1).input.text, /收下最近的 10 张图：收进表情库 9 张（名字：[^）]+），本来就在库里 1 张，没能收进 0 张；一次最多收 10 张，更早的 2 张没有收。\]/);
+});
+
+test('收下这些 from anyone but the owner, in their own conversation, changes nothing', async t => {
+  const f = fixture(t), { kept } = pictures(f);
+  const call = f.bridge.onebot.call;
+  f.bridge.onebot.call = async (action, params) => action === 'get_friend_list' ? [{ user_id: 300 }] : call(action, params);
+  await f.bridge.connection(true);
+  f.bridge.authority.admitPerson = async () => ({});
+  const friend = (id, message) => ({ ...f.event(id, message), user_id: 300, sender: { user_id: 300 }, sub_type: 'friend' });
+  await f.bridge.receive(friend(141, [{ type: 'image', data: { file: 'pic-1', sub_type: 1 } }]));
+  await f.bridge.receive(friend(142, [{ type: 'image', data: { file: 'pic-2', sub_type: 1 } }]));
+  await f.bridge.receive(friend(143, [{ type: 'text', data: { text: '这些都收下' } }]));
+  assert.deepEqual(kept, []);
+  for (const execution of f.executions) assert.doesNotMatch(execution.input.text, /表情库/);
+});
+
 test('收下这个 from anyone but the owner changes nothing; without the sticker switch the picture goes as an ordinary image', async t => {
   const f = fixture(t), kept = [];
   const call = f.bridge.onebot.call;
