@@ -523,6 +523,8 @@ export class QQBridge {
       // `[表情:词]` never reaches the chat: taken out here, its word picks a sticker below.
       const reply = await executeConversation(this.executor, { scope, requestId, input, timeoutMs: this.media && (prepared.mediaRefs.length || /音频|语音|转写|识别|qwen/i.test(prepared.queryText)) ? 420000 : 120000 });
       const taken = takeStickerMarker(reply), word = taken.word, text = this.sayable(taken.text), marks = markerParts(reply), chosen = marks.find(mark => mark.word)?.part;
+      // The executor's output guard left nothing to say (or she said nothing): nothing is sent.
+      if (DECLINED.test(text)) { end('declined'); return; }
       // The executor has stored her reply: what becomes of it is reported when the turn ends (finally), wherever it ends.
       report = { requestId, parts: [{ kind: 'text', status: 'unsent' }, ...marks.map(mark => mark.part)] };
       meant.set(report.parts[0], text);

@@ -57,7 +57,7 @@ export function createFakeChannel({ authority, executor, executeConversation, de
       const scope = await authority.context({ streamId, query: text.slice(0, 512), budgetChars: 1 });
       const observed = await authority.observe({ eventId, streamId, actorId: actorOf(account), role: 'user', text, at: Date.now() });
       const reply = await executeConversation(executor, { scope: { streamId, memoryEpoch: scope.memoryEpoch }, requestId: eventId, input: { text, queryText: text.slice(0, 512), evidence: [{ ref: observed.observationId, eventId, role: 'user' }] } });
-      end(await deliver(account, reply));
+      end(declined.test(reply) ? 'declined' : await deliver(account, reply));
     } catch (error) { end(error?.code === 'BUDGET_EXHAUSTED' ? 'budget_exhausted' : 'failed'); }
   }
   /** One round: ask Authority for a run she starts herself on this channel, run it, report once. */
