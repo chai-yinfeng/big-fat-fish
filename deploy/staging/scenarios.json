@@ -1148,6 +1148,9 @@
         { "expectReply": { "to": "MOCK-OWNER", "image": "sticker" } },
         { "say": { "from": "MOCK-A", "text": "MOCK-K10A-{run} 跳个舞" } },
         { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K10A-{run} 跳就跳" } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-K10M-{run} 这些都收下", "image": { "seed": "K10M-{run}", "as": "mall", "name": "鲸鱼甲" } } },
+        { "expectReply": { "to": "MOCK-OWNER" } },
+        { "expectPrompt": { "userText": "MOCK-K10M-{run} 这些都收下", "contains": "：收进表情库 1 张（名字：鲸鱼甲），本来就在库里 " } },
         { "expectSilence": { "to": "*", "afterMs": 3000 } }
       ]
     },

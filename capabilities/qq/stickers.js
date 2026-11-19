@@ -9,6 +9,8 @@ export const MAX_STICKERS_PER_REPLY = 1;
 export const RECENT_REPLIES = 10;
 /** "收下这个" refers to the last picture of the owner's own conversation at most this long ago. */
 export const KEEP_WINDOW_MS = 10 * 60000;
+/** Safety value: at most this many pictures (the latest of the window) for one "收下这些". */
+export const MAX_KEEP_PER_REQUEST = 10;
 const MARKER = /\[表情[:：]\s*([^[\]\n]{1,12}?)\s*\]/g;
 
 /** Her reply without `[表情:词]` markers, and the word of the first (null when there is none). */
@@ -23,6 +25,13 @@ export function takeStickerMarker(text, log = message => process.stderr.write(me
 /** The owner asking her to keep a picture: a short message saying 收下这个 / 收下这张 / 收下它. */
 export function asksToKeep(text) {
   return typeof text === 'string' && [...text].length <= 40 && /收下(?:这个|这张|它)/.test(text);
+}
+/** The owner asking her to keep the pictures sent lately: a short message such as 这些都收下 / 把刚才的都收了 /
+ * 收下这几张. It names several pictures, so 收下它 stays the one picture of asksToKeep and 我都收了 is nothing. */
+export function asksToKeepMany(text) {
+  if (typeof text !== 'string' || [...text].length > 40) return false;
+  const these = '(?:这些|这几张|这几个|刚才的|刚刚的|刚发的|上面的|它们|全部|所有)';
+  return new RegExp(`收下${these}|${these}(?:图|图片|表情|表情包)?(?:都|全|全都|全部)?收(?:下|了|进)|^\\s*(?:都|全|全都|全部)收下`).test(text);
 }
 /** The fact line about how often she sent a sticker lately (soft: whether to send one is hers to judge). */
 export function frequencyLine(recent) {
