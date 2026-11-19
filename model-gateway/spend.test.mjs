@@ -63,7 +63,7 @@ test('meter rolls over at Beijing midnight and charges reservations that never r
   handle = await meter.reserve('maintenance', () => 30000);
   await meter.settle(handle, null); // no usage reported: the reservation is charged
   assert.equal(meter.status().spentYuan, 0.13); assert.equal(meter.status().unreportedUsage, 1);
-  assert.deepEqual(meter.status().byTier, { conversation: 0.1, maintenance: 0.03, vision: 0, web: 0, generation: 0, proactive: 0 });
+  assert.deepEqual(meter.status().byTier, { conversation: 0.1, maintenance: 0.03, vision: 0, web: 0, generation: 0, proactive: 0, activity: 0 });
   // A reservation still in flight at midnight is carried into the new day.
   handle = await meter.reserve('conversation', () => 20000);
   now = Date.parse('2026-11-09T02:00:00Z'); // Monday 10:00 in Beijing: new day, peak
@@ -107,21 +107,21 @@ test('token totals: per Beijing day, only charged calls with reported usage, kep
   assert.deepEqual([older.status().calls, older.status().tokens], [1, zero]);
 });
 
-test('tiers: reduced stops proactive, restricted stops maintenance/vision/web, exhausted stops everything', async t => {
+test('tiers: reduced stops proactive, restricted stops maintenance/vision/web/activity, exhausted stops everything', async t => {
   const dir = await directory(t);
   const meter = createSpendMeter({ stateFile: path.join(dir, 's.json'), settingsFile: path.join(dir, 'ss.json'), pricingFile: path.join(dir, 'p.json'), clock: () => BJ('20:00') });
   await meter.start();
   await meter.updateSettings({ dailyCapYuan: 1 });
   const spendTo = async yuan => { const h = await meter.reserve('conversation', () => 0); await meter.settle(h, yuan * 1e6 - meter.status().spentYuan * 1e6); };
   const allowed = async category => { try { await meter.settle(await meter.reserve(category, () => 0), 0, { charge: false }); return true; } catch (error) { assert.equal(error.code, 'BUDGET_EXHAUSTED'); return false; } };
-  const matrix = async () => Object.fromEntries(await Promise.all(['proactive', 'maintenance', 'vision', 'web', 'conversation'].map(async c => [c, await allowed(c)])));
-  assert.deepEqual(await matrix(), { proactive: true, maintenance: true, vision: true, web: true, conversation: true });
+  const matrix = async () => Object.fromEntries(await Promise.all(['proactive', 'maintenance', 'vision', 'web', 'activity', 'conversation'].map(async c => [c, await allowed(c)])));
+  assert.deepEqual(await matrix(), { proactive: true, maintenance: true, vision: true, web: true, activity: true, conversation: true });
   await spendTo(0.6); assert.equal(meter.status().tier, 'reduced');
-  assert.deepEqual(await matrix(), { proactive: false, maintenance: true, vision: true, web: true, conversation: true });
+  assert.deepEqual(await matrix(), { proactive: false, maintenance: true, vision: true, web: true, activity: true, conversation: true });
   await spendTo(0.8); assert.equal(meter.status().tier, 'restricted');
-  assert.deepEqual(await matrix(), { proactive: false, maintenance: false, vision: false, web: false, conversation: true });
+  assert.deepEqual(await matrix(), { proactive: false, maintenance: false, vision: false, web: false, activity: false, conversation: true });
   await spendTo(1); assert.equal(meter.status().tier, 'exhausted');
-  assert.deepEqual(await matrix(), { proactive: false, maintenance: false, vision: false, web: false, conversation: false });
+  assert.deepEqual(await matrix(), { proactive: false, maintenance: false, vision: false, web: false, activity: false, conversation: false });
   // Raising the cap takes effect immediately.
   await meter.updateSettings({ dailyCapYuan: 10 });
   assert.equal(meter.status().tier, 'normal'); assert.equal(await allowed('maintenance'), true);

@@ -11,6 +11,7 @@ import { createContentOperator } from './operator.js';
 import { createJobs } from './jobs.js';
 import { createDemoRunner } from './demo-job.js';
 import { createNormalizeImage } from './normalize.js';
+import { createVideoProvider } from '../providers/video/provider.js';
 
 process.umask(0o077);
 let server, timer, jobs;
@@ -29,15 +30,21 @@ try {
   const worldStatus = async () => (await authority.health()).world;
   // Background jobs keep their records beside the media files (no new configuration key: the previous release
   // reads this same content.json and ignores the file).
-  jobs = createJobs({ file: path.join(cfg.store.root, 'jobs.json'), runners: { demo: createDemoRunner() }, worldStatus, usage: { reserve: capability => gateway.reserveUsage({ capability }), record: gateway.recordUsage } });
-  const media = new MediaService({ store, speech, ...gateway, normalizeImage, workRoot: cfg.workRoot, jobs });
+  // Watching a shared video. Its operator file sits beside this one (operator/providers/video.json, absent: the
+  // capability is off); its cache and work directories are inside the media store's root, which the speech runner
+  // may read. No new key in content.json, for the same reason as above.
+  const video = createVideoProvider({ configFile: path.join(path.dirname(file), 'providers/video.json'), cacheRoot: path.join(store.root, 'video-cache'), workRoot: path.join(store.root, 'video-work'), store, speech, summarize: gateway.summarize, jobs: () => jobs });
+  video.sweep({ start: true });
+  jobs = createJobs({ file: path.join(cfg.store.root, 'jobs.json'), runners: { demo: createDemoRunner(), video: video.runner }, worldStatus, usage: { reserve: capability => gateway.reserveUsage({ capability }), record: gateway.recordUsage } });
+  const { summarize: _summarize, ...ports } = gateway;
+  const media = new MediaService({ store, speech, ...ports, normalizeImage, workRoot: cfg.workRoot, jobs, activities: { video } });
   // Every request somebody is waiting for goes through the gate, so a yielding background job lets it go first.
   const service = { call: (scope, input) => jobs.gate.timely(() => media.call(scope, input)) };
   const operator = createContentOperator({ speechConfigFile: cfg.speechConfigFile, worldStatus, speechFactory: () => speech });
   server = createContentServer({ ...cfg.control, service, worldStatus, operatorCall: (input, options) => input?.action === 'test' ? jobs.gate.timely(() => operator.call(input, options)) : operator.call(input, options), jobsCall: input => jobs.control(input) });
   await server.start();
   jobs.start();
-  store.expire(); timer = setInterval(() => { try { store.expire(); jobs.sweep(); } catch { process.stderr.write('Media retention requires operator inspection.\n'); } }, 3600000);
+  store.expire(); timer = setInterval(() => { try { store.expire(); jobs.sweep(); video.sweep(); } catch { process.stderr.write('Media retention requires operator inspection.\n'); } }, 3600000);
   let stopping = false;
   const stop = async () => { if (stopping) return; stopping = true; clearInterval(timer); await jobs.close(); await server.close(); };
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { void stop(); });

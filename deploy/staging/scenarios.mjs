@@ -484,9 +484,10 @@ export const STEPS = {
   /** One job of this scenario on the operator's list (GET /jobs; `job`: its number in the order registered, default
    * the last): waits until its state is `status` and telling the person stands as `notice` ("none", "pending",
    * "carry", "issued", or how it was closed: "sent", "carried", ...). A finished job shows its result, a refused one
-   * its reason (`code`). The list never holds an account number. */
-  async expectJob(run, ctx, { job, status, notice, code, timeoutMs = 60000 }) {
-    const id = ctx.jobs?.[job === undefined ? ctx.jobs.length - 1 : job - 1] ?? fail('expectJob: no such demo job in this scenario');
+   * its reason (`code`). The list never holds an account number. With `capability` it is instead the newest job of
+   * that capability on the list: one she registered herself (companion_activity), which the runner has no id of. */
+  async expectJob(run, ctx, { job, capability, status, notice, code, timeoutMs = 60000 }) {
+    const id = capability !== undefined ? null : ctx.jobs?.[job === undefined ? ctx.jobs.length - 1 : job - 1] ?? fail('expectJob: no such demo job in this scenario');
     let seen = null;
     const told = entry => entry.notice.state === 'closed' ? entry.notice.outcome : entry.notice.state;
     try {
@@ -494,7 +495,7 @@ export const STEPS = {
         const listing = await run.operator('GET', '/jobs');
         const leaked = [run.data.bot, ...Object.values(run.data.people)].find(account => JSON.stringify(listing).includes(account.qq));
         if (leaked) fail(`the job list contains the account number ${leaked.qq}`);
-        seen = listing.jobs.find(entry => entry.id === id) ?? null;
+        seen = listing.jobs.find(entry => id === null ? entry.capability === capability : entry.id === id) ?? null;
         return seen && seen.status === status && (notice === undefined || told(seen) === notice);
       }, timeoutMs, 'timeout');
     } catch (error) { if (error.message !== 'timeout') throw error; fail(`the job is ${seen ? `${seen.status}, telling ${told(seen)}` : 'not listed'}, expected ${status}${notice === undefined ? '' : ', telling ' + notice}`); }

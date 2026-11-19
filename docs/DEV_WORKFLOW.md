@@ -62,6 +62,11 @@ GitHub release 失败（SSL_ERROR_SYSCALL），sherpa Qwen3-ASR 压缩包须先�
 安装器按 manifest 固定的 sha256 校验。已有安装补装长语音用的 Silero VAD（>30 秒的 ASR 需要它）：
 `ops/install-speech.mjs --apply --models vad --model-source modelscope --proxy http://127.0.0.1:7890`
 （只下载约 2.3MB 的固定 sha256 文件，并在 speech.json 补 `models.vad`、把旧默认 maxAudioSeconds 30 提到 120）。
+看视频用的 yt-dlp 也是主人的一次性安装步骤：`ops/install-video.mjs --apply --index https://pypi.tuna.tsinghua.edu.cn/simple`
+（固定版本和 wheel 的 sha256，装进私有运行时下独立的 venv `~/.local/opt/companion/video`，清华镜像直连即可，约 3 秒；不动任何服务）。
+它打印 `operator/providers/video.json` 里与站点无关的部分，站点规则由主人补上后保存（0600）；没有这个文件时能力是关的。
+该主机的 `/usr/bin/ffmpeg` 和 `/usr/bin/bwrap` 已具备（2026-11-19 在 agent 账号核对过；bwrap 里带网络的 yt-dlp 和断网的 ffmpeg 都能跑）。
+详见 `capabilities/providers/video/README.md`。
 `--models all` 默认以 Vulkan 编译 llama-tts（iGPU，需主机已装 glslc、libvulkan-dev、spirv-headers，缺少时报
 `SPEECH_VULKAN_BUILD_DEPS` 且不下载任何东西；`--cpu-only` 编译旧的纯 CPU 版），重跑会在原 build 目录重新配置编译（-j2 约 3.5 分钟）。
 运行时 `auto` 需要 content 服务进程在 render 组里（能读写 /dev/dri/renderD*）；companion 加入 render 组后须重启它的
@@ -106,7 +111,7 @@ node deploy/qq/open-login.mjs        # NapCat WebUI 扫码登录（默认 home-a
 私有运行时：/home/companion/.local/opt/companion
 用户单元：/home/companion/.config/systemd/user/companion-*
 会话记录：/home/companion/.local/share/companion-world-v1/conversation-data/sessions（每会话一个 JSONL）
-执行器：companion-conversation（UDS ipc/conversation/execute.sock，无 TCP 端口；以 companion 用户运行、无文件系统隔离，网络经 seccomp 只允许 Unix socket，模型只能用两个不访问文件系统的工具）
+执行器：companion-conversation（UDS ipc/conversation/execute.sock，无 TCP 端口；以 companion 用户运行、无文件系统隔离，网络经 seccomp 只允许 Unix socket，模型只能用三个不访问文件系统的工具）
 3082 独立世界控制台与 operator API（唯一由 companion 单元监听的 TCP 端口）
 NapCat WebUI 6099 / OneBot WS 3001（部署后核查第 3 步用 ss 看它们是否在监听）
 ```
@@ -122,7 +127,7 @@ NapCat WebUI 6099 / OneBot WS 3001（部署后核查第 3 步用 ss 看它们是
   （自动准入，最多 40 人，彼此记忆隔离）；不开群、广播，也不自动加好友。
 - 语音识别在本地，但转写会进入 DeepSeek 对话，不是全本地对话。
 - 额度：“额度”页顶部是当日花费，下面每种能力一行（聊天、后台整合、看图、表情识别、联网、语音合成、语音识别、
-  主动开口、演示任务），可展开看被拒原因和最近 7 天；有每日上限的行（看图、联网、表情识别、演示任务）在行内改，
+  主动开口、演示任务、看视频、视频摘要），可展开看被拒原因和最近 7 天；有每日上限的行（看图、联网、表情识别、演示任务、看视频）在行内改，
   下一次调用起生效，不需要暂停。
   每日金额上限和三档仍在“世界概览”的开销卡片里改。
 - 音色：暂停后在“音色”中上传参考 WAV 登记（ID、名称、参考语言、使用范围），可设默认、试听、移除。
@@ -194,6 +199,7 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
 | Q、P | Q1、Q2、P1 | 额度账本每个出口都记一行且与 `/spend` 对得上、被拒记原因；供应商适配骨架（假供应商 `mock`，提交—轮询—取回） |
 | R | R1–R6 | 她先开口：只到主人、60% 档不调模型、回执丢失不重发、暂停时当场作废、`<不说>` 不发送、安静时段作废 |
 | J | J1–J3 | 后台任务：做完后只有主人收到一条、档位挡住时随下一条消息带上、每日上限与排队上限 |
+| V | V1、V2 | 看视频：主人发链接 → 她用 `companion_activity` 去看并当场回一句 → 做完在主人的会话里说一句，笔记带“机器整理、不可信外部内容”标注；同一链接再发走缓存、不再登记任务；名单外站点、好友分享、已删除的视频、每日次数用完各自被拒 |
 | K | K1、K2、K4–K10 | 小表情（多个也照常回复；发送默认关闭时 `[微笑]` 原样当文字，她先开口时也一样）；表情包按哈希只看一次、商城表情用名字、表情识别单独计数；她的表情库（主人“收下这个”、`[表情:词]` 单独一条发送、匹配不到只发文字） |
 | B | B1 | 连发两条只回一次：两条都记下，模型一个回合按顺序读到两句（回放与 staging 把 `qq-bridge.json` 的 `pacing` 调短：等 0.5 秒、拆条不停） |
 | MOCK | MOCK-1–MOCK-4 | 第二个渠道：准入与对话、同一个人两个渠道共用记忆而窗口分开、“对我试一次”发到主人最近说话的渠道、回执不可靠时不重发 |
@@ -204,6 +210,7 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
 - R 场景：回放时 QQ 桥每 3 秒取一次（`qq-bridge.json` 的 `initiationPollMs`，生产缺省 60 秒）；场景开头经 operator `/initiative/settings` 关掉安静时段、结尾恢复默认，所以任何时刻回放结果相同；回放前 staging agent 在 Authority 停着时删掉 `initiations` 状态（`reset_initiations`）。“对方先开口则作废”有时序竞争，由 `authority/test/initiations.test.js` 与 `capabilities/qq/test/initiation.test.js` 覆盖。
 - J 场景：演示任务经 operator `/jobs/demo` 登记，永远在主人自己的会话里；回放前删掉 `media-data/jobs.json`。时序竞争、重启恢复、超时、取消和“及时请求先于后台任务”由 `capabilities/media/jobs.test.js`、`authority/test/completions.test.js`、`capabilities/qq/test/completion.test.js` 覆盖；staging 没有语音模型，“语音回复抢占后台任务”不回放。
 - K 场景与看图：staging 没有图片运行时（sharp）。Q1/Q2 的看图和搜索由运行器用 `gatewayCall` 直接打到网关的 inference socket；表情包场景要走 QQ 这条路，所以回放期间 staging agent 在 `content.json` 写入 `allowRawSmallPng: true`（不超过 512×512 的 PNG 原样送去看图），回放结束（`finally`）立刻删掉（旧版本不认这个键，随后的回退会用到同一份配置）；生产的配置生成不写它。假 OneBot 发的图是由种子生成的 1×1 PNG，种子带 `{run}`。回放前删掉 `media-data/describe-cache.json` 和 `media-data/stickers/`。
+- V 场景：`fake-ytdlp.mjs` 冒充 yt-dlp（只认 MOCK 站点的假域名，不联网，无状态；特殊编号模拟被拦截、要登录、已删除、不应答等；编号里带 `SLOWISH` 的晚 4 秒应答，保证登记任务的那一回合先结束）。回放期间 staging agent 写入 `operator/providers/video.json`（站点条目取自 `fake-ytdlp.mjs --mock-site`，子进程照生产的方式放进 bubblewrap：只读挂 node 运行时和 tools 目录），回放结束（`finally`）删掉，回放前清掉 `media-data/video-cache/`。staging 没有语音模型，所以不下载、不转码、不摘要，笔记只有标题和简介；下载、切片、时间偏移、人声太少丢弃、摘要、被拦截后停用、忘记时清任务由 `capabilities/media/video.test.js` 与 `deploy/authority/purge-execution.test.mjs` 覆盖。视频编号带 `{run}`，每次回放都是新视频。
 - MOCK 场景：`fake-channel.mjs` 是只存在于 staging 的测试渠道 MOCK 的桥（纯文字、回执不可靠），用自己的 Authority 凭据（capability `mock`）和它自己启动的一个 release 对话执行器；staging 在回放前把 `mock` 的 capability、凭据和 `operator.allowTestChannels` 写进 staging 的 `authority.json`（没有这个开关 Authority 和部署预检都拒绝测试渠道；旧 release 不认识这个字段、照常启动）。涉及主人的 MOCK 场景在 `finally` 里让主人回到 QQ 说一句，之后的回放仍以 QQ 为最近渠道。
 - 本机回放栈（`scenarios.test.mjs`）也启动内容服务（没有语音模型和图片运行时，与 staging 相同）。本地 TTS/ASR 在 staging 没有模型，上报与计数由单元测试覆盖。每次回放开始时，账本当天文件和上限随开销一起清零（历史不清）。
 
@@ -211,7 +218,7 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
 
 - 新功能开工前先加场景：在 `scenarios.json` 的 `scenarios` 里加一项
   `{ id, title, model, steps, finally }`。`model` 是假模型的规则（最新一条用户消息包含 `match`
-  时回 `reply`；带 `propose` 则先发起一次 companion_scope propose，再带 `retry` 则在第一次工具结果后不带 id 再提一次；`usage` 决定计费）；`steps`
+  时回 `reply`；带 `propose` 则先发起一次 companion_scope propose，再带 `retry` 则在第一次工具结果后不带 id 再提一次；带 `activity` 则先按给定参数发起一次 companion_activity；`usage` 决定计费）；`steps`
   每步一个键：`say`、`converse`、`expectReply`、`expectSilence`、`expectSentCount`、`expectMemory`、
   `expectMemoryPages`、`expectPrompt`、`expectTrace`、`expectStablePrefix`、`expectBatchTrim`、`expectHistory`、
   `expectInjectedOnce`、`pinMemory`、`setPersona`、`restorePersona`、`expectNoModelCall`、`expectAdmitted`、`spendSettings`、`expectSpend`、
@@ -222,7 +229,7 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
   `providerKey`、`providerJob`、
   `pause`、`quietHours`、`poke`、`expectInitiation`、`loseReceipts`、`expectLostSends`、`expectModelCalls`、
   `noteMessages`、`expectMessages`、`expectInitiatedPrefix`、
-  `demoJob`、`expectJob`、`noteCompletions`、`expectCompletions`，
+  `demoJob`、`expectJob`（带 `capability` 时看该能力最新的一个任务，用于她自己登记的任务）、`noteCompletions`、`expectCompletions`，
   第二渠道用 `mockFriends`、`mockSay`、`mockExpectReply`、`mockExpectSilence`、`mockExpectSentCount`、`mockLoseReceipts`、
   `mockExpectLostSends`、`mockAttach`（operator `/people/attach`）、`mockExpectAdmitted`、`expectChannel`（`noteMessages`/`expectMessages` 可带 `"channel": "mock"`）
   （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。带 `consolidate` 的规则只应答记忆 worker 的整合请求

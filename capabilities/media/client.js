@@ -40,7 +40,7 @@ export class ContentClient {
     this.socketPath = socketPath; this.tokenFile = tokenFile;
   }
   call(input, { signal } = {}) {
-    if (!input || typeof input.streamId !== 'string' || !Number.isSafeInteger(input.memoryEpoch) || !['ingest', 'transcribe', 'describe', 'synthesize', 'asset', 'attach', 'pending', 'search', 'fetch', 'jobResult', 'stickerKeep', 'stickerPick'].includes(input.action)) return Promise.reject(fail('CONTENT_REQUEST_INVALID'));
+    if (!input || typeof input.streamId !== 'string' || !Number.isSafeInteger(input.memoryEpoch) || !['ingest', 'transcribe', 'describe', 'synthesize', 'asset', 'attach', 'pending', 'search', 'fetch', 'jobResult', 'stickerKeep', 'stickerPick', 'activity'].includes(input.action)) return Promise.reject(fail('CONTENT_REQUEST_INVALID'));
     return unixJson({ socketPath: this.socketPath, tokenFile: this.tokenFile, route: '/v1/content', body: input,
       timeoutMs: ['transcribe', 'synthesize'].includes(input.action) ? 300000 : 90000,
       maxBytes: input.action === 'asset' ? 13 * 1024 * 1024 : 65536, signal });
@@ -52,7 +52,34 @@ export function capabilityGateway({ socketPath, tokenFile }) {
     // The gateway's usage ledger: how a local run ended (count, units, elapsed time; never text or audio).
     recordUsage: body => unixJson({ socketPath, tokenFile, route: '/v1/usage/record', body, maxBytes: 4096, timeoutMs: 5000 }),
     // One of today's slots of a local capability that has a daily limit; CONTENT_BUDGET_EXHAUSTED when none is left.
-    reserveUsage: body => unixJson({ socketPath, tokenFile, route: '/v1/usage/reserve', body, maxBytes: 4096, timeoutMs: 5000 }) };
+    reserveUsage: body => unixJson({ socketPath, tokenFile, route: '/v1/usage/reserve', body, maxBytes: 4096, timeoutMs: 5000 }),
+    // One bounded completion for an activity's own model work (no tools, thinking off; the `activity` spend category).
+    summarize: activityCompletion({ socketPath, tokenFile }) };
+}
+/** `({ messages, maxTokens, signal }) -> { content }` through the gateway's /v1/activity/completions. Rejects with
+ * CONTENT_SPEND_RESTRICTED when the spend tier refused it (no provider call was made), else CONTENT_OPERATION_UNAVAILABLE. */
+export function activityCompletion({ socketPath, tokenFile }) {
+  return ({ messages, maxTokens, signal }) => new Promise((resolve, reject) => {
+    let token;
+    try { token = fs.readFileSync(tokenFile, 'utf8').trim(); } catch { reject(fail('CONTENT_CREDENTIAL_UNAVAILABLE')); return; }
+    const body = JSON.stringify({ model: 'deepseek', messages, max_tokens: maxTokens, stream: false });
+    const request = http.request({ socketPath, path: '/v1/activity/completions', method: 'POST', agent: false, signal, headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } }, response => {
+      let size = 0; const chunks = [];
+      response.on('data', chunk => { size += chunk.length; if (size > 65536) response.destroy(fail('CONTENT_RESPONSE_LIMIT')); else chunks.push(chunk); });
+      response.on('error', () => reject(fail('CONTENT_OPERATION_UNAVAILABLE')));
+      response.on('end', () => {
+        if (response.statusCode === 429) { reject(fail('CONTENT_SPEND_RESTRICTED')); return; }
+        try {
+          const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          if (response.statusCode !== 200 || typeof value.choices?.[0]?.message?.content !== 'string') throw new Error();
+          resolve({ content: value.choices[0].message.content });
+        } catch { reject(fail('CONTENT_OPERATION_UNAVAILABLE')); }
+      });
+    });
+    request.setTimeout(110000, () => request.destroy(fail('CONTENT_TIMEOUT')));
+    request.on('error', () => reject(fail('CONTENT_OPERATION_UNAVAILABLE')));
+    request.end(body);
+  });
 }
 /** The local speech runner with every transcription and synthesis reported through `record` (the usage ledger):
  * outcome, elapsed time including the wait for the serial runner, seconds of audio, characters spoken. Reporting

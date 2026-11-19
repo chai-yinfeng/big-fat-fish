@@ -143,3 +143,16 @@ test('scripted model: `retry` answers the first tool result with a second propos
   // Without `retry` the first tool result is answered with the reply, as before.
   assert.equal(planReply({ stream: true, tools, messages: [...turn, call, result('{"status":"rejected"}')] }, rules).kind, 'text');
 });
+
+test('scripted model: `activity` is a companion_activity call with the scripted arguments, only when that tool is offered, then the reply', () => {
+  const activity = { capability: 'video', action: 'watch', input: { url: 'https://video.mock.invalid/v/MOCK001' } };
+  const script = [{ match: '看看这个', activity, reply: 'MOCK-我去看看' }], offered = [...tools, { type: 'function', function: { name: 'companion_activity' } }];
+  const turn = [{ role: 'system', content: system }, user('看看这个 https://video.mock.invalid/v/MOCK001')];
+  const first = planReply({ stream: true, tools: offered, messages: turn }, script);
+  assert.deepEqual([first.kind, first.call], ['tool', { name: 'companion_activity', arguments: activity }]);
+  assert.match(renderReply(first), /"name":"companion_activity","arguments":"\{\\"capability\\":\\"video\\"/);
+  const second = planReply({ stream: true, tools: offered, messages: [...turn, { role: 'assistant', tool_calls: [] }, { role: 'tool', content: '{"status":"processing"}' }] }, script);
+  assert.deepEqual([second.kind, second.text, second.toolResult], ['text', 'MOCK-我去看看', '{"status":"processing"}']);
+  // A release whose executor does not offer the tool (or a request that is not a chat turn) just gets the reply.
+  assert.deepEqual([planReply({ stream: true, tools, messages: turn }, script).kind, planReply({ stream: false, tools: offered, messages: turn }, script).kind], ['text', 'text']);
+});

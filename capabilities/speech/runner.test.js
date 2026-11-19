@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { createLocalSpeechRunner } from './runner.js';
+import { createLocalSpeechRunner, OUTPUT_BYTES } from './runner.js';
 import { loadSpeechConfig, resolveVoice, trustedReference } from './config.js';
 import { prepareSpeech } from '../../deploy/authority/prepare-speech.mjs';
 
@@ -145,4 +145,17 @@ test('child exit failure is sanitized and does not poison the next queued reques
   await assert.rejects(pending, { code: 'SPEECH_CANCELLED' }); clearTimeout(timer);
   assert.equal(fs.existsSync(outputFile), false);
   assert.equal((await runner.transcribe({ inputFile })).text, 'synthetic transcript');
+});
+
+test('the longest transcript the runner accepts fits its output cap (12000 Chinese characters are 36 KB); an answer over the cap is refused', async t => {
+  const { root, configFile, inputFile } = fixture(t);
+  const workerFile = path.join(root, 'long-worker.mjs');
+  // The transcript length comes from the language field so one worker serves every case.
+  fs.writeFileSync(workerFile, `let raw='';for await(const b of process.stdin)raw+=b;const j=JSON.parse(raw);const text='字'.repeat(j.language==='zh'?12000:1)+(j.language==='ja'?' '.repeat(${OUTPUT_BYTES.plain}):'');process.stdout.write(JSON.stringify({ok:true,value:{model:'asr-default',text,durationMs:20,complete:true}})+'\\n');`);
+  const runner = createLocalSpeechRunner({ configFile, workerFile });
+  const long = await runner.transcribe({ inputFile, language: 'zh' });
+  assert.deepEqual([long.text.length, Buffer.byteLength(long.text) > 32768, Buffer.byteLength(long.text) < OUTPUT_BYTES.plain], [12000, true, true]);
+  await assert.rejects(runner.transcribe({ inputFile, language: 'ja' }), { code: 'SPEECH_WORKER_FAILED' });
+  assert.equal((await runner.transcribe({ inputFile })).text, '字');
+  assert.ok(OUTPUT_BYTES.timed >= 2 * 36000 + 600 * 80, 'timed output holds the text twice plus the times of every segment');
 });

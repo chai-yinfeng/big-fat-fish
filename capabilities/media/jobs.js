@@ -72,7 +72,11 @@ export function createGate() {
 
 /**
  * `runners`: `{ [capability]: { title, action, priority: 'timely' | 'yielding', deadlineMs, input(raw) -> input,
- * run({ input, signal, stage }) -> { text } } }`. A runner does its work in stages, each with its own time limit,
+ * dedupe?(input) -> key, run({ input, signal, stage, scope, source }) -> { text } } }`. `scope` and `source` are the
+ * job's own (who asked, in which conversation, by which message), for what the runner files under them. With
+ * `dedupe`, a second registration of the same key in the same scope while the first is waiting or running is that
+ * first job again (`duplicate: true`): nothing new is queued and no slot is taken.
+ * A runner does its work in stages, each with its own time limit,
  * and each stage in slices: `await stage(name, timeoutMs, step => ...)`, inside it `await step.slice(signal => ...)`
  * and `step.progress(percent)`. It fails with a fixed lowercase code (`fail('no_speech')`); anything else is `failed`.
  * `usage`: `{ reserve(capability), record(body) }`, the gateway's usage ledger (a slot of the day before the job
@@ -165,7 +169,7 @@ export function createJobs({ file, runners, gate = createGate(), worldStatus, us
       try { const now = await world(); if (!now || now.paused || now.revision !== revision) controller.abort(fail('paused')); } finally { checking = false; }
     }, worldCheckMs);
     try {
-      const result = await runner.run({ input: job.input, signal: controller.signal, stage: (name, timeoutMs, body) => stage(job, controller, name, timeoutMs, body) });
+      const result = await runner.run({ input: job.input, signal: controller.signal, scope: { ...job.scope }, source: { ...job.source }, stage: (name, timeoutMs, body) => stage(job, controller, name, timeoutMs, body) });
       controller.signal.throwIfAborted();
       if (!text(result?.text, JOBS.resultChars)) throw fail('failed');
       settle(job, 'done', { result: { text: result.text }, worldRevision: (await world())?.revision ?? null });
@@ -209,10 +213,13 @@ export function createJobs({ file, runners, gate = createGate(), worldStatus, us
         const owner = scopeOf(scope), runner = Object.hasOwn(runners, capability) ? runners[capability] : null;
         if (!runner || closed) throw fail('MEDIA_ACTION_DENIED');
         if (source?.requestId !== undefined && !text(source.requestId) || source?.sourceEventId !== undefined && !text(source.sourceEventId)) throw fail('MEDIA_INPUT_INVALID');
-        const accepted = runner.input(input), now = clock();
+        const accepted = runner.input(input), now = clock(), dedupeKey = typeof runner.dedupe === 'function' ? runner.dedupe(accepted) : null;
+        if (dedupeKey !== null && !text(dedupeKey)) throw fail('MEDIA_JOB_RUNNER');
+        const same = dedupeKey === null ? null : active().find(entry => entry.capability === capability && entry.dedupeKey === dedupeKey && sameScope(entry.scope, owner));
+        if (same) return { ...brief(same), duplicate: true };
         const job = {
           id: 'job:' + randomUUID(), capability, action: runner.action, priority: runner.priority, scope: owner,
-          source: { requestId: source?.requestId ?? null, sourceEventId: source?.sourceEventId ?? null }, dedupeKey: null, input: accepted,
+          source: { requestId: source?.requestId ?? null, sourceEventId: source?.sourceEventId ?? null }, dedupeKey, input: accepted,
           status: 'queued', attempts: 0, progress: null, createdAt: now, startedAt: null, endedAt: null, deadlineAt: now + runner.deadlineMs,
           result: null, failureCode: null, notice: { state: 'none', at: now },
         };
@@ -239,6 +246,13 @@ export function createJobs({ file, runners, gate = createGate(), worldStatus, us
       if (job.notice.state !== 'issued' || !FINISHED.includes(job.status)) throw fail('MEDIA_UNAVAILABLE');
       return { id: job.id, capability: job.capability, title: runners[job.capability]?.title ?? job.capability, status: job.status, failureCode: job.failureCode, text: job.result?.text ?? null, derived: true, isNewEvidence: false, isVerbatimUserText: false };
     },
+    /** How the newest job of one capability in this very conversation stands (no result, no input), or null. */
+    recent(scope, capability) {
+      const owner = scopeOf(scope), job = state.jobs.findLast(entry => entry.capability === capability && sameScope(entry.scope, owner));
+      return job ? { id: job.id, status: job.status, failureCode: job.failureCode, progress: job.progress, ahead: job.status === 'queued' ? active().indexOf(job) : 0, createdAt: job.createdAt, endedAt: job.endedAt } : null;
+    },
+    /** Jobs waiting or running, all people together (for an estimate of the wait). */
+    get waiting() { return active().length; },
     /** Control socket only (Authority). */
     control(input) {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw fail('MEDIA_JOB_REQUEST');
@@ -285,4 +299,28 @@ export function createJobs({ file, runners, gate = createGate(), worldStatus, us
       while (working) await new Promise(resolve => setTimeout(resolve, 5));
     },
   };
+}
+
+/**
+ * Forgetting (deploy/authority/purge-execution.mjs, with this service stopped and the world paused): the records of
+ * background jobs that belong to what was forgotten go, whatever state they were in. A waiting job is thereby
+ * cancelled (it is never started), a finished one loses its result and is never told. Selected: jobs of `entityId`
+ * registered in an affected conversation under an earlier memory epoch (`affectedStreams`: `{ streamId, memoryEpoch }`,
+ * the conversation's new epoch), and jobs asked for by a forgotten message (`sourceEvents`: `{ streamId, eventId }`).
+ * `dryRun` only validates and counts. Returns `{ removed }`.
+ */
+export function forgetJobs({ file, entityId, affectedStreams = [], sourceEvents = [], dryRun = false }) {
+  if (!path.isAbsolute(file) || typeof entityId !== 'string' || !Array.isArray(affectedStreams) || !Array.isArray(sourceEvents)) throw fail('MEDIA_FORGET_PLAN');
+  if (!fs.existsSync(file)) return { removed: 0 };
+  if (!fs.lstatSync(file).isFile()) throw fail('MEDIA_JOB_STATE');
+  let stored;
+  try { stored = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw fail('MEDIA_JOB_STATE'); }
+  if (stored?.schema !== 1 || !Array.isArray(stored.jobs)) throw fail('MEDIA_JOB_STATE');
+  const gone = job => job?.scope?.entityId === entityId && (
+    affectedStreams.some(stream => stream?.streamId === job.scope.streamId && Number.isSafeInteger(stream.memoryEpoch) && job.scope.memoryEpoch < stream.memoryEpoch)
+    || job.source?.sourceEventId != null && sourceEvents.some(event => event?.streamId === job.scope.streamId && event.eventId === job.source.sourceEventId));
+  const kept = stored.jobs.filter(job => !gone(job)), removed = stored.jobs.length - kept.length;
+  if (dryRun || !removed) return { removed };
+  const temporary = file + '.tmp'; fs.writeFileSync(temporary, JSON.stringify({ schema: 1, jobs: kept }) + '\n', { mode: 0o600 }); fs.renameSync(temporary, file);
+  return { removed };
 }

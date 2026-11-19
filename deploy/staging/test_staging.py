@@ -254,6 +254,20 @@ class InitiationReplayTests(unittest.TestCase):
         # Taken out in the `finally` of the replay, before anything else (a rollback) can start an older release.
         self.assertIn("        stop_fake_channel()\n        edit('content.json', lambda c: scenario_content_config(c, content_source, False))\n    lines = ", source)
 
+    def test_the_video_operator_file_names_only_the_mock_site_and_runs_the_stand_in_inside_bubblewrap(self):
+        site = {'id': 'MOCK', 'patterns': ['^https://video\\.mock\\.invalid/v/(?<id>[A-Za-z0-9]+)$']}
+        config = sa.video_scenario_config(site, ROOT / '.local/opt/companion/bin/node', ROOT / 'tools', ROOT / '.local/opt/companion')
+        self.assertEqual(config, {
+            'schemaVersion': 1, 'ytdlp': [str(ROOT / '.local/opt/companion/bin/node'), str(ROOT / 'tools/fake-ytdlp.mjs')], 'ffmpeg': ['/usr/bin/ffmpeg'],
+            'sandbox': {'kind': 'bwrap', 'bwrap': '/usr/bin/bwrap', 'readOnly': [str(ROOT / '.local/opt/companion'), str(ROOT / 'tools')]}, 'sites': [site]})
+        # Nothing of the data root is among what the sandbox may read.
+        self.assertFalse(any('companion-world-v1' in entry for entry in config['sandbox']['readOnly']))
+        source = (HERE / 'staging-agent.py').read_text()
+        self.assertIn("    scenario_video_config(release, True)\n", source)
+        # Removed again in the `finally` of the replay: production never has a MOCK site.
+        self.assertIn("        scenario_video_config(release, False)\n        stop_fake_channel()\n", source)
+        self.assertIn("'deploy/staging/fake-ytdlp.mjs': 'fake-ytdlp.mjs'", (HERE / 'run.mjs').read_text())
+
     def test_the_second_channel_gets_its_own_credential_executor_and_the_explicit_switch(self):
         config = {'credentials': [{'hash': 'a' * 64, 'role': 'capability', 'capabilityId': 'qq'}, {'hash': 'old', 'role': 'capability', 'capabilityId': 'mock'}],
                   'capabilities': [{'id': 'qq', 'policy': 'conversation.v1'}], 'operator': {'origins': []}}
