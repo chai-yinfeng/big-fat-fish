@@ -863,6 +863,18 @@ export function WorldConsole({ t, standalone = false }) {
         await load(); setNotice(t(result.ok ? 'modelTestPassed' : 'modelTestFailed'));
       }), { disabled: busy || !model.configured, icon: 'sparkles' })));
   }
+  // Whether everyday chat thinks: the world's setting in Authority (GET /world `conversation`), off by default. Runs she
+  // starts herself, runs with a background result, consolidation and the diary think whatever it says. No pause needed.
+  function thinkingCard() {
+    const known = typeof data.conversation?.chatThinking === 'boolean', on = data.conversation?.chatThinking === true;
+    return h('section', { className: 'bff-card' }, cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('sparkles')), h('h2', null, t('thinking.title')))),
+      known && statusLine(t(on ? 'thinking.on' : 'thinking.off'), on ? 'primary' : 'ok'),
+      text('thinking.hint'),
+      !known ? text('thinking.unavailable') : h('label', { className: 'bff-check' }, h('input', { type: 'checkbox', checked: on, disabled: busy, onChange: event => {
+        const chatThinking = event.target.checked;
+        void run(async () => { await request('/conversation/settings', { chatThinking }); await load(); setNotice(t('saved')); });
+      } }), h('span', null, t('thinking.label'))));
+  }
   // Provider keys: one row per provider the gateway really has (DeepSeek, then each adapter). A key can be stored
   // or cleared, never shown: the listing says only whether one is set.
   function providerKeys() {
@@ -1089,7 +1101,7 @@ export function WorldConsole({ t, standalone = false }) {
   function runtime() {
     return h(React.Fragment, null,
       standalone ? h('section', { className: 'bff-card' }, h('h2', null, t('runtime')), text('standaloneRuntimeHint')) : h(React.Fragment, null, ...[['runtime', 'runtimeHint'], ['strategy', 'strategyHint']].map(([title, hint]) => h('section', { key: title, className: 'bff-card' }, h('h2', null, t(title)), text(hint)))),
-      standalone && speechSettings(), modelSettings(), providerKeys(),
+      standalone && speechSettings(), modelSettings(), providerKeys(), thinkingCard(),
       h('section', { className: 'bff-card' }, h('h2', null, t('setup')), text(standalone ? 'standaloneSetupHint' : 'setupHint')));
   }
   function skeleton() {

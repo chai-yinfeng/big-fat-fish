@@ -1,6 +1,6 @@
 const failure = code => Object.assign(new Error(code), { code });
-/** Output tokens asked for the diary (the gateway's cap for a maintenance completion). */
-export const DIARY_MAX_TOKENS = 1536;
+/** Output tokens asked for the diary, reasoning included (the gateway's cap for a memory completion; it thinks). */
+export const DIARY_MAX_TOKENS = 4096;
 const INPUT_CHARS = 8000;
 
 // What the diary is for, not a list of rules: Authority checks the few hard things (shape, length, usedIds,
@@ -59,6 +59,9 @@ export class MemoryDiary {
         const result = await this.complete({ messages: diaryMessages(task), maxTokens: DIARY_MAX_TOKENS });
         answer = { outcome: 'ok', ...parseDiaries(result.content) };
       } catch (error) {
+        // Cut at the output cap: not the model's fault and not an invalid answer. Nothing is committed, so the day
+        // stays where it is and is handed out again on the next tick (it already took one of the day's calls).
+        if (error?.code === 'MEMORY_TRUNCATED') return this.status = 'truncated';
         if (error?.code === 'MEMORY_BUDGET_DEFERRED') { this.deferUntil = this.clock() + this.deferMs; answer = { outcome: 'deferred' }; }
         else if (['INVALID_DIARY_OUTPUT', 'MEMORY_INPUT_BUDGET', 'INVALID_MEMORY_BATCH'].includes(error?.code)) answer = { outcome: 'invalid' };
         // Gateway unreachable or paused: the day stays where it is and is handed out again.

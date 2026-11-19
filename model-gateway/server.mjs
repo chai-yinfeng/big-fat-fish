@@ -33,8 +33,13 @@ const ERRORS = {
 export const INITIATED_HEADER = 'x-companion-run';
 /** A picture's `purpose` -> the ledger row whose daily count it takes instead of vision's (its money stays `vision`'s). */
 const PURPOSES = Object.freeze({ __proto__: null, sticker: 'sticker', frame: 'video-frame' });
-/** Output cap of one maintenance completion (/v1/memory/completions): room for a digest plus quoted facts. */
-export const MAINTENANCE_MAX_TOKENS = 1536;
+/** Output cap of one memory completion (/v1/memory/completions): thinking is on, so the cap holds the reasoning as
+ * well as the answer. The answer's own length is checked by Authority (digest, facts, diary), not by this cap. */
+export const MAINTENANCE_MAX_TOKENS = 4096;
+/** Output cap of an activity completion (/v1/activity/completions): thinking off, a bounded summary. */
+export const ACTIVITY_MAX_TOKENS = 1536;
+/** The thinking parameters of a completion with thinking on (DeepSeek: `thinking.type` plus `reasoning_effort`). */
+const THINKING = Object.freeze({ thinking: { type: 'enabled' }, reasoning_effort: 'high' });
 const failure = code => Object.assign(new Error(ERRORS[code][1]), { code });
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 function send(res, status, value) {
@@ -433,7 +438,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     if (['/v1/usage/reserve', '/v1/usage/record'].includes(req.url)) { await usageReport(req, res); return; }
     if (['/v1/provider/submit', '/v1/provider/status', '/v1/provider/fetch'].includes(req.url)) { await provider(req, res); return; }
     // An activity's own model work (the content service's summary of a video): the bounded shape of a maintenance
-    // completion (no tools, thinking off), but its own usage row and the `activity` spend category.
+    // completion (no tools), but thinking off, its own output cap, its own usage row and the `activity` spend category.
     const activity = req.url === '/v1/activity/completions';
     const maintenance = activity || req.url === '/v1/memory/completions';
     if (req.method !== 'POST' || (!maintenance && req.url !== '/v1/chat/completions')) throw failure('NOT_FOUND');
@@ -469,9 +474,17 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     if (maintenance) {
       closed(body, ['model', 'messages', 'max_tokens', 'stream']);
       if (body.stream !== false || body.messages.length > 3 || body.messages.some(message => !object(message) || !['system', 'user'].includes(message.role) || typeof message.content !== 'string' || Object.keys(message).some(key => !['role', 'content'].includes(key))) || body.messages.reduce((sum, message) => sum + message.content.length, 0) > 8000) throw failure('INVALID_REQUEST');
-      await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 600, MAINTENANCE_MAX_TOKENS), thinking: { type: 'disabled' } }, 'inference', res, activity ? 'activity' : 'maintenance', note);
+      // Memory work (consolidation, diary) thinks; the caller cannot choose. Its answer may come back cut at the cap
+      // (`finish_reason: length`): the worker then retries the same batch, it is not an invalid answer.
+      if (activity) await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 600, ACTIVITY_MAX_TOKENS), thinking: { type: 'disabled' } }, 'inference', res, 'activity', note);
+      else await call({ ...body, max_tokens: Math.min(body.max_tokens ?? MAINTENANCE_MAX_TOKENS, MAINTENANCE_MAX_TOKENS), ...THINKING }, 'inference', res, 'maintenance', note);
     } else {
-      await call({ ...body, max_tokens: Math.min(body.max_tokens ?? 4096, 4096), thinking: { type: 'enabled' }, reasoning_effort: 'high' }, 'inference', res, proactive ? 'proactive' : 'conversation', note);
+      // Chat thinks (high) unless the executor asked for `thinking: {type: 'disabled'}`: it decides per run (the console's
+      // everyday-chat switch; runs she starts herself think, a poke follows the switch). Nothing else of the body
+      // chooses thinking or its effort.
+      const thinking = object(body.thinking) && body.thinking.type === 'disabled' ? { thinking: { type: 'disabled' } } : THINKING;
+      const { reasoning_effort: _effort, ...rest } = body;
+      await call({ ...rest, max_tokens: Math.min(body.max_tokens ?? 4096, 4096), ...thinking }, 'inference', res, proactive ? 'proactive' : 'conversation', note);
     }
   }
   // Requests still being handled; a handler outlives its response by its bookkeeping (settling spend, the usage ledger).

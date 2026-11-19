@@ -70,8 +70,18 @@ Control socket uses `Authorization: Bearer <console token>`:
 
 Inference socket uses `Authorization: Bearer <opaque inference token>` and only
 `POST /v1/chat/completions`. The worker sends model `deepseek`; gateway rewrites
-it to the configured real model, forces `thinking.type=enabled` and
-`reasoning_effort=high`, and clamps/defaults `max_tokens` to 4096. A paused world
+it to the configured real model and clamps/defaults `max_tokens` to 4096. Thinking:
+a body with `thinking.type=disabled` is sent with thinking disabled (no
+`reasoning_effort`); anything else is sent with `thinking.type=enabled` and
+`reasoning_effort=high`. The executor decides per run (everyday chat follows the
+world's `chatThinking` switch, off by default; runs she starts herself and runs
+with a background event think; a poke follows the switch); nothing else of the body
+chooses thinking or its effort. `POST /v1/memory/completions` (consolidation, the
+diary, public drafts) always thinks (enabled, high) with an output cap of 4096
+(`MAINTENANCE_MAX_TOKENS`, reasoning included; also the default); the caller cannot
+turn it off (the body is closed). An answer may then end with
+`finish_reason: length`: the memory worker retries it instead of reporting it
+invalid. A paused world
 returns 409 and unconfigured running world 503, without calling the provider.
 The gateway rechecks world state immediately before upstream fetch. The bounded
 JSON body otherwise retains messages, `reasoning_content`, tools and tool IDs.
@@ -133,8 +143,8 @@ TZ) in three private files next to the settings file: `spend.json` (state),
 `POST /v1/activity/completions` (inference socket) is the model work of something she does besides
 talking; today the content service's summary of a video's machine transcript
 (`capabilities/providers/video`). It has the bounded shape of `/v1/memory/completions` (no tools,
-`stream:false`, at most 3 system/user messages and 8000 characters, thinking disabled, output capped
-at 1536 tokens) but its own usage row (`video-note`) and spend category (`activity`, refused from
+`stream:false`, at most 3 system/user messages and 8000 characters) but with thinking disabled and output capped
+at 1536 tokens (`ACTIVITY_MAX_TOKENS`) but its own usage row (`video-note`) and spend category (`activity`, refused from
 the restricted tier on with 429). An older release has no such route (404): the caller then files
 its note without a summary.
 

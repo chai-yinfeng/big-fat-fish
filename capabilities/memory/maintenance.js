@@ -73,7 +73,8 @@ export class MemoryMaintenance {
         // Reserve before calling: process death or invalid output must not reset a
         // paid request's budget. Never persist prompts, outputs or credentials.
         this.state.calls++; this.state.status = 'running'; this.save();
-        const result = await this.complete({ messages, maxTokens: 600 });
+        // The gateway thinks on memory work: the cap holds the reasoning as well as the draft.
+        const result = await this.complete({ messages, maxTokens: 4096 });
         this.state.inputTokens += result.usage?.prompt_tokens || 0;
         this.state.outputTokens += result.usage?.completion_tokens || 0;
         const diary = parseDiary(result.content, batch);
@@ -83,7 +84,7 @@ export class MemoryMaintenance {
         delete this.state.pendingAt[mode]; this.state.status = 'committed'; this.save();
       }
     } catch (error) {
-      this.state.status = error.code === 'WORLD_PAUSED' ? 'paused' : 'unavailable'; this.save();
+      this.state.status = error.code === 'WORLD_PAUSED' ? 'paused' : error.code === 'MEMORY_TRUNCATED' ? 'truncated' : 'unavailable'; this.save();
       // Errors may contain provider or input text; status is intentionally enum-only.
     } finally { this.running = false; }
     return this.status();

@@ -66,6 +66,10 @@ test('one day per run: commit, invalid output, a refused call and an unreachable
   const before = commits.length;
   assert.equal(await worker.runOnce(), 'unavailable');
   assert.equal(commits.length, before);
+  // Cut at the output cap (thinking took the room): not an invalid answer; nothing is reported, the day comes again.
+  reply = async () => { throw Object.assign(new Error('MEMORY_TRUNCATED'), { code: 'MEMORY_TRUNCATED' }); };
+  for (let attempt = 0; attempt < 3; attempt++) assert.equal(await worker.runOnce(), 'truncated');
+  assert.equal(commits.length, before);
   // The spend tier refused the call: reported as deferred, and no request is taken for a while.
   reply = async () => { throw Object.assign(new Error('MEMORY_BUDGET_DEFERRED'), { code: 'MEMORY_BUDGET_DEFERRED' }); }; committed = { status: 'deferred' };
   assert.equal(await worker.runOnce(), 'budget_deferred');

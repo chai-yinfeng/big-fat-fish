@@ -9,7 +9,7 @@ import { AuthorityClient } from '../../authority/src/client.js';
 import { ContentClient } from '../media/client.js';
 import { SessionStore, conversationSessionId } from './sessions.js';
 import { createGatewayStream } from './model.js';
-import { createConversationExecutor, neutralizeNoteMarkers, beijingTime, renderNote, NOTE_OPEN, NOTE_CLOSE, EVENT_OPEN } from './agent.js';
+import { createConversationExecutor, neutralizeNoteMarkers, beijingTime, renderNote, thinkingFor, NOTE_OPEN, NOTE_CLOSE, EVENT_OPEN } from './agent.js';
 import { DECLINE_MARK, reportDelivery, validDelivery } from './executor.js';
 import { createConversationServer } from './server.js';
 import { createConversationClient } from './client.js';
@@ -36,6 +36,9 @@ const said = m => note(m) ? m.content.slice(1).map(part => part.text).join('') :
 const lastUser = body => body.messages.findLast(m => m.role === 'user');
 const toolMessages = body => body.messages.filter(m => m.role === 'tool');
 const contexts = state => state.requests.filter(r => r.route === '/v1/context');
+// The model's reasoning is never stored: a later run replays an earlier assistant message with empty reasoning_content
+// (the run's own tool loop still replays it). Compared as values: the field's place in the JSON is pi-ai's.
+const unthought = messages => messages.map(m => m.role === 'assistant' ? { ...m, reasoning_content: '' } : m);
 
 test('plain reply: persona in the system prompt, the memory-hub note leads the user message and is stored with it, real-input query, private persisted run', async t => {
   const f = await setup(t, { clock: () => Date.parse('2026-11-11T03:20:30Z') });
@@ -44,7 +47,8 @@ test('plain reply: persona in the system prompt, the memory-hub note leads the u
   assert.equal(await f.executor.execute(request('你好'.repeat(400), { queryText: '你好' })), '你好呀');
   const [body] = f.gateway.state.bodies;
   assert.equal(body.model, 'deepseek'); assert.equal(body.stream, true); assert.equal(body.max_tokens > 0, true);
-  assert.deepEqual(body.thinking, { type: 'enabled' });
+  // Everyday chat thinks only when the console's switch is on (Authority context `chatThinking`, off by default).
+  assert.deepEqual([body.thinking, body.reasoning_effort], [{ type: 'disabled' }, undefined]);
   assert.deepEqual(body.tools.map(tool => tool.function.name).sort(), ['companion_activity', 'companion_content', 'companion_scope']);
   for (const tool of body.tools) assert.equal(JSON.stringify(tool.function.parameters).match(/streamId|memoryEpoch|entityId|personId|requestId|path/), null);
   assert.equal(body.messages[0].role, 'system');
@@ -82,6 +86,7 @@ test('plain reply: persona in the system prompt, the memory-hub note leads the u
 
 test('tool loop replays reasoning_content and reuses the same query for every request', async t => {
   const f = await setup(t);
+  f.authority.state.chatThinking = true;
   f.gateway.state.script.push(toolCall('companion_scope', { action: 'evidence' }, 'R1-need-evidence'), reply('记住啦', 'R2-final'));
   assert.equal(await f.executor.execute(request('我喜欢红茶')), '记住啦');
   const second = f.gateway.state.bodies[1];
@@ -91,11 +96,13 @@ test('tool loop replays reasoning_content and reuses the same query for every re
   assert.deepEqual(JSON.parse(toolMessages(second)[0].content), { evidence, unavailable: [] });
   // One full context per run; the continuation only re-checks pause/epoch, with the same query.
   assert.deepEqual(contexts(f.authority.state).map(r => [r.body.budgetChars, r.body.query]), [[4000, '我喜欢红茶'], [1, '我喜欢红茶'], [1, '我喜欢红茶']]);
-  // A later run (also after a restart) replays every earlier assistant with its reasoning_content.
+  assert.deepEqual([second.thinking, second.reasoning_effort], [{ type: 'enabled' }, 'high']);
+  // A later run (also after a restart) replays every earlier assistant without its reasoning: it was never stored.
   f.gateway.state.script.push(reply('还记得', 'R3'));
   await f.restart().execute(request('还记得吗'));
   const replayed = f.gateway.state.bodies[2].messages.filter(m => m.role === 'assistant');
-  assert.deepEqual(replayed.map(m => m.reasoning_content), ['R1-need-evidence', 'R2-final']);
+  assert.deepEqual(replayed.map(m => m.reasoning_content), ['', '']);
+  assert.equal(replayed[0].tool_calls[0].function.name, 'companion_scope');
   assert.deepEqual(f.gateway.state.bodies[2].messages.filter(m => m.role === 'user').map(said), ['我喜欢红茶', '还记得吗']);
 });
 
@@ -253,10 +260,16 @@ test('stable prefix: the system message and the earlier dialogue are byte-identi
   }
   assert.notEqual(note(lastUser(one)), note(lastUser(two)));
   // Every request is the previous one plus new messages: a tool continuation only appends, and the next
-  // run replays each earlier run with the note it was sent with.
+  // run replays each earlier run with the note it was sent with. The one change: the reasoning of an earlier run's
+  // tool step, which its own continuation replayed, is not stored, so the next run sends it empty. The bytes before
+  // that step are identical.
   assert.equal(json(two.messages.slice(0, one.messages.length)), json(one.messages));
   assert.equal(json(twoAgain.messages.slice(0, two.messages.length)), json(two.messages));
-  assert.equal(json(three.messages.slice(0, twoAgain.messages.length)), json(twoAgain.messages));
+  const step = twoAgain.messages.findIndex(m => m.tool_calls);
+  assert.equal(twoAgain.messages[step].reasoning_content, 'R2');
+  assert.equal(json(three.messages.slice(0, step)), json(twoAgain.messages.slice(0, step)));
+  assert.deepEqual(unthought(three.messages.slice(0, twoAgain.messages.length)), unthought(twoAgain.messages));
+  assert.equal(three.messages[step].reasoning_content, '');
   // Each run keeps the note of its own context read: three different notes, none rewritten later.
   const notes = three.messages.filter(m => m.role === 'user').map(note);
   assert.deepEqual(three.messages.filter(m => m.role === 'user').map(said), ['第一句', '第二句', '第三句']);
@@ -498,6 +511,29 @@ test('a session stored by the previous release (plain dialogue lines) loads and 
 // A run she starts herself: what the channel sends when nobody has written (no evidence: there is no message).
 const initiatedRequest = (event, id = 'qq:init:mock-1') => ({ scope, requestId: id, input: { text: event, initiated: true }, timeoutMs: 10000 });
 
+test('thinking per run: everyday chat and a poke follow the switch (off by default); a run she starts herself and a carried event think; the system text and tools do not change', async t => {
+  const f = await setup(t);
+  f.gateway.state.script.push(...['一', '二', '三', '四', '五', '六'].map(word => reply(word, 'MOCK-R')));
+  const runs = [
+    request('默认'), initiatedRequest('MOCK-EVENT 主动', 'qq:init:mock-a'),
+    { ...initiatedRequest('MOCK-EVENT 戳一戳', 'qq:init:mock-b'), input: { text: 'MOCK-EVENT 戳一戳', initiated: true, light: true } },
+    request('带结果', { event: 'MOCK-RESULT 任务完成' }),
+  ];
+  for (const input of runs) await f.executor.execute(input);
+  f.authority.state.chatThinking = true;
+  await f.executor.execute(request('开关打开'));
+  await f.executor.execute({ ...initiatedRequest('MOCK-EVENT 戳一戳', 'qq:init:mock-c'), input: { text: 'MOCK-EVENT 戳一戳', initiated: true, light: true } });
+  const bodies = f.gateway.state.bodies, json = value => JSON.stringify(value);
+  assert.deepEqual(bodies.map(body => body.thinking.type === 'disabled' ? 'off' : body.reasoning_effort), ['off', 'high', 'off', 'high', 'high', 'high']);
+  // Switching thinking changes only the request's thinking parameters: the system message and the tools stay the same bytes.
+  for (const body of bodies) assert.deepEqual([json(body.messages[0]), json(body.tools)], [json(bodies[0].messages[0]), json(bodies[0].tools)]);
+  // Only a run she starts herself can be light; `light` is the channel's, never true on anything else.
+  for (const input of [{ text: 'x', light: true }, { text: 'x', initiated: true, light: false }, { text: 'x', event: 'y', light: true }]) {
+    await assert.rejects(f.executor.execute({ scope, requestId: 'qq-light-bad', input, timeoutMs: 10000 }), { code: 'INVALID_EXECUTION_REQUEST' });
+  }
+  assert.deepEqual([thinkingFor({}), thinkingFor({ chatThinking: true }), thinkingFor({ initiated: true }), thinkingFor({ initiated: true, light: true }), thinkingFor({ initiated: true, light: true, chatThinking: true }), thinkingFor({ carried: true })], ['off', 'high', 'high', 'off', 'high', 'high']);
+});
+
 test('initiated run: no message of the person; the note says so, the event block is marked, and its provider requests are marked for the gateway', async t => {
   const f = await setup(t);
   f.gateway.state.script.push(reply('早上好'), toolCall('companion_scope', { action: 'evidence' }), reply('在忙吗？想你了'), reply('刚才在开会'));
@@ -715,11 +751,12 @@ test('delivery record: only the latest reply takes one, once; every request stil
   assert.equal(bodies.length, 6);
   assert.deepEqual(assistants(bodies[5]), ['一号[表情包：MOCK 猫（机器描述）]', '二号\n[送达情况：这条是用语音发出的]', '三号[表情包：MOCK 月亮（机器描述）]', '四号']);
   assert.doesNotMatch(json(bodies[5].messages.slice(1)), /\[表情:|"delivery"/);
-  // Each request is the previous one plus new messages: a record only changes a reply no request carried yet.
-  for (let n = 1; n < bodies.length; n++) assert.equal(json(bodies[n].messages.slice(0, bodies[n - 1].messages.length)), json(bodies[n - 1].messages), `request ${n + 1} extends request ${n}`);
+  // Each request is the previous one plus new messages: a record only changes a reply no request carried yet (the
+  // reasoning of an earlier tool step is not stored and comes back empty; see the stable prefix test).
+  for (let n = 1; n < bodies.length; n++) assert.deepEqual(unthought(bodies[n].messages.slice(0, bodies[n - 1].messages.length)), unthought(bodies[n - 1].messages), `request ${n + 1} extends request ${n}`);
   for (const body of bodies) assert.deepEqual([sha(body.messages[0].content), sha(json(body.tools.slice(0, 2))), sha(json(body.tools))], [PINNED_SYSTEM_SHA256, PINNED_TOOLS_SHA256, PINNED_ALL_TOOLS_SHA256]);
-  // Reasoning is replayed untouched beside the rendered text.
-  assert.equal(bodies[5].messages.find(m => m.role === 'assistant').reasoning_content, 'R1');
+  // Reasoning is never stored: an earlier reply is replayed with empty reasoning_content beside the rendered text.
+  assert.equal(bodies[5].messages.find(m => m.role === 'assistant').reasoning_content, '');
   // Stored: the reply as she wrote it, and the record as a line of its own without messages, which the release
   // before this one reads as an empty run.
   const lines = fs.readFileSync(path.join(f.sessionsDir, conversationSessionId(scope.streamId, 0) + '.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));

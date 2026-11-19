@@ -55,11 +55,21 @@ export function injectedIds(messages) {
   return [...new Set(messages.flatMap(message => message.role === 'user' && Array.isArray(message.hub?.memoryIds) ? message.hub.memoryIds.filter(id => typeof id === 'string') : []))];
 }
 
+/** The thinking level of one run: everyday chat (and a light initiated run, a poke) follows the switch; a run she
+ * starts herself and a run carrying a background event (a finished job) think. */
+export function thinkingFor({ initiated = false, light = false, carried = false, chatThinking = false }) {
+  return initiated && !light || carried || chatThinking ? 'high' : 'off';
+}
+/** A message as it is stored: an assistant message without its thinking blocks (the model's reasoning is never kept). */
+export function withoutThinking(message) {
+  return message.role === 'assistant' && Array.isArray(message.content) && message.content.some(block => block?.type === 'thinking') ? { ...message, content: message.content.filter(block => block?.type !== 'thinking') } : message;
+}
+
 function validRequest({ scope, requestId, input, timeoutMs }) {
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   if (!object(scope) || Object.keys(scope).some(key => !['streamId', 'memoryEpoch'].includes(key)) || typeof scope.streamId !== 'string' || !scope.streamId || scope.streamId.length > 256 || !Number.isSafeInteger(scope.memoryEpoch) || scope.memoryEpoch < 0) return false;
   if (typeof requestId !== 'string' || !/^[A-Za-z0-9:_-]{1,200}$/.test(requestId) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_EXECUTION_TIMEOUT_MS) return false;
-  if (!object(input) || Object.keys(input).some(key => !['text', 'queryText', 'mediaRefs', 'evidence', 'initiated', 'event'].includes(key)) || input.initiated !== undefined && input.initiated !== true || input.event !== undefined && (typeof input.event !== 'string' || !input.event || input.event.length > 4000 || input.initiated === true) || typeof input.text !== 'string' || !input.text || input.text.length > 24000) return false;
+  if (!object(input) || Object.keys(input).some(key => !['text', 'queryText', 'mediaRefs', 'evidence', 'initiated', 'light', 'event'].includes(key)) || input.initiated !== undefined && input.initiated !== true || input.light !== undefined && (input.light !== true || input.initiated !== true) || input.event !== undefined && (typeof input.event !== 'string' || !input.event || input.event.length > 4000 || input.initiated === true) || typeof input.text !== 'string' || !input.text || input.text.length > 24000) return false;
   if (input.queryText !== undefined && (typeof input.queryText !== 'string' || !input.queryText || input.queryText.length > 512)) return false;
   if (input.mediaRefs !== undefined && (!Array.isArray(input.mediaRefs) || input.mediaRefs.length > 12 || input.mediaRefs.some(ref => !object(ref) || typeof ref.id !== 'string' || !ref.id || ref.id.length > 200 || typeof ref.kind !== 'string' || !ref.kind || ref.kind.length > 64))) return false;
   if (input.evidence !== undefined && (!Array.isArray(input.evidence) || input.evidence.length > 16 || input.evidence.some(item => !object(item) || Object.keys(item).some(key => !['ref', 'eventId', 'role'].includes(key)) || typeof item.ref !== 'string' || !item.ref || item.ref.length > 256 || typeof item.eventId !== 'string' || !item.eventId || item.eventId.length > 256 || !['user', 'assistant', 'external'].includes(item.role)))) return false;
@@ -87,6 +97,11 @@ function validRequest({ scope, requestId, input, timeoutMs }) {
  * After a run the channel may report what became of the reply (`delivered`): the record is stored with the run and
  * the reply is replayed with it from the next request on. That reply was not in any request yet, so every request
  * still extends the one before it; the system text and the tools are untouched.
+ * Thinking is chosen per run (`thinkingFor`): everyday chat follows the world's switch (Authority context
+ * `chatThinking`, off by default); a run she starts herself and a run carrying a background event think. A light
+ * initiated run (`input.light`, a poke, set only by the channel) follows the switch. The system text and the tools are
+ * the same either way. The model's reasoning stays in memory for the run's own tool loop and is never stored: the
+ * session line keeps her text and tool calls only, so a later run replays them with empty `reasoning_content`.
  */
 export function createConversationExecutor({ authority, content, store, model, streamFn, limit = ACTIVE_CONTEXT_CHARS, clock = Date.now }) {
   const tails = new Map();
@@ -137,6 +152,7 @@ export function createConversationExecutor({ authority, content, store, model, s
         system: [BASE_PROMPT, channelPrompt(context.capabilityId), context.personaText, neutralizeNoteMarkers(context.profileText)].filter(Boolean).join('\n\n'),
         note: renderNote({ revision: context.revision, personaRevision: context.personaRevision, now: clock(), continuationText, memoryText: context.memoryText, evidence, initiated, carried }),
         memoryIds: [...context.memoryIds, ...continuationIds], personaRevision: context.personaRevision,
+        chatThinking: context.chatThinking === true,
       };
     }
     const persisted = store.load(sessionId);
@@ -153,7 +169,7 @@ export function createConversationExecutor({ authority, content, store, model, s
     const prompt = await runPrompt(injectedIds(window).slice(-MAX_EXCLUDED), windowFromAt);
     signal.throwIfAborted();
     const agent = new Agent({
-      initialState: { systemPrompt: BASE_PROMPT, model, thinkingLevel: 'high', messages: history,
+      initialState: { systemPrompt: BASE_PROMPT, model, thinkingLevel: thinkingFor({ initiated, light: input.light === true, carried, chatThinking: prompt.chatThinking }), messages: history,
         tools: createCompanionTools({ authority, content, scope, windowFromAt, requestId, evidence, guard, turn: { text: initiated ? '' : input.text, initiated }, neutralize: neutralizeNoteMarkers }) },
       // The gateway's fixed error code (e.g. BUDGET_EXHAUSTED) is a side channel; the model never sees it.
       streamFn: (m, context, options) => streamFn(m, context, { ...options, gatewayFailure: code => { gatewayFailure = code; }, ...(initiated ? { initiated: true } : {}) }), sessionId, toolExecution: 'sequential',
@@ -185,7 +201,7 @@ export function createConversationExecutor({ authority, content, store, model, s
     if (last?.role !== 'assistant' || last.stopReason !== 'stop') throw fail('MODEL_UNAVAILABLE');
     const text = last.content.filter(block => block.type === 'text').map(block => block.text).join('');
     if (!text.trim()) throw fail('EMPTY_REPLY');
-    store.append(sessionId, persisted.validBytes, { requestId, at: Date.now(), messages: added.filter(message => message.role !== 'system') });
+    store.append(sessionId, persisted.validBytes, { requestId, at: Date.now(), messages: added.filter(message => message.role !== 'system').map(withoutThinking) });
     return text;
   }
   return {

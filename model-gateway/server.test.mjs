@@ -9,9 +9,9 @@ import { createModelGateway } from './server.mjs';
 
 const operator = 'operator-test-token-with-no-real-credential', infer = 'inference-test-token-with-no-real-credential';
 const hash = value => createHash('sha256').update(value).digest('hex');
-function request(socketPath, route, body, token = operator, method = 'POST') {
+function request(socketPath, route, body, token = operator, method = 'POST', extra = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.request({ socketPath, path: route, method, agent: false, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' } }, res => {
+    const req = http.request({ socketPath, path: route, method, agent: false, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...extra } }, res => {
       const chunks = [];
       res.on('data', chunk => chunks.push(chunk));
       res.on('error', reject);
@@ -116,7 +116,7 @@ test('operator cancellation aborts active inference and a successful explicit pr
   assert.equal(abortSeen, true);
 });
 
-test('memory completion is bounded and toolless, disables reasoning, and still respects pause', async t => {
+test('memory completion is bounded and toolless, thinks with a 4096 cap, and still respects pause', async t => {
   const calls = [];
   const f = await fixture(t, async (_url, options) => { calls.push(JSON.parse(options.body)); return new Response('{"choices":[{"message":{"content":"{\\"text\\":\\"reflection\\",\\"sourceIds\\":[\\"m1\\"]}"}}],"usage":{"prompt_tokens":40,"completion_tokens":20}}'); });
   await f.control('/model', { model: 'deepseek-flash', apiKey: 'synthetic-key' });
@@ -125,12 +125,36 @@ test('memory completion is bounded and toolless, disables reasoning, and still r
   assert.equal(calls.length, 0);
   f.pause(false);
   assert.equal((await f.memory(request)).status, 200);
-  assert.equal(calls[0].max_tokens, 1536);
-  assert.deepEqual(calls[0].thinking, { type: 'disabled' });
-  assert.equal(calls[0].reasoning_effort, undefined);
+  assert.equal(calls[0].max_tokens, 2000);
+  assert.deepEqual(calls[0].thinking, { type: 'enabled' });
+  assert.equal(calls[0].reasoning_effort, 'high');
+  // The cap is 4096 and the default; the caller cannot turn thinking off (the body is closed).
+  assert.equal((await f.memory({ ...request, max_tokens: 20000 })).status, 200);
+  assert.equal(calls[1].max_tokens, 4096);
+  const { max_tokens: _max, ...uncapped } = request;
+  assert.equal((await f.memory(uncapped)).status, 200);
+  assert.equal(calls[2].max_tokens, 4096);
+  assert.equal((await f.memory({ ...request, thinking: { type: 'disabled' } })).status, 400);
   assert.equal((await f.memory({ ...request, tools: [] })).status, 400);
   assert.equal((await f.memory({ ...request, messages: [{ role: 'user', content: 'x'.repeat(8001) }] })).status, 400);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 3);
+});
+
+test('chat thinks (high) unless the executor turns it off; nothing else of the body chooses thinking', async t => {
+  const calls = [];
+  const sse = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n';
+  const f = await fixture(t, async (_url, options) => { calls.push({ body: JSON.parse(options.body) }); return new Response(sse); });
+  await f.control('/model', { model: 'deepseek-flash', apiKey: 'synthetic-key' });
+  f.pause(false);
+  const initiated = body => request(f.inferenceSocket, '/v1/chat/completions', body, infer, 'POST', { 'x-companion-run': 'initiated' });
+  assert.equal((await f.inference({ ...prompt, thinking: { type: 'disabled' } })).status, 200);
+  assert.equal((await f.inference({ ...prompt, thinking: { type: 'enabled' }, reasoning_effort: 'max' })).status, 200);
+  assert.equal((await f.inference({ ...prompt, thinking: 'disabled', reasoning_effort: 'low' })).status, 200);
+  // A poke is marked like a run she starts herself (proactive spend) and follows the everyday-chat switch.
+  assert.equal((await initiated({ ...prompt, thinking: { type: 'disabled' } })).status, 200);
+  assert.deepEqual(calls.map(call => [call.body.thinking, call.body.reasoning_effort]), [
+    [{ type: 'disabled' }, undefined], [{ type: 'enabled' }, 'high'], [{ type: 'enabled' }, 'high'], [{ type: 'disabled' }, undefined],
+  ]);
 });
 
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/a7cAAAAASUVORK5CYII=';

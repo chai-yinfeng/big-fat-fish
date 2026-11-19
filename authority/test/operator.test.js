@@ -50,3 +50,31 @@ test('operator UI uses its separate credential and real world/persona operations
   assert.equal((await call('GET', '/world')).body.value.persona.revision, 3, 'preview never writes');
   assert.equal((await call('GET', '/world')).body.value.bindings.length, 0);
 });
+
+test('the everyday-chat thinking switch: off by default, changed only by the operator, read by every context() call', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'world-operator-'));
+  const authority = new Authority({ file: path.join(dir, 'world.sqlite'), initialPaused: false });
+  authority.registerCapability({ id: 'source', policy: 'conversation.v1' });
+  authority.bindActor({ capabilityId: 'source', externalActorId: 'owner', personId: 'person:owner' });
+  authority.bindStream({ capabilityId: 'source', streamId: 'private', personId: 'person:owner', audience: 'private' });
+  const token = 'o'.repeat(43), socketPath = path.join(dir, 'operator.sock');
+  const app = createOperatorServer({ authority, socketPath, tokenHash: createHash('sha256').update(token).digest('hex'), origins: ['http://127.0.0.1:3081'] });
+  await app.start();
+  t.after(async () => { await app.close(); authority.close(); fs.rmSync(dir, { recursive: true }); });
+  const call = (method, target, data) => new Promise((resolve, reject) => {
+    const req = http.request({ socketPath, path: target, method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' } }, res => {
+      let raw = ''; res.on('data', chunk => { raw += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(raw) }));
+    }); req.on('error', reject); req.end(data ? JSON.stringify(data) : undefined);
+  });
+  assert.deepEqual((await call('GET', '/world')).body.value.conversation, { chatThinking: false });
+  assert.equal(authority.context('source', { streamId: 'private', query: 'x' }).chatThinking, false);
+  const revision = authority.worldStatus().revision;
+  // While the world runs: it changes no stored text, only the thinking of later requests.
+  assert.deepEqual((await call('POST', '/conversation/settings', { chatThinking: true })).body.value, { chatThinking: true });
+  assert.deepEqual((await call('GET', '/world')).body.value.conversation, { chatThinking: true });
+  assert.equal(authority.context('source', { streamId: 'private', query: 'x' }).chatThinking, true);
+  assert.equal(authority.worldStatus().revision, revision);
+  for (const body of [{}, { chatThinking: 'yes' }, { chatThinking: true, extra: 1 }]) assert.equal((await call('POST', '/conversation/settings', body)).status, 400);
+  assert.deepEqual((await call('POST', '/conversation/settings', { chatThinking: false })).body.value, { chatThinking: false });
+  assert.equal(authority.context('source', { streamId: 'private', query: 'x' }).chatThinking, false);
+});

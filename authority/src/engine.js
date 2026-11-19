@@ -18,6 +18,8 @@ export const MAX_ADMITTED_PEOPLE = 40;
 export const TRACE_LIMIT = 400;
 /** Most memory IDs one context() call may exclude. */
 export const MAX_CONTEXT_EXCLUDE = 256;
+/** Metadata key of the world's conversation settings (no schema change). */
+export const CONVERSATION_SETTINGS_KEY = 'conversation.settings';
 const OWNER = 'person:owner';
 /** An actor or conversation ID as a channel names it: inside the channel's own namespace, plain and bounded. */
 function channelId(capabilityId,value){
@@ -602,6 +604,9 @@ export class Authority extends InitiationDomain {
       // `continuationIds` with the note it shows them in and passes them back as `exclude`, like `memoryIds`.
       continuationText:continuation.text,
       continuationIds:continuation.ids,
+      // Whether everyday chat thinks (the console's switch, off by default). The executor decides each run's thinking
+      // with it; runs she starts herself think regardless.
+      chatThinking:this.conversationSettings().chatThinking,
       scope,
       world:this.worldStatus()
     };
@@ -621,6 +626,22 @@ export class Authority extends InitiationDomain {
       if(this.traces.length>TRACE_LIMIT)this.traces.shift();
     }
     return result;
+  }
+  /** The world's conversation settings: `chatThinking`, whether everyday chat thinks (off unless the operator turned
+   * it on). Read by every context() call. */
+  conversationSettings(){
+    const row=this.store.db.prepare('SELECT value FROM metadata WHERE key=?').get(CONVERSATION_SETTINGS_KEY);
+    return{chatThinking:row?JSON.parse(row.value).chatThinking===true:false};
+  }
+  /** Operator only: `{chatThinking:boolean}`. Applies from the next run on; no pause needed (it changes no stored
+   * text, only the thinking parameter of later requests). */
+  setConversationSettings(input){
+    closed(input,['chatThinking'],['chatThinking']);
+    if(typeof input.chatThinking!=='boolean')fail('VALIDATION_ERROR','chatThinking must be boolean');
+    return this.store.transaction(()=>{
+      this.store.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(CONVERSATION_SETTINGS_KEY,JSON.stringify({chatThinking:input.chatThinking}));
+      return this.conversationSettings();
+    });
   }
   /** Operator-only, read-only: the newest injection traces first, optionally for one person's opaque label. */
   contextTrace(input={}){
