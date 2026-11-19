@@ -2,62 +2,24 @@
 // are accepted, which media hosts to avoid and what a site's "blocked" looks like are the operator's, in the data
 // root (operator/providers/video.json); this repository and its tests only ever name the MOCK site.
 import fs from 'node:fs';
-import path from 'node:path';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { CEILINGS, defaults } from './config.js';
 
 export const fail = code => Object.assign(new Error(code), { code });
 export const LIMITS = Object.freeze({
-  /** Default bounds of one video; `limits` in the operator file may lower or raise them within these ceilings. */
-  maxDurationSeconds: 3600, maxFilesizeMiB: 300, pieceSeconds: 120,
-  /** Stills of one video the vision model may look at (they are cached with the video, so this is per video). */
-  framesPerVideo: 3,
-  ceilings: Object.freeze({ maxDurationSeconds: 4 * 3600, maxFilesizeMiB: 2048, pieceSeconds: 500, framesPerVideo: 6 }),
+  /** Default bounds of one video and stills of one video the vision model may look at (cached with the video, so per
+   * video); `limits` in the operator file may lower or raise them within these ceilings. Both live in ./config.js. */
+  ...defaults.limits,
+  ceilings: CEILINGS,
   /** yt-dlp's JSON answer and what is kept of a child's stderr (its end; never written to a log as it is). */
   jsonBytes: 2 * 1024 * 1024, stderrBytes: 65536,
   url: 2048,
 });
-const absolute = value => typeof value === 'string' && path.isAbsolute(value) && !value.includes('\0');
-const strings = (value, max, each = 256) => Array.isArray(value) && value.length <= max && value.every(item => typeof item === 'string' && item.length > 0 && item.length <= each);
 const plainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-const SITE_KEYS = ['id', 'patterns', 'skipHosts', 'blocked', 'loginRequired', 'unavailable'];
 
-/**
- * operator/providers/video.json, or null when the operator has not written one (the capability is then off).
- * `{ schemaVersion: 1, ytdlp: [executable, ...fixed arguments], ffmpeg: [executable, ...],
- *    sandbox: { kind: 'bwrap', bwrap, readOnly: [path...] } | { kind: 'none' },
- *    sites: [{ id, patterns: ['^https://…'], skipHosts?, blocked?, loginRequired?, unavailable? }],
- *    limits?: { maxDurationSeconds?, maxFilesizeMiB?, pieceSeconds?, framesPerVideo? } }`
- * A pattern is a regular expression a whole link must match, beginning `^https://`; its named group `id` (and
- * optionally `part`) is the video's own number, when the link carries it. `skipHosts` are media hosts never
- * downloaded from; the three lists of expressions say how that site's refusals look in yt-dlp's error output.
- */
-export function loadVideoConfig(file) {
-  if (!absolute(file)) throw fail('VIDEO_CONFIG');
-  let stat; try { stat = fs.lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw fail('VIDEO_CONFIG'); }
-  if (!stat.isFile() || stat.size > 65536 || (stat.mode & 0o077) !== 0) throw fail('VIDEO_CONFIG');
-  let c; try { c = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw fail('VIDEO_CONFIG'); }
-  if (!plainObject(c) || c.schemaVersion !== 1 || Object.keys(c).some(key => !['schemaVersion', 'ytdlp', 'ffmpeg', 'sandbox', 'sites', 'limits'].includes(key))) throw fail('VIDEO_CONFIG');
-  for (const key of ['ytdlp', 'ffmpeg']) if (!strings(c[key], 8, 1024) || !c[key].length || !absolute(c[key][0])) throw fail('VIDEO_CONFIG');
-  const sandbox = c.sandbox;
-  if (!plainObject(sandbox) || !(sandbox.kind === 'none' && Object.keys(sandbox).length === 1 || sandbox.kind === 'bwrap' && absolute(sandbox.bwrap) && strings(sandbox.readOnly ?? [], 16, 1024) && (sandbox.readOnly ?? []).every(absolute) && Object.keys(sandbox).every(key => ['kind', 'bwrap', 'readOnly'].includes(key)))) throw fail('VIDEO_CONFIG');
-  if (!Array.isArray(c.sites) || !c.sites.length || c.sites.length > 8) throw fail('VIDEO_CONFIG');
-  const sites = c.sites.map(site => {
-    if (!plainObject(site) || Object.keys(site).some(key => !SITE_KEYS.includes(key)) || typeof site.id !== 'string' || !/^[A-Za-z0-9_-]{1,32}$/.test(site.id) || !strings(site.patterns, 8, 512) || !site.patterns.length || site.patterns.some(pattern => !pattern.startsWith('^https://'))) throw fail('VIDEO_CONFIG');
-    for (const key of ['skipHosts', 'blocked', 'loginRequired', 'unavailable']) if (site[key] !== undefined && !strings(site[key], 16)) throw fail('VIDEO_CONFIG');
-    const compiled = list => (list ?? []).map(pattern => { try { return new RegExp(pattern, 'u'); } catch { throw fail('VIDEO_CONFIG'); } });
-    return { id: site.id, patterns: compiled(site.patterns), skipHosts: (site.skipHosts ?? []).map(host => host.toLowerCase()), blocked: compiled(site.blocked), loginRequired: compiled(site.loginRequired), unavailable: compiled(site.unavailable) };
-  });
-  if (new Set(sites.map(site => site.id)).size !== sites.length) throw fail('VIDEO_CONFIG');
-  const limits = {};
-  if (c.limits !== undefined && (!plainObject(c.limits) || Object.keys(c.limits).some(key => !Object.hasOwn(LIMITS.ceilings, key)))) throw fail('VIDEO_CONFIG');
-  for (const key of Object.keys(LIMITS.ceilings)) {
-    const value = c.limits?.[key] ?? LIMITS[key];
-    if (!Number.isSafeInteger(value) || value < 1 || value > LIMITS.ceilings[key]) throw fail('VIDEO_CONFIG');
-    limits[key] = value;
-  }
-  return { ytdlp: c.ytdlp, ffmpeg: c.ffmpeg, sandbox: sandbox.kind === 'none' ? { kind: 'none' } : { kind: 'bwrap', bwrap: sandbox.bwrap, readOnly: sandbox.readOnly ?? [] }, sites, limits };
-}
+/** operator/providers/video.json: see ./config.js (its `load`, under the name the provider and tests use). */
+export { load as loadVideoConfig } from './config.js';
 
 /**
  * The site a link belongs to, or null: the whole link must match one of that site's patterns. `key` names the video

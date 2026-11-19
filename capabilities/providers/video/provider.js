@@ -61,8 +61,10 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
     if (fs.lstatSync(directory).isSymbolicLink()) throw fail('VIDEO_CONFIG');
   }
   // An unreadable operator file turns the capability off (and says so once); it never stops the content service.
-  let complained = false;
-  const config = () => { try { return loadVideoConfig(configFile); } catch { if (!complained) { complained = true; log('VIDEO_CONFIG_INVALID operator/providers/video.json is not usable; watching videos is off.'); } return null; } };
+  // Unknown keys (from a newer release) are left out and named once.
+  let complained = false, warned = false;
+  const warn = line => { if (!warned) { warned = true; log(line); } };
+  const config = () => { try { return loadVideoConfig(configFile, { warn }); } catch { if (!complained) { complained = true; log('VIDEO_CONFIG_INVALID operator/providers/video.json is not usable; watching videos is off.'); } return null; } };
   const cacheFile = key => path.join(cacheRoot, createHash('sha256').update(key).digest('hex') + '.json');
   const blockedFile = site => path.join(cacheRoot, `blocked-${createHash('sha256').update(site).digest('hex').slice(0, 16)}.json`);
   const writeJson = (file, value) => { const temporary = `${file}.${randomUUID()}.tmp`; fs.writeFileSync(temporary, JSON.stringify(value) + '\n', { mode: 0o600 }); fs.renameSync(temporary, file); };

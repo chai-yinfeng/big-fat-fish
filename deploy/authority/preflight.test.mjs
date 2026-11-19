@@ -93,7 +93,7 @@ test('runtime shape, permissions, token files and staging ports are checked like
   w.edit('conversation.json', c => { delete c.callerTokenHash; });
   fs.writeFileSync(path.join(w.base, 'operator/execution-storage.json'), JSON.stringify({ version: 1, sessionsRoot: 'dsh-home/sessions' }), { mode: 0o600 });
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), [
-    'model-gateway.json CONFIG_INVALID', 'conversation.json CONVERSATION_CONFIG', 'qq-bridge.json MISSING_PATH onebotTokenFile',
+    'model-gateway.json CONFIG_UNKNOWN_KEY upstream', 'conversation.json CONVERSATION_CONFIG', 'qq-bridge.json MISSING_PATH onebotTokenFile',
     'memory-worker.json CONFIG_INVALID', 'content.json CONFIG_PERMISSIONS', 'execution-storage.json EXECUTION_LAYOUT']);
 });
 
@@ -228,11 +228,13 @@ test('the QQ bridge poll interval for initiated runs is optional; a value out of
   }
 });
 
-test('the QQ bridge reply pacing is optional; an unknown key or a value out of range is refused, as the bridge would refuse to start', async t => {
+test('the QQ bridge reply pacing is optional; a value out of range is refused, as the bridge would refuse to start; an unknown key is refused here only', async t => {
   const w = world(t);
   w.edit('qq-bridge.json', c => { c.pacing = { burstQuietMs: 500, burstMaxWaitMs: 1500, gapMinMs: 0, gapMaxMs: 0, firstMinMs: 0, firstMaxMs: 0, pokeCooldownMs: 0 }; });
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), []);
-  for (const bad of [null, [], { unknown: 1 }, { burstQuietMs: -1 }, { burstQuietMs: '2500' }, { burstMaxMessages: 13 }, { burstQuietMs: 9000 }, { pokeCooldownMs: 86400001 }]) {
+  w.edit('qq-bridge.json', c => { c.pacing = { unknown: 1 }; });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['qq-bridge.json CONFIG_UNKNOWN_KEY pacing.unknown']);
+  for (const bad of [null, [], { burstQuietMs: -1 }, { burstQuietMs: '2500' }, { burstMaxMessages: 13 }, { burstQuietMs: 9000 }, { pokeCooldownMs: 86400001 }]) {
     w.edit('qq-bridge.json', c => { c.pacing = bad; });
     assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['qq-bridge.json CONFIG_INVALID'], JSON.stringify(bad));
   }
@@ -308,4 +310,54 @@ test('a room credential listed in authority.json refuses the deploy and the prep
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['authority.json ROOM_CREDENTIAL_INLINE credentials']);
   assert.throws(() => prepareRoom(w.base), /ROOM_CREDENTIAL_INLINE/);
   assert.ok(!fs.existsSync(path.join(w.base, 'room-config')));
+});
+
+// Config schema modules (model-gateway/config.mjs, capabilities/qq/config.js, capabilities/providers/video/config.js):
+// the preflight refuses unknown keys, the services only ignore them (see their tests).
+test('model-gateway.json: an unknown key, a value out of range or a missing required key refuses the deploy', async t => {
+  const w = world(t);
+  const failures = async () => codes((await preflight({ base: w.base, release: w.release })).failures);
+  w.edit('model-gateway.json', c => { c.budgets = { web: 5, vision: 0 }; });
+  assert.deepEqual(await failures(), []);
+  w.edit('model-gateway.json', c => { c.future = 1; c['bad key\n'] = 2; c.authority.extra = true; c.budgets.audio = 3; });
+  assert.deepEqual(await failures(), ['model-gateway.json CONFIG_UNKNOWN_KEY authority.extra', 'model-gateway.json CONFIG_UNKNOWN_KEY budgets.audio', 'model-gateway.json CONFIG_UNKNOWN_KEY future', 'model-gateway.json CONFIG_UNKNOWN_KEY bad_key_']);
+  w.edit('model-gateway.json', c => { delete c.future; delete c['bad key\n']; delete c.authority.extra; delete c.budgets.audio; c.budgets.web = 1001; });
+  assert.deepEqual(await failures(), ['model-gateway.json CONFIG_INVALID']);
+  w.edit('model-gateway.json', c => { c.budgets.web = 5; delete c.inferenceTokenHash; });
+  assert.deepEqual(await failures(), ['model-gateway.json CONFIG_INVALID']);
+});
+
+test('qq-bridge.json: an unknown key, a value out of range or a missing required key refuses the deploy; DSH-era keys only warn', async t => {
+  const w = world(t);
+  const run = () => preflight({ base: w.base, release: w.release });
+  w.edit('qq-bridge.json', c => { c.future = true; });
+  assert.deepEqual(codes((await run()).failures), ['qq-bridge.json CONFIG_UNKNOWN_KEY future']);
+  w.edit('qq-bridge.json', c => { delete c.future; c.stickerSubType = 'no'; });
+  assert.deepEqual(codes((await run()).failures), ['qq-bridge.json CONFIG_INVALID']);
+  w.edit('qq-bridge.json', c => { delete c.stickerSubType; c.onebotPort = 70000; });
+  assert.deepEqual(codes((await run()).failures), ['qq-bridge.json CONFIG_INVALID']);
+  w.edit('qq-bridge.json', c => { delete c.onebotPort; delete c.stateFile; });
+  assert.deepEqual(codes((await run()).failures), ['qq-bridge.json CONFIG_INVALID']);
+  w.edit('qq-bridge.json', c => { c.stateFile = path.join(w.base, 'qq-data/dispatch.json'); c.inboxFile = path.join(w.base, 'qq-inbox/inbox.jsonl'); });
+  const result = await run();
+  assert.deepEqual([codes(result.failures), codes(result.warnings)], [[], ['qq-bridge.json IGNORED_LEGACY_FIELD inboxFile']]);
+});
+
+test('providers/video.json is optional and now checked: an unknown key, a value out of range or a missing required key refuses the deploy', async t => {
+  const w = world(t);
+  const file = path.join(w.base, 'operator/providers/video.json');
+  const write = value => { fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); fs.writeFileSync(file, JSON.stringify(value), { mode: 0o600 }); };
+  const site = { id: 'MOCK', patterns: ['^https://video\\.mock\\.invalid/v/(?<id>[A-Za-z0-9]+)$'] };
+  const good = { schemaVersion: 1, ytdlp: ['/usr/bin/yt-dlp'], ffmpeg: ['/usr/bin/ffmpeg'], sandbox: { kind: 'none' }, sites: [site] };
+  const run = async () => { const result = await preflight({ base: w.base, release: w.release }); return [codes(result.failures), result.checked.includes('video.json')]; };
+  assert.deepEqual(await run(), [[], false]);
+  write(good);
+  assert.deepEqual(await run(), [[], true]);
+  write({ ...good, cookies: '/x', sites: [{ ...site, extra: 1 }], limits: { other: 1 } });
+  assert.deepEqual(await run(), [['video.json CONFIG_UNKNOWN_KEY cookies', 'video.json CONFIG_UNKNOWN_KEY sites.0.extra', 'video.json CONFIG_UNKNOWN_KEY limits.other'], false]);
+  write({ ...good, limits: { framesPerVideo: 7 } });
+  assert.deepEqual(await run(), [['video.json VIDEO_CONFIG'], false]);
+  const { sites, ...missing } = good;
+  write(missing);
+  assert.deepEqual(await run(), [['video.json VIDEO_CONFIG'], false]);
 });
