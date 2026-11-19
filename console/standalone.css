@@ -162,6 +162,8 @@ body{margin:0;min-width:320px;background:var(--bff-page);color:var(--bff-text);f
 .bff-kv dd{font-size:13.5px;font-weight:500;font-variant-numeric:tabular-nums;margin-top:2px;overflow-wrap:anywhere}
 .bff-list-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--bff-border);min-width:0}
 .bff-list-row:last-child{border-bottom:0}
+/* her sticker library: one thumbnail per row */
+.bff-sticker{display:block;flex:none;width:56px;height:56px;object-fit:contain;border-radius:var(--bff-radius-sm);border:1px solid var(--bff-border);background:var(--bff-sunken)}
 
 /* ---- persona ---- */
 .bff-persona{display:grid;gap:var(--bff-gap);grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);align-items:start}

@@ -80,7 +80,7 @@ export async function purgeExecution({ base, plan, checkStopped = stopped }) {
     }
     if (changed) writes.push([dispatchFile, state]);
   }
-  let mediaStore, stickers, forgetJobs, jobsPlan, mediaRemoved = 0, stickersRemoved = 0, jobsRemoved = 0;
+  let mediaStore, stickers, forgetJobs, jobsPlan, mediaRemoved = 0, stickersRemoved = 0, stickersDetached = 0, jobsRemoved = 0;
   const speechScratch = [];
   if (layout.media) {
     if (layout.media.root !== 'media-data' || layout.media.workRoot !== 'speech-data' || typeof plan.entityId !== 'string' || !Array.isArray(plan.sourceEvents)) throw fail('EXECUTION_STORAGE_UNVERIFIED');
@@ -89,7 +89,9 @@ export async function purgeExecution({ base, plan, checkStopped = stopped }) {
       const { ArtifactStore } = await import(path.basename(path.dirname(fileURLToPath(import.meta.url))) === 'ops' ? '../capabilities/media/artifacts.js' : '../../capabilities/media/artifacts.js');
       mediaStore = new ArtifactStore({ root: mediaRoot });
       mediaStore.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents, dryRun: true });
-      // Her sticker library: a picture the owner had her keep goes when the message it came from is forgotten.
+      // Her sticker library: a picture the owner had her keep goes when the message it came from is forgotten. One
+      // collected from the forgotten message goes too (with what the description cache says of it) when nobody else
+      // sent it; when others did, only this sender is taken off it (`stickersDetached`).
       const { createStickers } = await import(path.basename(path.dirname(fileURLToPath(import.meta.url))) === 'ops' ? '../capabilities/media/stickers.js' : '../../capabilities/media/stickers.js');
       stickers = createStickers({ root: mediaStore.root });
       stickers.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents, dryRun: true });
@@ -108,10 +110,10 @@ export async function purgeExecution({ base, plan, checkStopped = stopped }) {
   for (const file of sessions) { inside(sessionsRoot, file); fs.unlinkSync(file); }
   for (const [file, value] of writes) { inside(base, file); rewrite(file, value); }
   if (mediaStore) mediaRemoved = mediaStore.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents }).removed;
-  if (stickers) stickersRemoved = stickers.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents }).removed;
+  if (stickers) ({ removed: stickersRemoved, detached: stickersDetached = 0 } = stickers.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents }));
   if (jobsPlan) jobsRemoved = forgetJobs(jobsPlan).removed;
   for (const target of speechScratch) { inside(base, target); if (fs.statSync(target).isDirectory()) { noLinks(target); fs.rmSync(target, { recursive: true }); } else fs.unlinkSync(target); }
-  return { sdkPurged: true, localSourcesPurged: true, platform: 'outside-control', executionSessionsRemoved: sessions.length, mediaArtifactsRemoved: mediaRemoved, stickersRemoved, jobRecordsRemoved: jobsRemoved, speechScratchRemoved: speechScratch.length };
+  return { sdkPurged: true, localSourcesPurged: true, platform: 'outside-control', executionSessionsRemoved: sessions.length, mediaArtifactsRemoved: mediaRemoved, stickersRemoved, stickersDetached, jobRecordsRemoved: jobsRemoved, speechScratchRemoved: speechScratch.length };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {

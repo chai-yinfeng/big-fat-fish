@@ -39,6 +39,10 @@ test('operator purge removes retired conversation sessions of affected streams o
   // Two library stickers the owner had her keep: one from the forgotten message, one from another.
   const library = createStickers({ root: media.root }), hash = n => String(n).repeat(64);
   for (const [n, eventId] of [[1, 'media-source'], [2, 'other-source']]) library.keep({ hash: hash(n), data: Buffer.from('fixture sticker ' + n), mime: 'image/png', kind: 'sticker', name: 'MOCK' + n, tags: [], origin: { entityId: 'e', streamId: target, eventId } });
+  // Two stickers collected from the forgotten message: one nobody else sent, one that another person sent as well.
+  const sticker = n => ({ hash: hash(n), data: Buffer.from('fixture sticker ' + n), mime: 'image/png', kind: 'sticker', name: 'MOCK' + n, tags: [] });
+  for (const n of [3, 4]) { library.remember(hash(n), { kind: 'sticker', description: 'MOCK description ' + n }); library.collect({ ...sticker(n), personId: 'person:owner', origin: { entityId: 'e', streamId: target, eventId: 'media-source' } }); }
+  library.collect({ ...sticker(4), personId: 'person:qq:9999002', origin: { entityId: 'e', streamId: other, eventId: 'media-source' } });
   fs.mkdirSync(path.join(f.base, 'speech-data/reference'), { recursive: true });
   fs.writeFileSync(path.join(f.base, 'speech-data/reference/default.wav'), 'synthetic voice reference');
   const scratch = path.join(f.base, 'speech-data/tts-11111111-1111-1111-1111-111111111111.wav'); fs.writeFileSync(scratch, 'unfinished source speech');
@@ -50,9 +54,12 @@ test('operator purge removes retired conversation sessions of affected streams o
   assert.equal(fs.existsSync(f.sessions.old), false); assert.equal(fs.existsSync(f.sessions.older), false); assert.equal(fs.existsSync(f.sessions.keep), true);
   assert.equal(result.mediaArtifactsRemoved, 2); assert.equal(fs.existsSync(media.directory(original.id)), false);
   assert.equal(media.read(retained.id, scope).data.toString(), 'unrelated fixture image');
-  assert.equal(result.stickersRemoved, 1);
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(media.root, 'stickers/index.json'), 'utf8')).entries.map(entry => entry.name), ['MOCK2']);
-  assert.deepEqual(fs.readdirSync(path.join(media.root, 'stickers')).sort(), [hash(2) + '.png', 'index.json']);
+  assert.deepEqual([result.stickersRemoved, result.stickersDetached], [2, 1]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(media.root, 'stickers/index.json'), 'utf8')).entries.map(entry => entry.name), ['MOCK2', 'MOCK4']);
+  assert.deepEqual(fs.readdirSync(path.join(media.root, 'stickers')).sort(), [hash(2) + '.png', hash(4) + '.png', 'index.json']);
+  // What the cache said of the sticker only the forgotten message carried is gone; the other is one person's now.
+  const after = createStickers({ root: media.root });
+  assert.deepEqual([after.described(hash(3)), after.described(hash(4)).description, after.list().stickers.map(entry => entry.senders)], [null, 'MOCK description 4', [0, 1]]);
   assert.equal(fs.existsSync(scratch), false); assert.equal(fs.existsSync(path.join(f.base, 'speech-data/reference/default.wav')), true);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.base, 'qq-data/dispatch.json'))).records, { [f.forgotten]: { status: 'forgotten' }, keep: { status: 'sent' } });
   assert.equal(fs.readFileSync(path.join(f.base, 'authority-data/keep.json'), 'utf8'), '{"remember":"not selected"}');

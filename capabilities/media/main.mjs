@@ -41,7 +41,7 @@ try {
   // Every request somebody is waiting for goes through the gate, so a yielding background job lets it go first.
   const service = { call: (scope, input) => jobs.gate.timely(() => media.call(scope, input)) };
   const operator = createContentOperator({ speechConfigFile: cfg.speechConfigFile, worldStatus, speechFactory: () => speech });
-  server = createContentServer({ ...cfg.control, service, worldStatus, operatorCall: (input, options) => input?.action === 'test' ? jobs.gate.timely(() => operator.call(input, options)) : operator.call(input, options), jobsCall: input => jobs.control(input) });
+  server = createContentServer({ ...cfg.control, service, worldStatus, operatorCall: (input, options) => input?.action === 'test' ? jobs.gate.timely(() => operator.call(input, options)) : operator.call(input, options), jobsCall: input => jobs.control(input), stickersCall: input => jobs.gate.timely(() => media.stickersCall(input)) });
   await server.start();
   jobs.start();
   store.expire(); timer = setInterval(() => { try { store.expire(); jobs.sweep(); video.sweep(); } catch { process.stderr.write('Media retention requires operator inspection.\n'); } }, 3600000);

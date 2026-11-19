@@ -21,6 +21,10 @@ function contentRequest({ socketPath, tokenFile }, route, payload, { signal, tim
             if (route === '/operator' && [400, 409, 413, 503].includes(res.statusCode)) {
               reject(Object.assign(new Error('Content operator operation failed'), { code: 'CONTENT_OPERATOR_FAILED', statusCode: res.statusCode })); return;
             }
+            // A console request about her sticker library that the content service refused as it was written.
+            if (route === '/stickers' && res.statusCode === 400) {
+              reject(Object.assign(new Error('Sticker library request refused'), { code: 'INVALID_REQUEST', statusCode: 400 })); return;
+            }
             // The gateway's spend tier stopped vision/web: the channel may stay silent instead of apologizing.
             if (route === '/content' && res.statusCode === 429 && envelope?.error?.code === 'CONTENT_SPEND_RESTRICTED') {
               reject(Object.assign(new Error('Content capability stopped by the spend cap'), { code: 'SPEND_RESTRICTED', statusCode: 429 })); return;
@@ -46,4 +50,8 @@ export function createContentOperatorClient(config) {
  * telling ended, cancelling, the operator's list. Asked on every initiation poll, so it gives up quickly. */
 export function createContentJobsClient(config) {
   return input => contentRequest(config, '/jobs', input, { timeoutMs: 3000 });
+}
+/** Her sticker library as the owner manages it on the console (the content service's `/stickers`). */
+export function createContentStickersClient(config) {
+  return input => contentRequest(config, '/stickers', input, { timeoutMs: 90000 });
 }

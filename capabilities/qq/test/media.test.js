@@ -23,7 +23,8 @@ function fixture(t, { faces } = {}) {
   const qualities = [];
   const service = new MediaService({ store, workRoot: path.join(root, 'work'), speech: { transcribe: async () => ({ text: '你好，我回来了', model: 'synthetic-asr' }), synthesize: async ({ outputFile, voiceProfile }) => { qualities.push(voiceProfile); tts++; fs.writeFileSync(outputFile, wav()); return { model: 'synthetic-tts' }; } }, normalizeImage: async data => ({ data, mime: 'image/gif' }), vision: async () => ({ description: '一张合成测试表情图', model: 'synthetic-vision', derived: true }), search: async () => ({}), fetchPage: async () => ({}) });
   const scope = { entityId: 'entity:test', streamId: 'qq:100:private:200', personId: 'person:owner', audience: 'private', memoryEpoch: 0 };
-  const content = { call: input => service.call({ ...scope, streamId: input.streamId, memoryEpoch: input.memoryEpoch }, input) };
+  // The scope as Authority would bind it: the owner's own conversation is the owner's, any other a friend's.
+  const content = { call: input => service.call({ ...scope, streamId: input.streamId, memoryEpoch: input.memoryEpoch, ...(input.streamId === scope.streamId ? {} : { personId: 'person:qq:' + input.streamId.split(':').at(-1) }) }, input) };
   const onebot = { call: async (action, params) => { if (action === 'get_login_info') return { user_id: '100' }; if (action === 'get_record') return { base64: wav().toString('base64') }; if (action === 'get_image') return { base64: 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' }; if (action === 'send_private_msg') { sent.push(params); return { message_id: nextId++ }; } throw Error('unexpected action'); } };
   const settingsFile = path.join(root, 'settings.json'); fs.writeFileSync(settingsFile, JSON.stringify({ expectedSelfId: '100', allowedCallerUID: '200' }));
   const executor = { execute: async request => { executions.push(request); return '我在。'; } };
@@ -376,4 +377,29 @@ test('small faces off (QQ\'s declaration by default): her [微笑] goes out as p
   await f.bridge.receive(f.event(70, [{ type: 'text', data: { text: '哈哈' } }, { type: 'face', data: { id: '14' } }]));
   assert.deepEqual(f.sent.map(p => p.message), [[{ type: 'text', data: { text: '收到[微笑]' } }]]);
   assert.equal(f.observed.at(-1).text, '收到[微笑]');
+});
+
+test('collecting: a sticker a friend sent goes back to that friend only; to the owner and to another friend her [表情:词] sends nothing', async t => {
+  const f = fixture(t), call = f.bridge.onebot.call;
+  f.bridge.onebot.call = async (action, params) => action === 'get_friend_list' ? [{ user_id: 99990301 }, { user_id: 99990302 }] : call(action, params);
+  await f.bridge.connection(true);
+  f.bridge.authority.admitPerson = async () => ({});
+  const from = (uid, id, message) => ({ ...f.event(id, message), user_id: uid, sender: { user_id: uid }, sub_type: 'friend' });
+  const stickers = sent => sent.filter(p => p.message[0].type === 'image').map(p => Number(p.user_id));
+  f.executor.execute = async request => { f.executions.push(request); return '嘿[表情:合成测试表情]'; };
+  // The first friend sends a sticker: collected, waiting for the owner. The reply to that very message may carry it.
+  await f.bridge.receive(from(99990301, 201, [{ type: 'image', data: { file: 'trusted-sticker', sub_type: 1 } }]));
+  assert.deepEqual(stickers(f.sent), [99990301]);
+  await f.bridge.receive(f.event(202, [{ type: 'text', data: { text: '在吗' } }]));
+  await f.bridge.receive(from(99990302, 203, [{ type: 'text', data: { text: '在吗' } }]));
+  assert.deepEqual(stickers(f.sent), [99990301], 'neither the owner nor the other friend is sent it');
+  assert.equal(f.sent.length, 4, 'everybody was answered with her words');
+  await f.bridge.receive(from(99990301, 204, [{ type: 'text', data: { text: '再来' } }]));
+  assert.deepEqual(stickers(f.sent), [99990301, 99990301]);
+  // Nothing about who sent it, or that it was collected, is in what the model reads.
+  for (const execution of f.executions) assert.doesNotMatch(execution.input.text, /表情库|收集|待审|9999030/);
+  // The owner lets it go to everyone (the console's approve): now the other friend may get it.
+  f.service.stickers.approve(f.service.stickers.list().stickers[0].hash);
+  await f.bridge.receive(from(99990302, 205, [{ type: 'text', data: { text: '还在吗' } }]));
+  assert.deepEqual(stickers(f.sent), [99990301, 99990301, 99990302]);
 });

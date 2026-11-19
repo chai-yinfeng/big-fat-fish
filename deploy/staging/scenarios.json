@@ -13,6 +13,10 @@
     "MOCK-H": { "qq": "999900000018", "friend": true },
     "MOCK-I": { "qq": "999900000019", "friend": true },
     "MOCK-J": { "qq": "999900000020", "friend": true },
+    "MOCK-P": { "qq": "999900000031", "friend": true },
+    "MOCK-Q": { "qq": "999900000032", "friend": true },
+    "MOCK-R": { "qq": "999900000033", "friend": true },
+    "MOCK-S": { "qq": "999900000034", "friend": true },
     "MOCK-STRANGER": { "qq": "999900000099", "friend": false },
     "MOCK-M": { "qq": "999900000021", "friend": false, "channel": "mock" }
   },
@@ -1136,7 +1140,7 @@
     },
     {
       "id": "K10",
-      "title": "owner-says-keep-this: 收下这个 from a friend changes nothing; from the owner, after a sticker, it goes into her library under the first tag of its one look, and she can send it",
+      "title": "owner-says-keep-this: 收下这个 from a friend changes nothing (what the friend sent only waits: her [表情:词] sends it to nobody else); from the owner, after a sticker, it goes into her library under the first tag of its one look, and she can send it",
       "model": [
         { "match": "这是一张聊天表情包", "reply": "MOCK-DESC-K10-{run} 一条鲸鱼在跳舞\n标签：鲸鱼跳舞、开舞" },
         { "match": "MOCK-K10A-{run} 跳", "reply": "MOCK-REPLY-K10A-{run} 跳就跳[表情:乙不该有]" },
@@ -1156,12 +1160,97 @@
         { "say": { "from": "MOCK-OWNER", "text": "MOCK-K10O-{run} 跳个舞" } },
         { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY-K10O-{run} 跳就跳" } },
         { "expectReply": { "to": "MOCK-OWNER", "image": "sticker" } },
-        { "say": { "from": "MOCK-A", "text": "MOCK-K10A-{run} 跳个舞" } },
-        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-K10A-{run} 跳就跳" } },
+        { "say": { "from": "MOCK-B", "text": "MOCK-K10A-{run} 跳个舞" } },
+        { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-K10A-{run} 跳就跳" } },
         { "say": { "from": "MOCK-OWNER", "text": "MOCK-K10M-{run} 这些都收下", "image": { "seed": "K10M-{run}", "as": "mall", "name": "鲸鱼甲" } } },
         { "expectReply": { "to": "MOCK-OWNER" } },
         { "expectPrompt": { "userText": "MOCK-K10M-{run} 这些都收下", "contains": "：收进表情库 1 张（名字：鲸鱼甲），本来就在库里 " } },
         { "expectSilence": { "to": "*", "afterMs": 3000 } }
+      ]
+    },
+    {
+      "id": "K11",
+      "title": "collected-sticker-back-to-its-sender-only: a sticker a friend sends is collected and waits for the owner; her [表情:词] sends it back to that friend and nothing to another friend, who reads nothing of it; once the owner approves it on the console the other friend gets it too",
+      "model": [
+        { "match": "这是一张聊天表情包", "reply": "MOCK-DESC-K11-{run} 一只水獭在拍手\n标签：水獭拍手" },
+        { "match": "MOCK-K11P-{run} 看", "reply": "MOCK-REPLY-K11P-{run} 收到" },
+        { "match": "MOCK-K11P-{run} 夸", "reply": "MOCK-REPLY-K11P-{run} 真棒[表情:水獭拍手]" },
+        { "match": "MOCK-K11Q-{run}", "reply": "MOCK-REPLY-K11Q-{run} 真棒[表情:水獭拍手]" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-P", "text": "MOCK-K11P-{run} 看这个", "image": { "seed": "K11-{run}", "as": "sticker" } } },
+        { "expectReply": { "to": "MOCK-P", "contains": "MOCK-REPLY-K11P-{run} 收到" } },
+        { "expectSticker": { "contains": "MOCK-DESC-K11-{run}", "level": "pending", "senders": 1 } },
+        { "say": { "from": "MOCK-Q", "text": "MOCK-K11Q-{run} 夸夸我" } },
+        { "expectReply": { "to": "MOCK-Q", "contains": "MOCK-REPLY-K11Q-{run} 真棒" } },
+        { "expectSilence": { "to": "MOCK-Q", "afterMs": 3000 } },
+        { "expectSentCount": { "to": "MOCK-Q", "contains": "[表情", "count": 0 } },
+        { "expectPrompt": { "userText": "MOCK-K11Q-{run} 夸夸我", "absent": "MOCK-DESC-K11-{run}" } },
+        { "expectPrompt": { "userText": "MOCK-K11Q-{run} 夸夸我", "absent": "MOCK-K11P-{run}" } },
+        { "say": { "from": "MOCK-P", "text": "MOCK-K11P-{run} 夸夸我" } },
+        { "expectReply": { "to": "MOCK-P", "contains": "MOCK-REPLY-K11P-{run} 真棒" } },
+        { "expectReply": { "to": "MOCK-P", "image": "sticker" } },
+        { "stickerDecide": { "contains": "MOCK-DESC-K11-{run}", "action": "approve" } },
+        { "expectSticker": { "contains": "MOCK-DESC-K11-{run}", "level": "owner", "senders": 1 } },
+        { "say": { "from": "MOCK-Q", "text": "MOCK-K11Q-{run} 再夸一次" } },
+        { "expectReply": { "to": "MOCK-Q", "contains": "MOCK-REPLY-K11Q-{run} 真棒" } },
+        { "expectReply": { "to": "MOCK-Q", "image": "sticker" } },
+        { "expectSilence": { "to": "*", "afterMs": 3000 } }
+      ],
+      "finally": [
+        { "stickerDecide": { "contains": "MOCK-DESC-K11-", "action": "disable" } }
+      ]
+    },
+    {
+      "id": "K12",
+      "title": "third-sender-makes-public: the same sticker from two friends still waits and a friend who never sent it gets nothing; when a third friend sends it it is public and that friend gets it; it was looked at once",
+      "model": [
+        { "match": "这是一张聊天表情包", "reply": "MOCK-DESC-K12-{run} 一只企鹅滑倒了\n标签：企鹅滑倒" },
+        { "match": "MOCK-K12S-{run}", "reply": "MOCK-REPLY-K12S-{run} 小心[表情:企鹅滑倒]" },
+        { "match": "MOCK-K12-{run}", "reply": "MOCK-REPLY-K12-{run} 收到" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-P", "text": "MOCK-K12-{run} 甲发", "image": { "seed": "K12-{run}", "as": "sticker" } } },
+        { "expectReply": { "to": "MOCK-P", "contains": "MOCK-REPLY-K12-{run} 收到" } },
+        { "say": { "from": "MOCK-Q", "text": "MOCK-K12-{run} 乙发", "image": { "seed": "K12-{run}", "as": "sticker" } } },
+        { "expectReply": { "to": "MOCK-Q", "contains": "MOCK-REPLY-K12-{run} 收到" } },
+        { "expectSticker": { "contains": "MOCK-DESC-K12-{run}", "level": "pending", "senders": 2 } },
+        { "say": { "from": "MOCK-S", "text": "MOCK-K12S-{run} 我摔了" } },
+        { "expectReply": { "to": "MOCK-S", "contains": "MOCK-REPLY-K12S-{run} 小心" } },
+        { "expectSilence": { "to": "MOCK-S", "afterMs": 3000 } },
+        { "say": { "from": "MOCK-R", "text": "MOCK-K12-{run} 丙发", "image": { "seed": "K12-{run}", "as": "sticker" } } },
+        { "expectReply": { "to": "MOCK-R", "contains": "MOCK-REPLY-K12-{run} 收到" } },
+        { "expectSticker": { "contains": "MOCK-DESC-K12-{run}", "level": "public", "senders": 3 } },
+        { "say": { "from": "MOCK-S", "text": "MOCK-K12S-{run} 又摔了" } },
+        { "expectReply": { "to": "MOCK-S", "contains": "MOCK-REPLY-K12S-{run} 小心" } },
+        { "expectReply": { "to": "MOCK-S", "image": "sticker" } },
+        { "expectVisionRequests": { "contains": "这是一张聊天表情包", "count": 1 } },
+        { "expectSilence": { "to": "*", "afterMs": 3000 } }
+      ],
+      "finally": [
+        { "stickerDecide": { "contains": "MOCK-DESC-K12-", "action": "reject" } }
+      ]
+    },
+    {
+      "id": "K13",
+      "title": "refused-sticker-not-collected-again: the owner refuses a waiting sticker on the console; the same friend sends it again and it is not in the library, not sent back, and not looked at a second time",
+      "model": [
+        { "match": "这是一张聊天表情包", "reply": "MOCK-DESC-K13-{run} 一只海豹在打滚\n标签：海豹打滚" },
+        { "match": "MOCK-K13-{run} 再发", "reply": "MOCK-REPLY-K13-{run} 又来[表情:海豹打滚]" },
+        { "match": "MOCK-K13-{run}", "reply": "MOCK-REPLY-K13-{run} 收到" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-P", "text": "MOCK-K13-{run} 看这个", "image": { "seed": "K13-{run}", "as": "sticker" } } },
+        { "expectReply": { "to": "MOCK-P", "contains": "MOCK-REPLY-K13-{run} 收到" } },
+        { "expectSticker": { "contains": "MOCK-DESC-K13-{run}", "level": "pending", "senders": 1 } },
+        { "stickerDecide": { "contains": "MOCK-DESC-K13-{run}", "action": "reject" } },
+        { "expectSticker": { "contains": "MOCK-DESC-K13-{run}", "absent": true } },
+        { "say": { "from": "MOCK-P", "text": "MOCK-K13-{run} 再发一次", "image": { "seed": "K13-{run}", "as": "sticker" } } },
+        { "expectReply": { "to": "MOCK-P", "contains": "MOCK-REPLY-K13-{run} 又来" } },
+        { "expectSilence": { "to": "MOCK-P", "afterMs": 3000 } },
+        { "expectSticker": { "contains": "MOCK-DESC-K13-{run}", "absent": true } },
+        { "expectPrompt": { "userText": "MOCK-K13-{run} 再发一次", "contains": "MOCK-DESC-K13-{run} 一只海豹在打滚（机器描述）" } },
+        { "expectVisionRequests": { "contains": "这是一张聊天表情包", "count": 1 } }
       ]
     },
     {
