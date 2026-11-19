@@ -22,6 +22,21 @@ export function takeStickerMarker(text, log = message => process.stderr.write(me
   const stripped = text.replace(MARKER, '').replace(/[ \t]+\n/g, '\n').replace(/[ \t]{2,}/g, ' ').trim();
   return { text: stripped, word: words[0] ?? null };
 }
+/** Every `[表情:词]` of her reply as she wrote it, in order (`word` null: no word in it). takeStickerMarker takes all
+ * of them out and sends at most the first with a word; the delivery report names each by these exact characters. */
+export function stickerMarkers(text) {
+  return [...text.matchAll(MARKER)].map(match => ({ marker: match[0], word: match[1].trim() ? match[1] : null }));
+}
+const ECHO = /[\[［]\s*(?:表情包|送达情况)\s*[:：][^\[\]［］\n]*[\]］]/g;
+/** Her text without bracketed pieces that imitate what the executor shows her about delivery (`[表情包：…]`,
+ * `[送达情况：…]`; full-width brackets and either colon too): those are lines of her replayed history, never words for
+ * the chat. Whole pieces only, and the lines they leave empty; `stripped` says whether anything was taken out. A
+ * `[表情包：词]` is not read as a sticker request: what follows the colon in her history is a description, not a word. */
+export function stripDeliveryEcho(text) {
+  if (!ECHO.test(text)) return { text, stripped: false };
+  ECHO.lastIndex = 0;
+  return { text: text.replace(ECHO, '').split('\n').map(line => line.replace(/[ \t]{2,}/g, ' ').trimEnd()).filter((line, index, lines) => line.trim() || !index || lines[index - 1].trim()).join('\n').trim(), stripped: true };
+}
 /** The owner asking her to keep a picture: a short message saying 收下这个 / 收下这张 / 收下它. */
 export function asksToKeep(text) {
   return typeof text === 'string' && [...text].length <= 40 && /收下(?:这个|这张|它)/.test(text);

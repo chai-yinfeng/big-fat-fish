@@ -290,6 +290,85 @@ test('收下这个 from anyone but the owner changes nothing; without the sticke
   assert.deepEqual(f.sent.at(-1).message.map(segment => Object.keys(segment.data).sort()), [['file']]);
 });
 
+test('delivery report: after a turn the executor is told what really went out, part by part, sent only with a receipt', async t => {
+  const f = fixture(t), reports = [], logs = []; await f.bridge.connection(true); f.bridge.log = line => logs.push(line);
+  const replies = [];
+  f.executor.execute = async request => { f.executions.push(request); return replies.shift(); };
+  f.executor.delivered = async report => { reports.push(report); };
+  const say = async (id, text, ...reply) => { replies.push(...reply); await f.bridge.receive(f.event(id, [{ type: 'text', data: { text } }])); return reports.at(-1).delivery.parts; };
+  // Plain text, sent whole: one report for the run the executor stored, in this conversation's scope.
+  assert.deepEqual(await say(81, '在吗', '在呢'), [{ kind: 'text', status: 'sent', chars: 2 }]);
+  assert.deepEqual(reports, [{ scope: { streamId: 'qq:100:private:200', memoryEpoch: 0 }, requestId: f.executions[0].requestId, delivery: { parts: [{ kind: 'text', status: 'sent', chars: 2 }] } }]);
+  // A library sticker: which picture, in the words the content service already had (a model's, so marked), under the
+  // exact marker she wrote; a second marker is dropped and reported as not sent.
+  replies.push('好可爱');
+  await f.bridge.receive(f.event(82, [{ type: 'image', data: { file: 'trusted-sticker', sub_type: 1 } }]));
+  await say(83, '收下这个', '收到');
+  const looked = f.store.records().filter(r => r.kind === 'description').length;
+  assert.deepEqual(await say(84, '考过了！', '好呀[表情: 合成测试表情 ] 嘿[表情:晚安]'), [{ kind: 'text', status: 'sent', chars: 4 }, { kind: 'sticker', status: 'sent', marker: '[表情: 合成测试表情 ]', description: '一张合成测试表情图', machine: true }, { kind: 'sticker', status: 'unsent', marker: '[表情:晚安]' }]);
+  assert.equal(f.store.records().filter(r => r.kind === 'description').length, looked, 'nothing is looked at for the report');
+  // Nothing in the library close to her word.
+  assert.deepEqual(await say(85, '还在吗', '在呢[表情:犀牛潜水艇]'), [{ kind: 'text', status: 'sent', chars: 2 }, { kind: 'sticker', status: 'unsent', marker: '[表情:犀牛潜水艇]', reason: 'none' }]);
+  // The content service failing to pick one: not sent, and not said to be missing.
+  const pick = f.bridge.media.pickSticker; f.bridge.media.pickSticker = async () => { throw new Error('CONTENT_UNAVAILABLE'); };
+  assert.deepEqual(await say(86, '嗯', '嗯嗯[表情:合成测试表情]'), [{ kind: 'text', status: 'sent', chars: 2 }, { kind: 'sticker', status: 'unsent', marker: '[表情:合成测试表情]' }]);
+  f.bridge.media.pickSticker = pick;
+  // A voice reply: voice, and its sticker is not sent. A failed synthesis: text in place of voice.
+  assert.deepEqual(await say(87, '请用语音说晚安', '晚安[表情:合成测试表情]'), [{ kind: 'voice', status: 'sent' }, { kind: 'sticker', status: 'unsent', marker: '[表情:合成测试表情]' }]);
+  const synthesize = f.service.speech.synthesize; f.service.speech.synthesize = async () => { throw new Error('TTS_UNAVAILABLE'); };
+  const fallback = await say(88, '请用语音再说一遍', '晚安');
+  assert.deepEqual(fallback, [{ kind: 'text', status: 'sent', chars: f.sent.at(-1).message[0].data.text.length, fallback: 'voice' }]);
+  f.service.speech.synthesize = synthesize;
+  // A split reply whose second message gets no receipt: delivered, unknown, never tried. The sticker after them too.
+  const sentence = n => `这是第${n}句话，它的长度刚好让两句放不进同一条消息里面去，所以一句一条。`, call = f.bridge.onebot.call;
+  let sends = 0;
+  f.bridge.onebot.call = async (action, params) => { if (action === 'send_private_msg' && ++sends === 2) throw new Error('ONEBOT_DELIVERY_UNKNOWN'); return call(action, params); };
+  assert.deepEqual(await say(89, '说长一点', sentence(1) + sentence(2) + sentence(3) + '[表情:合成测试表情]'), [{ kind: 'text', status: 'sent', chars: sentence(1).length }, { kind: 'text', status: 'unknown', chars: sentence(2).length }, { kind: 'text', status: 'unsent', chars: sentence(3).length }, { kind: 'sticker', status: 'unsent', marker: '[表情:合成测试表情]', description: '一张合成测试表情图', machine: true }]);
+  assert.equal(Object.values(f.bridge.state.records).at(-1).status, 'partial_unknown');
+  f.bridge.onebot.call = call;
+  // The reply was made but the conversation moved on before anything was sent (a new memory epoch): nothing went out.
+  const context = f.bridge.authority.context;
+  f.executor.execute = async request => { f.executions.push(request); f.bridge.authority.context = async () => ({ entityId: 'entity:test', memoryEpoch: 4 }); return '过期的回复[表情:合成测试表情]'; };
+  await f.bridge.receive(f.event(90, [{ type: 'text', data: { text: '在吗' } }]));
+  assert.deepEqual(reports.at(-1).delivery.parts, [{ kind: 'text', status: 'unsent' }, { kind: 'sticker', status: 'unsent', marker: '[表情:合成测试表情]' }]);
+  assert.equal(reports.at(-1).scope.memoryEpoch, 0);
+  f.bridge.authority.context = context; f.executor.execute = async request => { f.executions.push(request); return replies.shift(); };
+  // One report per run, each for the run just executed.
+  assert.deepEqual(reports.map(report => report.requestId), f.executions.map(execution => execution.requestId));
+  // A report the executor refuses or cannot take changes nothing about the turn: one log line without content.
+  f.executor.delivered = async () => { throw Object.assign(new Error('DELIVERY_NOT_CURRENT'), { code: 'DELIVERY_NOT_CURRENT' }); };
+  const before = f.sent.length; logs.length = 0;
+  replies.push('还在'); await f.bridge.receive(f.event(91, [{ type: 'text', data: { text: '还在吗' } }]));
+  assert.deepEqual([f.sent.length - before, Object.values(f.bridge.state.records).at(-1).status, logs], [1, 'sent', ['qq delivery report: DELIVERY_NOT_CURRENT']]);
+  // A backend that keeps no such record is told nothing.
+  delete f.executor.delivered; logs.length = 0;
+  replies.push('嗯'); await f.bridge.receive(f.event(92, [{ type: 'text', data: { text: '好' } }]));
+  assert.deepEqual([Object.values(f.bridge.state.records).at(-1).status, logs], ['sent', []]);
+});
+
+test('delivery echo: what she writes in imitation of her replayed delivery lines never reaches the chat; a message left empty is not sent', async t => {
+  const f = fixture(t), reports = [], logs = [], replies = []; await f.bridge.connection(true); f.bridge.log = line => logs.push(line);
+  f.executor.execute = async request => { f.executions.push(request); return replies.shift(); };
+  f.executor.delivered = async report => { reports.push(report); };
+  const say = async (id, reply) => { const before = f.sent.length; logs.length = 0; replies.push(reply); await f.bridge.receive(f.event(id, [{ type: 'text', data: { text: '在吗' } }])); return f.sent.slice(before).map(p => p.message[0].data.text); };
+  assert.deepEqual(await say(101, '好呀[表情包：一只打哈欠的猫（机器描述）] 嘿\n[送达情况：这条是用语音发出的]'), ['好呀 嘿']);
+  assert.deepEqual(logs, ['qq delivery echo stripped']);
+  assert.deepEqual(f.observed.at(-1).text, '好呀 嘿');
+  assert.deepEqual(reports.at(-1).delivery.parts, [{ kind: 'text', status: 'sent', chars: 4 }]);
+  // Full-width brackets and the other colon; a description is never read as a sticker word.
+  assert.deepEqual(await say(102, '在呢［表情包:开心］[表情包 : 没发出]［送达情况:拆成 2 条发］'), ['在呢']);
+  assert.equal(f.sent.at(-1).message.length, 1);
+  // A paragraph that was only such a piece is not sent as an empty message.
+  assert.deepEqual(await say(103, '第一段。\n\n[送达情况：这条回复没有发出]\n\n第二段。'), ['第一段。', '第二段。']);
+  // Nothing else in the reply: nothing is sent, and the report says so.
+  assert.deepEqual(await say(104, '[表情包：已发出，没有描述]'), []);
+  assert.deepEqual(logs, ['qq delivery echo stripped']);
+  assert.deepEqual(reports.at(-1).delivery.parts, [{ kind: 'text', status: 'unsent' }]);
+  // Ordinary brackets, small faces and her real marker are untouched; no log line.
+  assert.deepEqual(await say(105, '[微笑]表情包：这个词不在括号里（歪头）[表情:犀牛潜水艇]'), ['[微笑]表情包：这个词不在括号里（歪头）']);
+  assert.deepEqual(logs, []);
+});
+
 test('small faces off (QQ\'s declaration by default): her [微笑] goes out as plain text in her message, no face segment', async t => {
   const f = fixture(t); await f.bridge.connection(true);
   assert.equal(f.bridge.media.faces, false);

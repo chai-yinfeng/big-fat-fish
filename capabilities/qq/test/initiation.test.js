@@ -57,6 +57,33 @@ test('an initiated run goes to the owner, as a turn with no message: one send wi
   assert.deepEqual([f.acks.length, f.runs.length, f.sends.length], [1, 1, 1]);
 });
 
+test('delivery report: an initiated run reports each message it sent and the sticker marker it dropped; a declined run reports nothing', async t => {
+  const f = await fixture(t), reports = [];
+  f.bridge.executor.delivered = async report => { reports.push(report); };
+  f.reply = 'MOCK 在忙吗？[表情:开心]'; f.offers.push(offer('mock-d1'));
+  await f.bridge.pollInitiations();
+  assert.deepEqual(reports, [{ scope: { streamId: OWNER_STREAM, memoryEpoch: 0 }, requestId: 'qq:init:mock-d1', delivery: { parts: [{ kind: 'text', status: 'sent', chars: 9 }, { kind: 'sticker', status: 'unsent', marker: '[表情:开心]' }] } }]);
+  // No receipt for her message: unknown, never said to be sent.
+  f.sendError = () => true; f.reply = 'MOCK 睡了吗'; f.offers.push(offer('mock-d2'));
+  await f.bridge.pollInitiations();
+  assert.deepEqual(reports[1].delivery.parts, [{ kind: 'text', status: 'unknown', chars: 8 }]);
+  assert.equal(f.record('mock-d2').status, 'unknown');
+  f.sendError = null; f.reply = DECLINE_MARK; f.offers.push(offer('mock-d3'));
+  await f.bridge.pollInitiations();
+  assert.deepEqual([reports.length, f.record('mock-d3').status], [2, 'declined']);
+});
+
+test('delivery echo: an initiated run sends none of it, and nothing at all when nothing else was written', async t => {
+  const f = await fixture(t), logs = []; f.bridge.log = line => logs.push(line);
+  f.reply = 'MOCK 在忙吗？[表情包：一只猫（机器描述）]\n[送达情况：这条是用语音发出的]'; f.offers.push(offer('mock-e1'));
+  await f.bridge.pollInitiations();
+  assert.deepEqual(f.sends.map(send => send.message), [[{ type: 'text', data: { text: 'MOCK 在忙吗？' } }]]);
+  assert.deepEqual([f.record('mock-e1').status, logs.filter(line => line === 'qq delivery echo stripped').length], ['sent', 1]);
+  f.reply = '［送达情况：这条回复没有发出］'; f.offers.push(offer('mock-e2'));
+  await f.bridge.pollInitiations();
+  assert.deepEqual([f.sends.length, f.record('mock-e2').status], [1, 'failed']);
+});
+
 test('the target is the conversation Authority named and nothing else: anyone but the owner is dropped unrun, and the reply text cannot redirect a send', async t => {
   const f = await fixture(t);
   const others = ['qq:100:private:201', 'qq:101:private:200', 'qq:100:group:200', 'qq:100:private:200:1', 'qq:100:private:0200', ' qq:100:private:200', 'native:owner', '', undefined, 200, ['qq:100:private:200'], { toString: () => OWNER_STREAM }];

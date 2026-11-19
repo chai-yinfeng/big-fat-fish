@@ -12,7 +12,10 @@ export function conversationSessionId(streamId, memoryEpoch) {
 }
 
 /** One private JSONL file per session. Each line is one completed run, so a
- * crash can only leave an incomplete trailing line, which is ignored and cut. */
+ * crash can only leave an incomplete trailing line, which is ignored and cut.
+ * A line with `delivery` (and no messages) is what the channel reported about the delivery of the run right before
+ * it: `load` hands it out as `delivery` on that run's last assistant message, and `last` says which run is the
+ * latest and whether it has one. A release that does not know such lines reads them as runs without messages. */
 export class SessionStore {
   #dir;
   constructor(dir) {
@@ -31,7 +34,7 @@ export class SessionStore {
     const file = this.file(sessionId);
     let fd;
     try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW); }
-    catch (error) { if (error.code === 'ENOENT') return { messages: [], validBytes: 0 }; throw fail('SESSION_UNAVAILABLE'); }
+    catch (error) { if (error.code === 'ENOENT') return { messages: [], validBytes: 0, last: null }; throw fail('SESSION_UNAVAILABLE'); }
     try {
       const stat = fs.fstatSync(fd);
       if (!stat.isFile()) throw fail('SESSION_UNAVAILABLE');
@@ -44,14 +47,22 @@ export class SessionStore {
       // A bounded tail read starts mid-line: drop the fragment before the first newline.
       if (start > 0) text = text.slice(text.indexOf('\n') + 1);
       const messages = [];
+      // The latest run, and whether a delivery record for it is stored.
+      let last = null;
       for (const line of text.split('\n')) {
         if (!line) continue;
         let run;
         try { run = JSON.parse(line); } catch { throw fail('SESSION_CORRUPT'); }
         if (run?.v !== 1 || !Array.isArray(run.messages)) throw fail('SESSION_CORRUPT');
+        if (run.delivery !== undefined) {
+          // A delivery line belongs to the run right before it; anywhere else it is ignored.
+          if (last && !last.delivered && last.reply && run.requestId === last.requestId) { last.reply.delivery = run.delivery; last.delivered = true; }
+          continue;
+        }
         messages.push(...run.messages);
+        if (run.messages.length) last = { requestId: run.requestId, reply: run.messages.findLast(message => message?.role === 'assistant'), delivered: false };
       }
-      return { messages, validBytes };
+      return { messages, validBytes, last: last && { requestId: last.requestId, delivered: last.delivered } };
     } finally { fs.closeSync(fd); }
   }
   append(sessionId, validBytes, run) {
