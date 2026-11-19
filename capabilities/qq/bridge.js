@@ -3,6 +3,7 @@ import path from 'node:path';
 import { messageFromOneBot, imageProbeLines, replyProbeLines, quotedText, quoteLine, pokeFromOneBot, pokeProbeLine } from './source.js';
 import { qqRequestId } from './worker-route.js';
 import { executeConversation, reportDelivery, DECLINE_MARK, MAX_DELIVERY_MARKER_CHARS, MAX_DELIVERY_DESCRIPTION_CHARS } from '../conversation/executor.js';
+import { replayDelivered } from '../conversation/delivery.js';
 import { splitReply } from './split.js';
 import { PACING, BURST_MAX_MEDIA, BURST_MAX_CHARS, segmentGap, firstDelay } from './pacing.js';
 import { replySegments } from './faces.js';
@@ -42,6 +43,16 @@ const DECLINED = new RegExp(`[<＜]\\s*${DECLINE_MARK.slice(1, -1)}\\s*[>＞]`, 
  * `sent` only with the platform's receipt. */
 const deliveryPart = part => part.type === 'text' ? { kind: 'text', status: 'unsent', chars: part.text.length, ...(part.voiceFallback ? { fallback: 'voice' } : {}) }
   : { kind: part.type === 'audio' ? 'voice' : part.type === 'image' && !part.sticker ? 'image' : 'sticker', status: 'unsent' };
+/** What an observation of hers says for one message she meant to send, or for one `[表情:词]` of hers, from that part's
+ * own delivery record, worded as her replayed history words it (conversation/delivery.js `replayDelivered`, the one
+ * definition): her text unchanged when it went out whole as text; a sticker or picture as what it was, in place of her
+ * marker; otherwise her text with one `[送达情况：…]` line (voice, a text fallback, not sent, status unknown). The night's
+ * consolidation reads these observations, so it sees what really went out. Descriptions are kept to one line there;
+ * note delimiters are left to whoever puts the text in a note, as with the person's own observations. */
+export function observedText(text, record) {
+  const content = record.kind === 'text' || record.kind === 'voice' ? text : record.marker ?? '';
+  return replayDelivered({ role: 'assistant', content: [{ type: 'text', text: content }], delivery: { parts: [record] } }, plain => plain).content.map(block => block.text).join('').trim();
+}
 const markerParts = reply => stickerMarkers(reply).map(({ marker, word }) => ({ word, part: { kind: 'sticker', status: 'unsent', ...(marker.length <= MAX_DELIVERY_MARKER_CHARS ? { marker } : {}) } }));
 /** The one phrase that asks for the passcode of one's open diary (read on the room page). A private message that is
  * exactly this, and nothing else, is answered by the bridge itself with what Authority returns: no model run, no
@@ -265,10 +276,21 @@ export class QQBridge {
     const scope = await this.authority.context({ streamId: observation.streamId, query: observation.text.slice(0, 512), budgetChars: 1 }), world = (await this.authority.health()).world;
     return scope.memoryEpoch === item.memoryEpoch && scope.entityId === item.entityId && !world.paused && world.revision === item.worldRevision && this.connected && this.selfId === cfg.expectedSelfId && this.settings?.expectedSelfId === cfg.expectedSelfId && this.settings?.allowedCallerUID === cfg.allowedCallerUID;
   }
-  async delivered(observation, item, receipt) {
+  /** `text`: what the observation says (observedText); by default what was sent. */
+  async delivered(observation, item, receipt, text = receipt.text) {
     item.receipts ||= []; item.receipts.push({ messageId: receipt.messageId, type: receipt.type }); item.messageId = receipt.messageId; this.save();
     this.sentTexts.set(receipt.messageId, receipt.text); while (this.sentTexts.size > SENT_TEXTS) this.sentTexts.delete(this.sentTexts.keys().next().value);
-    try { await this.port.observe({ eventId: 'qq:sent:' + receipt.messageId, streamId: observation.streamId, actorId: 'qq:model', role: 'assistant', text: receipt.text, at: Date.now() }); }
+    try { await this.port.observe({ eventId: 'qq:sent:' + receipt.messageId, streamId: observation.streamId, actorId: 'qq:model', role: 'assistant', text, at: Date.now() }); }
+    catch { item.unobserved = true; this.save(); }
+  }
+  /** As a turn ends: what of her reply did not go out, or may not have (no receipt), as one observation of hers, worded
+   * like the delivered ones (observedText; `meant` holds each part's text). Delivered messages were observed as they went
+   * out. Nothing is written once the conversation has moved on (paused, another memory epoch: what was forgotten is not
+   * written back), and nothing after a restart: a message cut off while sending stays unobserved. */
+  async undelivered(cfg, observation, item, requestId, parts, meant) {
+    const lines = parts.filter(part => part.status !== 'sent').map(part => part.kind === 'text' || part.kind === 'voice' ? meant.get(part)?.trim() ? observedText(meant.get(part), part) : '' : observedText('', part)).filter(Boolean);
+    if (!lines.length || !await this.current(cfg, observation, item).catch(() => false)) return;
+    try { await this.port.observe({ eventId: 'qq:undelivered:' + requestId, streamId: observation.streamId, actorId: 'qq:model', role: 'assistant', text: lines.join('\n'), at: Date.now() }); }
     catch { item.unobserved = true; this.save(); }
   }
   /** Her reply (sticker markers already taken out) as it may go to the chat: without anything that imitates the delivery
@@ -344,6 +366,7 @@ export class QQBridge {
     const scope = { streamId, memoryEpoch: item.memoryEpoch }, stream = { streamId, text: '' };
     const end = status => { item.status = status; this.save(); };
     let sending = false, report = null;
+    const meant = new Map();
     try {
       if (!await this.current(cfg, stream, item)) return end('dropped:stale');
       item.status = 'processing'; this.save();
@@ -356,6 +379,7 @@ export class QQBridge {
       const pieces = splitReply(text).filter(piece => piece.trim());
       // What becomes of each message, and of the dropped markers, is reported when the run ends (finally).
       report = [...pieces.map(piece => deliveryPart({ type: 'text', text: piece })), ...markerParts(reply).map(mark => mark.part)];
+      pieces.forEach((piece, index) => meant.set(report[index], piece));
       if (!report.length) report = [{ kind: 'text', status: 'unsent' }];
       for (const [index, piece] of pieces.entries()) {
         if (index) await this.sleep(segmentGap(piece, this.pacing, this.random));
@@ -369,7 +393,7 @@ export class QQBridge {
           receipt = { messageId, type: 'text', text: piece };
         }
         report[index].status = 'sent';
-        await this.delivered(stream, item, receipt); sending = false;
+        await this.delivered(stream, item, receipt, observedText(piece, report[index])); sending = false;
       }
       // Nothing was left to say (only pieces that are never sent): nothing went out.
       end(pieces.length ? 'sent' : 'failed');
@@ -377,7 +401,7 @@ export class QQBridge {
       // The spend tier stops this kind of work first: recorded, no notice to the owner, nothing retried.
       end(sending ? 'unknown' : item.receipts?.length ? 'partial' : error?.code === 'BUDGET_EXHAUSTED' ? 'deferred:budget' : error?.code === 'WORLD_PAUSED' ? 'dropped:paused' : 'failed');
     } finally {
-      if (report) await this.tellDelivery(scope, requestId, report);
+      if (report) { await this.tellDelivery(scope, requestId, report); await this.undelivered(cfg, stream, item, requestId, report, meant); }
     }
   }
   /** As an ordinary turn begins: a finished background job of this conversation the person was not told about yet.
@@ -461,6 +485,7 @@ export class QQBridge {
     const scope = { streamId: observation.streamId, memoryEpoch: item.memoryEpoch };
     const end = status => { for (const entry of turn) entry.item.status = status; this.save(); };
     let sending = false, prepared, carry = null, report = null;
+    const meant = new Map();
     try {
       end('processing');
       // Observed one by one, in order. A forgotten one leaves the turn as a tombstone; the rest are still answered.
@@ -500,6 +525,7 @@ export class QQBridge {
       const taken = takeStickerMarker(reply), word = taken.word, text = this.sayable(taken.text), marks = markerParts(reply), chosen = marks.find(mark => mark.word)?.part;
       // The executor has stored her reply: what becomes of it is reported when the turn ends (finally), wherever it ends.
       report = { requestId, parts: [{ kind: 'text', status: 'unsent' }, ...marks.map(mark => mark.part)] };
+      meant.set(report.parts[0], text);
       // She has the result now, in a stored turn: it counts as told, whatever becomes of sending the reply.
       if (carry) { carry.item.status = 'carried'; this.save(); }
       if (!await this.current(cfg, observation, item)) { end('paused'); return; }
@@ -513,6 +539,7 @@ export class QQBridge {
       let asked = false;
       const sticker = word && this.media && !prepared.voiceRequested ? await this.media.pickSticker(scope, word, observation.eventId).then(found => { asked = true; return found; }).catch(() => null) : null;
       const records = new Map(parts.map(part => [part, deliveryPart(part)]));
+      for (const [part, record] of records) meant.set(record, part.text ?? '');
       if (sticker) { parts.push(sticker); records.set(sticker, chosen); if (sticker.description) Object.assign(chosen, { description: sticker.description.slice(0, MAX_DELIVERY_DESCRIPTION_CHARS), ...(sticker.machine ? { machine: true } : {}) }); }
       else if (asked && chosen) chosen.reason = 'none';
       report.parts = [...parts.filter(part => part !== sticker).map(part => records.get(part)), ...marks.map(mark => mark.part)];
@@ -533,7 +560,7 @@ export class QQBridge {
           receipt = { messageId, type: 'text', text: part.text };
         }
         records.get(part).status = 'sent';
-        await this.delivered(observation, item, receipt); sending = false;
+        await this.delivered(observation, item, receipt, observedText(part.text ?? '', records.get(part))); sending = false;
       }
       end(item.unobserved ? 'sent_unobserved' : 'sent');
     } catch (error) {
@@ -551,7 +578,7 @@ export class QQBridge {
         } catch { end('unknown'); }
       }
     } finally {
-      if (report?.parts.length) await this.tellDelivery(scope, report.requestId, report.parts);
+      if (report?.parts.length) { await this.tellDelivery(scope, report.requestId, report.parts); await this.undelivered(cfg, observation, item, report.requestId, report.parts, meant); }
       // The turn ended before she had the carried result: reported as failed, so it rides on a later message.
       if (carry?.item.status === 'processing') { carry.item.status = 'failed'; this.save(); }
       // What became of a hand-out for this turn is reported now rather than on the next poll (an open one holds others back).

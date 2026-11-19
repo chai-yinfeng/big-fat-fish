@@ -16,17 +16,21 @@
 // Today the declarations are read by the usage ledger (model-gateway/usage-ledger.mjs) and, through
 // it, the console's quota page, and by the executor (capabilities/conversation/tools.js): the whole definition of the
 // model tool `companion_activity` (ACTIVITY_TOOL_DEFINITION) and, for every model action of that tool and of
-// `companion_content`, its fields, the content action behind it and its named rules (MODEL_ACTIONS). The texts of the
-// two older model tools, Authority's /v1/content allowlist, the content service, the gateway's purposes and stop tiers
-// and the console's spend card still carry their own lists; the tables derived below say what those lists should be,
-// and consistency.test.js holds the two against each other.
+// `companion_content`, its fields, the content action behind it and its named rules (MODEL_ACTIONS). The model gateway
+// reads GATEWAY_PURPOSES, SPEND_CATEGORIES, SPEND_STOP and GATEWAY_DEFAULT_LIMITS (server.mjs, spend.mjs). The texts of
+// the two older model tools, Authority's /v1/content allowlist, the content service and the console's spend card still
+// carry their own lists; the tables derived below say what those lists should be, and consistency.test.js holds the
+// two against each other.
 //
-// The three model tools, and where a new capability goes (the first two are closed; consistency.test.js FROZEN_TOOLS):
-// - companion_scope: her own memory, which Authority owns: looking it up and proposing to it. No capability is offered here.
+// The three model tools. A new action goes where its meaning puts it (按语义选工具：同步只读查阅→companion_content；
+// 她的记忆→companion_scope；要花时间或有副作用→companion_activity):
+// - companion_scope: her own memory, which Authority owns: looking it up and proposing to it.
 // - companion_content: read-only looking-up and looking again at material, answered within the same turn (the web,
-//   an image, a transcript, queueing a sticker for this reply). Closed: nothing is added to it.
+//   an image, a transcript, queueing a sticker for this reply).
 // - companion_activity: anything that takes time or has an effect, whose result a background job reports later.
-//   Every new capability is offered here, and only here.
+// The first two are written out in a frozen list (consistency.test.js FROZEN_TOOLS). The list is an approval gate, not
+// a ban: 往前两个工具加动作需要更新冻结名单（经主人批准，会让提示缓存失效一次）. An action that belongs in one of
+// them by meaning goes there; it is not pushed into companion_activity to leave the list alone.
 import chat from './chat/manifest.js';
 import consolidation from './consolidation/manifest.js';
 import vision from './vision/manifest.js';

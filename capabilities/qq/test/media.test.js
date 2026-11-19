@@ -51,7 +51,7 @@ test('explicit speech creates a record only after synthesis; authorized image at
   // The model is told the reply is spoken in its own voice, so it does not claim it can only type.
   assert.match(f.executions[0].input.text, /用你自己的声音合成为语音消息发出，你能发语音/); assert.match(f.executions[0].input.text, /不超过100字，不用Markdown、链接、表情符号/);
   assert.equal(f.tts(), 1); assert.deepEqual(f.qualities, [undefined]); assert.equal(f.sent[0].message[0].type, 'record'); assert.match(f.sent[0].message[0].data.file, /^base64:\/\//);
-  assert.match(f.observed.at(-1).text, /已发送语音/);
+  assert.equal(f.observed.at(-1).text, '我在。\n[送达情况：这条是用语音发出的]');
   f.executor.execute = async request => { const image = f.store.records().find(r => r.kind === 'image'); await f.content.call({ action: 'attach', streamId: 'qq:100:private:200', memoryEpoch: 0, requestId: request.requestId, ref: image.id }); return '给你这张图。'; };
   await f.bridge.receive(f.event(3, [{ type: 'text', data: { text: '把这张表情包发回来' } }, { type: 'image', data: { file: 'trusted-image-reference', emoji_id: 'fixture' } }]));
   assert.deepEqual(f.sent.slice(1).map(p => p.message[0].type), ['text', 'image']);
@@ -88,7 +88,7 @@ test('with media: only the text of a reply is split; a voice reply and an attach
   f.executor.execute = async () => long;
   await f.bridge.receive(f.event(21, [{ type: 'text', data: { text: '请用语音告诉我' } }]));
   assert.deepEqual(f.sent.map(p => p.message[0].type), ['record']); assert.equal(f.tts(), 1); assert.deepEqual(gaps, []);
-  assert.ok(f.observed.at(-1).text.endsWith(long));
+  assert.equal(f.observed.at(-1).text, long + '\n[送达情况：这条是用语音发出的]');
   // Failed synthesis falls back to one text message, as before.
   f.service.speech.synthesize = async () => { throw new Error('TTS_UNAVAILABLE'); };
   await f.bridge.receive(f.event(22, [{ type: 'text', data: { text: '请用语音再说一遍' } }]));
@@ -108,7 +108,7 @@ test('a voice reply is synthesized without bracketed asides and emoticons; the r
   await f.bridge.receive(f.event(31, [{ type: 'text', data: { text: '请用语音告诉我，你在吗' } }]));
   assert.deepEqual(spoken, ['我在呢，别担心。']);
   assert.equal(f.sent[0].message[0].type, 'record');
-  assert.equal(f.observed.at(-1).text, '[已发送语音；以下为合成文本而非逐字收听验证]\n（轻轻笑）我在呢😊，别担心。(拍拍你)');
+  assert.equal(f.observed.at(-1).text, '（轻轻笑）我在呢😊，别担心。(拍拍你)\n[送达情况：这条是用语音发出的]');
   // Nothing left to say: no synthesis, and the existing text fallback carries the reply as written.
   f.executor.execute = async () => '（点头）';
   await f.bridge.receive(f.event(32, [{ type: 'text', data: { text: '请用语音回答我' } }]));
@@ -186,7 +186,7 @@ test('her library: the owner says 收下这个 after a picture; her [表情:词]
   await f.bridge.receive(f.event(53, [{ type: 'text', data: { text: '考过了！' } }]));
   // The marker never reaches the chat; the sticker is the last message, an image marked as a sticker, with its own receipt.
   assert.deepEqual(f.sent.slice(2).map(p => p.message.map(segment => segment.type === 'text' ? segment.data.text : [segment.type, segment.data.sub_type, segment.data.summary, segment.data.file.startsWith('base64://')])), [['好呀 嘿'], [['image', 1, '[动画表情]', true]]]);
-  assert.deepEqual(f.observed.slice(-2).map(o => o.text), ['好呀 嘿', '[已发送表情包：一张合成测试表情图]']);
+  assert.deepEqual(f.observed.slice(-2).map(o => o.text), ['好呀 嘿', '[表情包：一张合成测试表情图（机器描述）]']);
   assert.equal(Object.values(f.bridge.state.records).at(-1).receipts.length, 2);
   // How often she sent one lately is told as a fact; no close sticker: nothing is sent but her words.
   await f.bridge.receive(f.event(54, [{ type: 'text', data: { text: '还在吗' } }]));
