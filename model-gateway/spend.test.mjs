@@ -47,6 +47,26 @@ test('usage parsing counts cache hits, misses and reasoning output at the window
   assert.equal(validPricing({ ...DEFAULT_PRICING, peak: { ...DEFAULT_PRICING.peak, windows: [['12:00', '09:00']] } }), false);
 });
 
+test('each category is refused from the same tier as before the stop table was derived from the declarations', async t => {
+  // The table spend.mjs had written by hand; every category is tried at every tier against it.
+  const before = { proactive: 'reduced', maintenance: 'restricted', vision: 'restricted', web: 'restricted', generation: 'restricted', activity: 'restricted', conversation: 'exhausted' };
+  const ORDER = ['normal', 'reduced', 'restricted', 'exhausted'], held = { normal: 0, reduced: 600000, restricted: 800000, exhausted: 1000000 };
+  for (const tier of ORDER) {
+    const dir = await directory(t);
+    const files = { stateFile: path.join(dir, 'spend.json'), settingsFile: path.join(dir, 'spend-settings.json'), pricingFile: path.join(dir, 'model-pricing.json') };
+    await fs.writeFile(files.settingsFile, JSON.stringify({ dailyCapYuan: 1, reducedPercent: 60, restrictedPercent: 80 }), { mode: 0o600 });
+    const meter = createSpendMeter({ ...files, clock: () => BJ('20:00') });
+    await meter.start();
+    await meter.reserve('conversation', () => held[tier]);
+    assert.equal(meter.status().tier, tier);
+    for (const category of Object.keys(before)) {
+      const refused = await meter.reserve(category, () => 0).then(handle => meter.settle(handle, 0, { charge: false }).then(() => false), error => { assert.equal(error.code, 'BUDGET_EXHAUSTED'); return true; });
+      assert.equal(refused, ORDER.indexOf(tier) >= ORDER.indexOf(before[category]), `${category} at ${tier}`);
+    }
+    assert.deepEqual(Object.keys(meter.status().byTier).sort(), Object.keys(before).sort());
+  }
+});
+
 test('meter rolls over at Beijing midnight and charges reservations that never report usage', async t => {
   const dir = await directory(t);
   let now = Date.parse('2026-11-08T15:50:00Z'); // 23:50 Sunday in Beijing (off-peak)

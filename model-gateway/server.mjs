@@ -8,7 +8,7 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { beijingDay, createSpendMeter, chatEstimate, parseUsage, usageCost, usageTap } from './spend.mjs';
 import { createUsageLedger } from './usage-ledger.mjs';
-import { CAPABILITIES } from '../capabilities/providers/index.js';
+import { CAPABILITIES, GATEWAY_DEFAULT_LIMITS, GATEWAY_PURPOSES } from '../capabilities/providers/index.js';
 import { createProviders } from './providers.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 
@@ -32,7 +32,7 @@ const ERRORS = {
 /** Request header by which the conversation executor marks the chat completions of an initiated run. */
 export const INITIATED_HEADER = 'x-companion-run';
 /** A picture's `purpose` -> the ledger row whose daily count it takes instead of vision's (its money stays `vision`'s). */
-const PURPOSES = Object.freeze({ __proto__: null, sticker: 'sticker', frame: 'video-frame' });
+const PURPOSES = Object.freeze({ __proto__: null, ...GATEWAY_PURPOSES.vision });
 /** Output cap of one memory completion (/v1/memory/completions): thinking is on, so the cap holds the reasoning as
  * well as the answer. The answer's own length is checked by Authority (digest, facts, diary), not by this cap. */
 export const MAINTENANCE_MAX_TOKENS = 4096;
@@ -143,10 +143,10 @@ function tokenUsage(value) {
 }
 
 /** Private control and inference transports; never returns or logs provider credentials. */
-export function createModelGateway({ settingsFile, inferenceSocket, controlSocket, inferenceTokenHash, operatorTokenHash, worldStatus, usageFile = path.join(path.dirname(settingsFile), 'capability-usage.json'), budgets = { web: 20, vision: 12 }, fetchImpl = fetch, upstream = 'https://api.deepseek.com/chat/completions', clock = Date.now, providers = PROVIDERS, capabilities = CAPABILITIES, proxyFetch }) {
+export function createModelGateway({ settingsFile, inferenceSocket, controlSocket, inferenceTokenHash, operatorTokenHash, worldStatus, usageFile = path.join(path.dirname(settingsFile), 'capability-usage.json'), budgets = GATEWAY_DEFAULT_LIMITS, fetchImpl = fetch, upstream = 'https://api.deepseek.com/chat/completions', clock = Date.now, providers = PROVIDERS, capabilities = CAPABILITIES, proxyFetch }) {
   const paths = [settingsFile, inferenceSocket, controlSocket, usageFile];
-  if (paths.some(value => typeof value !== 'string' || !path.isAbsolute(value)) || new Set(paths).size !== 4 || ![inferenceTokenHash, operatorTokenHash].every(value => /^[a-f0-9]{64}$/.test(value)) || inferenceTokenHash === operatorTokenHash || typeof worldStatus !== 'function' || typeof fetchImpl !== 'function' || new URL(upstream).protocol !== 'https:' || !object(budgets) || Object.keys(budgets).some(key => !['web', 'vision'].includes(key))) throw new Error('Invalid gateway configuration');
-  const limits = { web: 20, vision: 12, ...budgets };
+  if (paths.some(value => typeof value !== 'string' || !path.isAbsolute(value)) || new Set(paths).size !== 4 || ![inferenceTokenHash, operatorTokenHash].every(value => /^[a-f0-9]{64}$/.test(value)) || inferenceTokenHash === operatorTokenHash || typeof worldStatus !== 'function' || typeof fetchImpl !== 'function' || new URL(upstream).protocol !== 'https:' || !object(budgets) || Object.keys(budgets).some(key => !Object.hasOwn(GATEWAY_DEFAULT_LIMITS, key))) throw new Error('Invalid gateway configuration');
+  const limits = { ...GATEWAY_DEFAULT_LIMITS, ...budgets };
   if (Object.values(limits).some(value => !Number.isSafeInteger(value) || value < 0 || value > 1000)) throw new Error('Invalid capability budgets');
   const inferenceHash = Buffer.from(inferenceTokenHash, 'hex'), operatorHash = Buffer.from(operatorTokenHash, 'hex');
   // Daily CNY spend (Beijing day), its settings and the price table live next to the settings file.
