@@ -25,7 +25,11 @@ const SCHEMAS = {
   '/v1/maintenance/consolidation/commit': ['taskId', 'outcome', 'digest', 'facts'],
   '/v1/maintenance/diary/next': [],
   '/v1/maintenance/diary/commit': ['taskId', 'outcome', 'private', 'open', 'usedIds'],
+  '/v1/diary/code': ['streamId'],
 };
+/** Passcode attempts on `/v1/room/diary` in any one minute, whoever makes them: a passcode is short, so guessing is
+ * held back here as well as in the room page's server. */
+export const ROOM_DIARY_PER_MINUTE = 30;
 const ERRORS = {
   AUTH_REQUIRED: [401, 'A valid capability or operator credential is required'],
   FORBIDDEN: [403, 'This operation is not granted to this principal'],
@@ -40,6 +44,7 @@ const ERRORS = {
   UNAVAILABLE: [503, 'Authority review is unavailable'],
   PEOPLE_LIMIT: [409, 'The admitted people limit is reached'],
   SPEND_RESTRICTED: [429, 'The daily spend cap has stopped this capability'],
+  RATE_LIMITED: [429, 'Too many attempts; try again in a minute'],
 };
 function failure(code) { return Object.assign(new Error(ERRORS[code][1]), { code }); }
 function send(res, status, body) {
@@ -101,6 +106,7 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
     return { ...record, bytes: Buffer.from(record.hash, 'hex') };
   });
   let closed = false, scheduled = false, unhealthy = false;
+  const diaryAttempts = [];
   // Finished background jobs nobody was told about, as the content service lists them. Authority asks with its own
   // control credential; the content service never calls here. Unreachable means none this round.
   const untoldJobs = async grant => {
@@ -141,13 +147,23 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
       const route = url.pathname;
       if (route.startsWith('/v1/admin/') && grant.role !== 'admin') throw failure('FORBIDDEN');
       let value;
-      // The room grant reads the room state and nothing else, and nobody else reads it: no write, no admin or
-      // capability route, not even health. Running jobs come from the content service; unreachable means none.
-      if (grant.role === 'room' || route === '/v1/room') {
-        if (grant.role !== 'room' || route !== '/v1/room' || req.method !== 'GET') throw failure('FORBIDDEN');
-        let listing = null;
-        try { listing = contentJobs ? await contentJobs({ action: 'list' }) : null; } catch {}
-        value = authority.roomState(listing);
+      // The room grant reads the room state and, with a person's passcode, that person's open diaries; nothing else,
+      // and nobody else reads either: no write, no admin or capability route, not even health. Running jobs come
+      // from the content service; unreachable means none.
+      if (grant.role === 'room' || route === '/v1/room' || route === '/v1/room/diary') {
+        if (grant.role !== 'room') throw failure('FORBIDDEN');
+        if (route === '/v1/room' && req.method === 'GET') {
+          let listing = null;
+          try { listing = contentJobs ? await contentJobs({ action: 'list' }) : null; } catch {}
+          value = authority.roomState(listing);
+        } else if (route === '/v1/room/diary' && req.method === 'POST') {
+          // Every attempt counts, right or wrong; over the limit nothing is looked up.
+          const now = Date.now();
+          while (diaryAttempts.length && diaryAttempts[0] <= now - 60000) diaryAttempts.shift();
+          if (diaryAttempts.length >= ROOM_DIARY_PER_MINUTE) throw failure('RATE_LIMITED');
+          diaryAttempts.push(now);
+          value = authority.roomDiary(await bodyOf(req, ['code'], 1024));
+        } else throw failure('FORBIDDEN');
       } else if (route === '/v1/content') {
         if (grant.role !== 'capability' || req.method !== 'POST') throw failure('FORBIDDEN');
         if (!contentControl) throw failure('UNAVAILABLE');
@@ -185,6 +201,8 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
         else if (route === '/v1/memory/read') value = authority.memoryRead(grant.capabilityId, body);
         else if (route === '/v1/memory/recall') value = authority.memoryRecall(grant.capabilityId, body);
         else if (route === '/v1/people/admit') value = authority.admitPerson(grant.capabilityId, body);
+        // The person of this conversation asked for their diary passcode: the bridge sends the answer itself.
+        else if (route === '/v1/diary/code') value = authority.diaryCode(grant.capabilityId, body);
         else if (route === '/v1/initiations/next') { value = authority.initiationNext(grant.capabilityId, body, await untoldJobs(grant)); await reportJobs(); }
         else if (route === '/v1/initiations/carry') { value = authority.initiationCarry(grant.capabilityId, body, await untoldJobs(grant)); await reportJobs(); }
         else if (route === '/v1/initiations/ack') { value = authority.initiationAck(grant.capabilityId, body); await reportJobs(); }

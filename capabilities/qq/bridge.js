@@ -43,6 +43,12 @@ const DECLINED = new RegExp(`[<＜]\\s*${DECLINE_MARK.slice(1, -1)}\\s*[>＞]`, 
 const deliveryPart = part => part.type === 'text' ? { kind: 'text', status: 'unsent', chars: part.text.length, ...(part.voiceFallback ? { fallback: 'voice' } : {}) }
   : { kind: part.type === 'audio' ? 'voice' : part.type === 'image' && !part.sticker ? 'image' : 'sticker', status: 'unsent' };
 const markerParts = reply => stickerMarkers(reply).map(({ marker, word }) => ({ word, part: { kind: 'sticker', status: 'unsent', ...(marker.length <= MAX_DELIVERY_MARKER_CHARS ? { marker } : {}) } }));
+/** The one phrase that asks for the passcode of one's open diary (read on the room page). A private message that is
+ * exactly this, and nothing else, is answered by the bridge itself with what Authority returns: no model run, no
+ * observation of the request or of the answer, so the passcode never enters a model's context or her memory. */
+export const DIARY_CODE_PHRASE = '日记口令';
+export const diaryCodeReply = code => `你的日记口令是：${code}\n在房间页面里点书桌上的笔记本，输入它，就能看到我写给你的日记。再发一次“日记口令”会换成新的，旧的就不能用了。`;
+export const DIARY_CODE_NONE = '还没有给你写日记。';
 export const OWNER_BUDGET_NOTICE = '提醒：今天的模型开销已经到达每日上限，大肥鱼今天先不再回复任何人，北京时间零点后自动恢复。可以在控制台查看今日开销或调整上限。';
 export class QQBridge {
   /** faces: send her `[名字]` as small faces (only where the bridge sends without the content service); by default
@@ -159,6 +165,7 @@ export class QQBridge {
     const item = this.state.records[requestId] = { status: 'queued' }; this.save();
     const world = (await this.authority.health()).world; item.worldRevision = world.revision;
     if (world.paused || (this.streams.get(observation.streamId)?.queued ?? 0) >= STREAM_QUEUE_LIMIT) { item.status = 'paused'; this.save(); return; }
+    if (!poke && !message.media.length && !message.replyTo && message.authoredText.trim() === DIARY_CODE_PHRASE) return this.diaryCode(observation, item, uid);
     const scope = await this.authority.context({ streamId: observation.streamId, query: observation.text.slice(0, 512), budgetChars: 1 });
     if (!Number.isSafeInteger(scope.memoryEpoch) || scope.memoryEpoch < 0 || typeof scope.entityId !== 'string') { item.status = 'failed'; this.save(); return; }
     item.memoryEpoch = scope.memoryEpoch; item.entityId = scope.entityId;
@@ -213,6 +220,25 @@ export class QQBridge {
       if (this.bursts.get(streamId) === burst) this.bursts.delete(streamId);
       return this.process(burst.entries.sort((a, b) => a.arrival - b.arrival));
     }).then(burst.resolve, burst.reject);
+  }
+  /** "日记口令": Authority says whether this conversation's person is on the open diary's list and, if so, makes a
+   * new passcode; the bridge sends the answer to that same person. Nothing is observed and no model runs. The
+   * passcode is kept nowhere here (the record holds a status only), and an unknown delivery is never sent again:
+   * the person asks once more and gets a new one. */
+  async diaryCode(observation, item, userId) {
+    item.status = 'diary_code'; this.save();
+    let text;
+    try { const answer = await this.authority.diaryCode({ streamId: observation.streamId }); text = answer?.listed === true && typeof answer.code === 'string' ? diaryCodeReply(answer.code) : DIARY_CODE_NONE; }
+    catch { item.status = 'failed'; this.save(); return; }
+    item.status = 'sending'; this.save();
+    try {
+      const sent = await this.onebot.call('send_private_msg', { user_id: userId, message: [{ type: 'text', data: { text } }], auto_escape: true });
+      if (!/^-?\d{1,20}$/.test(String(sent.message_id))) throw new Error('INVALID_SEND_RECEIPT');
+      item.status = 'sent'; item.messageId = String(sent.message_id);
+      // Should the person quote this message later, the quote line says only that it was the passcode.
+      this.sentTexts.set(item.messageId, '（日记口令）'); while (this.sentTexts.size > SENT_TEXTS) this.sentTexts.delete(this.sentTexts.keys().next().value);
+    } catch { item.status = 'unknown'; }
+    this.save();
   }
   /** Daily cap reached: the sender gets silence; the owner gets one QQ notice per Beijing day. */
   async budgetExhausted(cfg, item) {

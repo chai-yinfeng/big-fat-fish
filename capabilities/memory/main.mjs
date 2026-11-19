@@ -4,7 +4,6 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { MemoryCleanup, operatorURL } from './cleanup.js';
 import { AuthorityClient } from '../../authority/src/client.js';
-import { MemoryMaintenance } from './maintenance.js';
 import { MemoryConsolidation } from './consolidation.js';
 import { MemoryDiary } from './diary.js';
 import { completeDiary } from './model-client.js';
@@ -17,12 +16,14 @@ async function main() {
   if (!stat.isFile() || stat.uid !== process.getuid() || stat.mode & 0o077) throw new Error('MEMORY_CONFIG');
   const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
   const authority = new AuthorityClient(cfg.authority);
-  // The old automatic private diary is no longer written: only public drafts are left of the old task.
-  const worker = new MemoryMaintenance({ authority, complete: completeDiary(cfg.gateway), stateFile: cfg.stateFile, maxCallsPerDay: cfg.maxCallsPerDay ?? 4, modes: ['public'] });
+  // Neither of the old task's diaries is written any more (maintenance.js): the automatic private diary gave way
+  // to her private diary, the public draft to the open diary. `stateFile` and `maxCallsPerDay` of an existing
+  // configuration are ignored; what the old task wrote stays in Authority.
   // Per-person consolidation: Authority picks the conversation and keeps the cursor and the daily budget.
   const consolidation = new MemoryConsolidation({ authority, complete: completeDiary(cfg.gateway), ...(cfg.consolidationDeferMs === undefined ? {} : { deferMs: cfg.consolidationDeferMs }) });
-  // Her private diary of a finished Beijing day: Authority decides when and keeps the marker; a call is one of the
-  // entity's daily consolidation batches.
+  // Her diaries of a finished Beijing day, one call each: the private one, then an open one for each person on the
+  // owner's list who has material that day. Authority decides when and for whom and keeps the markers; a call is
+  // one of the entity's daily consolidation batches.
   const diary = new MemoryDiary({ authority, complete: completeDiary(cfg.gateway), ...(cfg.consolidationDeferMs === undefined ? {} : { deferMs: cfg.consolidationDeferMs }) });
   // Optional memory-worker.json `tickMs` / `consolidationDeferMs` (staging shortens both).
   const tickMs = cfg.tickMs ?? 60000;
@@ -42,7 +43,7 @@ async function main() {
     startExecution: () => service('start', ['companion-content.service', 'companion-conversation.service', 'companion-qq.service']),
   });
   let ticking = false;
-  const tick = async () => { if (ticking) return; ticking = true; try { await cleanup.runOnce(); await worker.runOnce(); await consolidation.runOnce(); await diary.runOnce(); } finally { ticking = false; } };
+  const tick = async () => { if (ticking) return; ticking = true; try { await cleanup.runOnce(); await consolidation.runOnce(); await diary.runOnce(); } finally { ticking = false; } };
   await tick();
   const timer = setInterval(() => { void tick(); }, tickMs);
   let stopping = false;

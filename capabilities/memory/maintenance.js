@@ -27,8 +27,8 @@ export function parseDiary(content, batch) {
 
 /** Bounded, incremental housekeeping. This is not a second conversation brain. */
 export class MemoryMaintenance {
-  /** `modes`: which of the two old tasks run. The worker runs only 'public' (drafts from material the operator
-   * made public); the old automatic private diary is no longer written (diary.js writes her diary). */
+  /** `modes`: which of the two old tasks run. The worker (main.mjs) runs neither any more: diary.js writes her
+   * private diary and the open diaries. This class is kept for what it documents and for its tests. */
   constructor({ authority, complete, stateFile, clock = Date.now, maxCallsPerDay = 4, minItems = 2, maxDelayWorldMs = 1800000, modes = ['private', 'public'] }) {
     if (!Array.isArray(modes) || modes.some(mode => !['private', 'public'].includes(mode))) throw failure('MEMORY_CONFIG');
     this.modes = modes;

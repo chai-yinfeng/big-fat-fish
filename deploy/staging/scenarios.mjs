@@ -380,6 +380,101 @@ export const STEPS = {
     if (count === undefined ? !selected.length : selected.length !== count) fail(`${selected.length} consolidation request(s) contain ${JSON.stringify(contains)}, expected ${count ?? 'at least 1'}`);
     if (absent !== undefined && selected.some(entry => entry.maintenance.includes(absent))) fail(`a consolidation request containing ${JSON.stringify(contains)} also contains ${JSON.stringify(absent)}`);
   },
+  /** The owner puts `person` on the open diary's list or takes them off it (operator POST /diary/open/listed, the
+   * route the console uses). The person must already be known to Authority. */
+  async openDiaryList(run, _ctx, { person, listed }) {
+    const value = await run.operator('POST', '/diary/open/listed', { personId: run.personId(person), listed });
+    if (value.people.find(row => row.personId === run.personId(person))?.listed !== listed) fail(`${person} is ${listed ? 'not on' : 'still on'} the open diary list`);
+  },
+  /** Exactly one open diary (operator GET /memory) whose text contains `contains`: written for `person` and nobody
+   * else, of a Beijing day, carrying the persona card it was written under. */
+  async expectOpenDiary(run, _ctx, { person, contains, timeoutMs = 90000 }) {
+    const found = await run.poll(async () => { const diaries = (await run.diaries()).filter(diary => diary.text.includes(contains)); return diaries.length ? diaries : null; }, timeoutMs, `Authority has no diary containing ${JSON.stringify(contains)}`);
+    if (found.length !== 1 || found[0].kind !== 'open') fail(`the diaries containing ${JSON.stringify(contains)} are ${JSON.stringify(found.map(diary => diary.kind))}, expected one open diary`);
+    if (found[0].personLabel !== await run.personLabel(person)) fail(`the open diary is not ${person}'s`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(found[0].day)) fail('the open diary is not of a Beijing day');
+    if (typeof found[0].cardId !== 'string' || !found[0].cardId) fail('the open diary does not carry its persona card');
+    if (JSON.stringify(found[0]).includes(run.qq(person))) fail('the listing of the open diary carries an account number');
+  },
+  /** The open diary requests the model was sent during this scenario (the fake model logs their whole input).
+   * `contains` selects them: at least one, or exactly `count`. Each selected one must contain no `absent` (a text or
+   * a list), hold a day, the persona and digests only (no notes, no earlier diary, no person label), and carry no
+   * account number. Neither old automatic diary task (private diary, public draft) may have been requested at all.
+   * `afterMs`: wait first, to give an unwanted request the time to happen. */
+  async expectOpenDiaryInput(run, ctx, { contains, absent, count, afterMs = 0 }) {
+    await run.sleep(afterMs);
+    const log = run.modelLog(ctx);
+    if (log.some(entry => entry.stream === false && typeof entry.system === 'string' && entry.system.startsWith('你为一个独立实体维护日记'))) fail('an old automatic diary task (private diary or public draft) was requested');
+    const requests = log.filter(entry => entry.openDiary === true);
+    if (!requests.every(entry => typeof entry.maintenance === 'string' && entry.stream === false)) fail('the model request log lacks the open diary input');
+    const selected = requests.filter(entry => entry.maintenance.includes(contains));
+    if (count === undefined ? !selected.length : selected.length !== count) fail(`${selected.length} open diary request(s) contain ${JSON.stringify(contains)}, expected ${count ?? 'at least 1'}`);
+    for (const entry of selected) {
+      for (const text of list(absent ?? [])) if (entry.maintenance.includes(text)) fail(`an open diary request containing ${JSON.stringify(contains)} also contains ${JSON.stringify(text)}`);
+      const leaked = Object.values(run.data.people).find(person => entry.maintenance.includes(person.qq));
+      if (leaked) fail(`an open diary request contains the account number ${leaked.qq}`);
+      const input = JSON.parse(entry.maintenance);
+      if (Object.keys(input).sort().join() !== 'day,digests,persona') fail(`an open diary request holds ${Object.keys(input).join()}, expected day, persona and digests only`);
+      if (!input.digests.length || input.digests.some(row => row.person !== undefined) || /\bp-[0-9a-f]{6}\b/.test(entry.maintenance)) fail('an open diary request names a person');
+      if (!entry.system.startsWith('这是你写给这个人看的日记。')) fail('an open diary request does not say what the diary is for');
+    }
+  },
+  /** `from` sends exactly "日记口令" in their private chat. `listed: true`: the next message delivered to them holds
+   * a passcode (remembered for `readDiary`); `listed: false`: it says no diary is written for them, and holds none.
+   * Either way the bridge answered by itself: Authority recorded neither the request nor the answer, and no model
+   * request of this scenario contains the phrase or the passcode. */
+  async askDiaryCode(run, ctx, { from, listed, timeoutMs = 30000 }) {
+    await STEPS.noteMessages(run, ctx, { person: from });
+    const requests = run.modelLog(ctx).filter(entry => entry.stream).length;
+    await run.onebot('POST', '/message', { user_id: run.qq(from), nickname: from, text: '日记口令' });
+    const message = await run.poll(async () => (await run.sent()).find(item => item.user_id === run.qq(from) && !ctx.matched.has(item.message_id)), timeoutMs, `no message delivered to ${from}`);
+    ctx.matched.add(message.message_id);
+    const code = /^你的日记口令是：([a-z0-9]{8})\n/.exec(message.text)?.[1];
+    if (listed ? !code : message.text !== '还没有给你写日记。') fail(`${from} received ${JSON.stringify(message.text.replace(/[a-z0-9]{8}/, '********').slice(0, 80))}, expected ${listed ? 'a passcode' : 'to be told there is no diary'}`);
+    if (listed) (ctx.diaryCodes ??= new Map()).set(from, code);
+    await run.sleep(1500);
+    await STEPS.expectMessages(run, ctx, { person: from, added: 0, timeoutMs: 1000 });
+    // The memory worker may be asking the model for something of its own meanwhile; no chat run may have started.
+    const log = run.modelLog(ctx);
+    if (log.filter(entry => entry.stream).length !== requests) fail(`${log.filter(entry => entry.stream).length - requests} chat request(s) were made while ${from} asked for the passcode`);
+    if (log.some(entry => JSON.stringify(entry).includes('日记口令') || code && JSON.stringify(entry).includes(code))) fail('a model request contains the passcode phrase or the passcode');
+  },
+  /** The room page's notebook (its server's POST /diary), with the passcode `as` was given by `askDiaryCode`
+   * (`stale: true`: a passcode that person was given earlier and has since replaced). `contains`: the diaries it
+   * opens include one with that text, and none holds any `absent` (a text or a list). Without `contains` the
+   * passcode must open nothing: the same empty 404 as a made-up one. */
+  async readDiary(run, ctx, { as, contains, absent, stale = false }) {
+    if (typeof run.room !== 'function') fail('this replay has no room page (--room-port)');
+    const code = (stale ? ctx.staleDiaryCodes : ctx.diaryCodes)?.get(as) ?? fail(`readDiary: ${as} was given no ${stale ? 'earlier ' : ''}passcode in this scenario`);
+    const answer = await run.room(code);
+    if (contains === undefined) {
+      // Asked once a scenario: the page's server limits the attempts of one client.
+      const unknown = ctx.unknownDiaryCode ??= await run.room('zzzzzzzz');
+      if (unknown.status !== 404 || unknown.text !== '{}') fail(`a made-up passcode was answered ${unknown.status} ${unknown.text.slice(0, 40)}`);
+      if (answer.status !== unknown.status || answer.text !== unknown.text) fail(`the passcode of ${as} was answered ${answer.status}, expected the same answer as a made-up one`);
+      return;
+    }
+    if (answer.status !== 200) fail(`the passcode of ${as} was answered ${answer.status}`);
+    const diaries = JSON.parse(answer.text).diaries;
+    if (!diaries.some(diary => diary.text.includes(contains))) fail(`the notebook of ${as} has no diary containing ${JSON.stringify(contains)}`);
+    if (!diaries.every(diary => Object.keys(diary).sort().join() === 'day,text')) fail('a notebook page holds more than a day and a text');
+    for (const text of list(absent ?? [])) if (answer.text.includes(text)) fail(`the notebook of ${as} contains ${JSON.stringify(text)}`);
+  },
+  /** `from` asks for the passcode again: the one they had becomes their stale one (see `readDiary`). */
+  async renewDiaryCode(run, ctx, { from }) {
+    const old = ctx.diaryCodes?.get(from) ?? fail(`renewDiaryCode: ${from} has no passcode yet`);
+    await STEPS.askDiaryCode(run, ctx, { from, listed: true });
+    if (ctx.diaryCodes.get(from) === old) fail('asking again did not make a new passcode');
+    (ctx.staleDiaryCodes ??= new Map()).set(from, old);
+  },
+  /** The room's public state (its server's GET /state) holds the contract's keys only, and none of `absent`. */
+  async expectRoomState(run, ctx, { absent = [] }) {
+    if (typeof run.roomState !== 'function') fail('this replay has no room page (--room-port)');
+    const answer = await run.roomState();
+    if (answer.status !== 200) fail(`the room state was answered ${answer.status}`);
+    if (Object.keys(JSON.parse(answer.text)).sort().join() !== 'activity,at,clock,lamp,pose,since,source,version,weather') fail('the room state holds more than its contract');
+    for (const text of [...list(absent), ...(ctx.diaryCodes?.values() ?? [])]) if (answer.text.includes(text)) fail(`the room state contains ${JSON.stringify(text.length === 8 ? 'a passcode' : text)}`);
+  },
   /** Staging only (operator POST /memory/diary/trigger, which exists only with `operator.allowDiaryTrigger`): the
    * diary of the running Beijing day is written now, as production writes it for a day that has ended. */
   async triggerDiary(run) { await run.operator('POST', '/memory/diary/trigger', {}); },
@@ -396,12 +491,13 @@ export const STEPS = {
   },
   /** The diary requests the model was sent during this scenario (the fake model logs their whole input). `contains`
    * selects them: at least one, or exactly `count`; each selected one must contain `also` and none `absent`, name
-   * people only by opaque labels and carry no account number. The old automatic private diary must not have been
-   * requested at all. `afterMs`: wait first, to give an unwanted request the time to happen. */
+   * people only by opaque labels and carry no account number. Neither old automatic diary task (private diary, public
+   * draft) may have been requested at all. `afterMs`: wait first, to give an unwanted request the time to happen. */
   async expectDiaryInput(run, ctx, { contains, also, absent, count, afterMs = 0 }) {
     await run.sleep(afterMs);
     const log = run.modelLog(ctx);
     if (log.some(entry => entry.stream === false && typeof entry.system === 'string' && entry.system.startsWith('你为一个独立实体维护日记') && entry.system.includes('私密日记'))) fail('the old automatic private diary was requested');
+    if (log.some(entry => entry.stream === false && typeof entry.system === 'string' && entry.system.startsWith('你为一个独立实体维护日记'))) fail('the old public diary draft was requested');
     const requests = log.filter(entry => entry.diary === true);
     if (!requests.every(entry => typeof entry.maintenance === 'string' && entry.stream === false)) fail('the model request log lacks the diary input');
     const selected = requests.filter(entry => entry.maintenance.includes(contains));
@@ -757,8 +853,9 @@ export class Runner {
   /** gateway(route, body) (optional) posts to the staged gateway's inference socket and resolves to "ok" or the refusal code. */
   /** gatewayAnswer(route, body) (optional) does the same and resolves to { value } (a JSON answer), { bytes, type } (a file) or { code }. */
   /** mock(method, route, body) (optional) is the control socket of the second channel (fake-channel.mjs). */
-  constructor({ data, operator, onebot, mock, gateway, gatewayAnswer, modelScript, modelLog, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), say = () => {} }) {
-    Object.assign(this, { data: validateScenarios(data), operator, onebot, mock, gateway, gatewayAnswer, modelScriptFile: modelScript, modelLogFile: modelLog, sleep, report: say });
+  /** `room` (optional): a passcode -> `{ status, text }` of the room page's POST /diary; `roomState`: of its GET /state. */
+  constructor({ data, operator, onebot, mock, gateway, gatewayAnswer, room, roomState, modelScript, modelLog, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), say = () => {} }) {
+    Object.assign(this, { data: validateScenarios(data), operator, onebot, mock, gateway, gatewayAnswer, room, roomState, modelScriptFile: modelScript, modelLogFile: modelLog, sleep, report: say });
     this.owner = Object.keys(data.people).find(name => data.people[name].owner);
   }
   qq(name) { return this.data.people[name].qq; }
@@ -895,6 +992,20 @@ export function gatewayReader(socketPath, token) {
   });
 }
 
+/** `room` and `roomState` for the Runner: the room page's server on loopback (never a production port). */
+export function roomCaller(port) {
+  if (!Number.isInteger(port) || port < 1024 || port > 65535 || [3001, 3082, 6099, 4173].includes(port)) fail('refusing room port ' + port);
+  const call = (method, route, body) => new Promise((resolve, reject) => {
+    const payload = body === undefined ? undefined : JSON.stringify(body);
+    const req = http.request({ host: '127.0.0.1', port, method, path: route, agent: false, timeout: 20000, headers: payload === undefined ? {} : { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) } }, res => {
+      const chunks = []; res.on('data', chunk => chunks.push(chunk)); res.on('end', () => resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString('utf8') }));
+    });
+    req.on('timeout', () => req.destroy(new Error(`${method} ${route} timed out`)));
+    req.on('error', reject); req.end(payload);
+  });
+  return { room: code => call('POST', '/diary', { code }), roomState: () => call('GET', '/state') };
+}
+
 async function main(argv) {
   const args = Object.fromEntries(argv.reduce((pairs, value, index, all) => index % 2 ? pairs : [...pairs, [value.replace(/^--/, ''), all[index + 1]]], []));
   const port = Number(args['operator-port']);
@@ -904,6 +1015,7 @@ async function main(argv) {
     data: JSON.parse(fs.readFileSync(args.scenarios, 'utf8')), modelScript: args['model-script'], modelLog: args['model-log'], say: line => console.log(line),
     operator: (method, route, body) => request({ host: '127.0.0.1', port, method, path: route, headers: { authorization: 'Bearer ' + token } }, body),
     onebot: (method, route, body) => request({ socketPath: args['onebot-control'], method, path: route }, body),
+    ...(args['room-port'] ? roomCaller(Number(args['room-port'])) : {}),
     ...(args['mock-control'] ? { mock: (method, route, body) => request({ socketPath: args['mock-control'], method, path: route }, body) } : {}),
     ...(args['inference-socket'] && args['inference-token-file'] ? { gateway: gatewayCaller(args['inference-socket'], fs.readFileSync(args['inference-token-file'], 'utf8').trim()), gatewayAnswer: gatewayReader(args['inference-socket'], fs.readFileSync(args['inference-token-file'], 'utf8').trim()) } : {}),
   });

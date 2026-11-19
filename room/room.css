@@ -55,6 +55,17 @@ main { max-width: 1100px; margin: 0 auto; padding: 16px; }
 .drawer p { margin: 2px 0; color: var(--muted); }
 .drawer .close { position: absolute; top: 6px; right: 8px; border: 0; background: none; color: var(--muted); font-size: 20px; cursor: pointer; }
 
+/* The notebook: a passcode, then that person's own diary pages. */
+.notebook { width: min(440px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow-y: auto; }
+.notebook form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.notebook input { width: 9.5em; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font: inherit; letter-spacing: .08em; }
+.notebook form button { background: #5b7fa6; color: #fff; border: 0; border-radius: 6px; padding: 5px 14px; font: inherit; cursor: pointer; }
+.notebook form button:disabled { opacity: .5; cursor: default; }
+.notebook .error { color: #ffb38a; }
+.notebook .pages article { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.notebook .pages h3 { margin: 0 0 4px; font-size: 14px; color: var(--muted); font-weight: 600; }
+.notebook .pages p { color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .caption { margin: 12px 2px 0; font-size: 16px; }
 .notice { color: #ffb38a; }
 .dev { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--muted); }

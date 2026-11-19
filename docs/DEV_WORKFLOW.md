@@ -231,6 +231,10 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
   `expectDigest`、`expectNoDigest`、`expectExtracted`、`expectProvenance`、`expectConsolidationInput`、`expectNoChatContains`、
   `expectConsolidation`、`noteExtracted`、`expectRejected`、`forget`（带 `diaries` 时预览必须正好列出这么多篇将删的日记）、`resume`、
   `triggerDiary`、`expectDiary`、`expectNoDiary`、`expectDiaryInput`、
+  `openDiaryList`（主人把某人加进/移出明面日记名单）、`expectOpenDiary`、`expectOpenDiaryInput`（明面日记的请求里只有这个人自己的摘要）、
+  `askDiaryCode`（这个人在私聊里发“日记口令”：桥直接回，不产生聊天请求、Authority 不多一行记录）、`renewDiaryCode`、
+  `readDiary`（用拿到的口令经房间服务的 `POST /diary` 读笔记本；不带 `contains` 时要求和乱编的口令得到同一个 404）、`expectRoomState`
+  （后两个需要房间服务：staging 在房间已 prepare 时给回放加 `--room-port`，本机测试自己起一个）、
   `expectSplitReply`、`expectBeijingTime`、`expectToolResult`、
   `gatewayCall`、`noteUsage`、`expectUsage`、`expectUsageMatchesSpend`、`usageLimit`、`expectVisionRequests`、
   `providerKey`、`providerJob`、
@@ -242,7 +246,7 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
   `mockExpectLostSends`、`mockAttach`（operator `/people/attach`）、`mockExpectAdmitted`、`expectChannel`（`noteMessages`/`expectMessages` 可带 `"channel": "mock"`）
   （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。带 `consolidate` 的规则只应答记忆 worker 的整合请求
   （按该批对话里出现的 `match` 选规则，没有规则时回一段固定的合法摘要），不应答聊天；整合请求在请求日志里单独标记，
-  `userText` 为空，所以按用户原文匹配的步骤看不到它。带 `diary` 的规则只应答写日记的请求（按当天素材里出现的 `match` 选规则，`usedIds` 取含 `match` 的那些素材；没有规则时回一篇固定的合法私密日记），同样单独标记。生产只写已结束的北京日，回放等不到，所以 staging 在 `authority.json` 写入 `operator.allowDiaryTrigger: true`（发行包的 prepare 脚本不写），场景用 `triggerDiary` 让当天的日记立刻写（preflight 见到这个字段会给警告 `DIARY_TRIGGER_ENABLED`，不拒绝，因为 staging 自己带着它过 preflight）；回放前 staging agent 清掉日记位置标记，同一天可以再回放。`forget` 里清理任务由运行器自己确认（staging 的 memory 单元连不到
+  `userText` 为空，所以按用户原文匹配的步骤看不到它。带 `diary` 的规则只应答写日记的请求（按当天素材里出现的 `match` 选规则，`usedIds` 取含 `match` 的那些素材；没有规则时回一篇固定的合法私密日记），同样单独标记；明面日记的请求（只有一个人的摘要、没有 `notes`）用同一条规则的 `diary.open` 应答，日志里标 `openDiary`。生产只写已结束的北京日，回放等不到，所以 staging 在 `authority.json` 写入 `operator.allowDiaryTrigger: true`（发行包的 prepare 脚本不写），场景用 `triggerDiary` 让当天的日记立刻写（preflight 见到这个字段会给警告 `DIARY_TRIGGER_ENABLED`，不拒绝，因为 staging 自己带着它过 preflight）；回放前 staging agent 清掉日记位置标记，同一天可以再回放。`forget` 里清理任务由运行器自己确认（staging 的 memory 单元连不到
   operator 端口），不清理会话文件。所有人名必须是 `MOCK-xx`，QQ 号必须是
   9999 开头的 12 位假号，否则运行器拒绝。
 - 本机先跑：`node --test deploy/staging/scenarios.test.mjs` 用本 checkout 的真实 Authority、

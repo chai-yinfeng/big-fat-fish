@@ -6,6 +6,9 @@ import { ALL_POSES } from './state.js';
 export const MANIFEST_VERSION = 1;
 /** What a hotspot's drawer tells: always a category from the room state, never anything else. */
 export const HOTSPOT_SHOWS = Object.freeze(['activity', 'weather', 'clock', 'lamp']);
+/** The one hotspot kind that is not a drawer: the notebook, which shows nothing of anyone until a person types
+ * their own passcode (providers/diary.js). */
+export const HOTSPOT_NOTEBOOK = 'diary';
 const IMAGE = /\.(?:svg|png|jpe?g|webp|avif|gif)$/i, VIDEO = /\.(?:webm|mp4)$/i;
 const fail = message => { throw Object.assign(new Error(message), { code: 'ROOM_MANIFEST_INVALID' }); };
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -47,7 +50,7 @@ export function validateManifest(manifest) {
     closed(spot, ['id', 'shows', 'polygon'], 'hotspot');
     if (typeof spot.id !== 'string' || !/^[a-z][a-z0-9-]{0,31}$/.test(spot.id) || ids.has(spot.id)) fail('Invalid hotspot id');
     ids.add(spot.id);
-    if (!HOTSPOT_SHOWS.includes(spot.shows)) fail('Unknown hotspot content: ' + spot.id);
+    if (!HOTSPOT_SHOWS.includes(spot.shows) && spot.shows !== HOTSPOT_NOTEBOOK) fail('Unknown hotspot content: ' + spot.id);
     polygon(spot.polygon, spot.id);
   }
   return manifest;

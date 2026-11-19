@@ -28,6 +28,8 @@
 // { match, diary: { private } }; `usedIds` are the refs of the rows containing `match`. Without such a rule
 // the answer is a plain valid diary using every row. Rules with `diary` answer nothing else. It is logged
 // with `diary: true`, its user message as `maintenance`, and an empty `userText`.
+// An open diary request (one person's digests of the day: the same JSON without `notes`) is answered the same
+// way from the rule's `diary.open`, as `{ open, usedIds }`, and logged with `openDiary: true` instead of `diary`.
 // A web search (the gateway's /v1/web/search) gets one fixed MOCK result and is logged with `search: true`
 // and the query as `userText`. A vision request is a non-streamed chat completion and is answered like one.
 // A release with provider adapters also gets the mock provider (fake-provider.mjs) and its capability row; its
@@ -41,7 +43,7 @@ import { FAKE_CAPABILITY, FAKE_PROVIDER, createFakeProviderUpstream } from './fa
 export const DEFAULT_REPLY = 'MOCK-REPLY';
 export const DEFAULT_USAGE = Object.freeze({ prompt_tokens: 100, completion_tokens: 20 });
 export const DEFAULT_DIGEST = Object.freeze({ summary: 'MOCK-DIGEST 一段没有编排的闲聊', feeling: '', facts: [] });
-export const DEFAULT_DIARY = Object.freeze({ private: 'MOCK-DIARY 私密：没有编排的一天' });
+export const DEFAULT_DIARY = Object.freeze({ private: 'MOCK-DIARY 私密：没有编排的一天', open: 'MOCK-DIARY 明面：没有编排的一天' });
 
 /** The rows of a consolidation request ([ref, speaker, time, text]), or null for any other request. */
 export function consolidationRows(body, userText) {
@@ -52,6 +54,11 @@ export function consolidationRows(body, userText) {
 export function diaryRows(body, userText) {
   if (body?.stream === true) return null;
   try { const input = JSON.parse(userText); return typeof input?.day === 'string' && Array.isArray(input.digests) && Array.isArray(input.notes) ? [...input.digests, ...input.notes].filter(row => typeof row?.ref === 'string') : null; } catch { return null; }
+}
+/** The digest rows of an open diary request (a day and one person's digests, no notes), or null for any other request. */
+export function openDiaryRows(body, userText) {
+  if (body?.stream === true) return null;
+  try { const input = JSON.parse(userText); return typeof input?.day === 'string' && Array.isArray(input.digests) && input.digests.length > 0 && input.notes === undefined && input.messages === undefined ? input.digests.filter(row => typeof row?.ref === 'string') : null; } catch { return null; }
 }
 const textOf = content => typeof content === 'string' ? content : Array.isArray(content) ? content.filter(part => part?.type === 'text').map(part => part.text).join('') : '';
 
@@ -87,13 +94,14 @@ export function planReply(body, rules = []) {
     const usage = { ...DEFAULT_USAGE, total_tokens: DEFAULT_USAGE.prompt_tokens + DEFAULT_USAGE.completion_tokens };
     return { kind: 'text', consolidation: true, maintenance: userText, userText: '', system, context: '', rest: '', notes: [], turns: 1, hashes: [], afterTool: false, usage, stream: false, text: JSON.stringify({ summary: scripted.summary, feeling: scripted.feeling ?? '', facts }) };
   }
-  const material = diaryRows(body, userText);
+  const openMaterial = openDiaryRows(body, userText), material = openMaterial ?? diaryRows(body, userText);
   if (material) {
     const holds = (row, text) => Object.values(row).some(value => typeof value === 'string' && value.includes(text));
     const scripted = rules.find(item => typeof item?.match === 'string' && item.match && item.diary && material.some(row => holds(row, item.match)));
     const usage = { ...DEFAULT_USAGE, total_tokens: DEFAULT_USAGE.prompt_tokens + DEFAULT_USAGE.completion_tokens };
-    const answer = { private: { text: scripted?.diary.private ?? DEFAULT_DIARY.private }, usedIds: material.filter(row => !scripted || holds(row, scripted.match)).map(row => row.ref) };
-    return { kind: 'text', diary: true, maintenance: userText, userText: '', system, context: '', rest: '', notes: [], turns: 1, hashes: [], afterTool: false, usage, stream: false, text: JSON.stringify(answer) };
+    const field = openMaterial ? 'open' : 'private';
+    const answer = { [field]: { text: scripted?.diary[field] ?? DEFAULT_DIARY[field] }, usedIds: material.filter(row => !scripted || holds(row, scripted.match)).map(row => row.ref) };
+    return { kind: 'text', ...(openMaterial ? { openDiary: true } : { diary: true }), maintenance: userText, userText: '', system, context: '', rest: '', notes: [], turns: 1, hashes: [], afterTool: false, usage, stream: false, text: JSON.stringify(answer) };
   }
   const rule = rules.find(item => typeof item?.match === 'string' && item.match && !item.consolidate && !item.diary && userText.includes(item.match)) ?? {};
   const usage = { ...DEFAULT_USAGE, ...rule.usage };
@@ -139,7 +147,7 @@ export function createFakeUpstream({ scriptFile, logFile }) {
     const body = JSON.parse(options.body);
     let rules = []; try { rules = JSON.parse(fs.readFileSync(scriptFile, 'utf8')); } catch {}
     const plan = planReply(body, Array.isArray(rules) ? rules : []);
-    const entry = { at: Date.now(), stream: plan.stream, userText: plan.userText, system: plan.system, context: plan.context, rest: plan.rest, notes: plan.notes, turns: plan.turns, hashes: plan.hashes, afterTool: plan.afterTool, ...(plan.afterTool ? { toolResult: plan.toolResult } : {}), ...(plan.consolidation ? { consolidation: true, maintenance: plan.maintenance } : {}), ...(plan.diary ? { diary: true, maintenance: plan.maintenance } : {}), answer: plan.kind === 'tool' ? { tool: plan.call } : { text: plan.text }, usage: plan.usage };
+    const entry = { at: Date.now(), stream: plan.stream, userText: plan.userText, system: plan.system, context: plan.context, rest: plan.rest, notes: plan.notes, turns: plan.turns, hashes: plan.hashes, afterTool: plan.afterTool, ...(plan.afterTool ? { toolResult: plan.toolResult } : {}), ...(plan.consolidation ? { consolidation: true, maintenance: plan.maintenance } : {}), ...(plan.diary ? { diary: true, maintenance: plan.maintenance } : {}), ...(plan.openDiary ? { openDiary: true, maintenance: plan.maintenance } : {}), answer: plan.kind === 'tool' ? { tool: plan.call } : { text: plan.text }, usage: plan.usage };
     fs.appendFileSync(logFile, JSON.stringify(entry) + '\n', { mode: 0o600 });
     return new Response(renderReply(plan), { status: 200, headers: { 'content-type': plan.stream ? 'text/event-stream' : 'application/json' } });
   };

@@ -15,7 +15,7 @@
 | capabilities/providers | 能力声明（注册表）：每个能力一份数据声明，入口 `index.js`；额度账本、控制台额度页和模型工具 `companion_activity` 读它。`video/` 另有实现：看对方在私聊里分享的视频（见该目录 README） |
 | model-gateway | 私有模型出口及预算，不拥有角色记忆；所有付费供应商的 Key 只在这里（`providers/` 放供应商适配，目前为空） |
 | deploy | 完整发布与运维入口；不可直接修改正式版本目录 |
-| room | 房间：占位画的静态页（`node room/serve.mjs` 本机预览，默认假数据）；发行包里作为用户单元 `companion-room.service` 读 Authority 的只读出口 `GET /v1/room`，只听回环、经 tailscale serve 在 tailnet 内访问，见 [room/README.md](room/README.md) |
+| room | 房间：占位画的静态页（`node room/serve.mjs` 本机预览，默认假数据）；发行包里作为用户单元 `companion-room.service` 读 Authority 的只读出口 `GET /v1/room`，书桌上的笔记本凭本人的“日记口令”读她写给这个人的明面日记（`POST /v1/room/diary`），只听回环、经 tailscale serve 在 tailnet 内访问，见 [room/README.md](room/README.md) |
 
 文字、语音识别、图片描述（表情包按图片只看一次）、授权素材回发、她自己的表情库（只收主人给的）与本地 TTS（Qwen3-TTS）已有实现；QQ 小表情能收，发送默认关闭。
 DSH 时代的遗留目录（plugin、core 等）已删除，需要时查 git 历史；Authority 复用的 `persona.js`、`util.js` 已移入 `authority/src/`。

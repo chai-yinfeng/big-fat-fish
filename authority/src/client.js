@@ -68,6 +68,13 @@ export class AuthorityClient {
     if (![value.uid, value.actorId, value.streamId].every(item => typeof item === 'string' && item && item.length <= 128)) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/people/admit', value);
   }
+  /** A conversation channel's credential: the person of this private conversation asked for their diary passcode.
+   * `{listed:true,code}` (a new passcode; the caller sends it and keeps it nowhere) or `{listed:false}`. */
+  async diaryCode(value) {
+    closed(value, ['streamId'], ['streamId']);
+    if (!text(value.streamId)) throw fail('INVALID_REQUEST');
+    return this.#request('POST', '/v1/diary/code', value);
+  }
   /** A conversation channel's credential: the next run she starts herself, as Authority chose it, or `initiation: null` with a reason. */
   initiationNext() { return this.#request('POST', '/v1/initiations/next', {}); }
   /** A conversation channel's credential, as an ordinary turn of this conversation begins: a finished background job of it that

@@ -3,8 +3,9 @@
 import { ACTIVITIES, WEATHERS, PHASES, roomState, validateRoomState } from './state.js';
 import { fakeState, fixture, STEP_MS } from './providers/fake.js';
 import { liveState, POLL_MS } from './providers/authority.js';
-import { validateManifest, placement } from './manifest.js';
-import { ACTIVITY_TEXT, WEATHER_TEXT, PHASE_TEXT, caption, drawer } from './view.js';
+import { validateManifest, placement, HOTSPOT_NOTEBOOK } from './manifest.js';
+import { ACTIVITY_TEXT, WEATHER_TEXT, PHASE_TEXT, NOTEBOOK_TEXT, caption, drawer } from './view.js';
+import { readDiaries } from './providers/diary.js';
 
 const SVG = 'http://www.w3.org/2000/svg';
 const $ = selector => document.querySelector(selector);
@@ -14,8 +15,8 @@ const points = polygon => polygon.map(point => point.join(',')).join(' ');
 const PHASE_MINUTE = { dawn: 6 * 60, day: 13 * 60, dusk: 18 * 60, night: 22 * 60 };
 
 const query = new URLSearchParams(location.search);
-const stage = $('#stage'), poses = $('.poses'), panel = $('#drawer');
-let manifest, state, shownPose = null, open = null;
+const stage = $('#stage'), poses = $('.poses'), panel = $('#drawer'), notebook = $('#notebook');
+let manifest, state, shownPose = null, open = null, fakeData = false;
 
 function buildSky() {
   const sky = $('.sky'), { width, height } = manifest.stage;
@@ -41,13 +42,44 @@ function buildHotspots() {
   const layer = $('.hotspots'), { width, height } = manifest.stage;
   layer.setAttribute('viewBox', `0 0 ${width} ${height}`);
   for (const spot of manifest.hotspots) {
-    const node = svg('polygon', { points: points(spot.polygon), tabindex: '0', role: 'button', 'aria-label': drawer(spot.shows, state).title }, layer);
-    const show = () => openDrawer(spot.shows);
+    const diary = spot.shows === HOTSPOT_NOTEBOOK;
+    const node = svg('polygon', { points: points(spot.polygon), tabindex: '0', role: 'button', 'aria-label': diary ? NOTEBOOK_TEXT.title : drawer(spot.shows, state).title }, layer);
+    const show = () => diary ? openNotebook() : openDrawer(spot.shows);
     node.addEventListener('click', show);
     node.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); show(); } });
   }
 }
-function openDrawer(shows) { open = shows; renderDrawer(); }
+function openDrawer(shows) { closeNotebook(); open = shows; renderDrawer(); }
+// The notebook: nothing of anyone is shown until a passcode is typed, and closing it forgets both the passcode and
+// the pages. It is not part of the room state and is not redrawn by it.
+function buildNotebook() {
+  const form = notebook.querySelector('form'), error = notebook.querySelector('.error'), pages = notebook.querySelector('.pages'), submit = form.querySelector('button');
+  notebook.querySelector('h2').textContent = NOTEBOOK_TEXT.title;
+  notebook.querySelector('.hint').textContent = NOTEBOOK_TEXT.hint;
+  form.querySelector('span').textContent = NOTEBOOK_TEXT.label;
+  submit.textContent = NOTEBOOK_TEXT.open;
+  const say = message => { error.textContent = message ?? ''; error.hidden = !message; };
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    say(null); pages.replaceChildren(); submit.disabled = true;
+    try {
+      const diaries = await readDiaries(form.elements.code.value, { fake: fakeData });
+      form.elements.code.value = '';
+      pages.replaceChildren(...(diaries.length ? diaries.map(entry => {
+        const page = document.createElement('article');
+        page.append(Object.assign(document.createElement('h3'), { textContent: entry.day }), Object.assign(document.createElement('p'), { textContent: entry.text }));
+        return page;
+      }) : [Object.assign(document.createElement('p'), { textContent: NOTEBOOK_TEXT.empty })]));
+    } catch (failure) { say(failure.message); } finally { submit.disabled = false; }
+  });
+  notebook.querySelector('.close').addEventListener('click', closeNotebook);
+}
+function openNotebook() { open = null; renderDrawer(); notebook.hidden = false; notebook.querySelector('input').focus(); }
+function closeNotebook() {
+  notebook.hidden = true;
+  notebook.querySelector('form').reset(); notebook.querySelector('.pages').replaceChildren();
+  const error = notebook.querySelector('.error'); error.textContent = ''; error.hidden = true;
+}
 function renderDrawer() {
   panel.hidden = open === null;
   if (open === null) return;
@@ -119,8 +151,9 @@ async function start() {
   $('.base').src = manifest.base.src;
   if (manifest.lamp) for (const [name, value] of [['--lamp-x', manifest.lamp.x / manifest.stage.width], ['--lamp-y', manifest.lamp.y / manifest.stage.height], ['--lamp-rx', manifest.lamp.radius / manifest.stage.width], ['--lamp-ry', manifest.lamp.radius / manifest.stage.height]]) $('.glow').style.setProperty(name, value * 100 + '%');
   if (!live) buildDev();
+  fakeData = !live;
   state = live ? first : fakeNow();
-  buildSky(); buildHotspots();
+  buildSky(); buildHotspots(); buildNotebook();
   panel.querySelector('.close').addEventListener('click', () => { open = null; renderDrawer(); });
   stage.hidden = false;
   render(state);

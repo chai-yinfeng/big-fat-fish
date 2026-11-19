@@ -17,7 +17,7 @@
 // operator has changed them, the quiet hours.
 import { randomUUID } from 'node:crypto';
 import { capability, closed, fail, identifier } from './identity.js';
-import { DiaryDomain } from './diary.js';
+import { OpenDiaryDomain } from './open-diary.js';
 import { opaquePerson } from './context.js';
 import { roomProjection } from './room.js';
 
@@ -53,7 +53,7 @@ export function quietHours(at, { fromMinute, toMinute } = INITIATION.quiet) {
 const clock = minute => `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
 const validMinute = value => Number.isInteger(value) && value >= 0 && value < 1440;
 
-export class InitiationDomain extends DiaryDomain {
+export class InitiationDomain extends OpenDiaryDomain {
   // What the content service is to be told about its finished jobs (handed out, settled, carry-only). The transport
   // drains it after each call; a report that is lost is made again when the job is next listed.
   #notices = [];

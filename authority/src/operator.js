@@ -96,6 +96,8 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       if (req.method === 'GET' && url.pathname === '/memory/sources') {
         respond(200, { ok: true, value: authority.memorySources({ id: url.searchParams.get('id') ?? '', ...(url.searchParams.has('entityId') ? { entityId: url.searchParams.get('entityId') } : {}) }) }); return;
       }
+      // The open diary's list: everyone known, who is on it, who has a passcode (never the passcode itself).
+      if (req.method === 'GET' && req.url === '/diary/open') { respond(200, { ok: true, value: authority.openDiaryList() }); return; }
       if (req.method === 'GET' && req.url === '/memory/cleanup/pending') { respond(200, { ok: true, value: authority.cleanupPending() }); return; }
       if (req.method === 'GET' && req.url === '/world') { respond(200, { ok: true, value: await overview(req.headers.authorization) }); return; }
       if (req.method === 'GET' && req.url === '/people') {
@@ -176,6 +178,8 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         '/memory/cleanup/complete': 'cleanupComplete', '/memory/retention': 'setMemoryRetention',
         '/memory/public': 'markMemoryPublic', '/diary/private': 'writePrivateDiary',
         '/diary/draft': 'savePublicDiaryDraft', '/diary/publish': 'publishDiary',
+        // Who gets an open diary, and a new passcode for one of them (shown to the owner once).
+        '/diary/open/listed': 'setOpenDiaryListed', '/diary/open/code': 'resetOpenDiaryCode',
       };
       if (Object.hasOwn(memoryActions, req.url)) value = authority[memoryActions[req.url]](body);
       else if (req.url === '/world/pause') {

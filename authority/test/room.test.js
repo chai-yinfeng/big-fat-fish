@@ -53,12 +53,12 @@ async function fixture(t, { jobs } = {}) {
   return { authority, clock, tokens, request, say, dump, asked };
 }
 
-test('room grant: reads GET /v1/room and nothing else; no other grant reads it; no operator token is involved', async t => {
+test('room grant: reads GET /v1/room (and a person\'s open diaries by passcode, see open-diary.test.js) and nothing else; no other grant reads it; no operator token is involved', async t => {
   // No operator server exists in this fixture at all: the route lives on the capability socket.
   const { request, tokens } = await fixture(t);
   const ok = await request('GET', '/v1/room');
   assert.equal(ok.status, 200); assert.equal(ok.body.ok, true);
-  const posts = ['/v1/observations', '/v1/proposals', '/v1/context', '/v1/memory/search', '/v1/memory/read', '/v1/memory/recall', '/v1/people/admit', '/v1/initiations/next', '/v1/initiations/ack', '/v1/initiations/carry',
+  const posts = ['/v1/observations', '/v1/proposals', '/v1/context', '/v1/memory/search', '/v1/memory/read', '/v1/memory/recall', '/v1/people/admit', '/v1/diary/code', '/v1/initiations/next', '/v1/initiations/ack', '/v1/initiations/carry',
     '/v1/content', '/v1/maintenance/batch', '/v1/maintenance/diary', '/v1/maintenance/consolidation/next', '/v1/maintenance/consolidation/commit',
     '/v1/admin/capabilities', '/v1/admin/actors', '/v1/admin/streams', '/v1/admin/persona', '/v1/room'];
   for (const route of posts) assert.equal((await request('POST', route, tokens.room, {})).status, 403, 'POST ' + route);
