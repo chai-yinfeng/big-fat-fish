@@ -252,6 +252,22 @@ test('the owner shares a link: a background job listens to it piece by piece, fi
   assert.deepEqual(f.reported.map(body => [body.capability, body.outcome]), [['video', 'ok']]);
 });
 
+test('a friend shares a link in their own private conversation: watched like the owner\'s, filed under the friend\'s own message, and the shared cache names neither of them', async t => {
+  const f = fixture(t);
+  const friend = owner({ personId: 'person:qq:999900000003', streamId: 'qq:999900000001:private:999900000003' });
+  assert.deepEqual(await f.watch('MOCK001', friend, 'MOCK-friend-event-1'), { status: 'processing', minutes: 5, derived: true, isNewEvidence: false, isVerbatimUserText: false });
+  const job = await f.settled();
+  assert.deepEqual([job.status, job.scope.personId, job.scope.streamId, f.reserved], ['done', friend.personId, friend.streamId, ['video']]);
+  // The note is the friend's conversation's; the owner's conversation has nothing of it, in the store or by asking.
+  const reference = f.store.latest(friend, 'note');
+  assert.deepEqual([reference.sourceEventId, reference.streamId, reference.personId, f.store.latest(owner(), 'note')], ['MOCK-friend-event-1', friend.streamId, friend.personId, null]);
+  assert.deepEqual([(await f.provider.call(friend, { activity: 'status' })).status, (await f.provider.call(owner(), { activity: 'status' })).status, (await f.provider.call(owner(), { activity: 'page' })).code], ['done', 'none', 'nothing_watched']);
+  // The owner shares the same video afterwards: the same cache entry answers, which says nothing of who shared it first.
+  const again = await f.watch('MOCK001', owner(), 'MOCK-event-2');
+  assert.deepEqual([again.cached, again.note, f.list().length, f.reserved.length, f.cache().length], [true, job.result, 1, 1, 1]);
+  assert.equal(JSON.stringify(f.cache()).match(/person:|qq:9999|MOCK-friend-event|MOCK-event|MOCK-request|entity:mock|owner/), null);
+});
+
 test('status and page speak of this conversation\'s own watching only', async t => {
   const f = fixture(t);
   assert.deepEqual(await f.provider.call(owner(), { activity: 'status' }), { status: 'none', derived: true, isNewEvidence: false, isVerbatimUserText: false });
@@ -269,9 +285,9 @@ test('status and page speak of this conversation\'s own watching only', async t 
   await assert.rejects(f.provider.call(owner(), { activity: 'find', input: {} }), { code: 'MEDIA_ACTION_DENIED' });
 });
 
-test('who may ask and what is refused before anything runs: only the owner\'s own conversation, only listed sites, only while configured and within the day\'s count', async t => {
+test('who may ask and what is refused before anything runs: anyone in their own private conversation, only listed sites, only while configured and within the day\'s count', async t => {
   const f = fixture(t);
-  for (const scope of [owner({ personId: 'person:qq:999900000003' }), owner({ audience: 'shared' })]) for (const activity of ['watch', 'status', 'page']) assert.deepEqual(await f.provider.call(scope, { activity, input: activity === 'watch' ? { url: LINK('MOCK001') } : {}, sourceEventId: 'e' }), { status: 'failed', code: 'not_allowed', derived: true, isNewEvidence: false, isVerbatimUserText: false });
+  for (const scope of [owner({ audience: 'shared' }), owner({ personId: 'person:qq:999900000003', audience: 'shared' }), owner({ personId: undefined }), owner({ personId: '' })]) for (const activity of ['watch', 'status', 'page']) assert.deepEqual(await f.provider.call(scope, { activity, input: activity === 'watch' ? { url: LINK('MOCK001') } : {}, sourceEventId: 'e' }), { status: 'failed', code: 'not_allowed', derived: true, isNewEvidence: false, isVerbatimUserText: false });
   assert.equal((await f.watch('https://elsewhere.mock.invalid/v/MOCK001')).code, 'unsupported_link');
   assert.equal((await f.watch('-J')).code, 'unsupported_link');
   f.limitReached = true;

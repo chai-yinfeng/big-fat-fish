@@ -203,8 +203,9 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
      */
     async call(scope, { activity, input = {}, sourceEventId, requestId } = {}) {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw fail('MEDIA_INPUT_INVALID');
-      // Step 4 of the plan: only what the owner shares, in the owner's own private conversation.
-      if (scope.personId !== 'person:owner' || scope.audience !== 'private') return refused('not_allowed');
+      // Anyone Authority admitted may share a video, each in their own private conversation (the scope Authority bound
+      // to this request names the person; who that is makes no difference here). Nothing else is a place for it.
+      if (typeof scope.personId !== 'string' || !scope.personId || scope.audience !== 'private') return refused('not_allowed');
       if (activity === 'status') {
         if (Object.keys(input).length) throw fail('MEDIA_INPUT_INVALID');
         const job = jobs().recent(scope, 'video');

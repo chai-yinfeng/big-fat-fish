@@ -485,8 +485,9 @@ export const STEPS = {
    * the last): waits until its state is `status` and telling the person stands as `notice` ("none", "pending",
    * "carry", "issued", or how it was closed: "sent", "carried", ...). A finished job shows its result, a refused one
    * its reason (`code`). The list never holds an account number. With `capability` it is instead the newest job of
-   * that capability on the list: one she registered herself (companion_activity), which the runner has no id of. */
-  async expectJob(run, ctx, { job, capability, status, notice, code, timeoutMs = 60000 }) {
+   * that capability on the list: one she registered herself (companion_activity), which the runner has no id of.
+   * The job must be the owner's; with `owner: false` it must be somebody else's (a friend shared a video). */
+  async expectJob(run, ctx, { job, capability, status, notice, code, owner = true, timeoutMs = 60000 }) {
     const id = capability !== undefined ? null : ctx.jobs?.[job === undefined ? ctx.jobs.length - 1 : job - 1] ?? fail('expectJob: no such demo job in this scenario');
     let seen = null;
     const told = entry => entry.notice.state === 'closed' ? entry.notice.outcome : entry.notice.state;
@@ -499,18 +500,19 @@ export const STEPS = {
         return seen && seen.status === status && (notice === undefined || told(seen) === notice);
       }, timeoutMs, 'timeout');
     } catch (error) { if (error.message !== 'timeout') throw error; fail(`the job is ${seen ? `${seen.status}, telling ${told(seen)}` : 'not listed'}, expected ${status}${notice === undefined ? '' : ', telling ' + notice}`); }
-    if (seen.owner !== true) fail('the job is not the owner\'s');
+    if (seen.owner !== owner) fail(owner ? 'the job is not the owner\'s' : 'the job is the owner\'s');
     if (code !== undefined && seen.failureCode !== code) fail(`the job's reason is ${seen.failureCode}, expected ${code}`);
     if (status === 'done' && !['dropped'].includes(String(told(seen)).split(':')[0]) && !(typeof seen.result === 'string' && seen.result)) fail('the finished job shows no result');
   },
   /** `noteCompletions` remembers the completion requests on the operator's list (GET /initiative/log);
    * `expectCompletions` then requires exactly these new ones since, oldest first, each closed with the given outcome:
-   * how often she was asked to tell a finished job, and how each telling ended. */
+   * how often she was asked to tell a finished job, and how each telling ended. One that is not about the owner's
+   * job reads `not-the-owner:<outcome>` (a friend's video). */
   async noteCompletions(run, ctx) { ctx.completions = new Set((await run.operator('GET', '/initiative/log')).items.filter(item => item.kind === 'completion').map(item => item.id)); },
   async expectCompletions(run, ctx, { outcomes, timeoutMs = 60000 }) {
     if (!ctx.completions) fail('expectCompletions: no noted completions');
     let seen;
-    const since = async () => (await run.operator('GET', '/initiative/log')).items.filter(item => item.kind === 'completion' && !ctx.completions.has(item.id)).reverse().map(item => item.owner !== true ? 'not-the-owner' : item.status === 'closed' ? item.outcome : item.status);
+    const since = async () => (await run.operator('GET', '/initiative/log')).items.filter(item => item.kind === 'completion' && !ctx.completions.has(item.id)).reverse().map(item => (item.owner !== true ? 'not-the-owner:' : '') + (item.status === 'closed' ? item.outcome : item.status));
     try { await run.poll(async () => JSON.stringify(seen = await since()) === JSON.stringify(outcomes), timeoutMs, 'timeout'); } catch (error) { if (error.message !== 'timeout') throw error; fail(`the completions since are ${JSON.stringify(seen)}, expected ${JSON.stringify(outcomes)}`); }
   },
   /** The fake OneBot leaves the next `count` sends without a receipt, as when the platform's answer is lost. */

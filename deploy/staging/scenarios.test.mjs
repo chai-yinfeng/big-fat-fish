@@ -670,6 +670,10 @@ test('job steps: the demo job is registered with nothing but its seconds, a job 
   await assert.rejects(STEPS.expectJob(run, ctx, { job: 1, status: 'done', notice: 'carried' }), /shows no result/);
   jobs = [listed('job:a', 'done', { state: 'closed', outcome: 'carried' }, { owner: false })];
   await assert.rejects(STEPS.expectJob(run, ctx, { job: 1, status: 'done' }), /not the owner's/);
+  // Somebody else's job is expected only when the step says so.
+  await STEPS.expectJob(run, ctx, { job: 1, status: 'done', owner: false });
+  jobs = [listed('job:a', 'done', { state: 'closed', outcome: 'carried' })];
+  await assert.rejects(STEPS.expectJob(run, ctx, { job: 1, status: 'done', owner: false }), /is the owner's/);
   jobs = [listed('job:a', 'done', { state: 'closed', outcome: 'sent' }, { person: owner })];
   await assert.rejects(STEPS.expectJob(run, ctx, { job: 1, status: 'done' }), /the job list contains the account number/);
   // Completions: only the ones since the note, oldest first, each by how it ended; pokes are not counted.
@@ -685,6 +689,7 @@ test('job steps: the demo job is registered with nothing but its seconds, a job 
   await assert.rejects(STEPS.expectCompletions(run, ctx, { outcomes: ['deferred:budget', 'carried', 'sent'], timeoutMs: 0 }), /"issued"\]/);
   items = [item('c3', 'completion', 'closed', 'sent', { owner: false }), ...items.slice(1)];
   await assert.rejects(STEPS.expectCompletions(run, ctx, { outcomes: ['deferred:budget', 'carried', 'sent'], timeoutMs: 0 }), /not-the-owner/);
+  await STEPS.expectCompletions(run, ctx, { outcomes: ['deferred:budget', 'carried', 'not-the-owner:sent'], timeoutMs: 0 });
 });
 
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 600000 }, async t => {
