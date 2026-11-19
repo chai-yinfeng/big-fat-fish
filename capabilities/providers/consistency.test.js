@@ -1,6 +1,7 @@
 // Consistency: every hand-written list of capabilities, actions, fields, purposes and spend categories in the
-// product, held against the capability declarations and the tables derived from them (./index.js). Nothing reads the
-// derived tables yet, so each test here names one list that a later step replaces with its table.
+// product, held against the capability declarations and the tables derived from them (./index.js). The executor
+// (tools.js), the model gateway and the content service read their tables already; each other test here names one
+// list that a later step replaces with its table.
 //
 // Where a list and the declarations disagree today, the difference is written down in KNOWN_DRIFT and asserted
 // exactly: fixing one (or adding a new one) fails the test until this table is updated on purpose.
@@ -10,7 +11,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DECLARATIONS, CAPABILITIES, ACTIVITIES, ACTIVITY_TOOL, CONTENT_TOOL, MODEL_ACTIONS, ACTIVITY_TOOL_DEFINITION, CONTENT_SCOPE_FIELDS, CONTENT_ACTIONS, CONTENT_FIELDS, GATEWAY_PURPOSES, SPEND_CATEGORIES, SPEND_STOP, GATEWAY_DEFAULT_LIMITS, CONFIGS, FORGET_OWNERS } from './index.js';
 import { TOOL_RULES } from '../conversation/tool-rules.js';
-import { ACTIVITY_TOOL_SCHEMA, CONTENT_TOOL_SCHEMA, createCompanionTools } from '../conversation/tools.js';
+import { ACTIVITY_TOOL_SCHEMA, CONTENT_TOOL_SCHEMA, SCOPE_TOOL_SCHEMA, createCompanionTools } from '../conversation/tools.js';
 import { CATEGORIES, STOP, RESERVED_STOP } from '../../model-gateway/spend.mjs';
 import { CONTENT_SERVICE_ACTIONS, checkContentActions } from '../media/service.js';
 
@@ -72,29 +73,59 @@ test('declarations: the new fields have one closed shape, and `rules` only picks
   }
   // No name in the table that no declaration uses.
   assert.deepEqual(sorted(new Set(MODEL_ACTIONS.flatMap(action => action.rules))), sorted(Object.keys(TOOL_RULES)));
-  assert.ok(Object.isFrozen(TOOL_RULES) && Object.values(TOOL_RULES).every(text => typeof text === 'string' && text.length > 0));
+  // Name -> function: each rule is code of the tool layer, run at one of its stages.
+  assert.ok(Object.isFrozen(TOOL_RULES) && Object.values(TOOL_RULES).every(rule => typeof rule === 'function' && ['turn', 'request', 'call', 'result'].includes(rule.stage) && typeof rule.text === 'string' && rule.text.length > 0));
   // The seven actions that had no declaration now have one, none of them with a ledger row.
   const unmetered = DECLARATIONS.filter(item => !item.meter).flatMap(item => item.actions.map(action => action.content.action));
   assert.deepEqual(unmetered, ['ingest', 'asset', 'attach', 'pending', 'stickerKeep', 'stickerPick', 'jobResult']);
 });
 
-test('executor (tools.js): the generated companion_activity definition is byte for byte the hand-written one', () => {
-  // service.test.js pins what is sent to the provider (PINNED_ALL_TOOLS_SHA256) from tools.js; equal bytes here mean
-  // the generated definition gives the same hash.
-  assert.equal(JSON.stringify(ACTIVITY_TOOL_DEFINITION), JSON.stringify(ACTIVITY_TOOL_SCHEMA));
+test('executor (tools.js): the companion_activity definition is the generated one', () => {
+  // service.test.js pins what is sent to the provider (PINNED_ALL_TOOLS_SHA256) from tools.js, so the bytes of the
+  // generated definition are held there.
+  assert.equal(ACTIVITY_TOOL_SCHEMA, ACTIVITY_TOOL_DEFINITION);
+  // The executor checks a declared field as a string or an integer, nothing else.
+  for (const action of MODEL_ACTIONS.filter(action => action.tool === ACTIVITY_TOOL)) for (const key of action.keys) assert.ok(['string', 'integer'].includes(action.input[key].schema.type), `${action.capability}.${action.action} ${key}`);
   assert.deepEqual(MODEL_ACTIONS.filter(action => action.tool === ACTIVITY_TOOL).map(action => `${action.capability}.${action.action}`), ACTIVITIES.flatMap(item => item.actions.map(action => `${item.capability}.${action}`)));
   // One field name means one thing across the tool: no two actions declare the same input field.
   const fields = MODEL_ACTIONS.filter(action => action.tool === ACTIVITY_TOOL).flatMap(action => action.keys);
   assert.equal(new Set(fields).size, fields.length);
 });
 
-test('executor (tools.js): the frozen companion_content tool offers exactly the declared actions and fields', () => {
+test('executor (tools.js): the frozen companion_content tool offers exactly the declared actions and fields', async () => {
   const declared = MODEL_ACTIONS.filter(action => action.tool === CONTENT_TOOL), properties = CONTENT_TOOL_SCHEMA.parameters.properties;
   assert.deepEqual(sorted(properties.action.enum), sorted(declared.map(action => action.action)));
   assert.deepEqual(sorted(Object.keys(properties).filter(key => key !== 'action')), sorted(new Set(declared.flatMap(action => action.keys))));
-  // The hand-written dispatch names each action as a literal.
-  const dispatch = found(source('capabilities/conversation/tools.js'), /async function contentAction[\s\S]*?!\[([^\]]*)\]\.includes\(args\.action\)/, 'tools.js contentAction');
-  assert.deepEqual(sorted(quoted(dispatch)), sorted(declared.map(action => action.action)));
+  // The dispatch is the declarations': an action that is not a declared one of this tool is refused before anything
+  // is asked (a content action's own name, another tool's action, no action at all).
+  const asked = [];
+  const tool = createCompanionTools({ authority: {}, content: { call: async request => { asked.push(request); return {}; } }, scope: { streamId: 's1', memoryEpoch: 3 }, requestId: 'r1', evidence: [], guard: async () => {} }).find(item => item.name === CONTENT_TOOL);
+  const undeclared = [...CONTENT_ACTIONS.map(row => row.action), ...MODEL_ACTIONS.filter(action => action.tool !== CONTENT_TOOL).map(action => action.action), undefined].filter(name => !declared.some(action => action.action === name));
+  for (const action of undeclared) await assert.rejects(tool.execute('call', { action, ref: 'ref-1', url: 'https://video.invalid/v/1', query: 'weather' }), { code: 'INVALID_REQUEST' }, String(action));
+  assert.equal(asked.length, 0);
+});
+
+// The two older model tools, written out: the whole list of what they offer. An approval gate, not a ban: an action
+// that belongs in one of them by meaning is added there, by changing this list with the owner's approval (the tool
+// definition changes, so the prompt cache is lost once).
+const FROZEN_TOOLS = Object.freeze({
+  // Her own memory, which Authority owns. No capability declaration offers anything through it today.
+  companion_scope: Object.freeze({ actions: ['evidence', 'propose', 'receipt', 'search', 'read', 'recall'], declared: [] }),
+  companion_content: Object.freeze({ actions: ['search', 'read', 'describe', 'transcribe', 'attach'], declared: ['vision.describe', 'web.search', 'web.read', 'speech-asr.transcribe', 'media.attach'] }),
+});
+
+test('frozen tools: companion_scope and companion_content offer the written-out actions, and no declaration adds one', () => {
+  const how = '按语义选工具：同步只读查阅→companion_content；她的记忆→companion_scope；要花时间或有副作用→companion_activity。往前两个工具加动作需要更新冻结名单（consistency.test.js 的 FROZEN_TOOLS；经主人批准，会让提示缓存失效一次）。';
+  assert.deepEqual(SCOPE_TOOL_SCHEMA.parameters.properties.action.enum, FROZEN_TOOLS.companion_scope.actions, how);
+  assert.deepEqual(CONTENT_TOOL_SCHEMA.parameters.properties.action.enum, FROZEN_TOOLS.companion_content.actions, how);
+  assert.deepEqual([SCOPE_TOOL_SCHEMA.name, CONTENT_TOOL_SCHEMA.name, CONTENT_TOOL], ['companion_scope', 'companion_content', 'companion_content']);
+  for (const item of DECLARATIONS) for (const action of item.actions) {
+    if (!action.model || !Object.hasOwn(FROZEN_TOOLS, action.model.tool)) continue;
+    const frozen = FROZEN_TOOLS[action.model.tool], name = `${item.id}.${action.name}`;
+    assert.ok(frozen.declared.includes(name) && frozen.actions.includes(action.name), `${name} 声明了 model.tool: '${action.model.tool}'，但它不在冻结名单里。${how}`);
+  }
+  // And none has gone missing: the list is exactly what is declared.
+  for (const [tool, frozen] of Object.entries(FROZEN_TOOLS)) assert.deepEqual(DECLARATIONS.flatMap(item => item.actions.filter(action => action.model && action.model.tool === tool).map(action => `${item.id}.${action.name}`)), frozen.declared, how);
 });
 
 test('executor (tools.js): every declared model action runs with its declared fields and reaches its declared content action', async () => {
