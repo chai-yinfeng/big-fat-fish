@@ -1,12 +1,13 @@
 // Shared UI for the standalone browser entry. Styling lives in standalone.css.
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
-import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, initiationResult, validJobs, jobNotice } from './operator-client.js';
+import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validCards, cardTags, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, initiationResult, validJobs, jobNotice } from './operator-client.js';
 import { validRuntime, ttsBackend, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
 const NS = 'companion.world';
 const VOICE_DRAFT = { voiceId: '', label: '', language: 'ja', usageScope: 'private' };
+const CARD_NEW = { title: '', tags: '', summary: '', copyFrom: '' };
 // Only a display preference; never secrets or world content.
 const THEME_KEY = 'companion-world:theme';
 // Data-driven navigation: a new page adds one entry here and one renderer below.
@@ -135,6 +136,13 @@ export function WorldConsole({ t, standalone = false }) {
   const [jobs, setJobs] = useState(null);
   // "The same person": which account (an index pair, never an account number) goes to which person (an opaque label).
   const [attachDraft, setAttachDraft] = useState({ account: '', target: '', confirmed: false });
+  // Persona cards (appended, same reason): the library, the card in the editor (null: the current one), its title,
+  // tags and summary as typed (null: unchanged), the new-card form, and the switch or deletion awaiting confirmation.
+  const [cards, setCards] = useState(null);
+  const [cardEdit, setCardEdit] = useState(null);
+  const [cardMeta, setCardMeta] = useState(null);
+  const [cardNew, setCardNew] = useState(CARD_NEW);
+  const [cardConfirm, setCardConfirm] = useState(null);
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -160,6 +168,7 @@ export function WorldConsole({ t, standalone = false }) {
     setQuota(null); setQuotaOpen(null); setQuotaHistory(null); setLimitDraft({});
     setProviders(null); setProviderClear(null);
     setInitiations(null); setJobs(null);
+    setCards(null); setCardEdit(null); setCardMeta(null); setCardNew(CARD_NEW); setCardConfirm(null);
   }
   async function request(path, payload, credential = token, query) {
     const controller = new AbortController();
@@ -195,6 +204,15 @@ export function WorldConsole({ t, standalone = false }) {
     if (!validWorld(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
     if (!mounted.current || generation.current !== current) return;
     setData(value); setDraft(personaDraft(value.persona.value)); setPersonaPreview(null); setModelName(value.model.model || 'deepseek-flash');
+    // The editor now holds the persona in force, which is the current card's.
+    setCardEdit(null); setCardMeta(null);
+  }
+  // The persona card library. It only lists: what the editor holds is not touched.
+  async function loadCards(credential = token) {
+    const current = generation.current, value = await request('/persona/cards', undefined, credential);
+    if (!validCards(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
+    if (mounted.current && generation.current === current) { setCards(value); setCardConfirm(null); }
+    return value;
   }
   async function loadQQ(credential = token) {
     const current = generation.current;
@@ -246,6 +264,7 @@ export function WorldConsole({ t, standalone = false }) {
   useEffect(() => { if (token) void run(async () => { await load(token); if (tab === 'runtime') await loadProviders(token); if (standalone && tab === 'runtime') await loadRuntime(token); }); }, [token]);
   useEffect(() => { if (token && tab === 'channels') void run(async () => { await loadQQ(token); await loadInitiations(token); await loadJobs(token); }); }, [token, tab]);
   useEffect(() => { if (token && tab === 'people') void run(() => loadPeople(token)); }, [token, tab]);
+  useEffect(() => { if (token && tab === 'persona') void run(() => loadCards(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'quota') void run(() => loadQuota(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'runtime') void run(async () => { await loadProviders(token); if (standalone) await loadRuntime(token); }); }, [tab]);
   // Shell effects: theme attribute, toast lifetime, scroll reset, global shortcuts.
@@ -275,9 +294,10 @@ export function WorldConsole({ t, standalone = false }) {
   function go(key) {
     if (key !== 'memory') { setMemory(null); setForgetPreview(null); setMemoryFilter(''); setConsolidation(null); setMemorySources({}); }
     if (key !== 'quota') { setQuotaOpen(null); setQuotaHistory(null); setLimitDraft({}); }
+    if (key !== 'persona') setCardConfirm(null);
     setTab(key); setDrawer(false);
   }
-  const refreshAll = () => run(async () => { await load(); if (tab === 'runtime') await loadProviders(); if (standalone && tab === 'runtime') await loadRuntime(); if (tab === 'quota') await loadQuota(); });
+  const refreshAll = () => run(async () => { await load(); if (tab === 'runtime') await loadProviders(); if (standalone && tab === 'runtime') await loadRuntime(); if (tab === 'quota') await loadQuota(); if (tab === 'persona') await loadCards(); });
   function field(key, multiline = false) {
     return h('label', { key }, h('span', null, t(key)), h(multiline ? 'textarea' : 'input', {
       name: key, value: draft[key], disabled: busy, rows: multiline ? 3 : undefined, onChange: event => setDraft({ ...draft, [key]: event.target.value }),
@@ -463,13 +483,36 @@ export function WorldConsole({ t, standalone = false }) {
             h('td', { className: 'bff-mono' }, String(conversation.messages)), h('td', null, conversation.lastAt ? time(conversation.lastAt) : '—'), h('td', { className: 'bff-mono' }, String(conversation.memoryEpoch))))))) : text('noBindings')));
   }
   function persona() {
-    const dirty = JSON.stringify(draft) !== JSON.stringify(personaDraft(data.persona.value));
-    return h('form', { className: 'bff-stack', onSubmit: event => { event.preventDefault(); void run(async () => {
-      await request('/persona', { patch: personaPatch(draft) }); await load(); setNotice(t('saved'));
-    }); } },
+    // With the library read, the editor holds one card (the current one unless another was picked); without it
+    // (an Authority that has no cards, or a failed read) it edits the persona in force as before.
+    const editing = cards ? cards.cards.find(card => card.id === cardEdit) || cards.cards.find(card => card.current) : null;
+    const base = !editing || editing.current ? data.persona.value : editing.persona;
+    // Title, tags (one line) and summary only describe the card for picking it here; they are no part of the persona.
+    const kept = editing ? { title: editing.title, tags: editing.tags.join('、'), summary: editing.summary } : null;
+    const meta = cardMeta ?? kept, metaDirty = Boolean(editing) && JSON.stringify(meta) !== JSON.stringify(kept);
+    const dirty = JSON.stringify(draft) !== JSON.stringify(personaDraft(base)) || metaDirty;
+    const editCard = card => { setCardEdit(card.id); setCardMeta(null); setDraft(personaDraft(card.current ? data.persona.value : card.persona)); setPersonaPreview(null); };
+    const save = () => run(async () => {
+      if (!editing) { await request('/persona', { patch: personaPatch(draft) }); await load(); }
+      else {
+        await request('/persona/cards/update', { id: editing.id, patch: personaPatch(draft), ...(metaDirty ? { title: meta.title, tags: cardTags(meta.tags), summary: meta.summary } : {}), ...(editing.current ? { expectedRevision: data.persona.revision } : {}) });
+        if (editing.current) await load();
+        const saved = (await loadCards()).cards.find(card => card.id === editing.id);
+        if (saved && !saved.current) editCard(saved);
+      }
+      setNotice(t('saved'));
+    });
+    return h(React.Fragment, null,
+    cards && personaCards(editing, dirty, editCard),
+    h('form', { id: 'bff-card-editor', className: 'bff-stack', onSubmit: event => { event.preventDefault(); void save(); } },
     h('div', { className: 'bff-persona' },
       h('div', { className: 'bff-stack' },
         h('section', { className: 'bff-card' }, cardHead(h('div', null, h('h2', null, `${t('personaRevision')}: ${data.persona.revision}`), text('arrayHint'))),
+          editing && h('div', { className: 'bff-form-grid' },
+            h('label', null, h('span', null, t('cardsPanel.cardTitle')), h('input', { name: 'cardTitle', value: meta.title, required: true, maxLength: 40, disabled: busy, onChange: event => setCardMeta({ ...meta, title: event.target.value }) })),
+            h('label', null, h('span', null, t('cardsPanel.tags')), h('input', { name: 'cardTags', value: meta.tags, maxLength: 90, placeholder: t('cardsPanel.tagsHint'), disabled: busy, onChange: event => setCardMeta({ ...meta, tags: event.target.value }) }))),
+          editing && h('label', null, h('span', null, t('cardsPanel.summary')), h('input', { name: 'cardSummary', value: meta.summary, maxLength: 60, placeholder: t('cardsPanel.summaryHint'), disabled: busy, onChange: event => setCardMeta({ ...meta, summary: event.target.value }) })),
+          editing && alert('info', t(editing.current ? 'cardsPanel.editingCurrent' : 'cardsPanel.editingOther')),
           h('div', { className: 'bff-form-grid' }, ...['name', 'userCallName', 'relationshipStage'].map(key => field(key))),
           text('personaPanel.neutralHint'),
           field('identity', true),
@@ -479,8 +522,64 @@ export function WorldConsole({ t, standalone = false }) {
     h('div', { className: 'bff-savebar' },
       dirty ? badge(t('personaPanel.unsaved'), 'warn', h('span', { className: 'bff-dot' })) : null,
       h('p', { className: 'bff-grow' }, t('conflictHint')),
-      button('discard', () => setDraft(personaDraft(data.persona.value)), { className: 'bff-ghost' }),
-      h('button', { type: 'submit', disabled: busy }, icon('save'), t('save'))));
+      button('discard', () => { setDraft(personaDraft(base)); setCardMeta(null); }, { className: 'bff-ghost' }),
+      h('button', { type: 'submit', disabled: busy }, icon('save'), t('save')))),
+    cardConfirm && cardConfirmation());
+  }
+  // The card library: every card, which one is current and which one the editor holds; a new card is a copy of an
+  // existing one or the built-in default persona. Picking another card would drop unsaved edits, so it waits for them.
+  function personaCards(editing, dirty, editCard) {
+    const create = () => run(async () => {
+      const value = await request('/persona/cards', { title: cardNew.title, tags: cardTags(cardNew.tags), summary: cardNew.summary, ...(cardNew.copyFrom ? { copyFrom: cardNew.copyFrom } : {}) });
+      if (!validCards(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
+      setCards(value); setCardNew(CARD_NEW);
+      const made = value.cards.find(card => card.id === value.id);
+      if (made) editCard(made);
+      setNotice(t('cardsPanel.created'));
+    });
+    const full = Number.isFinite(cards.limit) && cards.cards.length >= cards.limit;
+    return h('section', { className: 'bff-card' },
+      cardHead(h('div', null, h('h2', null, t('cardsPanel.title'), ' ', badge(Number.isFinite(cards.limit) ? `${cards.cards.length} / ${cards.limit}` : String(cards.cards.length))), text('cardsPanel.hint'))),
+      ...cards.cards.map(card => h('div', { className: 'bff-list-row', key: card.id },
+        h('div', { className: 'bff-grow' },
+          h('div', { className: 'bff-row' }, h('strong', null, card.title), card.current ? badge(t('cardsPanel.current'), 'ok', icon('check')) : null, card.id === editing.id ? badge(t('cardsPanel.editing'), 'primary') : null),
+          card.tags.length ? h('div', { className: 'bff-row', style: { flexWrap: 'wrap', gap: '4px', margin: '4px 0' } }, ...card.tags.map(tag => h('span', { key: tag }, badge(tag)))) : null,
+          card.summary ? h('div', { className: 'bff-small' }, card.summary) : null,
+          h('div', { className: 'bff-small bff-muted' }, `${t('name')}: ${card.current ? data.persona.value.name : card.persona.name}`, card.updatedAt ? ` · ${t('cardsPanel.updated')} ${time(card.updatedAt)}` : '')),
+        h('div', { className: 'bff-actions' },
+          // The editor is below the list: bring it into view (a library of several cards is taller than the window).
+          button('cardsPanel.edit', () => { editCard(card); try { document.getElementById('bff-card-editor').scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch {} }, { disabled: busy || dirty || card.id === editing.id, className: 'bff-ghost bff-sm' }),
+          !card.current && button('cardsPanel.activate', () => setCardConfirm({ kind: 'activate', id: card.id }), { disabled: busy || dirty, className: 'bff-sm', icon: 'check' }),
+          !card.current && button('cardsPanel.delete', () => setCardConfirm({ kind: 'delete', id: card.id }), { disabled: busy || dirty, className: 'bff-danger-ghost bff-sm', icon: 'trash' })))),
+      dirty && alert('warn', t('cardsPanel.dirtyHint')),
+      h('form', { onSubmit: event => { event.preventDefault(); void create(); } },
+        h('div', { className: 'bff-form-grid' },
+          h('label', null, h('span', null, t('cardsPanel.newTitle')), h('input', { name: 'newCardTitle', value: cardNew.title, required: true, maxLength: 40, disabled: busy || dirty || full, onChange: event => setCardNew({ ...cardNew, title: event.target.value }) })),
+          h('label', null, h('span', null, t('cardsPanel.tags')), h('input', { name: 'newCardTags', value: cardNew.tags, maxLength: 90, placeholder: t('cardsPanel.tagsHint'), disabled: busy || dirty || full, onChange: event => setCardNew({ ...cardNew, tags: event.target.value }) })),
+          h('label', null, h('span', null, t('cardsPanel.summary')), h('input', { name: 'newCardSummary', value: cardNew.summary, maxLength: 60, placeholder: t('cardsPanel.summaryHint'), disabled: busy || dirty || full, onChange: event => setCardNew({ ...cardNew, summary: event.target.value }) })),
+          h('label', null, h('span', null, t('cardsPanel.source')), h('select', { name: 'newCardSource', value: cardNew.copyFrom, disabled: busy || dirty || full, onChange: event => setCardNew({ ...cardNew, copyFrom: event.target.value }) },
+            h('option', { value: '' }, t('cardsPanel.blank')), ...cards.cards.map(card => h('option', { key: card.id, value: card.id }, `${t('cardsPanel.copyOf')} ${card.title}`))))),
+        full && text('cardsPanel.full'),
+        h('button', { type: 'submit', disabled: busy || dirty || full || !cardNew.title.trim() }, icon('plus'), t('cardsPanel.create'))));
+  }
+  function cardConfirmation() {
+    const target = cards?.cards.find(card => card.id === cardConfirm.id), close = () => setCardConfirm(null);
+    if (!target || target.current) return null;
+    const activate = cardConfirm.kind === 'activate';
+    return dialog(t(activate ? 'cardsPanel.activateTitle' : 'cardsPanel.deleteTitle'), [h('p', { key: 'card' }, h('strong', null, target.title)), h('p', { key: 'warning', className: 'bff-muted' }, t(activate ? 'cardsPanel.activateWarning' : 'cardsPanel.deleteWarning'))], [
+      button('cardsPanel.cancel', close, { className: 'bff-ghost', autoFocus: true, key: 'cancel' }),
+      activate
+        ? button('cardsPanel.activateConfirm', () => run(async () => {
+          await request('/persona/cards/activate', { id: target.id, expectedRevision: data.persona.revision });
+          await load(); await loadCards(); setNotice(t('cardsPanel.activated'));
+        }), { icon: 'check', key: 'confirm' })
+        : button('cardsPanel.deleteConfirm', () => run(async () => {
+          const value = await request('/persona/cards/delete', { id: target.id });
+          if (!validCards(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
+          setCards(value); setCardConfirm(null);
+          if (cardEdit === target.id) { setCardEdit(null); setCardMeta(null); setDraft(personaDraft(data.persona.value)); setPersonaPreview(null); }
+          setNotice(t('cardsPanel.deleted'));
+        }), { className: 'bff-danger', icon: 'trash', key: 'confirm' })], close);
   }
   function personaExamples() {
     const examples = draft.examples;
@@ -908,11 +1007,12 @@ export function WorldConsole({ t, standalone = false }) {
       if (palette) setPalette(null);
       else if (forgetPreview && !busy) setForgetPreview(null);
       else if (confirmRemove !== false && !busy) setConfirmRemove(false);
+      else if (cardConfirm && !busy) setCardConfirm(null);
       else if (drawer) setDrawer(false);
       return;
     }
     const target = event.target || {};
-    if (palette || forgetPreview || confirmRemove !== false || event.metaKey || event.ctrlKey || event.altKey || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable) return;
+    if (palette || forgetPreview || confirmRemove !== false || cardConfirm || event.metaKey || event.ctrlKey || event.altKey || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable) return;
     if (key.toLowerCase() === 'g') { gPressedAt.current = Date.now(); return; }
     if (Date.now() - gPressedAt.current < 1200) {
       gPressedAt.current = 0;
@@ -939,7 +1039,7 @@ export function WorldConsole({ t, standalone = false }) {
         h('button', { type: 'submit', disabled: busy || !input.trim() }, icon('lock'), t('login')))),
       busyLive, toasts);
   }
-  const tabLoading = busy && ((tab === 'channels' && !qq) || (tab === 'people' && !people) || (tab === 'quota' && !quota) || (standalone && tab === 'runtime' && !runtimeInfo));
+  const tabLoading = busy && ((tab === 'channels' && !qq) || (tab === 'people' && !people) || (tab === 'persona' && !cards) || (tab === 'quota' && !quota) || (standalone && tab === 'runtime' && !runtimeInfo));
   const current = NAV.find(item => item.id === tab) || NAV[0];
   return h('div', { className: `bff-world bff-app${drawer ? ' bff-drawer-open' : ''}`, 'aria-busy': busy },
     h('aside', { className: 'bff-side', 'aria-label': t('title') },

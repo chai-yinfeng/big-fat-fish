@@ -8,8 +8,9 @@ import { createJobs, forgetJobs } from './jobs.js';
 import { ArtifactStore } from './artifacts.js';
 import { MediaService } from './service.js';
 import { createVideoProvider, VIDEO } from '../providers/video/provider.js';
-import { NOTE, NOTE_HEAD, plain, clockText, tooLittleSpeech, sectionsOf, pagesOf, summaryRequests, mergeRequest, parseSummary, renderNote } from '../providers/video/note.js';
-import { LIMITS, loadVideoConfig, matchSite, metadataArgs, downloadArgs, convertArgs, childCommand, runChild, refusalCode, metadataOf, audioFormat } from '../providers/video/source.js';
+import { NOTE, NOTE_HEAD, FRAMES_HEAD, FRAME_QUESTION, plain, clockText, tooLittleSpeech, sectionsOf, pagesOf, summaryRequests, mergeRequest, parseSummary, renderNote, mergeFrames, framesText } from '../providers/video/note.js';
+import { LIMITS, loadVideoConfig, matchSite, metadataArgs, downloadArgs, videoDownloadArgs, convertArgs, sceneArgs, grabArgs, childCommand, runChild, refusalCode, metadataOf, audioFormat, videoFormat } from '../providers/video/source.js';
+import { PICK, sceneCuts, candidateTimes, averageHash, hashDistance } from '../providers/video/frames.js';
 import { MOCK_SITE } from '../../deploy/staging/fake-ytdlp.mjs';
 
 // Only the MOCK site and made-up hosts appear here: nothing of a real site belongs in this repository.
@@ -18,15 +19,15 @@ const LINK = id => `https://video.mock.invalid/v/${id}`;
 const owner = (extra = {}) => ({ entityId: 'entity:mock', streamId: 'qq:999900000001:private:999900000002', personId: 'person:owner', audience: 'private', memoryEpoch: 0, ...extra });
 const until = async (check, label = 'condition') => { for (let i = 0; i < 1000; i++) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 10)); } throw new Error('never: ' + label); };
 const SUMMARY = JSON.stringify({ summary: 'MOCK-整体摘要：讲了两件事。', sections: [{ n: 1, title: 'MOCK-小标题', line: 'MOCK-一句话摘要' }] });
-// A stand-in ffmpeg: two pieces, each a copy of the input. Written per test (it is not a staging tool).
-const FAKE_FFMPEG = `import fs from 'node:fs';const a=process.argv.slice(2);const input=a[a.indexOf('-i')+1];if(a.at(-1)!=='piece-%04d.wav'||!a.includes('-nostdin')){process.stderr.write('MOCK-USAGE');process.exit(2);}if(fs.readFileSync(input).length<44)process.exit(3);for(const n of [0,1])fs.copyFileSync(input,'piece-000'+n+'.wav');`;
+// The stand-in ffmpeg (audio: two pieces, each a copy of the input; stills: fixed cuts and patterned pictures).
+const fakeFfmpeg = fileURLToPath(new URL('../../deploy/staging/fake-ffmpeg.mjs', import.meta.url));
 
-function fixture(t, { configure = true, limits, speech = {}, summarize } = {}) {
+function fixture(t, { configure = true, limits, speech = {}, summarize, describeFrame } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'fish-video-')));
   t.after(() => { assert.ok(root.startsWith(fs.realpathSync(os.tmpdir()) + path.sep + 'fish-video-')); fs.rmSync(root, { recursive: true }); });
   const f = { root, world: { paused: false, revision: 3 }, reserved: [], reported: [], heard: [], asked: [], logs: [], limitReached: false };
   f.configFile = path.join(root, 'operator/providers/video.json'); fs.mkdirSync(path.dirname(f.configFile), { recursive: true });
-  f.ffmpeg = path.join(root, 'fake-ffmpeg.mjs'); fs.writeFileSync(f.ffmpeg, FAKE_FFMPEG);
+  f.ffmpeg = fakeFfmpeg; f.looked = [];
   f.write = (change = {}) => fs.writeFileSync(f.configFile, JSON.stringify({ schemaVersion: 1, ytdlp: [process.execPath, fakeYtdlp], ffmpeg: [process.execPath, f.ffmpeg], sandbox: { kind: 'none' }, sites: [MOCK_SITE], ...(limits ? { limits } : {}), ...change }), { mode: 0o600 });
   if (configure) f.write();
   f.store = new ArtifactStore({ root: path.join(root, 'media-data') });
@@ -43,9 +44,10 @@ function fixture(t, { configure = true, limits, speech = {}, summarize } = {}) {
   f.provider = createVideoProvider({
     configFile: f.configFile, cacheRoot: f.cacheRoot, workRoot: f.workRoot, store: f.store, speech: f.speech, jobs: () => f.jobs, log: line => f.logs.push(line),
     summarize: async request => { f.asked.push(request); if (summarize) return summarize(request); return { content: SUMMARY }; },
+    describeFrame: async request => { f.looked.push(request); if (describeFrame) return describeFrame(request, f.looked.length); return { description: `MOCK-画面${f.looked.length}` }; },
   });
   f.jobs = createJobs({
-    file: path.join(f.store.root, 'jobs.json'), runners: { video: f.provider.runner }, worldStatus: async () => ({ ...f.world }), worldCheckMs: 10,
+    file: path.join(f.store.root, 'jobs.json'), runners: { video: f.provider.runner, 'video-frames': f.provider.framesRunner }, worldStatus: async () => ({ ...f.world }), worldCheckMs: 10,
     usage: { reserve: async capability => { if (f.limitReached) throw Object.assign(new Error('x'), { code: 'CONTENT_BUDGET_EXHAUSTED' }); f.reserved.push(capability); }, record: async body => { f.reported.push(body); } },
   });
   t.after(() => f.jobs.close());
@@ -139,10 +141,10 @@ test('the operator file: a closed shape, absolute executables, anchored https pa
   assert.equal(loadVideoConfig(f.configFile), null);
   f.write({ limits: { pieceSeconds: 60 } });
   const config = loadVideoConfig(f.configFile);
-  assert.deepEqual([config.sandbox, config.limits, config.sites[0].id, config.sites[0].skipHosts], [{ kind: 'none' }, { maxDurationSeconds: 3600, maxFilesizeMiB: 300, pieceSeconds: 60 }, 'MOCK', ['skip.mock.invalid']]);
+  assert.deepEqual([config.sandbox, config.limits, config.sites[0].id, config.sites[0].skipHosts], [{ kind: 'none' }, { maxDurationSeconds: 3600, maxFilesizeMiB: 300, pieceSeconds: 60, framesPerVideo: 3 }, 'MOCK', ['skip.mock.invalid']]);
   const bad = [{ schemaVersion: 2 }, { ytdlp: ['yt-dlp'] }, { ytdlp: [] }, { ffmpeg: 'ffmpeg' }, { sandbox: { kind: 'docker' } }, { sandbox: { kind: 'bwrap', bwrap: 'bwrap' } }, { sandbox: { kind: 'bwrap', bwrap: '/usr/bin/bwrap', readOnly: ['relative'] } }, { sandbox: { kind: 'none', bwrap: '/usr/bin/bwrap' } },
     { sites: [] }, { sites: [{ ...MOCK_SITE, patterns: ['https://video.mock.invalid/.*'] }] }, { sites: [{ ...MOCK_SITE, patterns: ['^http://video.mock.invalid/'] }] }, { sites: [{ ...MOCK_SITE, patterns: ['^https://(unclosed'] }] }, { sites: [{ ...MOCK_SITE, id: 'bad id' }] },
-    { sites: [MOCK_SITE, MOCK_SITE] }, { sites: [{ ...MOCK_SITE, cookies: '/x' }] }, { limits: { pieceSeconds: 501 } }, { limits: { maxDurationSeconds: 0 } }, { limits: { other: 1 } }, { extra: true }];
+    { sites: [MOCK_SITE, MOCK_SITE] }, { sites: [{ ...MOCK_SITE, cookies: '/x' }] }, { limits: { pieceSeconds: 501 } }, { limits: { maxDurationSeconds: 0 } }, { limits: { framesPerVideo: 7 } }, { limits: { framesPerVideo: 0 } }, { limits: { other: 1 } }, { extra: true }];
   for (const change of bad) { f.write(change); assert.throws(() => loadVideoConfig(f.configFile), { code: 'VIDEO_CONFIG' }, JSON.stringify(change)); }
   f.write(); fs.chmodSync(f.configFile, 0o644);
   assert.throws(() => loadVideoConfig(f.configFile), { code: 'VIDEO_CONFIG' });
@@ -436,4 +438,139 @@ test('forgetting removes the job records of what was forgotten: by the message t
   assert.deepEqual(forgetJobs({ ...plan, file: path.join(f.root, 'absent.json') }), { removed: 0 });
   fs.writeFileSync(file, '{broken'); assert.throws(() => forgetJobs(plan), { code: 'MEDIA_JOB_STATE' });
   assert.throws(() => forgetJobs({ ...plan, sourceEvents: 'x' }), { code: 'MEDIA_FORGET_PLAN' });
+});
+
+// Stills ("静帧按需"): only on request, or when the video has no usable voice.
+
+test('choosing stills: scene cuts make shots, the middles of the longest come first, a single take gets even spacing, near-duplicates share a hash', () => {
+  assert.deepEqual(sceneCuts('frame:0    pts:51200   pts_time:4\nlavfi.scene_score=0.70\nframe:1    pts:179200  pts_time:14.5\nlavfi.scene_score=0.9\njunk pts_time:99\n'), [4, 14.5]);
+  assert.deepEqual([sceneCuts(''), sceneCuts(null)], [[], []]);
+  // Shots of 10, 40, 10 and 35 seconds: longest first, then evenly spaced times not close to a chosen one.
+  assert.deepEqual(candidateTimes({ cuts: [10, 50, 60], durationMs: 95000, wanted: 3 }), [30, 77.5, 5, 55, 23.75, 47.5, 71.25]);
+  assert.deepEqual(candidateTimes({ cuts: [10, 50, 60], durationMs: 95000, wanted: 1 }), [30, 77.5, 5]);
+  // One long take; cuts at the very ends and outside the video are ignored; nothing for nothing.
+  assert.deepEqual(candidateTimes({ cuts: [0.2, 99.9, 500], durationMs: 100000, wanted: 3 }), [50, 25, 75]);
+  assert.deepEqual([candidateTimes({ cuts: [], durationMs: 0, wanted: 3 }), candidateTimes({ cuts: [], durationMs: 9000, wanted: 0 })], [[], []]);
+  assert.ok(candidateTimes({ cuts: Array.from({ length: 100 }, (_, n) => n + 1), durationMs: 200000, wanted: 3 }).length <= 3 * PICK.candidatesPerStill);
+  const a = averageHash(Buffer.from(Array.from({ length: 64 }, (_, n) => n < 32 ? 10 : 200))), b = averageHash(Buffer.from(Array.from({ length: 64 }, (_, n) => n < 33 ? 10 : 200)));
+  assert.deepEqual([hashDistance(a, a), hashDistance(a, b), averageHash(Buffer.alloc(63)), averageHash('x')], [0, 1, null, null]);
+});
+
+test('stills command lines: the lowest video stream from a host not skipped, scene cuts to a file, one small JPEG and its 8x8 grey bytes a still', () => {
+  assert.deepEqual(videoDownloadArgs({ format: 'mock-video', maxFilesizeMiB: 300 }).slice(-4), ['-f', 'mock-video', '-o', 'video.%(ext)s']);
+  assert.deepEqual(sceneArgs({ input: 'video.mp4' }), ['-nostdin', '-v', 'error', '-i', './video.mp4', '-an', '-sn', '-dn', '-vf', 'select=gt(scene\\,0.3),metadata=print:file=scenes.txt', '-f', 'null', '-']);
+  assert.deepEqual(grabArgs({ input: 'video.mp4', seconds: 77.5, name: 'frame-01' }), ['-nostdin', '-v', 'error', '-ss', '77.500', '-i', './video.mp4', '-an', '-sn', '-dn', '-frames:v', '1', '-vf', 'scale=w=512:h=512:force_original_aspect_ratio=decrease', '-q:v', '5', 'frame-01.jpg', '-frames:v', '1', '-vf', 'scale=8:8:flags=area,format=gray', '-f', 'rawvideo', 'frame-01.gray']);
+  const site = { skipHosts: ['skip.mock.invalid'] };
+  const formats = [{ format_id: 'skip', vcodec: 'v', acodec: 'none', height: 144, url: 'https://SKIP.mock.invalid/x' }, { format_id: 'hd', vcodec: 'v', acodec: 'none', height: 1080, tbr: 3000 }, { format_id: 'sd', vcodec: 'v', acodec: 'none', height: 360, tbr: 900 }, { format_id: 'sd-small', vcodec: 'v', acodec: 'none', height: 360, tbr: 400 },
+    { format_id: 'board', vcodec: 'v', ext: 'mhtml', height: 180 }, { format_id: 'audio', vcodec: 'none', acodec: 'a' }, { format_id: '--exec', vcodec: 'v', height: 120 }, null];
+  assert.equal(videoFormat({ formats }, site), 'sd-small');
+  assert.deepEqual([videoFormat({ formats: formats.slice(5) }, site), videoFormat({}, site)], [null, null]);
+});
+
+test('stills in the note: their own lines at the end, the note still at most 1200 characters with its untrusted-content head kept', () => {
+  const frames = [{ atMs: 5000, text: 'MOCK 画面\n甲' }, { atMs: 30000, text: 'MOCK 画面乙'.repeat(40) }];
+  const short = mergeFrames([NOTE_HEAD, '标题：MOCK'].join('\n'), frames);
+  assert.equal(short, [NOTE_HEAD, '标题：MOCK', '画面（机器看图，每行是一张静帧的描述）：', '[00:05] MOCK 画面 甲', plain('[00:30] ' + 'MOCK 画面乙'.repeat(40), 110)].join('\n'));
+  const long = mergeFrames([NOTE_HEAD, ...Array.from({ length: 40 }, (_, n) => `第${n}行` + 'x'.repeat(40))].join('\n'), frames);
+  assert.ok(long.length <= NOTE.chars && long.startsWith(NOTE_HEAD + '\n') && long.endsWith(plain('[00:30] ' + 'MOCK 画面乙'.repeat(40), 110)));
+  assert.equal(mergeFrames('x', []), 'x');
+  assert.equal(framesText({ meta: { title: 'MOCK 标题' }, frames }).split('\n').slice(0, 3).join('\n'), [FRAMES_HEAD, '标题：MOCK 标题', '[00:05] MOCK 画面 甲'].join('\n'));
+});
+
+test('frames on request: a job of its own for the video this conversation watched, three stills of different shots looked at once each, then cached for everybody', async t => {
+  const f = fixture(t);
+  await f.watch('MOCK001'); await f.settled();
+  // Watching a video with a voice looks at no picture.
+  assert.deepEqual(f.looked, []);
+  const asked = await f.provider.call(owner(), { activity: 'frames', input: {}, requestId: 'MOCK-request-2' });
+  assert.deepEqual(asked, { status: 'processing', minutes: 3, derived: true, isNewEvidence: false, isVerbatimUserText: false });
+  await until(() => f.list().length === 2 && f.list()[0].status === 'done', 'frames done');
+  const job = f.list()[0];
+  assert.deepEqual([job.capability, job.action, job.title, job.scope.streamId], ['video-frames', 'frames', '看视频画面', owner().streamId]);
+  // Filed under the message that shared the link, so forgetting that message removes it too.
+  assert.deepEqual(f.jobs.control({ action: 'pending' }).jobs.find(item => item.id === job.id).source, { requestId: 'MOCK-request-2', sourceEventId: 'MOCK-event-1' });
+  // Cuts at 10/50/60 s: the 40-second shot, then (the 35-second shot is the same picture as the 40-second one) the 10-second ones.
+  assert.equal(job.result, [FRAMES_HEAD, '标题：MOCK 视频 MOCK001', '[00:05] MOCK-画面1', '[00:30] MOCK-画面2', '[00:55] MOCK-画面3'].join('\n'));
+  assert.deepEqual(f.looked.map(request => [request.mime, request.question, Buffer.from(request.imageBase64, 'base64').subarray(0, 3).toString('hex'), Object.keys(request).sort().join()]), Array(3).fill(['image/jpeg', FRAME_QUESTION, 'ffd8ff', 'imageBase64,mime,question,signal']));
+  // No slot of the day's videos and no report of its own: each still is counted at the gateway.
+  assert.deepEqual([f.reserved, f.reported.map(body => body.capability)], [['video'], ['video']]);
+  const [entry] = f.cache();
+  assert.deepEqual(entry.frames, [{ atMs: 5000, text: 'MOCK-画面1' }, { atMs: 30000, text: 'MOCK-画面2' }, { atMs: 55000, text: 'MOCK-画面3' }]);
+  assert.ok(entry.note.length <= NOTE.chars && entry.note.startsWith(NOTE_HEAD) && entry.note.endsWith('画面（机器看图，每行是一张静帧的描述）：\n[00:05] MOCK-画面1\n[00:30] MOCK-画面2\n[00:55] MOCK-画面3'));
+  assert.equal(JSON.stringify(entry).match(/person:|qq:9999|MOCK-event|MOCK-request|entity:mock|owner|mock\.invalid\/v\//), null);
+  assert.deepEqual(f.work(), []);
+  // Asked again, here or by somebody who shares the same video: from the cache, nothing looked at again.
+  assert.deepEqual(await f.provider.call(owner(), { activity: 'frames' }), { status: 'done', text: job.result, frames: 3, cached: true, derived: true, isNewEvidence: false, isVerbatimUserText: false });
+  const friend = owner({ personId: 'person:qq:999900000003', streamId: 'qq:999900000001:private:999900000003' });
+  assert.equal((await f.watch('MOCK001', friend, 'MOCK-friend-event')).note, entry.note);
+  assert.equal((await f.provider.call(friend, { activity: 'frames' })).cached, true);
+  assert.deepEqual([f.looked.length, f.list().length], [3, 2]);
+});
+
+test('frames are only for the video this very conversation watched; the per-video count is the operator\'s; a refusal by the gateway is a fixed code', async t => {
+  const f = fixture(t, { limits: { framesPerVideo: 1 } });
+  const friend = owner({ personId: 'person:qq:999900000003', streamId: 'qq:999900000001:private:999900000003' });
+  // Nothing watched here; the owner's video is not the friend's to ask about, nor another conversation's; a shared place neither.
+  assert.equal((await f.provider.call(owner(), { activity: 'frames' })).code, 'nothing_watched');
+  await f.watch('MOCK001'); await f.settled();
+  for (const scope of [friend, owner({ streamId: 'mock:other' })]) assert.equal((await f.provider.call(scope, { activity: 'frames' })).code, 'nothing_watched');
+  assert.equal((await f.provider.call(owner({ audience: 'shared' }), { activity: 'frames' })).code, 'not_allowed');
+  for (const input of [{ url: LINK('MOCK002') }, { key: 'MOCK:MOCK002' }, { purpose: 'frame' }]) await assert.rejects(f.provider.call(owner(), { activity: 'frames', input }), { code: 'MEDIA_INPUT_INVALID' });
+  assert.equal(f.list().length, 1);
+  // One still a video, as configured.
+  await f.provider.call(owner(), { activity: 'frames' });
+  await until(() => f.list()[0].capability === 'video-frames' && f.list()[0].status === 'done', 'one still');
+  assert.deepEqual([f.looked.length, f.cache()[0].frames.length, f.list()[0].result.split('\n').length], [1, 1, 3]);
+  // The day's stills used up (or the spend tier) before any was looked at: the job fails with that code, nothing cached.
+  for (const [code, expected] of [['CONTENT_BUDGET_EXHAUSTED', 'daily_limit'], ['CONTENT_SPEND_RESTRICTED', 'spend_tier']]) {
+    const g = fixture(t, { describeFrame: async () => { throw Object.assign(new Error('x'), { code }); } });
+    await g.watch('MOCK001'); await g.settled();
+    await g.provider.call(owner(), { activity: 'frames' });
+    await until(() => g.list().length === 2 && !['queued', 'running'].includes(g.list()[0].status), expected);
+    assert.deepEqual([g.list()[0].status, g.list()[0].failureCode, g.looked.length, g.cache()[0].frames, g.work()], ['failed', expected, 1, undefined, []]);
+  }
+  // Refused after two: the two are kept (and the video costs no more), the third is not made up.
+  const h = fixture(t, { describeFrame: async (request, n) => { if (n === 3) throw Object.assign(new Error('x'), { code: 'CONTENT_BUDGET_EXHAUSTED' }); return { description: 'MOCK-画面' + n }; } });
+  await h.watch('MOCK001'); await h.settled();
+  await h.provider.call(owner(), { activity: 'frames' });
+  await until(() => h.list().length === 2 && h.list()[0].status === 'done', 'partial');
+  assert.deepEqual(h.cache()[0].frames.map(frame => frame.text), ['MOCK-画面1', 'MOCK-画面2']);
+  // A video without a video stream: nothing to look at.
+  const k = fixture(t);
+  await k.watch('MOCKNOVIDEO'); await k.settled();
+  await k.provider.call(owner(), { activity: 'frames' });
+  await until(() => k.list().length === 2 && k.list()[0].status === 'failed', 'no video');
+  assert.deepEqual([k.list()[0].failureCode, k.looked.length, k.work()], ['unavailable', 0, []]);
+});
+
+test('no usable voice: the watch job looks at the stills itself; if the gateway refuses them the note is filed without', async t => {
+  const quiet = fixture(t, { speech: { speechMs: 1000 } });
+  await quiet.watch('MOCK001'); const job = await quiet.settled();
+  assert.deepEqual([job.status, job.capability, quiet.cache()[0].source, quiet.looked.length, quiet.asked.length, quiet.list().length], ['done', 'video', 'empty_unconfirmed', 3, 0, 1]);
+  assert.match(job.result, /\n文本来源：无可用人声（没有得到可用的转写，不等于视频里没人说话）\n/);
+  assert.ok(job.result.endsWith('画面（机器看图，每行是一张静帧的描述）：\n[00:05] MOCK-画面1\n[00:30] MOCK-画面2\n[00:55] MOCK-画面3') && job.result.length <= NOTE.chars);
+  assert.deepEqual([quiet.cache()[0].frames.length, quiet.reserved, quiet.work()], [3, ['video'], []]);
+  // Asked for afterwards: already there.
+  assert.equal((await quiet.provider.call(owner(), { activity: 'frames' })).cached, true);
+  // A video with a voice, or one nobody could listen to (no recognizer), is not looked at unasked.
+  const deaf = fixture(t, { speech: { status: { longAudio: { vadPresent: false, maxAudioSeconds: 30 } } } });
+  await deaf.watch('MOCK001'); await deaf.settled();
+  assert.deepEqual([deaf.cache()[0].source, deaf.looked.length], ['unavailable', 0]);
+  const refused = fixture(t, { speech: { speechMs: 0 }, describeFrame: async () => { throw Object.assign(new Error('x'), { code: 'CONTENT_BUDGET_EXHAUSTED' }); } });
+  await refused.watch('MOCK001'); const kept = await refused.settled();
+  assert.deepEqual([kept.status, refused.cache()[0].frames, refused.logs, refused.work()], ['done', undefined, ['VIDEO_FRAMES_SKIPPED daily_limit'], []]);
+  assert.doesNotMatch(kept.result, /画面（机器看图/);
+});
+
+test('forgetting the message that shared a video removes its stills job with it', async t => {
+  const f = fixture(t), file = path.join(f.store.root, 'jobs.json');
+  await f.watch('MOCK001', owner(), 'MOCK-event-1'); await f.settled();
+  await f.provider.call(owner(), { activity: 'frames' });
+  await until(() => f.list().length === 2 && f.list()[0].status === 'done', 'frames');
+  await f.jobs.close();
+  assert.deepEqual(forgetJobs({ file, entityId: 'entity:mock', sourceEvents: [{ streamId: owner().streamId, eventId: 'MOCK-event-1' }] }), { removed: 2 });
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')).jobs, []);
+  // The share's own reference (and with it the way to ask for these stills) goes by the media store's rule.
+  f.store.forget({ entityId: 'entity:mock', sourceEvents: [{ streamId: owner().streamId, eventId: 'MOCK-event-1' }] });
+  assert.equal((await f.provider.call(owner(), { activity: 'frames' })).code, 'nothing_watched');
 });

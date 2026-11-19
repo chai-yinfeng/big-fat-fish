@@ -4,8 +4,9 @@ import { capability, canonical, closed, contextScope, enumeration, fail, identif
 import { POLICIES, validatePayload, review } from './policies.js';
 import { normalizePersona, validatePersonaPatch } from './persona.js';
 import { tokenize } from './util.js';
-import { renderContextParts, renderProfile, renderContinuation, RETRIEVED_ITEMS, DEFAULT_CONTEXT_CHARS, personaBudget, personaContextText, opaquePerson, opaqueStream } from './context.js';
+import { renderContextParts, renderProfile, renderContinuation, CONTINUATION_CHARS, RETRIEVED_ITEMS, DEFAULT_CONTEXT_CHARS, personaBudget, personaContextText, opaquePerson, opaqueStream } from './context.js';
 import { BACKGROUND_PROPOSAL } from './consolidation.js';
+import { CARDS_KEY, CARD_SUMMARY_CHARS, CARD_TAGS, CARD_TAG_CHARS, CARD_TITLE_CHARS, DEFAULT_CARD_ID, MAX_PERSONA_CARDS, initialLibrary } from './cards.js';
 import { InitiationDomain } from './initiations.js';
 import { channel } from '../../capabilities/channels/index.js';
 export {
@@ -254,15 +255,141 @@ export class Authority extends InitiationDomain {
       if(input.expectedRevision!==undefined&&e.persona_revision!==input.expectedRevision)fail('CONFLICT','Persona revision conflicts',409);
       const persona=validated(()=>normalizePersona({
         ...JSON.parse(e.persona),...input.patch
-      })),personaRevision=e.persona_revision+1;
-      this.store.db.prepare('UPDATE entities SET persona=?,persona_revision=? WHERE id=?').run(JSON.stringify(persona),personaRevision,e.id);
-      const revision=this.store.nextRevision();
-      this.store.audit({
-        type:'persona.revision',entityId:e.id,revision,personaRevision,patch:input.patch,reason:input.reason,at:this.now()
-      });
-      return{
-        entityId:e.id,revision,personaRevision,persona
-      };
+      })),all=this.#cardState();
+      // The current card's content is this row; a library that was never written has nothing to note.
+      if(all[e.id]){
+        all[e.id].cards[all[e.id].currentId].updatedAt=this.now();
+        this.#saveCards(all);
+      }
+      return this.#setPersona(e,persona,{patch:input.patch,reason:input.reason});
+    });
+  }
+  /** Inside a transaction: puts `persona` in force as the next persona revision, with its audit entry. */
+  #setPersona(e,persona,audit){
+    const personaRevision=e.persona_revision+1;
+    this.store.db.prepare('UPDATE entities SET persona=?,persona_revision=? WHERE id=?').run(JSON.stringify(persona),personaRevision,e.id);
+    const revision=this.store.nextRevision();
+    this.store.audit({
+      type:'persona.revision',entityId:e.id,revision,personaRevision,...audit,at:this.now()
+    });
+    return{
+      entityId:e.id,revision,personaRevision,persona
+    };
+  }
+  // Persona cards (see cards.js): the library of every entity under one metadata key.
+  #cardState(){
+    const row=this.store.db.prepare('SELECT value FROM metadata WHERE key=?').get(CARDS_KEY);
+    return row?JSON.parse(row.value):{};
+  }
+  #saveCards(all){
+    this.store.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(CARDS_KEY,JSON.stringify(all));
+  }
+  /** The id of the card whose persona is in force for this entity. */
+  currentCardId(entityId=DEFAULT_ENTITY_ID){
+    return this.#cardState()[entityId]?.currentId??DEFAULT_CARD_ID;
+  }
+  #cardView(e,library){
+    return{
+      entityId:e.id,personaRevision:e.persona_revision,currentId:library.currentId,limit:MAX_PERSONA_CARDS,
+      cards:Object.values(library.cards).map(card=>({
+        id:card.id,title:card.title,tags:card.tags??[],summary:card.summary??'',current:card.id===library.currentId,
+        persona:card.id===library.currentId?JSON.parse(e.persona):card.persona,createdAt:card.createdAt,updatedAt:card.updatedAt
+      }))
+    };
+  }
+  /** A card change that leaves the persona in force alone: recorded, but the world revision does not move. */
+  #cardAudit(type,e,entry){
+    this.store.audit({
+      type,entityId:e.id,...entry,revision:this.store.get('revision'),at:this.now()
+    });
+  }
+  listPersonaCards(input={}){
+    closed(input,['entityId'],[]);
+    const e=this.entity(input.entityId??DEFAULT_ENTITY_ID);
+    return this.#cardView(e,this.#cardState()[e.id]??initialLibrary());
+  }
+  /** A new card, never current: a copy of `copyFrom`'s persona, or the built-in default persona. */
+  createPersonaCard(input){
+    closed(input,['entityId','title','tags','summary','copyFrom'],['title']);
+    const title=cardTitle(input.title),tags=input.tags===undefined?[]:cardTags(input.tags),summary=input.summary===undefined?'':cardSummary(input.summary);
+    if(input.copyFrom!==undefined)identifier(input.copyFrom);
+    return this.store.transaction(()=>{
+      const e=this.entity(input.entityId??DEFAULT_ENTITY_ID),all=this.#cardState(),library=all[e.id]??=initialLibrary();
+      if(Object.keys(library.cards).length>=MAX_PERSONA_CARDS)fail('CONFLICT','Persona card limit reached',409);
+      const source=input.copyFrom===undefined?undefined:library.cards[input.copyFrom];
+      if(input.copyFrom!==undefined&&!source)fail('NOT_FOUND','Persona card not found',404);
+      const id=`card:${randomUUID()}`,at=this.now(),
+      persona=!source?validated(()=>normalizePersona({})):source.id===library.currentId?JSON.parse(e.persona):source.persona;
+      library.cards[id]={id,title,tags,summary,persona,createdAt:at,updatedAt:at};
+      this.#saveCards(all);
+      this.#cardAudit('persona.card.created',e,{cardId:id,title,...(source?{copyFrom:source.id}:{})});
+      return{id,...this.#cardView(e,library)};
+    });
+  }
+  /** Changes a card's title, tags or summary and/or edits its persona. Editing the current card's persona is a
+   * persona revision like revisePersona (`expectedRevision` applies to it); nothing else here changes what a
+   * conversation reads. */
+  updatePersonaCard(input){
+    closed(input,['entityId','id','title','tags','summary','patch','expectedRevision','reason'],['id','reason']);
+    identifier(input.id);
+    text(input.reason,1000);
+    if(['title','tags','summary','patch'].every(key=>input[key]===undefined))fail('VALIDATION_ERROR','Nothing to change');
+    const title=input.title===undefined?undefined:cardTitle(input.title),tags=input.tags===undefined?undefined:cardTags(input.tags),summary=input.summary===undefined?undefined:cardSummary(input.summary);
+    if(input.expectedRevision!==undefined)integer(input.expectedRevision,1);
+    if(input.patch!==undefined){
+      jsonValue(input.patch);
+      validated(()=>validatePersonaPatch(input.patch));
+    }
+    return this.store.transaction(()=>{
+      const e=this.entity(input.entityId??DEFAULT_ENTITY_ID),all=this.#cardState(),library=all[e.id]??=initialLibrary(),card=library.cards[input.id];
+      if(!card)fail('NOT_FOUND','Persona card not found',404);
+      const current=card.id===library.currentId;
+      if(input.expectedRevision!==undefined&&e.persona_revision!==input.expectedRevision)fail('CONFLICT','Persona revision conflicts',409);
+      if(title!==undefined)card.title=title;
+      if(tags!==undefined)card.tags=tags;
+      if(summary!==undefined)card.summary=summary;
+      const persona=input.patch===undefined?undefined:validated(()=>normalizePersona({
+        ...(current?JSON.parse(e.persona):card.persona),...input.patch
+      }));
+      if(persona&&!current)card.persona=persona;
+      card.updatedAt=this.now();
+      this.#saveCards(all);
+      if(persona&&current)this.#setPersona(e,persona,{patch:input.patch,reason:input.reason,cardId:card.id});
+      else this.#cardAudit('persona.card.updated',e,{cardId:card.id,...(title===undefined?{}:{title}),...(persona?{fields:Object.keys(input.patch)}:{})});
+      return{id:card.id,...this.#cardView(this.entity(e.id),library)};
+    });
+  }
+  deletePersonaCard(input){
+    closed(input,['entityId','id'],['id']);
+    identifier(input.id);
+    return this.store.transaction(()=>{
+      const e=this.entity(input.entityId??DEFAULT_ENTITY_ID),all=this.#cardState(),library=all[e.id]??=initialLibrary();
+      if(!library.cards[input.id])fail('NOT_FOUND','Persona card not found',404);
+      if(input.id===library.currentId)fail('CONFLICT','The current persona card cannot be deleted',409);
+      delete library.cards[input.id];
+      this.#saveCards(all);
+      this.#cardAudit('persona.card.deleted',e,{cardId:input.id});
+      return this.#cardView(e,library);
+    });
+  }
+  /** Makes a card the current one: its persona comes into force as the next persona revision. The card that
+   * was current keeps the persona that was in force. Activating the current card changes nothing. */
+  activatePersonaCard(input){
+    closed(input,['entityId','id','expectedRevision','reason'],['id','reason']);
+    identifier(input.id);
+    text(input.reason,1000);
+    if(input.expectedRevision!==undefined)integer(input.expectedRevision,1);
+    return this.store.transaction(()=>{
+      const e=this.entity(input.entityId??DEFAULT_ENTITY_ID),all=this.#cardState(),library=all[e.id]??=initialLibrary(),card=library.cards[input.id];
+      if(!card)fail('NOT_FOUND','Persona card not found',404);
+      if(input.expectedRevision!==undefined&&e.persona_revision!==input.expectedRevision)fail('CONFLICT','Persona revision conflicts',409);
+      if(card.id===library.currentId)return{changed:false,...this.#cardView(e,library)};
+      const from=library.currentId;
+      library.cards[from].persona=JSON.parse(e.persona);
+      library.currentId=card.id;
+      this.#saveCards(all);
+      this.#setPersona(e,card.persona,{card:{from,to:card.id},reason:input.reason});
+      return{changed:true,...this.#cardView(this.entity(e.id),library)};
     });
   }
   /** Read-only: the persona block a patch would render into context, and the persona budget it must fit. */
@@ -450,7 +577,8 @@ export class Authority extends InitiationDomain {
     const profile=renderProfile(input.profile?this.profileEntries(scope,registered.policy):[]);
     // Continuation: this person's newest digests of dialogue outside the window, for the run's note. Outside
     // `budgetChars` and the retrieval cap; what it shows is not retrieved as well.
-    const continuation=renderContinuation(this.continuationEntries(scope,registered.policy,windowFromAt,exclude));
+    // Her feeling in a digest is shown only to the card it was written under (cards.js).
+    const continuation=renderContinuation(this.continuationEntries(scope,registered.policy,windowFromAt,exclude),CONTINUATION_CHARS,this.currentCardId(e.id));
     const budget=integer(input.budgetChars===undefined?DEFAULT_CONTEXT_CHARS:input.budgetChars,0,16000),
     rows=this.candidates(scope,registered.policy,query,64,{exclude:[...exclude,...profile.ids,...continuation.ids],digestsBefore:windowFromAt}),
     // The best-ranked few only; what is left out was not injected and can come in on a later call.
@@ -553,6 +681,20 @@ export class Authority extends InitiationDomain {
   close(){
     this.store.close();
   }
+}
+function cardTitle(value,limit=CARD_TITLE_CHARS){
+  text(value,limit);
+  if(/[\u0000-\u001f\u007f]/u.test(value))fail('VALIDATION_ERROR','Invalid card title');
+  return value.trim();
+}
+function cardTags(value){
+  if(!Array.isArray(value)||value.length>CARD_TAGS)fail('VALIDATION_ERROR','Invalid card tags');
+  return value.map(tag=>cardTitle(tag,CARD_TAG_CHARS));
+}
+function cardSummary(value){
+  text(value,CARD_SUMMARY_CHARS,true);
+  if(/[\u0000-\u001f\u007f]/u.test(value))fail('VALIDATION_ERROR','Invalid card summary');
+  return value.trim();
 }
 function validated(fn){
   try{

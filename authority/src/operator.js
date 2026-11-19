@@ -100,6 +100,8 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         const qq = qqControl ? await qqControl('/qq/people', undefined, req.headers.authorization).catch(() => null) : null;
         respond(200, { ok: true, value: { ...authority.listPeople(), qq } }); return;
       }
+      // The persona card library: every card with its persona, and which one is current.
+      if (req.method === 'GET' && req.url === '/persona/cards') { respond(200, { ok: true, value: authority.listPersonaCards() }); return; }
       if (req.method === 'GET' && req.url === '/conversations') { respond(200, { ok: true, value: authority.listConversations() }); return; }
       // Read-only: the newest runs she was asked to start herself and how each ended (labels and times, no text).
       if (req.method === 'GET' && req.url === '/initiative/log') { respond(200, { ok: true, value: authority.initiationLog() }); return; }
@@ -210,6 +212,16 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         object(body, req.url === '/persona' ? ['entityId', 'expectedRevision', 'patch'] : ['entityId', 'patch']);
         object(body.patch, Object.keys(DEFAULT_PERSONA));
         value = req.url === '/persona' ? authority.revisePersona({ ...body, reason: 'Explicit world console edit' }) : authority.previewPersona(body);
+      } else if (req.url === '/persona/cards') {
+        value = authority.createPersonaCard(object(body, ['entityId', 'title', 'tags', 'summary', 'copyFrom']));
+      } else if (req.url === '/persona/cards/update') {
+        object(body, ['entityId', 'id', 'title', 'tags', 'summary', 'patch', 'expectedRevision']);
+        if (body.patch !== undefined) object(body.patch, Object.keys(DEFAULT_PERSONA));
+        value = authority.updatePersonaCard({ ...body, reason: 'Explicit world console edit' });
+      } else if (req.url === '/persona/cards/activate') {
+        value = authority.activatePersonaCard({ ...object(body, ['entityId', 'id', 'expectedRevision']), reason: 'Explicit world console card switch' });
+      } else if (req.url === '/persona/cards/delete') {
+        value = authority.deletePersonaCard(object(body, ['entityId', 'id']));
       } else { respond(404, { ok: false, error: { code: 'NOT_FOUND', message: 'Unknown console operation' } }); return; }
       respond(200, { ok: true, value });
     } catch (error) {

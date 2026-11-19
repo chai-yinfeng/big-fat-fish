@@ -27,10 +27,11 @@ import proactive from './proactive/manifest.js';
 import demo from './demo/manifest.js';
 import video from './video/manifest.js';
 import videoNote from './video-note/manifest.js';
+import videoFrame from './video-frame/manifest.js';
 
 const frozen = value => { if (value && typeof value === 'object') { Object.values(value).forEach(frozen); Object.freeze(value); } return value; };
 /** Every declared capability, in the order the quota page lists them. */
-export const CAPABILITIES = frozen([chat, consolidation, vision, sticker, web, speechTts, speechAsr, proactive, demo, video, videoNote]);
+export const CAPABILITIES = frozen([chat, consolidation, vision, sticker, web, speechTts, speechAsr, proactive, demo, video, videoNote, videoFrame]);
 
 /** The model tool `companion_activity`: what it may name, generated from the declarations (an action carries
  * `tool: 'companion_activity'`). -> [{ capability, title, actions: [name...] }] */

@@ -5,13 +5,15 @@ import { normalizePersona, renderPersona } from './persona.js';
 import { tokenize } from './util.js';
 import { memoryContent, opaquePerson, CONTINUATION_ITEMS, DIGEST_LABEL, beijingDated } from './context.js';
 import { SENSITIVE } from './policies.js';
+import { feelingFor } from './cards.js';
 
 const DAY=86400000;
 /** A machine digest as a memory tool returns it: its ID, the label, the summary (cut to `chars`), her feeling and
- * the Beijing day the dialogue ended. Nothing else of the body (stream, observation IDs, account numbers). */
-const digestItem=(memory,chars=1000)=>({
+ * the Beijing day the dialogue ended. Nothing else of the body (stream, observation IDs, account numbers).
+ * `cardId`: the persona card now current; a feeling written under another card is left out (cards.js). */
+const digestItem=(memory,chars,cardId)=>({
   id:memory.id,kind:'digest',label:DIGEST_LABEL,summary:String(memory.summary??'').slice(0,chars),
-  ...(memory.feeling?{feeling:memory.feeling}:{}),...beijingDated(memory.toAt)
+  ...(feelingFor(memory,cardId)?{feeling:memory.feeling}:{}),...beijingDated(memory.toAt)
 });
 const placeholders=values=>values.map(()=>'?').join(',');
 const uniqueIds=ids=>{
@@ -180,7 +182,7 @@ export class MemoryDomain {
     const items=[];
     for(const row of rows){
       if(row.kind==='digest'){
-        const item=digestItem(row,Math.min(remaining,1000));
+        const item=digestItem(row,Math.min(remaining,1000),this.currentCardId(scope.entityId));
         if(!item.summary)continue;
         items.push(item);
         remaining-=item.summary.length;
@@ -217,7 +219,7 @@ export class MemoryDomain {
     const row=this.store.db.prepare(`SELECT m.* FROM memory_items m WHERE m.id=? AND m.entity_id=? AND ${v.sql} AND m.status='active' AND m.collection IN ('facts','notes','experiences')`).get(input.id,e.id,...v.args);
     const memory = row ? this.store.memory(row) : null;
     // A digest is read as its safe fields only.
-    if(memory?.kind==='digest')return{entityId:e.id,memoryEpoch:this.streamEpoch(e,capabilityId,scope.streamId),item:digestItem(memory)};
+    if(memory?.kind==='digest')return{entityId:e.id,memoryEpoch:this.streamEpoch(e,capabilityId,scope.streamId),item:digestItem(memory,1000,this.currentCardId(e.id))};
     // Model-facing read: the person is an opaque label, never a raw person ID.
     const item = memory ? { ...memory, ...(memory.personId ? { personId: opaquePerson(memory.personId) } : {}), archived: !row.pinned && row.created_world_at < cutoff } : null;
     return{
@@ -600,7 +602,7 @@ export class MemoryDomain {
     const items = rows.map(row => {
       const memory = this.store.memory(row);
       // A digest (dated by the end of its dialogue, which is its eventAt): its safe fields only.
-      if (memory.kind === 'digest') { const item = digestItem(memory, Math.min(1000, remaining)); remaining -= item.summary.length; return item.summary ? item : null; }
+      if (memory.kind === 'digest') { const item = digestItem(memory, Math.min(1000, remaining), this.currentCardId(entity.id)); remaining -= item.summary.length; return item.summary ? item : null; }
       const content = memoryContent(memory).slice(0, Math.min(1000, remaining));
        remaining -= content.length;
        return {
