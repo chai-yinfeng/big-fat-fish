@@ -35,8 +35,8 @@ const DEFAULT_QUESTION = '描述图片内容；若是表情包，说明可能的
 /** Platform-neutral file perception and expression. A generated artifact or an
  * attached reply part is not a delivery receipt and never records an experience. */
 export class MediaService {
-  constructor({ store, speech, vision, search, fetchPage, normalizeImage, workRoot, jobs, stickers = createStickers({ root: store.root }) }) {
-    Object.assign(this, { store, speech, vision, search, fetchPage, normalizeImage, jobs, stickers });
+  constructor({ store, speech, vision, search, fetchPage, normalizeImage, workRoot, jobs, activities = {}, stickers = createStickers({ root: store.root }) }) {
+    Object.assign(this, { store, speech, vision, search, fetchPage, normalizeImage, jobs, activities, stickers });
     if (!path.isAbsolute(workRoot)) throw fail('MEDIA_WORK_ROOT');
     fs.mkdirSync(workRoot, { recursive: true, mode: 0o700 });
     if (fs.lstatSync(workRoot).isSymbolicLink()) throw fail('MEDIA_WORK_ROOT');
@@ -161,6 +161,14 @@ export class MediaService {
       if (!this.jobs) throw fail('MEDIA_ACTION_DENIED');
       if (action === 'jobResult') return this.jobs.read(scope, input.ref);
       return this.jobs.register(scope, { capability: input.capability, input: input.input, source: { ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...(input.sourceEventId === undefined ? {} : { sourceEventId: input.sourceEventId }) } });
+    }
+    // Something she does that is more than a lookup (capabilities/providers/<capability>/provider.js), called by the
+    // model through companion_activity: `capability` picks the provider, `activity` its action. The provider answers
+    // inside this scope only; what it starts in the background is a job of this conversation.
+    if (action === 'activity') {
+      const provider = typeof input.capability === 'string' && Object.hasOwn(this.activities, input.capability) ? this.activities[input.capability] : null;
+      if (!provider || typeof input.activity !== 'string') throw fail('MEDIA_ACTION_DENIED');
+      return provider.call(scope, { activity: input.activity, input: input.input ?? {}, sourceEventId: input.sourceEventId, requestId: input.requestId });
     }
     if (action === 'search') return this.search({ query: input.query, count: 3 });
     if (action === 'fetch') return this.fetchPage({ url: input.url });
