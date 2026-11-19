@@ -2,7 +2,7 @@
 export default {
   id: 'chat', title: '聊天',
   // A conversation turn is driven by the channel, not called by the model.
-  actions: [{ name: 'turn', mode: 'sync', model: false }],
+  actions: [{ name: 'turn', mode: 'sync', model: false, content: null }],
   // Counted by the model gateway itself, one per chat-completion request (a turn makes 1–12), with the
   // tokens the provider reported. dailyLimit null: bounded by the daily spend cap only, refused at the 100% tier.
   meter: { kind: 'paid', source: 'gateway', unit: 'requests', units: ['inputTokens', 'outputTokens'], dailyLimit: null, spendCategory: 'conversation', stopTier: 'exhausted', perPerson: false },
@@ -14,4 +14,7 @@ export default {
   outputs: [{ type: 'reply', derived: null }],
   runtime: { process: 'companion-conversation', subprocess: false, network: 'model-gateway' },
   operatorConfig: null,
+  config: null,
+  // Who removes what this capability keeps about a person when a message is forgotten (`owner`: a process).
+  forget: { owner: 'companion-conversation', what: 'session files of the conversations the forgotten message was in' },
 };

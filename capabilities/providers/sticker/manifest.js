@@ -4,10 +4,13 @@ export default {
   // The first look at a sticker nobody has sent before (the content service caches what a picture is by its hash,
   // so the same sticker is looked at once). Same provider, model and price as `vision`, through the same gateway
   // route marked `purpose: 'sticker'`; that mark comes only from the content service, never from the model.
-  actions: [{ name: 'describe', mode: 'sync', model: false }],
+  // `content`: the action of Authority's /v1/content this is reached by, the fields it takes besides the scope, and
+  // whether a source message comes with it. `sticker` and `name` are the channel's own reading of its platform fields.
+  actions: [{ name: 'describe', mode: 'sync', model: false, content: { action: 'describe', fields: ['ref', 'sticker', 'name'], source: 'none' } }],
   // Its own daily count (not vision's 12): a slot of this ledger row, refused as `daily_limit` once used up. The
   // money stays in the spend meter's `vision` category, so the restricted tier stops it like vision.
-  meter: { kind: 'paid', source: 'gateway', unit: 'calls', units: [], dailyLimit: 20, spendCategory: 'vision', stopTier: 'restricted', perPerson: false },
+  // `via`: counted on another capability's gateway route, told apart there by the `purpose` mark.
+  meter: { kind: 'paid', source: 'gateway', unit: 'calls', units: [], dailyLimit: 20, spendCategory: 'vision', stopTier: 'restricted', perPerson: false, via: { capability: 'vision', purpose: 'sticker' } },
   credentials: [
     { name: 'provider API key', location: 'model-data/settings.json', holder: 'model-gateway' },
     { name: 'inference token', location: 'service-config/inference.token', holder: 'companion-content' },
@@ -16,4 +19,6 @@ export default {
   outputs: [{ type: 'description', derived: 'machine-description' }],
   runtime: { process: 'companion-content', subprocess: false, network: 'model-gateway' },
   operatorConfig: null,
+  config: null,
+  forget: { owner: 'companion-content', what: 'descriptions derived from the forgotten picture' },
 };

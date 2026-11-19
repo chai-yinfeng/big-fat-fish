@@ -36,7 +36,7 @@ test('one consolidation call per case through the real gateway and Authority; th
     return new Response(JSON.stringify({ choices: [{ message: { content: typeof answer === 'string' ? answer : JSON.stringify(answer) }, finish_reason: 'stop' }], usage: { prompt_tokens: 3000, prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 3000, completion_tokens: 200, total_tokens: 3200 } }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
   const result = await runQuality({ ...f, label: 'test', only: ['daily', 'venting'], fetchImpl });
-  assert.deepEqual(bodies.map(body => [body.max_tokens, body.thinking, body.stream, body.messages.length]), [[1536, { type: 'disabled' }, false, 2], [1536, { type: 'disabled' }, false, 2]]);
+  assert.deepEqual(bodies.map(body => [body.max_tokens, body.thinking, body.stream, body.messages.length]), [[4096, { type: 'disabled' }, false, 2], [4096, { type: 'disabled' }, false, 2]]);
   const [daily, venting] = result.cases;
   assert.deepEqual([daily.workerStatus, daily.digest.summary, daily.digest.covers, daily.facts, daily.refused], ['committed', 'MOCK-摘要：对方下班后聊了开会和猫。', 20, [{ key: '猫', value: 'MOCK-煤球', quote: '我家猫叫MOCK-煤球', verbatim: true }], ['newer_fact_kept']]);
   // The second fact (same key, a quote that is not word for word) is no longer refused for its quote: it only may not replace the first.
