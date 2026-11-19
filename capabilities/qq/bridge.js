@@ -45,10 +45,16 @@ const deliveryPart = part => part.type === 'text' ? { kind: 'text', status: 'uns
 const markerParts = reply => stickerMarkers(reply).map(({ marker, word }) => ({ word, part: { kind: 'sticker', status: 'unsent', ...(marker.length <= MAX_DELIVERY_MARKER_CHARS ? { marker } : {}) } }));
 /** The one phrase that asks for the passcode of one's open diary (read on the room page). A private message that is
  * exactly this, and nothing else, is answered by the bridge itself with what Authority returns: no model run, no
- * observation of the request or of the answer, so the passcode never enters a model's context or her memory. */
+ * observation of the request or of the answer, so the passcode never enters a model's context or her memory. Should
+ * the person quote that answer later, the quote line holds a placeholder instead of its text (quoteOf). */
 export const DIARY_CODE_PHRASE = '日记口令';
 export const diaryCodeReply = code => `你的日记口令是：${code}\n在房间页面里点书桌上的笔记本，输入它，就能看到我写给你的日记。再发一次“日记口令”会换成新的，旧的就不能用了。`;
 export const DIARY_CODE_NONE = '还没有给你写日记。';
+/** What stands for her passcode message wherever a quote of it would be shown to the model. */
+export const DIARY_CODE_QUOTED = '（日记口令）';
+/** Whether a message of hers, as the platform returns it (get_msg's `message`: segments or a string), is a passcode
+ * reply: recognized by the fixed opening of `diaryCodeReply`, on the whole text, before any cut. */
+export const isDiaryCodeReply = message => /^\s*你的日记口令是：/.test(typeof message === 'string' ? message : Array.isArray(message) ? message.map(segment => segment?.type === 'text' && typeof segment.data?.text === 'string' ? segment.data.text : '').join('') : '');
 export const OWNER_BUDGET_NOTICE = '提醒：今天的模型开销已经到达每日上限，大肥鱼今天先不再回复任何人，北京时间零点后自动恢复。可以在控制台查看今日开销或调整上限。';
 export class QQBridge {
   /** faces: send her `[名字]` as small faces (only where the bridge sends without the content service); by default
@@ -206,7 +212,8 @@ export class QQBridge {
         const quoted = await this.onebot.call('get_msg', { message_id: Number(messageId) }), from = String(quoted?.sender?.user_id ?? quoted?.user_id);
         const who = from === this.selfId ? 'self' : from === userId ? 'person' : null;
         found = 'get_msg:' + (who ?? 'other');
-        if (who) line = quoteLine(who, quotedText(quoted.message));
+        // Her passcode reply (after a restart the bridge no longer remembers sending it): the passcode never reaches the model.
+        if (who) line = quoteLine(who, who === 'self' && isDiaryCodeReply(quoted.message) ? DIARY_CODE_QUOTED : quotedText(quoted.message));
       } catch { found = 'get_msg:failed'; }
     }
     this.log(`qq reply lookup: ${found}`);
@@ -236,7 +243,7 @@ export class QQBridge {
       if (!/^-?\d{1,20}$/.test(String(sent.message_id))) throw new Error('INVALID_SEND_RECEIPT');
       item.status = 'sent'; item.messageId = String(sent.message_id);
       // Should the person quote this message later, the quote line says only that it was the passcode.
-      this.sentTexts.set(item.messageId, '（日记口令）'); while (this.sentTexts.size > SENT_TEXTS) this.sentTexts.delete(this.sentTexts.keys().next().value);
+      this.sentTexts.set(item.messageId, DIARY_CODE_QUOTED); while (this.sentTexts.size > SENT_TEXTS) this.sentTexts.delete(this.sentTexts.keys().next().value);
     } catch { item.status = 'unknown'; }
     this.save();
   }
