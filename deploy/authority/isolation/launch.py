@@ -63,6 +63,9 @@ def build_command(role, base, release, runtime, ops, arguments=()):
     if Path(base + '/authority-content/control.token').is_file():
         args += ['--ro-bind', existing(base + '/ipc/content'), '/authority/content-ipc',
                  '--ro-bind', existing(base + '/authority-content'), '/authority/content-config']
+    # The room page's credential hash (ops/prepare-room.mjs): its own file, so an older release never sees it.
+    if Path(base + '/operator/room-credential.json').is_file():
+        args += ['--ro-bind', existing(base + '/operator/room-credential.json', False), '/authority/room-credential.json']
     command = [NODE, PREFIX + '/release/authority/src/main.js', '--config', '/authority/config.json']
     for key, value in env.items():
         args += ['--setenv', key, value]

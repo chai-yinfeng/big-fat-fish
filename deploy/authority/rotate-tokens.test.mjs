@@ -170,3 +170,18 @@ test('CLI dry-run prints only a JSON summary', t => {
   assert.equal(summary.dryRun, true);
   for (const value of [...Object.values(old.tokens), ...Object.values(old.tokens).map(sha), old.webuiEnv, old.webui]) assert.ok(!stdout.includes(value));
 });
+
+test('the room credential is rotated with the rest: new token, new hash in its own file, authority.json still without it', async t => {
+  const { prepareRoom } = await import('./prepare-room.mjs');
+  const base = world(t);
+  prepareRoom(base);
+  const read = relative => fs.readFileSync(path.join(base, relative), 'utf8');
+  const oldToken = read('room-config/room.token').trim();
+  const result = await rotateTokens({ base, probe: idle });
+  assert.ok(result.rotated.includes('room-config/room.token') && result.changedFiles.includes('operator/room-credential.json'));
+  const token = read('room-config/room.token').trim();
+  assert.notEqual(token, oldToken); assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(JSON.parse(read('operator/room-credential.json')), { schemaVersion: 1, hash: sha(token) });
+  assert.ok(!JSON.parse(read('operator/authority.json')).credentials.some(row => row.role === 'room'));
+  for (const relative of ['room-config/room.token', 'operator/room-credential.json']) assert.equal(fs.statSync(path.join(base, relative)).mode & 0o777, 0o600);
+});

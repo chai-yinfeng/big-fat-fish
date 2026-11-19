@@ -233,6 +233,11 @@ test('serve: fake mode has no state route; real mode hands on the contract and n
   }
   const gone = await serving(t, { live: authorityReader({ socketPath: path.join(dir, 'none.sock'), credentialFile }) });
   assert.equal((await gone('state')).status, 503);
+  // A deployed room before ops/prepare-room.mjs has run: no credential file yet. The page is served, the state is not.
+  const unprepared = await serving(t, { live: authorityReader({ socketPath, credentialFile: path.join(dir, 'absent.token') }) });
+  assert.equal((await unprepared('')).status, 200);
+  const waiting = await unprepared('state');
+  assert.equal(waiting.status, 503); assert.equal(await waiting.text(), '{}');
   assert.throws(() => authorityReader({ socketPath: 'api.sock', credentialFile }));
 });
 

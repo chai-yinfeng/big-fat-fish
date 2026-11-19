@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-// Development preview only: serves this directory on loopback. Not part of any release, unit or deploy step.
+// The room page's server: this directory on loopback. Local preview, and in a release the companion-room unit
+// (real mode on 127.0.0.1:4173; who may reach it from outside the host is the owner's `tailscale serve`, not this file).
 //   node room/serve.mjs [port]      (default 4173; fake data)
 //   node room/serve.mjs [port] --authority-socket /abs/api.sock --credential-file /abs/room.token
 //     real mode: `GET /state` answers with the room state read from Authority's `GET /v1/room`. The two paths may
 //     also come from ROOM_AUTHORITY_SOCKET and ROOM_CREDENTIAL_FILE. The credential stays in this process: it is
-//     sent to the Unix socket only, and nothing this server answers contains it.
+//     sent to the Unix socket only, and nothing this server answers contains it. A missing credential file is not
+//     fatal: `/state` answers 503 until ops/prepare-room.mjs has run and Authority has been restarted.
 import http from 'node:http';
 import fs from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -82,6 +84,6 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
   if (parsed.positionals.length > 1 || !Number.isInteger(port) || port < 1024 || port > 65535 || Boolean(socketPath) !== Boolean(credentialFile)) usage();
   let live;
   try { live = socketPath ? authorityReader({ socketPath, credentialFile }) : undefined; } catch { usage(); }
-  // Loopback only, in both modes: who else may see the room, and through what, is not decided here.
-  createRoomServer({ live }).listen(port, '127.0.0.1', () => console.log(`room preview (${live ? 'real data from Authority' : 'fake data'}): http://127.0.0.1:${port}/`));
+  // Loopback only, in both modes: who else may see the room is decided outside (tailscale serve), never here.
+  createRoomServer({ live }).listen(port, '127.0.0.1', () => console.log(`room page (${live ? 'real data from Authority' : 'fake data'}): http://127.0.0.1:${port}/`));
 }

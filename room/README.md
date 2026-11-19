@@ -4,11 +4,11 @@
 **自己不决定任何事**：它拿到一份“房间状态”，按素材清单把它画出来。
 
 这条链路是：房间状态契约 → 分层渲染。画是占位的手画 SVG；数据默认是假的，也可以读 Authority 的只读出口
-（见“真实数据”）。没有接进任何发布、端口、systemd 单元或 operator API；`deploy/` 和发行包里没有它，
-还差哪些部署工作见最后一节。
+（见“真实数据”）。发行包里带着它和一个用户单元 `companion-room.service`（真实模式，只听回环，经 tailscale serve
+只在 tailnet 内访问），见最后一节“部署”。
 
 ```sh
-node room/serve.mjs          # 只听 127.0.0.1:4173，仅供本机预览；默认假数据
+node room/serve.mjs          # 只听 127.0.0.1:4173，本机预览；默认假数据
 # http://127.0.0.1:4173/                      假时间线，每 6 秒一步，走完所有活动
 # http://127.0.0.1:4173/?step=2000            每 2 秒一步
 # http://127.0.0.1:4173/?activity=sleeping    固定在某个活动
@@ -27,7 +27,7 @@ node --run test:room
 | `view.js` | 页面上的文字（按类别选固定句子） |
 | `index.html`、`room.js`、`room.css` | 页面 |
 | `assets/` | 占位画（自己画的 SVG，不含第三方素材） |
-| `serve.mjs` | 本机预览用的静态服务；真实模式下替页面去读 Authority 的 `GET /v1/room` |
+| `serve.mjs` | 页面的静态服务（本机预览，也是发行包里房间单元跑的东西）；真实模式下替页面去读 Authority 的 `GET /v1/room` |
 
 ## 房间状态（v1）
 
@@ -119,7 +119,8 @@ node --run test:room
 浏览器 ──GET /state──▶ room/serve.mjs（真实模式，只听 127.0.0.1）──GET /v1/room + room 凭据──▶ Authority（Unix socket）
 ```
 
-- **凭据**：Authority 配置的 `credentials` 里加一条 `{ "role": "room", "hash": "<令牌的 sha256>" }`。这个角色只能
+- **凭据**：一条 `role: 'room'` 的授权（令牌的 sha256）。部署时它在 Authority 配置旁边单独的
+  `room-credential.json` 里（见“部署”；测试里也可以直接写进 `credentials`）。这个角色只能
   `GET /v1/room`：别的路由、别的方法一律 403（包括 health 和任何写入）；它也不是 operator 令牌，operator
   socket 不认它。反过来，渠道、记忆 worker、admin 的凭据读不了 `/v1/room`。
 - **serve.mjs 真实模式**：给出 Authority 的 socket 和凭据文件（都是绝对路径；凭据文件只能自己可读，如 0600）。
@@ -157,24 +158,74 @@ node --run test:room
    需要这些能力各自报告一个只有类别的“开始/结束”，由 Authority 汇总。真实模式下这三种活动不会出现。
 3. `weather`、`mood` 没有来源。
 
-## 还没做的部署工作（等主人决定）
+## 部署（方案 A：companion 账号下的一个用户单元，只在 tailnet 内访问）
 
-现在只有代码和本机验证：生产上没有 `room` 凭据，没有进程在跑房间，`deploy/`、发行包、systemd、端口都没动。
-要让家里人真的看到房间，还差这些，每一项都需要主人拍板：
+发行包里有 `room/`（页面、占位画、`serve.mjs`）、单元 `companion-room.service` 和一次性准备脚本
+`ops/prepare-room.mjs`。和其他服务一样跑在 `companion` 账号的 systemd user manager 下，由 `companion-deploy`
+安装、启动、做健康检查、回退。
 
-1. **凭据的发放**：`deploy/authority/bootstrap.mjs`（新环境）和 `rotate-tokens.mjs`（轮换）要生成 room 令牌、
-   把它的 sha256 写进 Authority 配置的 `credentials`、把令牌文件放到只有“提供页面的那个进程”能读的地方
-   （它不该和 operator 令牌、渠道凭据放在同一个账号可读的目录）。已有的生产环境加这一条要改 Authority 配置并
-   重启 Authority。**回退注意**：这一版之前的 Authority 见到 `role: 'room'` 的凭据会拒绝启动，所以回退到旧版
-   之前要先把这条凭据从配置里拿掉（或者让 `companion-deploy` 的回退步骤处理），否则自动回退会失败。
-2. **谁来提供页面**：`room/` 不在发行包里（`build-release.mjs` 没有复制它），`serve.mjs` 写的是“开发预览”。
-   要么把 `room/` 放进发行包、给 serve.mjs（或一个等价的小服务）配一个单独的低权限账号和 systemd 单元，
-   它只需要能连 Authority 的 socket 和读自己的令牌文件；要么由别的已有进程代为提供。不管哪种，这个进程
-   都不应该持有 operator 令牌。Authority 的 socket 现在是 0600（`main.js` 没有开放别的权限；`createAuthorityServer`
-   本身支持 0660 组），所以这个进程能不能连上、以什么账号/组运行，也要一起定。
-3. **怎么让人访问**：serve.mjs 只听 127.0.0.1，没有任何登录。可选的方向：只在家里局域网内开放；经已有的
-   反向代理加一层访问控制（口令、每人一个链接等）；或者只做成 QQ 里发一张截图。对外网开放意味着任何拿到
-   地址的人都能看到“她此刻在做哪一类事、做了多久”，是否接受、要不要鉴权由主人决定。
-4. **在场感透露多少**：现在的房间会让所有看的人知道“刚刚有人找过她”（看手机）和她的安静时段。是否要把
-   “看手机”做得更模糊（比如延迟、只在白天显示），由主人决定。
-5. 上线前的验证：在 staging（`home-agent-dev`）上带着 room 凭据跑一遍升级和回退；用真手机看页面。这些都没做。
+```
+手机/电脑（tailnet 内）──HTTPS──▶ tailscale serve（主人配置）──▶ 127.0.0.1:4173 companion-room.service
+                                                              └─ GET /v1/room + room 凭据 ─▶ Authority（Unix socket）
+```
+
+- **单元**：`node current/room/serve.mjs 4173 --authority-socket <数据根>/ipc/authority/authority.sock
+  --credential-file <数据根>/room-config/room.token`，在 Authority 之后启动，只听 `127.0.0.1:4173`；
+  seccomp 把网络限制在 Unix socket 和 IPv4。它手里只有 room 凭据：没有 operator 令牌、渠道凭据和供应商 Key，
+  不在模型 worker（对话执行器）的配置里。
+- **凭据**（`ops/prepare-room.mjs`，主人以 companion 身份跑一次，可重复跑，不重置任何东西）：
+  - `<数据根>/room-config/room.token`：令牌，0600（目录 0700），只有 serve.mjs 读；
+  - `<数据根>/operator/room-credential.json`：`{ "schemaVersion": 1, "hash": "<令牌的 sha256>" }`，0600。
+    Authority 启动时从配置文件旁边读它（沙箱里是 `/authority/room-credential.json`，`launch.py` 在文件存在时只读挂进去）。
+  - **不写进 `authority.json`**。有房间之前的 Authority 见到 `credentials` 里的 `role: 'room'` 会拒绝启动；单独的文件
+    旧版本根本不读，所以 `companion-deploy rollback`（以及健康检查失败后的自动恢复）不需要先改配置。预检遇到写在
+    `authority.json` 里的 room 凭据会以 `ROOM_CREDENTIAL_INLINE` 拒绝部署。
+  - 轮换：`deploy/authority/rotate-tokens.mjs` 把它和其他内部凭据一起换。
+- **还没准备凭据时**（已有的世界第一次升级到带房间的版本）：单元照常启动、页面能打开，`/state` 回 503，页面提示
+  稍后再试。跑完 `prepare-room.mjs` 并重启服务后就有真实数据。
+- **预检**（`ops/preflight.mjs`）：room 凭据两个文件要么都没有，要么成对且一致（0600、属主、格式、令牌的 sha256 等于
+  登记的哈希、不与 `authority.json` 里的凭据重复）；新包里有 `room/serve.mjs`、素材清单合法、清单里的文件都在。
+  错误码：`ROOM_CREDENTIAL_INLINE`、`ROOM_CREDENTIAL_MISSING`、`ROOM_TOKEN_MISSING`、`ROOM_TOKEN_MISMATCH`、
+  `ROOM_CREDENTIAL_DUPLICATE`、`ROOM_FILES_MISSING`、`ROOM_ASSET_MISSING`、`ROOM_MANIFEST_INVALID`。
+- **健康检查**：`companion-room.service` 是带 `[Install]` 的单元，`companion-deploy` 的健康检查要求它 active 且观察窗口内
+  没有重启（端口被占等启动失败会让它退出重启，部署随之失败并自动恢复上一版）。`companion-deploy` 本身没有改，
+  不需要重装；它的端口检查仍只有 3082（把 4173 加进去会让回退到没有房间的旧版本失败）。
+
+### 主人上线时要做的（按顺序；Agent 不执行 sudo）
+
+```sh
+# 1. 照常部署（见 docs/DEV_WORKFLOW.md“发布与回退”）。完成后房间单元已在跑，/state 是 503。
+ssh -t home-agent 'sudo companion-deploy deploy ~blackmagic/releases/<release>.tar.gz'
+# 2. 生成 room 凭据（一次；输出只有 JSON 摘要，不含令牌）
+ssh -t home-agent "sudo -u companion -H bash -c 'cd ~ && ~/.local/opt/companion/bin/node ~/src/companion/current/ops/prepare-room.mjs'"
+# 3. 重启服务让 Authority 读到它（带健康检查）
+ssh -t home-agent 'sudo companion-deploy start'
+# 4. 只在 tailnet 内开放（一次；--bg 的配置由 tailscaled 保存，重启后仍在）。
+#    home-agent 的 443 已经有别的 tailscale serve 在用，所以房间用 8443：
+ssh -t home-agent 'sudo tailscale serve --bg --https=8443 http://127.0.0.1:4173'
+ssh home-agent 'tailscale serve status'        # 应多出一行 :8443 → http://127.0.0.1:4173，且标着 tailnet only
+# 5. 用 tailnet 里的手机或电脑打开 https://<home-agent 的 MagicDNS 名>:8443/
+```
+
+- 不要用 `tailscale funnel`（那是公网）。能看到房间的人 = tailnet 里按 ACL 能访问 home-agent 这个端口的设备；
+  页面本身没有登录。要收回：`sudo tailscale serve --https=8443 off`。
+- 第 4 步没有在主机上验证过（Agent 不能 sudo）：语法取自该主机 tailscale 1.104 的 `serve --help` 和现有的 serve 配置。
+- 无 sudo 的核查：`ssh home-agent "ss -Hltn | grep ':4173 '"` 应只有 `127.0.0.1:4173`；
+  `ssh home-agent 'curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:4173/state'` 第 1 步后是 503，第 3 步后是 200。
+
+### 回退
+
+- `sudo companion-deploy rollback` 回到没有房间的版本：旧的单元快照里没有 `companion-room.service`，它被停掉并删除，
+  4173 不再监听；`room-config/room.token` 和 `operator/room-credential.json` 原样留在数据根，旧 Authority 不读它们，
+  正常启动。**不需要任何手工步骤。** tailscale serve 的 8443 留着也无妨（后端不在，打开是 502）。
+- 再升级（或再 rollback 一次回到新版本）：凭据还在，房间直接恢复，不用重跑 prepare。
+- staging 每次都走一遍：升级后未准备（503）→ prepare → 重启 → 用 room 凭据读到状态、其他路由 403、别的凭据读
+  `/v1/room` 403 → 回退（无房间单元、旧 Authority 带着凭据文件健康启动）→ 前滚（房间恢复）→ manager 重启后再查一次。
+
+### 还没做 / 等主人决定
+
+1. **真素材**：仍是仓库里的占位 SVG。素材清单目前只能指向发行包里 `room/` 下的文件，还不支持从数据根覆盖；
+   真图放哪里（不进公开仓库）要另做。
+2. **在场感透露多少**：房间会让所有看的人知道“刚刚有人找过她”（看手机）和她的安静时段。是否要更模糊由主人决定。
+3. **tailnet 之外**：没有登录、没有每人一个链接；现在不开公网。
+4. 用真手机经 tailnet 看页面还没做过。

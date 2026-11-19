@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Release: ops/ sits next to capabilities/; checkout: deploy/authority/.
@@ -194,6 +195,38 @@ async function checkDatabase(base, release, config, { migrations, freeBytes = fr
   return true;
 }
 
+/** The room page (companion-room.service, room/serve.mjs): its credential pair in the data root and the files it
+ * serves from this release. An unprepared world (neither file) passes: the page then answers 503 for its state. */
+async function checkRoom(base, authority, report, result) {
+  const label = 'room-credential.json', hashFile = path.join(base, 'operator', label), tokenFile = path.join(base, 'room-config/room.token');
+  // Listed in authority.json it would be accepted by this release but refused by an older one after a rollback.
+  if (authority?.credentials.some(row => row?.role === 'room')) report.fail('authority.json', 'ROOM_CREDENTIAL_INLINE', 'credentials');
+  if (fs.existsSync(hashFile) || fs.existsSync(tokenFile)) {
+    try {
+      if (!fs.existsSync(hashFile)) throw fail('ROOM_CREDENTIAL_MISSING');
+      // authority/src/main.js reads it the same way.
+      const c = readPrivate(hashFile, { size: 4096, owner: true });
+      if (!plain(c) || c.schemaVersion !== 1 || Object.keys(c).some(key => !['schemaVersion', 'hash'].includes(key)) || !/^[a-f0-9]{64}$/.test(c.hash)) throw fail('CONFIG_INVALID');
+      if (authority?.credentials.some(row => row?.hash === c.hash)) throw fail('ROOM_CREDENTIAL_DUPLICATE');
+      // room/serve.mjs authorityReader reads the token the same way, on each request.
+      if (!fs.existsSync(tokenFile)) throw fail('ROOM_TOKEN_MISSING');
+      const stat = fs.lstatSync(tokenFile);
+      if (!stat.isFile() || stat.size > 1024 || (stat.mode & 0o077) || stat.uid !== process.getuid()) throw fail('CONFIG_PERMISSIONS');
+      const token = fs.readFileSync(tokenFile, 'utf8').trim();
+      if (!/^[A-Za-z0-9_-]{32,256}$/.test(token) || createHash('sha256').update(token).digest('hex') !== c.hash) throw fail('ROOM_TOKEN_MISMATCH');
+      result.checked.push(label);
+    } catch (error) { report.fail(label, typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) ? error.code : 'CONFIG_INVALID'); }
+  }
+  // What the unit starts and the page asks for: the server, a valid asset manifest and every file it names.
+  const room = path.join(tree, 'room');
+  try {
+    if (!fs.existsSync(path.join(room, 'serve.mjs'))) throw fail('ROOM_FILES_MISSING');
+    const manifest = (await load('room/manifest.js')).validateManifest(readJson(path.join(room, 'manifest.json')));
+    const named = [manifest.base.src, ...Object.values(manifest.poses).flatMap(pose => [pose.src, pose.poster])].filter(Boolean);
+    if (named.some(src => !fs.statSync(path.join(room, src), { throwIfNoEntry: false })?.isFile())) throw fail('ROOM_ASSET_MISSING');
+  } catch (error) { report.fail('room', typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) ? error.code : 'ROOM_FILES_MISSING'); }
+}
+
 /** `migrations` and `freeBytes` are for tests; the release's own list and statfs are used otherwise. */
 export async function preflight({ base = path.join(os.homedir(), '.local/share/companion-world-v1'), release = RELEASE_NAME.test(path.basename(tree)) ? tree : null, migrations, freeBytes } = {}) {
   const result = { failures: [], warnings: [], checked: [] };
@@ -216,6 +249,7 @@ export async function preflight({ base = path.join(os.homedir(), '.local/share/c
     result.checked.push(spec.label);
     if (spec.label === 'authority.json') authority = config;
   }
+  await checkRoom(base, authority, report, result);
   if (authority && await checkDatabase(base, release, authority, { migrations, freeBytes }, report)) result.checked.push('authority-db');
   return result;
 }
