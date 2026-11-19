@@ -4,8 +4,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { QQBridge } from '../bridge.js';
+import { PACING } from '../pacing.js';
 import { qqRequestId } from '../worker-route.js';
 import { observationFromOneBot } from '../source.js';
+
+// No burst wait (each message is its own turn unless they arrive together) and a fixed random source.
+const QUICK = { pacing: { ...PACING, burstQuietMs: 0, burstMaxWaitMs: 0 }, random: () => 0.5 };
 
 async function fixture(t, sendError = false) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-bridge-'));
@@ -13,7 +17,7 @@ async function fixture(t, sendError = false) {
   const world = { paused: true, revision: 1 }, observations = [], sends = []; let executions = 0;
   const authority = { health: async () => ({ world }), context: async () => ({ entityId: 'entity:big-fat-fish', memoryEpoch: 0, world }) };
   const onebot = { call: async (action, args) => { if (action === 'get_login_info') return { user_id: 100 }; if (action === 'get_friend_list') return []; sends.push(args); if (sendError) throw new Error('NO_RECEIPT'); return { message_id: 99 }; } };
-  const bridge = new QQBridge({ authority, port: { observe: async value => { observations.push(value); return { observationId: 'observation-' + observations.length }; } }, onebot, settingsFile: path.join(dir, 'settings.json'), stateFile: path.join(dir, 'state.json'), executor: { execute: async () => { executions++; return '[CQ:file,file=/secret] just text'; } } });
+  const bridge = new QQBridge({ ...QUICK, sleep: async () => {}, authority, port: { observe: async value => { observations.push(value); return { observationId: 'observation-' + observations.length }; } }, onebot, settingsFile: path.join(dir, 'settings.json'), stateFile: path.join(dir, 'state.json'), executor: { execute: async () => { executions++; return '[CQ:file,file=/secret] just text'; } } });
   await bridge.connection(true); await bridge.configure({ expectedSelfId: '100', allowedCallerUID: '200' });
   world.paused = false; world.revision++;
   const event = { post_type: 'message', message_type: 'private', self_id: 100, user_id: 200, sender: { user_id: 200 }, message_id: 7, time: Math.floor(Date.now() / 1000), message: [{ type: 'text', data: { text: 'Hello' } }] };
@@ -108,16 +112,17 @@ test('a long text reply goes out as short messages in order, each observed under
   const f = await longReply(t); await f.bridge.receive(f.event);
   assert.deepEqual(f.texts, [1, 2, 3, 4].map(sentence)); assert.equal(f.texts.join(''), LONG);
   for (const text of f.texts) assert.ok(text.length <= 60);
-  assert.deepEqual(f.gaps, [1200, 1200, 1200]);
+  // A short random pause first, then one growing with the next message's length (random fixed at 0.5).
+  assert.deepEqual(f.gaps, [950, 2363, 2363, 2363]);
   assert.equal(f.record().status, 'sent');
   assert.deepEqual(f.record().receipts, [501, 502, 503, 504].map(id => ({ messageId: String(id), type: 'text' })));
   assert.deepEqual(f.observations.slice(1).map(o => [o.eventId, o.role, o.text]), [1, 2, 3, 4].map(n => ['qq:sent:' + (500 + n), 'assistant', sentence(n)]));
 });
-test('a short reply is one message with the model text unchanged and no pause', async t => {
+test('a short reply is one message with the model text unchanged, after only the short first pause', async t => {
   const f = await fixture(t), gaps = []; f.bridge.sleep = async ms => { gaps.push(ms); };
   await f.bridge.receive(f.event);
   assert.deepEqual(f.sends.map(send => send.message), [[{ type: 'text', data: { text: '[CQ:file,file=/secret] just text' } }]]);
-  assert.deepEqual(gaps, []); assert.equal(f.observations[1].text, '[CQ:file,file=/secret] just text');
+  assert.deepEqual(gaps, [950]); assert.equal(f.observations[1].text, '[CQ:file,file=/secret] just text');
 });
 test('a message of a split reply without a receipt stops the rest: nothing is resent, only delivered text is recorded', async t => {
   const f = await longReply(t, { failAt: 2 }); await f.bridge.receive(f.event); await f.bridge.receive(f.event);
@@ -130,7 +135,7 @@ test('a message of a split reply without a receipt stops the rest: nothing is re
   assert.deepEqual(g.texts, [sentence(1)]); assert.equal(g.record().status, 'unknown'); assert.equal(g.observations.length, 1);
 });
 test('a pause between the messages of a split reply stops the rest', async t => {
-  const f = await longReply(t, { onGap: (f, n) => { if (n === 2) { f.world.paused = true; f.world.revision++; } } });
+  const f = await longReply(t, { onGap: (f, n) => { if (n === 3) { f.world.paused = true; f.world.revision++; } } });
   await f.bridge.receive(f.event);
   assert.deepEqual(f.texts, [sentence(1), sentence(2)]); assert.equal(f.record().status, 'partial');
   assert.deepEqual(f.observations.slice(1).map(o => o.text), [sentence(1), sentence(2)]);

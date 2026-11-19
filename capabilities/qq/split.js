@@ -2,8 +2,7 @@
 export const SPLIT_MAX_CHARS = 60;
 /** Most messages for one reply; what is left over stays in the last one. */
 export const SPLIT_MAX_PARTS = 4;
-/** Pause before each message after the first. */
-export const SPLIT_GAP_MS = 1200;
+// The pause before each message after the first: segmentGap in pacing.js.
 
 const SENTENCE = '。！？…～!?~.', CLOSERS = '”’」』）)】》', COMMA = '，、；：,;';
 const PAIRS = { '（': '）', '(': ')', '【': '】', '[': ']', '《': '》', '「': '」', '『': '』', '“': '”', '‘': '’', '"': '"' };

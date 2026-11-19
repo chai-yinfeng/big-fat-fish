@@ -7,6 +7,10 @@ import { ArtifactStore } from '../../media/artifacts.js';
 import { MediaService } from '../../media/service.js';
 import { QQMedia, explicitSpeechRequested } from '../media.js';
 import { QQBridge } from '../bridge.js';
+import { PACING } from '../pacing.js';
+
+// No burst wait (each message is its own turn unless they arrive together) and a fixed random source.
+const QUICK = { pacing: { ...PACING, burstQuietMs: 0, burstMaxWaitMs: 0 }, random: () => 0.5 };
 
 function wav() {
   const b = Buffer.alloc(44 + 3200); b.write('RIFF'); b.writeUInt32LE(b.length - 8, 4); b.write('WAVEfmt ', 8); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(16000, 24); b.writeUInt32LE(32000, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write('data', 36); b.writeUInt32LE(3200, 40); return b;
@@ -23,7 +27,7 @@ function fixture(t, { faces } = {}) {
   const onebot = { call: async (action, params) => { if (action === 'get_login_info') return { user_id: '100' }; if (action === 'get_record') return { base64: wav().toString('base64') }; if (action === 'get_image') return { base64: 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' }; if (action === 'send_private_msg') { sent.push(params); return { message_id: nextId++ }; } throw Error('unexpected action'); } };
   const settingsFile = path.join(root, 'settings.json'); fs.writeFileSync(settingsFile, JSON.stringify({ expectedSelfId: '100', allowedCallerUID: '200' }));
   const executor = { execute: async request => { executions.push(request); return '我在。'; } };
-  const bridge = new QQBridge({ authority: { health: async () => ({ world: { paused: false, revision: 1 } }), context: async () => ({ entityId: scope.entityId, memoryEpoch: 0 }) }, port: { observe: async value => { observed.push(value); return { observationId: 'synthetic-observation' }; } }, onebot, executor, media: new QQMedia({ content, onebot, ...(faces === undefined ? {} : { faces }) }), settingsFile, stateFile: path.join(root, 'dispatch.json') });
+  const bridge = new QQBridge({ ...QUICK, sleep: async () => {}, authority: { health: async () => ({ world: { paused: false, revision: 1 } }), context: async () => ({ entityId: scope.entityId, memoryEpoch: 0 }) }, port: { observe: async value => { observed.push(value); return { observationId: 'synthetic-observation' }; } }, onebot, executor, media: new QQMedia({ content, onebot, ...(faces === undefined ? {} : { faces }) }), settingsFile, stateFile: path.join(root, 'dispatch.json') });
   const event = (id, message) => ({ post_type: 'message', self_id: 100, user_id: 200, message_id: id, message_type: 'private', sender: { user_id: 200 }, time: Math.floor(Date.now() / 1000), message });
   return { bridge, event, observed, sent, executions, executor, content, store, service, qualities, tts: () => tts };
 }
@@ -91,7 +95,7 @@ test('with media: only the text of a reply is split; a voice reply and an attach
   f.executor.execute = async request => { const image = f.store.records().find(r => r.kind === 'image'); await f.content.call({ action: 'attach', streamId: 'qq:100:private:200', memoryEpoch: 0, requestId: request.requestId, ref: image.id }); return long; };
   await f.bridge.receive(f.event(23, [{ type: 'text', data: { text: '把这张图发回来' } }, { type: 'image', data: { file: 'trusted-image-reference' } }]));
   assert.deepEqual(f.sent.slice(2).map(p => p.message[0].type === 'text' ? p.message[0].data.text : p.message[0].type), [sentence(1), sentence(2), 'image']);
-  assert.deepEqual(gaps, [1200]);
+  assert.deepEqual(gaps, [950, 2363]);
   assert.equal(Object.values(f.bridge.state.records).at(-1).receipts.length, 3);
   assert.deepEqual(f.observed.slice(-3, -1).map(o => o.text), [sentence(1), sentence(2)]);
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { splitReply, SPLIT_MAX_CHARS, SPLIT_MAX_PARTS, SPLIT_GAP_MS } from '../split.js';
+import { splitReply, SPLIT_MAX_CHARS, SPLIT_MAX_PARTS } from '../split.js';
 
 const squeezed = text => text.replace(/\s+/g, '');
 /** Every split keeps all the text, in order; only white space at the cuts is dropped. */
@@ -11,8 +11,8 @@ function split(text) {
   return parts;
 }
 
-test('the constants: 60 characters a message, at most 4 messages, about 1.2 seconds apart', () => {
-  assert.deepEqual([SPLIT_MAX_CHARS, SPLIT_MAX_PARTS, SPLIT_GAP_MS], [60, 4, 1200]);
+test('the constants: 60 characters a message, at most 4 messages', () => {
+  assert.deepEqual([SPLIT_MAX_CHARS, SPLIT_MAX_PARTS], [60, 4]);
 });
 
 test('a short reply without a blank line is returned as it is, byte for byte', () => {

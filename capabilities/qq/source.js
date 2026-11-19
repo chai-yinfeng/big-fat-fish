@@ -24,6 +24,18 @@ function stickerOf(data) {
   const name = mall && typeof data.summary === 'string' ? data.summary.trim().replace(/^\[(.*)\]$/s, '$1').trim() : '';
   return { sticker: mall || data.sub_type === 1 || data.sub_type === '1', ...(name && name.length <= 12 && !/[\n\0[\]]/.test(name) && !['动画表情', '图片', '表情'].includes(name) ? { stickerName: name } : {}) };
 }
+/** One log line per image segment of an inbound message, to see which NapCat-only fields really arrive: the names of
+ * the segment's data fields, `sub_type`, whether `emoji_id` is there and the `summary` string. Never a value of any
+ * other field (no file name, URL, account number or message text). */
+export function imageProbeLines(event) {
+  if (!Array.isArray(event?.message)) return [];
+  return event.message.filter(segment => segment?.type === 'image' && segment.data && typeof segment.data === 'object').map(({ data }) => {
+    const keys = Object.keys(data).filter(key => /^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(key)).slice(0, 24).join(',');
+    const subType = typeof data.sub_type === 'number' && Number.isSafeInteger(data.sub_type) || typeof data.sub_type === 'string' && /^\w{1,16}$/.test(data.sub_type) ? data.sub_type : data.sub_type === undefined ? '-' : '?';
+    const summary = typeof data.summary === 'string' ? JSON.stringify(data.summary.slice(0, 24)) : '-';
+    return `qq image segment: keys=${keys || '-'} sub_type=${subType} emoji_id=${data.emoji_id !== undefined && data.emoji_id !== '' ? 'yes' : 'no'} summary=${summary}`;
+  });
+}
 export function messageFromOneBot(event, { expectedSelfId }) {
   if (!event || typeof event !== 'object' || event.post_type !== 'message') return null;
   const self = id(event.self_id);
