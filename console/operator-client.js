@@ -129,8 +129,8 @@ export function sourcesQuery({ id } = {}) {
 }
 export async function operatorRequest({ location, token, path, payload, query, fetchImpl = fetch, signal, sameOrigin = false }) {
   if (!token) throw Object.assign(new Error('authorization_required'), { code: 'authorization_required' });
-  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/people/attach', '/conversations', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits', '/providers', '/providers/key', '/providers/clear', '/initiative/log', '/initiative/poke', '/jobs', '/jobs/demo', '/jobs/cancel'].includes(path)) throw new Error('unsupported_operator_path');
-  if (['/model', '/model/test', '/people/attach', '/spend/settings', '/usage/limits', '/providers/key', '/providers/clear', '/initiative/poke', '/jobs/demo', '/jobs/cancel', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
+  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/persona/cards', '/persona/cards/update', '/persona/cards/activate', '/persona/cards/delete', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/people/attach', '/conversations', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits', '/providers', '/providers/key', '/providers/clear', '/initiative/log', '/initiative/poke', '/jobs', '/jobs/demo', '/jobs/cancel'].includes(path)) throw new Error('unsupported_operator_path');
+  if (['/model', '/model/test', '/persona/cards/update', '/persona/cards/activate', '/persona/cards/delete', '/people/attach', '/spend/settings', '/usage/limits', '/providers/key', '/providers/clear', '/initiative/poke', '/jobs/demo', '/jobs/cancel', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
   if (['/runtime', '/people', '/conversations', '/spend', '/usage', '/usage/history', '/providers', '/initiative/log', '/jobs', '/memory/consolidation', '/memory/sources'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
   if (query !== undefined && (!['/memory', '/memory/sources'].includes(path) || payload !== undefined) || path === '/memory/sources' && query === undefined) throw new Error('operator_query_unsupported');
   const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}${query === undefined ? '' : path === '/memory/sources' ? sourcesQuery(query) : memoryQuery(query)}`, {
@@ -181,6 +181,16 @@ export function personaImport(source, defaults) {
     || ('examples' in value && (!Array.isArray(value.examples) || value.examples.some(item => typeof item?.user !== 'string' || typeof item?.assistant !== 'string')));
   if (bad) throw Object.assign(new Error('invalid_persona_file'), { code: 'invalid_persona_file' });
   return personaDraft({ ...defaults, ...value });
+}
+/** GET /persona/cards (and what the card operations answer): the library, exactly one card current. */
+export function validCards(value) {
+  return Boolean(value) && Number.isSafeInteger(value.personaRevision) && Array.isArray(value.cards)
+    && value.cards.every(card => card && typeof card.id === 'string' && typeof card.title === 'string' && Array.isArray(card.tags) && card.tags.every(tag => typeof tag === 'string') && typeof card.summary === 'string' && typeof card.current === 'boolean' && card.persona && typeof card.persona === 'object')
+    && value.cards.filter(card => card.current).length === 1;
+}
+/** A card's tags as typed on one line: separated by commas, 、 or spaces. */
+export function cardTags(line) {
+  return [...new Set(String(line || '').split(/[,，、;；\s]+/).map(tag => tag.trim()).filter(Boolean))];
 }
 export function validWorld(value) {
   return value && typeof value.world?.paused === 'boolean' && Number.isSafeInteger(value.world.revision)
