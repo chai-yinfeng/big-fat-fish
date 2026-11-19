@@ -23,7 +23,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -746,12 +746,32 @@ test('job steps: the demo job is registered with nothing but its seconds, a job 
   await STEPS.expectCompletions(run, ctx, { outcomes: ['deferred:budget', 'carried', 'not-the-owner:sent'], timeoutMs: 0 });
 });
 
+test('sticker steps: a library sticker is found by its description with its level and number of senders; the owner\'s decision posts the hash only', async () => {
+  const posted = [], hash = n => String(n).repeat(64);
+  let stickers = [{ hash: hash(1), level: 'pending', senders: 1, description: 'MOCK-DESC-X 一只水獭' }, { hash: hash(2), level: 'owner', senders: 0, description: 'MOCK-DESC-Y 一条鱼' }, { hash: hash(3), level: 'public', senders: 3 }];
+  const run = new Runner({ data: shipped(), sleep: async () => {}, operator: async (method, route, body) => { if (method === 'POST') { posted.push([route, body]); return {}; } return { stickers }; } });
+  await STEPS.expectSticker(run, {}, { contains: 'MOCK-DESC-X', level: 'pending', senders: 1, timeoutMs: 0 });
+  await assert.rejects(STEPS.expectSticker(run, {}, { contains: 'MOCK-DESC-X', level: 'public', timeoutMs: 0 }), /1 sticker\(s\) described as "MOCK-DESC-X" \(pending, 1 sender\(s\)\), expected one at level public/);
+  await assert.rejects(STEPS.expectSticker(run, {}, { contains: 'MOCK-DESC-X', senders: 2, timeoutMs: 0 }), /expected one sent by 2/);
+  await assert.rejects(STEPS.expectSticker(run, {}, { contains: 'MOCK-DESC-Z', timeoutMs: 0 }), /0 sticker\(s\)/);
+  await STEPS.expectSticker(run, {}, { contains: 'MOCK-DESC-Z', absent: true });
+  await assert.rejects(STEPS.expectSticker(run, {}, { contains: 'MOCK-DESC-X', absent: true }), /expected none/);
+  await STEPS.stickerDecide(run, {}, { contains: 'MOCK-DESC-X', action: 'approve' });
+  await assert.rejects(STEPS.stickerDecide(run, {}, { contains: 'MOCK-DESC-', action: 'approve' }), /2 sticker\(s\).*expected one to approve/);
+  await assert.rejects(STEPS.stickerDecide(run, {}, { contains: 'MOCK-DESC-X', action: 'delete' }), /unknown action/);
+  // Refusing every match: an owner-level one cannot be refused and is turned off; no match is no request.
+  await STEPS.stickerDecide(run, {}, { contains: 'MOCK-DESC-', action: 'reject' });
+  await STEPS.stickerDecide(run, {}, { contains: 'MOCK-DESC-Y', action: 'disable' });
+  await STEPS.stickerDecide(run, {}, { contains: 'MOCK-DESC-NONE', action: 'disable' });
+  assert.deepEqual(posted, [['/stickers/approve', { hash: hash(1) }], ['/stickers/reject', { hash: hash(1) }], ['/stickers/update', { hash: hash(2), status: 'disabled' }], ['/stickers/update', { hash: hash(2), status: 'disabled' }]]);
+});
+
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 900000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '51/51 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '54/54 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));

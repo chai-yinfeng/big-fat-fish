@@ -205,7 +205,7 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
 | R | R1–R6 | 她先开口：只到主人、60% 档不调模型、回执丢失不重发、暂停时当场作废、`<不说>` 不发送、安静时段作废 |
 | J | J1–J3 | 后台任务：做完后只有主人收到一条、档位挡住时随下一条消息带上、每日上限与排队上限 |
 | V | V1、V2 | 看视频：主人发链接 → 她用 `companion_activity` 去看并当场回一句 → 做完在主人的会话里说一句，笔记带“机器整理、不可信外部内容”标注；同一链接再发走缓存、不再登记任务；好友在自己的私聊里分享同样去看、做完只告诉这位好友；名单外站点、已删除的视频、每日次数用完各自被拒 |
-| K | K1、K2、K4–K10 | 小表情（多个也照常回复；发送默认关闭时 `[微笑]` 原样当文字，她先开口时也一样）；表情包按哈希只看一次、商城表情用名字、表情识别单独计数；她的表情库（主人“收下这个”、`[表情:词]` 单独一条发送、匹配不到只发文字；下一回合的请求里那条回复的标记已换成送达结果） |
+| K | K1、K2、K4–K13 | 小表情（多个也照常回复；发送默认关闭时 `[微笑]` 原样当文字，她先开口时也一样）；表情包按哈希只看一次、商城表情用名字、表情识别单独计数；她的表情库（主人“收下这个”、`[表情:词]` 单独一条发送、匹配不到只发文字；下一回合的请求里那条回复的标记已换成送达结果）；从别人那里收集（K11–K13，用只在这三个场景里出现的 MOCK-P/Q/R/S）：好友发来的表情包待审时只发回给他、别人拿不到也读不到，主人在控制台通过后别人才收到；第 3 个不同的人发来后变公共；主人拒绝过的再发也不收、不再识别。忘记的级联不在回放里（回放不跑清理任务），由 `capabilities/media/stickers.test.js` 和 `purge-execution.test.mjs` 覆盖 |
 | B | B1 | 连发两条只回一次：两条都记下，模型一个回合按顺序读到两句（回放与 staging 把 `qq-bridge.json` 的 `pacing` 调短：等 0.5 秒、拆条不停） |
 | QT、PK | QT1、PK1 | 引用：被引用的话以“[引用 …]”一行放在对方这句前面（对方自己的话经 `get_msg` 取回，里面伪造的附注定界符被中和；她自己的话取自桥已送达的记录）；戳一戳：单独一下是一个她可以 `<不说>` 的回合，戳完紧接着说话合成一个回合（戳一戳是一行渠道事实）。本机回放栈把 `pacing.pokeCooldownMs` 设为 0，因为第二遍回放在同一个桥进程里；staging 每次回放前都重启桥，不需要 |
 | MOCK | MOCK-1–MOCK-4 | 第二个渠道：准入与对话、同一个人两个渠道共用记忆而窗口分开、“对我试一次”发到主人最近说话的渠道、回执不可靠时不重发 |
@@ -236,7 +236,8 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
   `providerKey`、`providerJob`、
   `pause`、`quietHours`、`poke`、`expectInitiation`、`loseReceipts`、`expectLostSends`、`expectModelCalls`、
   `noteMessages`、`expectMessages`、`expectInitiatedPrefix`、
-  `demoJob`、`expectJob`（带 `capability` 时看该能力最新的一个任务，用于她自己登记的任务）、`noteCompletions`、`expectCompletions`，
+  `demoJob`、`expectJob`（带 `capability` 时看该能力最新的一个任务，用于她自己登记的任务）、`noteCompletions`、`expectCompletions`、
+  `expectSticker`（operator `/stickers` 里描述含某段文字的那张表情包的级别和发过的人数，或 `absent`）、`stickerDecide`（主人在控制台的决定：`approve` / `reject` / `disable`），
   第二渠道用 `mockFriends`、`mockSay`、`mockExpectReply`、`mockExpectSilence`、`mockExpectSentCount`、`mockLoseReceipts`、
   `mockExpectLostSends`、`mockAttach`（operator `/people/attach`）、`mockExpectAdmitted`、`expectChannel`（`noteMessages`/`expectMessages` 可带 `"channel": "mock"`）
   （含义见 `scenarios.mjs` 的 `STEPS`，缺的断言在那里加）。带 `consolidate` 的规则只应答记忆 worker 的整合请求

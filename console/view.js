@@ -1,13 +1,16 @@
 // Shared UI for the standalone browser entry. Styling lives in standalone.css.
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
-import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validCards, cardTags, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, initiationResult, validJobs, jobNotice } from './operator-client.js';
+import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validCards, cardTags, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, initiationResult, validJobs, jobNotice, validStickers, stickerDataUrl, stickerWords, readStickerFile } from './operator-client.js';
 import { validRuntime, ttsBackend, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
 const NS = 'companion.world';
 const VOICE_DRAFT = { voiceId: '', label: '', language: 'ja', usageScope: 'private' };
 const CARD_NEW = { title: '', tags: '', summary: '', copyFrom: '' };
+const STICKER_NEW = { name: '', tags: '', description: '' };
+// How many library rows the stickers card shows (and loads pictures for) at first and per "show more".
+const STICKER_PAGE = 20;
 // Only a display preference; never secrets or world content.
 const THEME_KEY = 'companion-world:theme';
 // Data-driven navigation: a new page adds one entry here and one renderer below.
@@ -143,6 +146,17 @@ export function WorldConsole({ t, standalone = false }) {
   const [cardMeta, setCardMeta] = useState(null);
   const [cardNew, setCardNew] = useState(CARD_NEW);
   const [cardConfirm, setCardConfirm] = useState(null);
+  // Her sticker library on the channels page (appended, same reason): the list (GET /stickers; null until loaded or
+  // when the content service cannot answer), the pictures read so far as data URLs by hash (page state only, never
+  // stored), the row being renamed, the upload form's words, the threshold as typed, and how many rows are shown.
+  const [stickers, setStickers] = useState(null);
+  const [stickerImages, setStickerImages] = useState({});
+  const [stickerEdit, setStickerEdit] = useState(null);
+  const [stickerNew, setStickerNew] = useState(STICKER_NEW);
+  const [stickerThreshold, setStickerThreshold] = useState('');
+  const [stickerShown, setStickerShown] = useState(STICKER_PAGE);
+  const stickerFileInput = useRef(null);
+  const stickerLoaded = useRef(new Set());
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -169,11 +183,13 @@ export function WorldConsole({ t, standalone = false }) {
     setProviders(null); setProviderClear(null);
     setInitiations(null); setJobs(null);
     setCards(null); setCardEdit(null); setCardMeta(null); setCardNew(CARD_NEW); setCardConfirm(null);
+    if (stickerFileInput.current) stickerFileInput.current.value = '';
+    stickerLoaded.current = new Set(); setStickers(null); setStickerImages({}); setStickerEdit(null); setStickerNew(STICKER_NEW); setStickerThreshold(''); setStickerShown(STICKER_PAGE);
   }
   async function request(path, payload, credential = token, query) {
     const controller = new AbortController();
     requests.current.add(controller);
-    const timeout = setTimeout(() => controller.abort(), path === '/voice/test' ? 240000 : path === '/model/test' ? 60000 : 12000);
+    const timeout = setTimeout(() => controller.abort(), path === '/voice/test' ? 240000 : path === '/stickers/describe' ? 95000 : ['/model/test', '/stickers/upload'].includes(path) ? 60000 : 12000);
     try { return await operatorRequest({ location: window.location, token: credential, path, payload, query, signal: controller.signal, sameOrigin: standalone }); }
     finally { clearTimeout(timeout); requests.current.delete(controller); }
   }
@@ -255,6 +271,26 @@ export function WorldConsole({ t, standalone = false }) {
     if (!mounted.current || generation.current !== current) return;
     setJobs(validJobs(value) ? value : null);
   }
+  // Her sticker library; like the jobs, a content service that cannot answer leaves the card saying so. The pictures
+  // of the rows on screen are read afterwards, one at a time, without holding the page busy.
+  async function loadStickers(credential = token, shown = stickerShown) {
+    const current = generation.current, value = await request('/stickers', undefined, credential).catch(caught => { if (caught.code === 'authorization_required') throw caught; return null; });
+    if (!mounted.current || generation.current !== current) return;
+    const list = validStickers(value) ? value : null;
+    setStickers(list); setStickerEdit(null);
+    if (list) void loadStickerImages(list, credential, shown);
+  }
+  async function loadStickerImages(list, credential = token, shown = stickerShown) {
+    const current = generation.current, pending = list.stickers.filter(item => item.level === 'pending'), library = list.stickers.filter(item => item.level !== 'pending').slice(0, shown);
+    for (const item of [...pending.slice(0, STICKER_PAGE), ...library]) {
+      if (stickerLoaded.current.has(item.hash)) continue;
+      stickerLoaded.current.add(item.hash);
+      let url;
+      try { url = stickerDataUrl(await request('/stickers/image', undefined, credential, { hash: item.hash })); } catch { stickerLoaded.current.delete(item.hash); return; }
+      if (!mounted.current || generation.current !== current) return;
+      setStickerImages(images => ({ ...images, [item.hash]: url }));
+    }
+  }
   async function loadRuntime(credential = token) {
     const current = generation.current, value = await request('/runtime', undefined, credential);
     if (!validRuntime(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
@@ -262,7 +298,7 @@ export function WorldConsole({ t, standalone = false }) {
     setRuntimeInfo(value); setSpeechDraft(value.speech.status === 'ready' ? { numThreads: value.speech.numThreads, maxTextChars: value.speech.maxTextChars } : null);
   }
   useEffect(() => { if (token) void run(async () => { await load(token); if (tab === 'runtime') await loadProviders(token); if (standalone && tab === 'runtime') await loadRuntime(token); }); }, [token]);
-  useEffect(() => { if (token && tab === 'channels') void run(async () => { await loadQQ(token); await loadInitiations(token); await loadJobs(token); }); }, [token, tab]);
+  useEffect(() => { if (token && tab === 'channels') void run(async () => { await loadQQ(token); await loadStickers(token); await loadInitiations(token); await loadJobs(token); }); }, [token, tab]);
   useEffect(() => { if (token && tab === 'people') void run(() => loadPeople(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'persona') void run(() => loadCards(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'quota') void run(() => loadQuota(token)); }, [token, tab]);
@@ -653,6 +689,83 @@ export function WorldConsole({ t, standalone = false }) {
         text('qqCallerHint'), text('qqCallerPrivacy'),
         h('button', { type: 'submit', disabled: gated }, t('qqSave')))));
   }
+  // Her sticker library (design §1.1), on the channels page because stickers are QQ's own: the pictures collected
+  // from others that wait for the owner's word, the library itself (rename, retag, off and on), and an upload form.
+  // Who sent a picture never reaches this page: the list carries a number per picture.
+  function stickersCard() {
+    const named = (key, fallback) => { const label = t(key); return label === key ? fallback : label; };
+    const act = (path, payload, notice) => run(async () => { await request(path, payload); await loadStickers(); if (notice) setNotice(t(notice)); });
+    const picture = item => stickerImages[item.hash] ? h('img', { className: 'bff-sticker', src: stickerImages[item.hash], alt: item.name, loading: 'lazy' }) : h('span', { className: 'bff-sticker', 'aria-hidden': true });
+    const what = item => item.description ? `${item.description}${item.machine === false ? '' : `（${t('stickers.machine')}）`}` : t('stickers.undescribed');
+    const waiting = stickers ? stickers.stickers.filter(item => item.level === 'pending') : [], library = stickers ? stickers.stickers.filter(item => item.level !== 'pending') : [];
+    const tone = level => level === 'owner' ? 'primary' : 'ok';
+    const upload = describe => run(async () => {
+      const imageBase64 = await readStickerFile(stickerFileInput.current?.files?.[0]);
+      if (describe) {
+        const value = await request('/stickers/describe', { imageBase64 });
+        if (value?.recognized !== true) { setNotice(t(value?.reason === 'spend' ? 'stickers.describeSpend' : 'stickers.describeBudget')); return; }
+        setStickerNew({ name: stickerNew.name || String(value.name ?? ''), tags: stickerNew.tags || (Array.isArray(value.tags) ? value.tags.join('、') : ''), description: String(value.description ?? '') });
+        return;
+      }
+      const value = await request('/stickers/upload', { imageBase64, ...stickerWords(stickerNew.name, stickerNew.tags) });
+      if (stickerFileInput.current) stickerFileInput.current.value = '';
+      setStickerNew(STICKER_NEW); await loadStickers(); setNotice(t(value?.already ? 'stickers.uploadedAlready' : 'stickers.uploaded'));
+    });
+    return h('section', { className: 'bff-card' },
+      cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('sparkles')), h('h2', null, t('stickers.title'))),
+        button('refresh', () => run(() => loadStickers()), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
+      text('stickers.hint'),
+      !stickers ? text('stickers.unavailable') : h(React.Fragment, null,
+        h('p', { className: 'bff-small bff-muted' }, `${t('stickers.count.library')} ${library.length} · ${t('stickers.count.pending')} ${waiting.length} · ${t('stickers.count.rejected')} ${stickers.rejected}`),
+        h('h3', null, t('stickers.pendingTitle')),
+        h('p', { className: 'bff-small bff-muted' }, t('stickers.pendingHint')),
+        !waiting.length ? text('stickers.pendingEmpty') : h('div', null, ...waiting.slice(0, STICKER_PAGE).map(item => h('div', { className: 'bff-list-row', key: item.hash },
+          picture(item),
+          h('div', { className: 'bff-grow' }, h('p', null, what(item)), h('p', { className: 'bff-small bff-muted' }, `${t('stickers.senders')}: ${item.senders} · ${t('stickers.name')}: ${item.name}`)),
+          h('div', { className: 'bff-actions' }, button('stickers.approve', () => act('/stickers/approve', { hash: item.hash }, 'stickers.approved'), { className: 'bff-primary bff-sm' }),
+            button('stickers.reject', () => act('/stickers/reject', { hash: item.hash }, 'stickers.rejected'), { className: 'bff-ghost bff-sm' }))))),
+        waiting.length > STICKER_PAGE ? h('p', { className: 'bff-small bff-muted' }, `${t('stickers.pendingMore')} ${waiting.length - STICKER_PAGE}`) : null,
+        h('form', { className: 'bff-stack-sm', onSubmit: event => { event.preventDefault(); void run(async () => {
+          const count = Number(stickerThreshold);
+          if (!Number.isInteger(count) || count < 2 || count > 20) throw Object.assign(new Error('invalid_sticker'), { code: 'invalid_sticker' });
+          await request('/stickers/settings', { publicThreshold: count }); setStickerThreshold(''); await loadStickers(); setNotice(t('saved'));
+        }); } },
+          h('label', null, h('span', null, `${t('stickers.threshold')}（${t('stickers.thresholdNow')} ${stickers.publicThreshold}）`), h('input', { type: 'number', min: 2, max: 20, step: 1, value: stickerThreshold, placeholder: String(stickers.publicThreshold), disabled: busy, onChange: event => setStickerThreshold(event.target.value) })),
+          h('div', { className: 'bff-actions' }, h('button', { type: 'submit', className: 'bff-sm', disabled: busy || stickerThreshold === '' }, t('stickers.thresholdSave')))),
+        h('h3', null, t('stickers.libraryTitle')),
+        !library.length ? text('stickers.libraryEmpty') : h('div', { className: 'bff-table' }, h('table', null,
+          h('thead', null, h('tr', null, ...['picture', 'name', 'level', 'senders', 'uses', 'action'].map(key => h('th', { key, scope: 'col' }, t(`stickers.columns.${key}`))))),
+          h('tbody', null, ...library.slice(0, stickerShown).map(item => {
+            const editing = stickerEdit?.hash === item.hash;
+            return h('tr', { key: item.hash },
+              h('td', null, picture(item)),
+              h('td', null, editing ? h('div', { className: 'bff-stack-sm' },
+                h('label', null, h('span', null, t('stickers.name')), h('input', { type: 'text', maxLength: 12, value: stickerEdit.name, disabled: busy, onChange: event => setStickerEdit({ ...stickerEdit, name: event.target.value }) })),
+                h('label', null, h('span', null, t('stickers.tags')), h('input', { type: 'text', value: stickerEdit.tags, disabled: busy, onChange: event => setStickerEdit({ ...stickerEdit, tags: event.target.value }) })))
+                : h(React.Fragment, null, h('p', null, item.name), h('p', { className: 'bff-small bff-muted' }, item.tags.join('、') || '—'), h('p', { className: 'bff-small bff-muted' }, what(item)))),
+              h('td', null, badge(named(`stickers.level.${item.level}`, item.level), tone(item.level)), item.status === 'disabled' ? badge(t('stickers.disabled'), 'warn') : null),
+              h('td', null, String(item.senders)),
+              h('td', null, String(item.uses)),
+              h('td', null, h('div', { className: 'bff-actions' }, ...(editing ? [
+                button('stickers.save', () => run(async () => { await request('/stickers/update', { hash: item.hash, ...stickerWords(stickerEdit.name, stickerEdit.tags) }); await loadStickers(); setNotice(t('saved')); }), { className: 'bff-primary bff-sm' }),
+                button('stickers.cancel', () => setStickerEdit(null), { className: 'bff-ghost bff-sm' }),
+              ] : [
+                button('stickers.edit', () => setStickerEdit({ hash: item.hash, name: item.name, tags: item.tags.join('、') }), { className: 'bff-ghost bff-sm' }),
+                button(item.status === 'disabled' ? 'stickers.enable' : 'stickers.disable', () => act('/stickers/update', { hash: item.hash, status: item.status === 'disabled' ? 'active' : 'disabled' }), { className: 'bff-ghost bff-sm' }),
+                item.level === 'public' ? button('stickers.reject', () => act('/stickers/reject', { hash: item.hash }, 'stickers.rejected'), { className: 'bff-ghost bff-sm' }) : null,
+              ]))));
+          })))),
+        library.length > stickerShown ? h('div', { className: 'bff-actions' }, button('stickers.more', () => { const shown = stickerShown + STICKER_PAGE; setStickerShown(shown); void loadStickerImages(stickers, token, shown); }, { className: 'bff-ghost bff-sm' })) : null,
+        h('h3', null, t('stickers.uploadTitle')),
+        h('p', { className: 'bff-small bff-muted' }, t('stickers.uploadHint')),
+        h('form', { className: 'bff-stack-sm', onSubmit: event => { event.preventDefault(); void upload(false); } },
+          h('label', null, h('span', null, t('stickers.file')), h('input', { ref: stickerFileInput, type: 'file', accept: 'image/png,image/jpeg,image/gif,image/webp', required: true, disabled: busy })),
+          h('label', null, h('span', null, t('stickers.name')), h('input', { type: 'text', maxLength: 12, value: stickerNew.name, disabled: busy, onChange: event => setStickerNew({ ...stickerNew, name: event.target.value }) })),
+          h('label', null, h('span', null, t('stickers.tags')), h('input', { type: 'text', value: stickerNew.tags, placeholder: t('stickers.tagsHint'), disabled: busy, onChange: event => setStickerNew({ ...stickerNew, tags: event.target.value }) })),
+          stickerNew.description ? h('p', { className: 'bff-small bff-muted' }, `${stickerNew.description}（${t('stickers.machine')}）`) : null,
+          h('div', { className: 'bff-actions' }, button('stickers.describe', () => upload(true), { className: 'bff-ghost bff-sm', icon: 'sparkles' }),
+            h('button', { type: 'submit', className: 'bff-primary bff-sm', disabled: busy }, t('stickers.upload'))))));
+  }
   // "Try it on me": one run she starts herself, in the owner's own QQ conversation only, and how the newest ones ended.
   // The request carries nothing: who it goes to is decided by Authority, never by this page.
   function initiationCard() {
@@ -715,6 +828,7 @@ export function WorldConsole({ t, standalone = false }) {
       qqSettings(),
       initiationCard(),
       jobsCard(),
+      stickersCard(),
       h('section', { className: 'bff-card' }, h('h2', null, t('channels')), data.bindings.length ? h('div', { className: 'bff-table' }, h('table', null,
         h('thead', null, h('tr', null, ...['source', 'conversation', 'person', 'audience'].map(key => h('th', { key, scope: 'col' }, t(key))))),
         h('tbody', null, ...data.bindings.map((binding, index) => h('tr', { key: `${binding.sourceId}:${index}` },

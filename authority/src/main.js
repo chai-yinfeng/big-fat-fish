@@ -5,7 +5,7 @@ import { Authority } from './engine.js';
 import { createAuthorityServer } from './server.js';
 import { createOperatorServer } from './operator.js';
 import { createModelControlClient } from './model-control.js';
-import { createContentControlClient, createContentOperatorClient, createContentJobsClient } from './content-control.js';
+import { createContentControlClient, createContentOperatorClient, createContentJobsClient, createContentStickersClient } from './content-control.js';
 import { fileURLToPath } from 'node:url';
 import { channel } from '../../capabilities/channels/index.js';
 
@@ -46,7 +46,7 @@ try {
   for (const actor of config.actors) authority.bindActor(actor);
   for (const stream of config.streams) authority.bindStream(stream);
   app = createAuthorityServer({ authority, socketPath: config.socketPath, credentials: config.credentials, ...(config.content ? { contentControl: createContentControlClient(config.content), contentJobs: createContentJobsClient(config.content) } : {}), onFatal: () => { process.stderr.write('Authority reviewer failed; pending work remains durable.\n'); void stop(1); } });
-  operator = createOperatorServer({ authority, ...config.operator, assetsDir: fileURLToPath(new URL('../../console-web/', import.meta.url)), ...(config.content ? { contentOperator: createContentOperatorClient(config.content), contentControl: createContentControlClient(config.content), contentJobs: createContentJobsClient(config.content) } : {}), modelControl: config.operator.modelSocketPath ? createModelControlClient(config.operator.modelSocketPath) : undefined, qqControl: config.operator.qqSocketPath ? createModelControlClient(config.operator.qqSocketPath, ['/qq', '/qq/identity', '/qq/people']) : undefined, onResume: () => app.wakeReviewer() });
+  operator = createOperatorServer({ authority, ...config.operator, assetsDir: fileURLToPath(new URL('../../console-web/', import.meta.url)), ...(config.content ? { contentOperator: createContentOperatorClient(config.content), contentControl: createContentControlClient(config.content), contentJobs: createContentJobsClient(config.content), contentStickers: createContentStickersClient(config.content) } : {}), modelControl: config.operator.modelSocketPath ? createModelControlClient(config.operator.modelSocketPath) : undefined, qqControl: config.operator.qqSocketPath ? createModelControlClient(config.operator.qqSocketPath, ['/qq', '/qq/identity', '/qq/people']) : undefined, onResume: () => app.wakeReviewer() });
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { void stop(0); });
   await app.start();
   await operator.start();

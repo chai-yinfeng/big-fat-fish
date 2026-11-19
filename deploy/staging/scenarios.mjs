@@ -479,6 +479,31 @@ export const STEPS = {
     const own = `qq:${run.data.bot.qq}:private:${run.qq(person)}`;
     for (const [streamId, epoch] of await epochs()) if (epoch !== before.get(streamId) + (streamId === own ? 1 : 0)) fail(`memory epoch of ${run.nameOf(streamId.split(':').at(-1))} went from ${before.get(streamId)} to ${epoch}`);
   },
+  /** Her sticker library as the console lists it (operator GET /stickers): exactly one sticker whose description
+   * contains `contains` must be there, at `level` (owner, public, pending) and sent by `senders` different people
+   * (a number: the list says no more); with `absent: true` there must be none. */
+  async expectSticker(run, _ctx, { contains, level, senders, absent = false, timeoutMs = 15000 }) {
+    const found = async () => (await run.operator('GET', '/stickers')).stickers.filter(item => (item.description ?? '').includes(contains));
+    if (absent) { const items = await found(); if (items.length) fail(`the library has ${items.length} sticker(s) described as ${JSON.stringify(contains)}, expected none`); return; }
+    let seen = [];
+    const right = () => seen.length === 1 && (level === undefined || seen[0].level === level) && (senders === undefined || seen[0].senders === senders);
+    try { await run.poll(async () => { seen = await found(); return right(); }, timeoutMs, 'timeout'); }
+    catch (error) { if (error.message !== 'timeout') throw error; fail(`the library has ${seen.length} sticker(s) described as ${JSON.stringify(contains)}${seen.length ? ` (${seen[0].level}, ${seen[0].senders} sender(s))` : ''}, expected one${level === undefined ? '' : ' at level ' + level}${senders === undefined ? '' : ` sent by ${senders}`}`); }
+  },
+  /** The owner's word on the console for the stickers whose description contains `contains`: `approve` (exactly
+   * one, operator POST /stickers/approve), `reject` or `disable` (every one of them; as a `finally` they keep a
+   * later replay on the same data root from matching this one's stickers). A sticker of the owner's level cannot be
+   * refused: it is turned off instead. */
+  async stickerDecide(run, _ctx, { contains, action }) {
+    if (!['approve', 'reject', 'disable'].includes(action)) fail(`stickerDecide: unknown action ${JSON.stringify(action)}`);
+    const items = (await run.operator('GET', '/stickers')).stickers.filter(item => (item.description ?? '').includes(contains));
+    if (action === 'approve' && items.length !== 1) fail(`the library has ${items.length} sticker(s) described as ${JSON.stringify(contains)}, expected one to approve`);
+    for (const item of items) {
+      if (action === 'approve') await run.operator('POST', '/stickers/approve', { hash: item.hash });
+      else if (action === 'reject' && item.level !== 'owner') await run.operator('POST', '/stickers/reject', { hash: item.hash });
+      else await run.operator('POST', '/stickers/update', { hash: item.hash, status: 'disabled' });
+    }
+  },
   /** The world runs and the QQ bridge has noticed (also as a `finally` after `forget`). */
   async resume(run) {
     await run.setPaused(false);

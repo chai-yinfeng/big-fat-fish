@@ -17,7 +17,7 @@ async function json(req, limit = 98304) {
 }
 
 /** Human control plane. Its socket/token are never mounted to the model worker. */
-export function createOperatorServer({ authority, socketPath, tokenHash, origins, modelControl, qqControl, contentOperator, contentControl, contentJobs, assetsDir, allowDiaryTrigger = false, onResume = () => {} }) {
+export function createOperatorServer({ authority, socketPath, tokenHash, origins, modelControl, qqControl, contentOperator, contentControl, contentJobs, contentStickers, assetsDir, allowDiaryTrigger = false, onResume = () => {} }) {
   if (!path.isAbsolute(socketPath) || !/^[a-f0-9]{64}$/.test(tokenHash) || !Array.isArray(origins)) throw new Error('Invalid operator configuration');
   const expected = Buffer.from(tokenHash, 'hex');
   // Control sockets of channel bridges, by channel id (only the QQ bridge has one).
@@ -110,6 +110,13 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         if (!contentJobs) throw Object.assign(new Error('Content runtime unavailable'), { statusCode: 503 });
         respond(200, { ok: true, value: authority.jobList(await contentJobs({ action: 'list' })) }); return;
       }
+      // Her sticker library on the QQ channel page: the list (levels and how many people sent each, never who) and
+      // one picture's bytes. The content service keeps the library; this only passes the owner's request on.
+      if (req.method === 'GET' && (req.url === '/stickers' || url.pathname === '/stickers/image')) {
+        if (!contentStickers) throw Object.assign(new Error('Content runtime unavailable'), { statusCode: 503 });
+        if (req.url !== '/stickers' && ([...url.searchParams.keys()].some(key => key !== 'hash') || !/^[a-f0-9]{64}$/.test(url.searchParams.get('hash') ?? ''))) throw Object.assign(new Error('Invalid sticker request'), { statusCode: 400, code: 'INVALID_REQUEST' });
+        respond(200, { ok: true, value: await contentStickers(req.url === '/stickers' ? { action: 'list' } : { action: 'image', hash: url.searchParams.get('hash') }) }); return;
+      }
       if (req.method === 'GET' && req.url === '/spend') {
         if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });
         respond(200, { ok: true, value: await modelControl('/spend', undefined, req.headers.authorization) }); return;
@@ -132,7 +139,7 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         respond(200, { ok: true, value: await contentOperator('status', {}, { signal: contentAbort.signal }) }); return;
       }
       if (req.method !== 'POST') { respond(404, { ok: false, error: { code: 'NOT_FOUND', message: 'Unknown console operation' } }); return; }
-      const body = await json(req, req.url === '/voice/reference' ? 3 * 1024 * 1024 : 98304);
+      const body = await json(req, ['/voice/reference', '/stickers/upload', '/stickers/describe'].includes(req.url) ? 3 * 1024 * 1024 : 98304);
       let value;
       const contentActions = {
         '/speech': ['configure', ['expectedRevision', 'numThreads', 'maxTextChars']],
@@ -150,6 +157,17 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         const current = authority.worldStatus();
         if (!current.paused || current.revision !== world.revision) throw Object.assign(new Error('World changed during operation'), { statusCode: 409, code: 'CONFLICT' });
         respond(200, { ok: true, value }); return;
+      }
+      // The owner's changes to her sticker library (content service `/stickers`; field checks are its own).
+      const stickerActions = {
+        '/stickers/update': ['update', ['hash', 'name', 'tags', 'status']], '/stickers/upload': ['upload', ['imageBase64', 'name', 'tags']],
+        '/stickers/describe': ['describe', ['imageBase64']], '/stickers/approve': ['approve', ['hash']], '/stickers/reject': ['reject', ['hash']],
+        '/stickers/settings': ['settings', ['publicThreshold']],
+      };
+      if (Object.hasOwn(stickerActions, req.url)) {
+        if (!contentStickers) throw Object.assign(new Error('Content runtime unavailable'), { statusCode: 503 });
+        const [action, fields] = stickerActions[req.url];
+        respond(200, { ok: true, value: await contentStickers({ ...object(body, fields), action }) }); return;
       }
       const memoryActions = {
         '/entities': 'createEntity', '/memory/forget-preview': 'forgetPreview', '/memory/forget': 'forgetApply',

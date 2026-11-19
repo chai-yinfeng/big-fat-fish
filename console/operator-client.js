@@ -90,6 +90,39 @@ export function validUsage(value) {
 export function validUsageHistory(value) {
   return value && Array.isArray(value.days) && value.days.every(day => typeof day.day === 'string' && day.rows && typeof day.rows === 'object' && Object.values(day.rows).every(usageNumbers));
 }
+const STICKER_MIMES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'], STICKER_BYTES = 2 * 1024 * 1024;
+const stickerWord = value => typeof value === 'string' && [...value].length >= 1 && value.length <= 12 && !/[\n\0]/.test(value);
+/** GET /stickers: her sticker library. Each picture has a level (owner, public, pending) and how many different
+ * people sent it: a number, never who. */
+export function validStickers(value) {
+  return Boolean(value) && Number.isInteger(value.publicThreshold) && Number.isFinite(value.rejected) && Array.isArray(value.stickers)
+    && value.stickers.every(item => item && /^[a-f0-9]{64}$/.test(item.hash) && typeof item.name === 'string' && Array.isArray(item.tags) && item.tags.every(tag => typeof tag === 'string')
+      && ['owner', 'public', 'pending'].includes(item.level) && ['active', 'disabled'].includes(item.status) && Number.isFinite(item.senders) && Number.isFinite(item.uses)
+      && (item.description === undefined || typeof item.description === 'string'));
+}
+/** GET /stickers/image: one library picture as a data URL for an <img> (the page's policy allows `data:` images). */
+export function stickerDataUrl(value) {
+  if (!STICKER_MIMES.includes(value?.mime) || typeof value.data !== 'string' || value.data.length > Math.ceil(STICKER_BYTES / 3) * 4 + 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value.data)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
+  return `data:${value.mime};base64,${value.data}`;
+}
+/** A sticker's name and tags as typed: a name of 1–12 characters, at most 6 tags of at most 12 (one line,
+ * separated like a card's tags). */
+export function stickerWords(name, line) {
+  const word = String(name ?? '').trim(), tags = cardTags(line);
+  if (!stickerWord(word) || tags.length > 6 || !tags.every(stickerWord)) throw Object.assign(new Error('invalid_sticker'), { code: 'invalid_sticker' });
+  return { name: word, tags };
+}
+/** A picture chosen for upload as base64: PNG, JPEG, GIF or WebP of at most 2 MiB, checked here by its first bytes
+ * (the content service checks again). Only the bytes are sent, never a file name or path. */
+export async function readStickerFile(file) {
+  const invalid = () => Object.assign(new Error('invalid_sticker_image'), { code: 'invalid_sticker_image' });
+  if (!file || !(file.size > 0) || file.size > STICKER_BYTES) throw invalid();
+  const bytes = new Uint8Array(await file.arrayBuffer()), ascii = (from, to) => String.fromCharCode(...bytes.subarray(from, to));
+  const known = ascii(1, 4) === 'PNG' && bytes[0] === 137 || bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 || /^GIF8[79]a$/.test(ascii(0, 6)) || ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP';
+  if (!known) throw invalid();
+  let binary = ''; for (let p = 0; p < bytes.length; p += 8192) binary += String.fromCharCode(...bytes.subarray(p, p + 8192));
+  return btoa(binary);
+}
 export function validPeople(value) {
   return value && Array.isArray(value.people) && value.people.every(p => typeof p.personId === 'string' && typeof p.label === 'string' && typeof p.owner === 'boolean' && Array.isArray(p.actors))
     && Number.isFinite(value.limit) && Number.isFinite(value.admitted);
@@ -122,6 +155,11 @@ export function memoryQuery({ person, beforeRevision } = {}) {
   const query = new URLSearchParams({ ...(person === undefined ? {} : { person }), ...(beforeRevision === undefined ? {} : { beforeRevision: String(beforeRevision) }) }).toString();
   return query ? `?${query}` : '';
 }
+/** Read-only query of GET /stickers/image: the one library picture, by the hash of its bytes. */
+export function stickerQuery({ hash } = {}) {
+  if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash)) throw new Error('invalid_sticker_query');
+  return `?${new URLSearchParams({ hash }).toString()}`;
+}
 /** Read-only query of GET /memory/sources: the one memory item whose source observations are read. */
 export function sourcesQuery({ id } = {}) {
   if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new Error('invalid_memory_query');
@@ -129,11 +167,11 @@ export function sourcesQuery({ id } = {}) {
 }
 export async function operatorRequest({ location, token, path, payload, query, fetchImpl = fetch, signal, sameOrigin = false }) {
   if (!token) throw Object.assign(new Error('authorization_required'), { code: 'authorization_required' });
-  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/persona/cards', '/persona/cards/update', '/persona/cards/activate', '/persona/cards/delete', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/people/attach', '/conversations', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits', '/providers', '/providers/key', '/providers/clear', '/initiative/log', '/initiative/poke', '/jobs', '/jobs/demo', '/jobs/cancel'].includes(path)) throw new Error('unsupported_operator_path');
-  if (['/model', '/model/test', '/persona/cards/update', '/persona/cards/activate', '/persona/cards/delete', '/people/attach', '/spend/settings', '/usage/limits', '/providers/key', '/providers/clear', '/initiative/poke', '/jobs/demo', '/jobs/cancel', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
-  if (['/runtime', '/people', '/conversations', '/spend', '/usage', '/usage/history', '/providers', '/initiative/log', '/jobs', '/memory/consolidation', '/memory/sources'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
-  if (query !== undefined && (!['/memory', '/memory/sources'].includes(path) || payload !== undefined) || path === '/memory/sources' && query === undefined) throw new Error('operator_query_unsupported');
-  const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}${query === undefined ? '' : path === '/memory/sources' ? sourcesQuery(query) : memoryQuery(query)}`, {
+  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/persona/cards', '/persona/cards/update', '/persona/cards/activate', '/persona/cards/delete', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/diary/publish', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/people/attach', '/conversations', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits', '/providers', '/providers/key', '/providers/clear', '/initiative/log', '/initiative/poke', '/jobs', '/jobs/demo', '/jobs/cancel', '/stickers', '/stickers/image', '/stickers/update', '/stickers/upload', '/stickers/describe', '/stickers/approve', '/stickers/reject', '/stickers/settings'].includes(path)) throw new Error('unsupported_operator_path');
+  if (['/model', '/model/test', '/persona/cards/update', '/persona/cards/activate', '/persona/cards/delete', '/people/attach', '/spend/settings', '/usage/limits', '/providers/key', '/providers/clear', '/initiative/poke', '/jobs/demo', '/jobs/cancel', '/stickers/update', '/stickers/upload', '/stickers/describe', '/stickers/approve', '/stickers/reject', '/stickers/settings', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
+  if (['/runtime', '/people', '/conversations', '/spend', '/usage', '/usage/history', '/providers', '/initiative/log', '/jobs', '/stickers', '/stickers/image', '/memory/consolidation', '/memory/sources'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
+  if (query !== undefined && (!['/memory', '/memory/sources', '/stickers/image'].includes(path) || payload !== undefined) || ['/memory/sources', '/stickers/image'].includes(path) && query === undefined) throw new Error('operator_query_unsupported');
+  const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}${query === undefined ? '' : path === '/memory/sources' ? sourcesQuery(query) : path === '/stickers/image' ? stickerQuery(query) : memoryQuery(query)}`, {
     method: payload === undefined ? 'GET' : 'POST',
     mode: sameOrigin ? 'same-origin' : 'cors', credentials: 'omit', cache: 'no-store', redirect: 'error',
     headers: { Authorization: `Bearer ${token}`, ...(payload === undefined ? {} : { 'Content-Type': 'application/json' }) },
