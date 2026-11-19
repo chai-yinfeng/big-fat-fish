@@ -16,7 +16,9 @@ export default {
       input: { page: { required: false, schema: { type: 'integer', minimum: 1 }, description: 'which page, from 1.', max: 999 } }, rules: ['scopeBound', 'worldGuard', 'notInitiated', 'neutralizeExternalText', 'derivedNotEvidence'] } },
     // A few stills of the video this conversation watched last, looked at by the vision model (a background job; the
     // stills' calls are the `video-frame` row's). Also done inside `watch` when the video has no usable voice.
-    { name: 'frames', mode: 'background', content: { action: 'activity', fields: ['capability', 'activity', 'input'], source: 'none' }, model: { tool: 'companion_activity',
+    // `job`: the content service's job kind it runs as (capabilities/media/jobs.js), when that is not the capability's
+    // id. Kept as it is because job records (jobs.json) carry it; it is not a ledger row (the job itself is not counted).
+    { name: 'frames', mode: 'background', job: 'video-frames', content: { action: 'activity', fields: ['capability', 'activity', 'input'], source: 'none' }, model: { tool: 'companion_activity',
       description: 'looks at a few stills of that same video (only when asked about the picture, or there is nothing else to go on; background work unless looked at before)', input: {}, rules: ['scopeBound', 'worldGuard', 'notInitiated', 'neutralizeExternalText', 'derivedNotEvidence'] } },
   ],
   // Local work. The content service takes one of the day's slots before a new video is queued (refused:
