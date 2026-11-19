@@ -108,5 +108,5 @@ All responses use `{ok:true,value}` / safe error envelopes. Standalone loads GET
 
 ## Test coverage / current limits
 
-- `node --run test:console` (13 checks) covers the retained console behaviors plus standalone asset independence, same-origin/fragment handling, payload shapes, no secret/storage leakage, paused controls, confirmed cleanup and Blob URL revocation.
+- `node --run test:console` covers the retained console behaviors plus standalone asset independence, same-origin/fragment handling, payload shapes, no secret/storage leakage, paused controls, confirmed cleanup and Blob URL revocation.
 - Not covered: live browser visual acceptance, real recording upload or deletion, paid model calls and audio playback.
