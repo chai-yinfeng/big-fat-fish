@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCompanionTools, proposalIdFor, REJECTION_HINTS, SCOPE_TOOL_SCHEMA, CONTENT_TOOL_SCHEMA, ACTIVITY_TOOL_SCHEMA } from './tools.js';
+import { createCompanionTools, proposalIdFor, REJECTION_HINTS, SCOPE_TOOL_SCHEMA, CONTENT_TOOL_SCHEMA, ACTIVITY_TOOL_SCHEMA, rulesOf } from './tools.js';
+import { TOOL_RULES } from './tool-rules.js';
 
 const scope = { streamId: 'qq:100:private:200', memoryEpoch: 0 };
 const fact = { key: '搬家日期', value: '下个月 5 号', quote: '我下个月 5 号搬家' };
@@ -211,4 +212,32 @@ test('search, read and recall carry the run\'s window start when there is one, a
       ['memoryRecall', { streamId: scope.streamId, fromAt: Date.parse('2026-11-11T00:00:00+08:00'), toAt: Date.parse('2026-11-12T00:00:00+08:00'), limit: 4, budgetChars: 1600, ...window }],
     ]);
   }
+});
+
+test('the scope is bound and the world re-checked for every model action, whatever its declaration lists', async () => {
+  // A declaration that names neither rule still gets both, first, and each once when it does name them.
+  for (const rules of [[], ['derivedNotEvidence'], ['worldGuard', 'scopeBound', 'requestBound']]) {
+    assert.equal(rulesOf({ rules }, 'request')[0], TOOL_RULES.scopeBound);
+    assert.deepEqual(rulesOf({ rules }, 'call'), [TOOL_RULES.worldGuard]);
+    assert.equal(rulesOf({ rules }, 'request').filter(rule => rule === TOOL_RULES.scopeBound).length, 1);
+  }
+  // A refusing guard stops the content tool and the activity tool before the content service is asked.
+  const asked = [];
+  const made = createCompanionTools({ authority: {}, content: { call: async request => { asked.push(request); return {}; } }, scope, requestId: 'r1', evidence: [{ ref: 'obs-1', eventId: 'e1', role: 'user' }], guard: async () => { throw Object.assign(new Error('WORLD_PAUSED'), { code: 'WORLD_PAUSED' }); }, turn: { text: LINK, initiated: false } });
+  for (const [tool, args] of [[made[1], { action: 'search', query: 'MOCK' }], [made[1], { action: 'attach', ref: 'ref-1' }], [made[2], { capability: 'video', action: 'watch', input: { url: LINK } }], [made[2], { capability: 'video', action: 'status' }]]) await assert.rejects(tool.execute('call', args), { code: 'WORLD_PAUSED' });
+  assert.equal(asked.length, 0);
+  // And what is asked carries the run's scope, which no field of the model can replace.
+  const open = createCompanionTools({ authority: {}, content: { call: async request => { asked.push(request); return {}; } }, scope, requestId: 'r1', evidence: [], guard: async () => {} });
+  await open[1].execute('call', { action: 'search', query: 'MOCK' });
+  assert.deepEqual([asked[0].streamId, asked[0].memoryEpoch], [scope.streamId, scope.memoryEpoch]);
+  await assert.rejects(open[1].execute('call', { action: 'search', query: 'MOCK', streamId: 'other' }), { code: 'INVALID_REQUEST' });
+});
+
+test('attach: an answer of the content service that is not an object is refused, never reported as queued', async () => {
+  for (const answer of [null, 'ok', 7, ['x']]) {
+    const [, content] = createCompanionTools({ authority: {}, content: { call: async () => answer }, scope, requestId: 'r1', evidence: [], guard: async () => {} });
+    await assert.rejects(content.execute('call', { action: 'attach', ref: 'ref-1' }), { code: 'CONTENT_RESPONSE_INVALID' });
+  }
+  const [, content] = createCompanionTools({ authority: {}, content: { call: async () => ({ ref: 'ref-1' }) }, scope, requestId: 'r1', evidence: [], guard: async () => {} });
+  assert.deepEqual(JSON.parse((await content.execute('call', { action: 'attach', ref: 'ref-1' })).content[0].text), { ref: 'ref-1', delivered: false, isNewEvidence: false, isVerbatimUserText: false });
 });
