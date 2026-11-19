@@ -365,6 +365,18 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
 保持 2 不变；新 release 的 SCHEMA_VERSION 与当前 release 不同则部署仍被拒绝。配置迁移不在部署
 范围内。回退只切换代码与 unit，不覆盖数据库、人设、记忆或登录态，也不撤销已应用的迁移。
 
+配置里的未知键（目前只对 `model-gateway.json`、`qq-bridge.json`、`providers/video.json` 三个文件）：每个文件一个
+模块（`model-gateway/config.mjs`、`capabilities/qq/config.js`、`capabilities/providers/video/config.js`，导出
+`KEYS`/`validate`/`load`/`defaults`），服务启动和预检调同一个 `load`。**预检遇到本版本不认识的键就拒绝部署**
+（`PREFLIGHT FAIL <文件> CONFIG_UNKNOWN_KEY <键名>`，嵌套键写成 `authority.x`、`pacing.x`、`sites.0.x`、`limits.x`；
+`providers/video.json` 在输出里记作 `video.json`），**服务运行时只忽略未知键**（stderr 一行列出键名，不打印值），
+值越界、缺必填仍拒绝启动（看视频是关掉该能力）。`qq-bridge.json` 里 DSH 时代的 `accessFile`、`inboxFile`、
+`workerConfigFile`、`workerAuthoritySocket`、`workerTokenFile`、`workerInboxFile` 运行时静默忽略，预检只给
+`IGNORED_LEGACY_FIELD` 警告。回退兼容：新版本读旧文件——旧文件的键新版本都认识，照常启动；旧版本读新文件——
+从这一版起，以后新加的键在回退到这一版（或更新）时只被忽略，不会让服务起不来；回退到这一版**之前**的版本，
+旧代码仍按原规则拒绝它不认识的键（网关、看视频拒绝任何未知键，QQ 拒绝 `pacing` 里的未知键），所以新加键后
+在回退到更早版本前要先删掉那个键。其余配置文件（content、authority、memory-worker 等）仍是原来的规则。
+
 回退到按人整合之前的版本（965c638 及更早）时，库里已有的机器摘要、后台事实、整合游标都原样留着，旧版本能直接运行，
 但它不认识摘要：①摘要会被当成普通“会话经验”检索进**本人**的对话（仍然只有本人，没有“机器整理”的提示）；②忘记一句
 原话时不会连带删除覆盖它的摘要；③控制台允许对摘要点“授权公开”。所以回退期间不要执行忘记，不要对摘要授权公开。重新

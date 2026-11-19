@@ -11,23 +11,21 @@ import { OneBotClient, onebotURL } from './onebot-client.js';
 import { ContentClient } from '../media/client.js';
 import { QQMedia } from './media.js';
 import { pacingFrom } from './pacing.js';
+import { load } from './config.js';
 
 process.umask(0o077);
 async function main() {
   if (process.argv.length !== 4 || process.argv[2] !== '--config') throw new Error('QQ_CONFIG');
-  const file = path.resolve(process.argv[3]), stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.uid !== process.getuid() || stat.mode & 0o077) throw new Error('QQ_CONFIG');
-  const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  // Checks and unknown keys: capabilities/qq/config.js (unknown keys are ignored with one stderr line).
+  const cfg = load(path.resolve(process.argv[3]));
   // Optional qq-bridge.json `initiationPollMs` (staging shortens it).
   const initiationPollMs = cfg.initiationPollMs ?? INITIATION_POLL_MS;
-  if (!Number.isInteger(initiationPollMs) || initiationPollMs < 1000 || initiationPollMs > 600000) throw new Error('QQ_CONFIG');
   const authority = new AuthorityClient(cfg.authority), port = new ConversationPort(authority);
   let bridge;
   const onebot = new OneBotClient({ url: onebotURL(cfg.onebotPort), token: fs.readFileSync(cfg.onebotTokenFile, 'utf8').trim(), onEvent: event => bridge.receive(event), onStatus: connected => { void bridge.connection(connected); } });
   const executor = createConversationClient(cfg.conversation);
   // Optional qq-bridge.json `stickerSubType` (default true): false sends her stickers as ordinary pictures, for a OneBot
   // implementation without NapCat's `sub_type: 1`.
-  if (cfg.stickerSubType !== undefined && typeof cfg.stickerSubType !== 'boolean') throw new Error('QQ_CONFIG');
   const media = cfg.contentEnabled ? new QQMedia({ content: new ContentClient(cfg.authority), onebot, stickerSubType: cfg.stickerSubType ?? true }) : undefined;
   // Optional qq-bridge.json `pacing` (any of the settings in pacing.js): the burst wait and the pauses between messages.
   const pacing = pacingFrom(cfg.pacing);

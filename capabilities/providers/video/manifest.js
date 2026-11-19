@@ -34,6 +34,6 @@ export default {
   // data root, never in this repository.
   operatorConfig: 'operator/providers/video.json',
   // Where that file is read and checked: `load` is an export of `module`.
-  config: { file: 'operator/providers/video.json', module: 'capabilities/providers/video/source.js', load: 'loadVideoConfig' },
+  config: { file: 'operator/providers/video.json', module: 'capabilities/providers/video/config.js', load: 'load' },
   forget: { owner: 'companion-content', what: 'the note reference and the jobs registered under the forgotten message' },
 };

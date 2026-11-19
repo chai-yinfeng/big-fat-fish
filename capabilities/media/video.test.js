@@ -144,8 +144,15 @@ test('the operator file: a closed shape, absolute executables, anchored https pa
   assert.deepEqual([config.sandbox, config.limits, config.sites[0].id, config.sites[0].skipHosts], [{ kind: 'none' }, { maxDurationSeconds: 3600, maxFilesizeMiB: 300, pieceSeconds: 60, framesPerVideo: 3 }, 'MOCK', ['skip.mock.invalid']]);
   const bad = [{ schemaVersion: 2 }, { ytdlp: ['yt-dlp'] }, { ytdlp: [] }, { ffmpeg: 'ffmpeg' }, { sandbox: { kind: 'docker' } }, { sandbox: { kind: 'bwrap', bwrap: 'bwrap' } }, { sandbox: { kind: 'bwrap', bwrap: '/usr/bin/bwrap', readOnly: ['relative'] } }, { sandbox: { kind: 'none', bwrap: '/usr/bin/bwrap' } },
     { sites: [] }, { sites: [{ ...MOCK_SITE, patterns: ['https://video.mock.invalid/.*'] }] }, { sites: [{ ...MOCK_SITE, patterns: ['^http://video.mock.invalid/'] }] }, { sites: [{ ...MOCK_SITE, patterns: ['^https://(unclosed'] }] }, { sites: [{ ...MOCK_SITE, id: 'bad id' }] },
-    { sites: [MOCK_SITE, MOCK_SITE] }, { sites: [{ ...MOCK_SITE, cookies: '/x' }] }, { limits: { pieceSeconds: 501 } }, { limits: { maxDurationSeconds: 0 } }, { limits: { framesPerVideo: 7 } }, { limits: { framesPerVideo: 0 } }, { limits: { other: 1 } }, { extra: true }];
+    { sites: [MOCK_SITE, MOCK_SITE] }, { limits: { pieceSeconds: 501 } }, { limits: { maxDurationSeconds: 0 } }, { limits: { framesPerVideo: 7 } }, { limits: { framesPerVideo: 0 } }];
   for (const change of bad) { f.write(change); assert.throws(() => loadVideoConfig(f.configFile), { code: 'VIDEO_CONFIG' }, JSON.stringify(change)); }
+  // Unknown keys (a newer release's): ignored at run time with one line naming them; the deploy preflight (strict) refuses them.
+  f.write({ sites: [{ ...MOCK_SITE, cookies: '/x' }], limits: { other: 1 }, extra: true });
+  const warned = [];
+  const ignored = loadVideoConfig(f.configFile, { warn: line => warned.push(line) });
+  assert.deepEqual([ignored.limits, ignored.sites[0].id, ignored.sites.length], [{ maxDurationSeconds: 3600, maxFilesizeMiB: 300, pieceSeconds: 120, framesPerVideo: 3 }, 'MOCK', 1]);
+  assert.deepEqual(warned, ['providers/video.json: ignoring unknown keys extra, sites.0.cookies, limits.other']);
+  assert.throws(() => loadVideoConfig(f.configFile, { strict: true }), { code: 'CONFIG_UNKNOWN_KEY', fields: ['extra', 'sites.0.cookies', 'limits.other'] });
   f.write(); fs.chmodSync(f.configFile, 0o644);
   assert.throws(() => loadVideoConfig(f.configFile), { code: 'VIDEO_CONFIG' });
   fs.chmodSync(f.configFile, 0o600);

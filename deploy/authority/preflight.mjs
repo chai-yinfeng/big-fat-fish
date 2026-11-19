@@ -47,29 +47,17 @@ const CHECKS = [
     if (c.operator.allowTestChannels !== true && [...c.capabilities, ...c.credentials].some(row => channel(row?.id ?? row?.capabilityId)?.testOnly)) throw fail('TEST_CHANNEL_CONFIGURED');
     return c;
   } },
-  // model-gateway/main.mjs
-  { label: 'model-gateway.json', required: true, check: file => {
-    const c = readPrivate(file, { size: 32768, owner: true });
-    const keys = ['settingsFile', 'inferenceSocket', 'controlSocket', 'inferenceTokenHash', 'operatorTokenHash', 'authority', 'usageFile', 'budgets'];
-    if (!plain(c) || Object.keys(c).some(key => !keys.includes(key)) || !plain(c.authority) || Object.keys(c.authority).some(key => !['socketPath', 'tokenFile'].includes(key))) throw fail('CONFIG_INVALID');
-    return c;
-  } },
+  // model-gateway/config.mjs load, as model-gateway/main.mjs reads it; an unknown key is refused here (strict), only
+  // ignored at startup, so a rollback never meets a key it does not know.
+  { label: 'model-gateway.json', required: true, check: async file => (await load('model-gateway/config.mjs')).load(file, { strict: true }) },
   // capabilities/conversation/main.mjs loadConfig (bundled into conversation.mjs in a release).
   { label: 'conversation.json', required: true, check: async file => {
     const module = await load(fs.existsSync(path.join(tree, 'capabilities/conversation/conversation.mjs')) ? 'capabilities/conversation/conversation.mjs' : 'capabilities/conversation/main.mjs');
     return module.loadConfig(file);
   } },
-  // capabilities/qq/main.mjs
-  { label: 'qq-bridge.json', required: true, check: async file => {
-    const c = readPrivate(file, { owner: true });
-    if (!plain(c) || !plain(c.authority) || !plain(c.conversation) || !absolute(c.controlSocket) || !absolute(c.onebotTokenFile) || !/^[a-f0-9]{64}$/.test(c.operatorTokenHash) || !port(c.onebotPort)) throw fail('CONFIG_INVALID');
-    // Optional timing (staging shortens it); the bridge refuses to start on a value out of range.
-    if (c.initiationPollMs !== undefined && !(Number.isInteger(c.initiationPollMs) && c.initiationPollMs >= 1000 && c.initiationPollMs <= 600000)) throw fail('CONFIG_INVALID');
-    // Optional reply pacing: the bridge's own check (capabilities/qq/pacing.js pacingFrom).
-    const { pacingFrom } = await load('capabilities/qq/pacing.js');
-    try { pacingFrom(c.pacing); } catch { throw fail('CONFIG_INVALID'); }
-    return c;
-  } },
+  // capabilities/qq/config.js load, as capabilities/qq/main.mjs reads it (strict: unknown keys refused). Keys only
+  // DSH-era releases wrote are a warning.
+  { label: 'qq-bridge.json', required: true, check: async (file, report) => (await load('capabilities/qq/config.js')).load(file, { strict: true, legacy: keys => keys.forEach(key => report.warn('qq-bridge.json', 'IGNORED_LEGACY_FIELD', key)) }) },
   // capabilities/memory/main.mjs; a legacy purgeModule is ignored by the worker.
   { label: 'memory-worker.json', required: true, ignored: ['purgeModule'], check: file => {
     const c = readPrivate(file, { owner: true });
@@ -85,6 +73,10 @@ const CHECKS = [
     if (!plain(c) || Object.keys(c).some(k => !['store', 'workRoot', 'speechConfigFile', 'authority', 'gateway', 'sharpModule', 'control', 'allowRawSmallPng'].includes(k)) || !absolute(c.sharpModule) || c.allowRawSmallPng !== undefined && typeof c.allowRawSmallPng !== 'boolean') throw fail('CONFIG_INVALID');
     return c;
   } },
+  // capabilities/providers/video/config.js load, as the content service's video provider reads it (strict: unknown
+  // keys refused). Absent: watching videos is off, which the runtime tolerates. The label has no '/' (companion-deploy's
+  // line format); the file is operator/providers/video.json.
+  { label: 'video.json', file: 'providers/video.json', required: false, check: async file => (await load('capabilities/providers/video/config.js')).load(file, { strict: true }) },
   // capabilities/speech/config.js loadSpeechConfig; absent until prepare-speech, which the runtime tolerates.
   { label: 'speech.json', required: false, check: async file => (await load('capabilities/speech/config.js')).loadSpeechConfig(file) },
   { label: 'speech-models.json', required: false, check: async file => {
@@ -238,10 +230,12 @@ export async function preflight({ base = path.join(os.homedir(), '.local/share/c
   if (release) release = path.resolve(release);
   let authority = null;
   for (const spec of CHECKS) {
-    const file = path.join(base, 'operator', spec.label);
+    const file = path.join(base, 'operator', spec.file ?? spec.label);
     if (!fs.existsSync(file)) { if (spec.required) report.fail(spec.label, 'MISSING_CONFIG'); continue; }
     let config;
-    try { config = await spec.check(file); } catch (error) {
+    try { config = await spec.check(file, report); } catch (error) {
+      // One line per unknown key (key names only, made safe for the line format by the config module).
+      if (error?.code === 'CONFIG_UNKNOWN_KEY' && Array.isArray(error.fields)) { for (const field of error.fields.slice(0, 10)) report.fail(spec.label, 'CONFIG_UNKNOWN_KEY', field); continue; }
       report.fail(spec.label, typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) ? error.code : 'CONFIG_INVALID');
       continue;
     }

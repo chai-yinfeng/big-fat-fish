@@ -11,6 +11,7 @@ import { createProviders } from './providers.mjs';
 import { PROVIDERS } from './providers/index.mjs';
 import { createProxyFetch } from './proxy-fetch.mjs';
 import { createUsageLedger } from './usage-ledger.mjs';
+import { KEYS as CONFIG_KEYS } from './config.mjs';
 import { CAPABILITIES } from '../capabilities/providers/index.js';
 
 // The whole flow (key, submit, poll, fetch, money, ledger) is tested with the staging-only mock adapter in
@@ -54,12 +55,14 @@ test('a release has no provider adapter: DeepSeek is the only key holder listed 
 
 test('the production entrypoint cannot be handed an adapter, a capability or a fetch', () => {
   const main = fs.readFileSync(fileURLToPath(new URL('./main.mjs', import.meta.url)), 'utf8');
-  assert.ok(main.includes("const keys = ['settingsFile', 'inferenceSocket', 'controlSocket', 'inferenceTokenHash', 'operatorTokenHash', 'authority', 'usageFile', 'budgets'];"));
+  // The file's keys pass only through config.mjs's list (unknown keys are left out before createModelGateway).
+  assert.deepEqual(Object.keys(CONFIG_KEYS), ['settingsFile', 'inferenceSocket', 'controlSocket', 'inferenceTokenHash', 'operatorTokenHash', 'authority', 'usageFile', 'budgets']);
+  assert.ok(main.includes("const config = await load(args[1]);"));
   assert.doesNotMatch(main, /providers:|capabilities:|fetchImpl/);
   // The staging mock is not among the sources a release is built from, and no gateway module imports it.
   const release = fs.readFileSync(fileURLToPath(new URL('../deploy/authority/build-release.mjs', import.meta.url)), 'utf8');
   assert.doesNotMatch(release, /deploy\/staging|fake-provider/);
-  for (const file of ['server.mjs', 'providers.mjs', 'providers/index.mjs', 'main.mjs', 'proxy-fetch.mjs']) assert.doesNotMatch(fs.readFileSync(fileURLToPath(new URL('./' + file, import.meta.url)), 'utf8'), /^import .*(staging|fake)/m, file);
+  for (const file of ['server.mjs', 'providers.mjs', 'providers/index.mjs', 'main.mjs', 'config.mjs', 'proxy-fetch.mjs']) assert.doesNotMatch(fs.readFileSync(fileURLToPath(new URL('./' + file, import.meta.url)), 'utf8'), /^import .*(staging|fake)/m, file);
 });
 
 test('an adapter that does not have the declared shape stops the gateway from being built', () => {
