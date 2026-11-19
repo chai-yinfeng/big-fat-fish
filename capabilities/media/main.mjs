@@ -33,10 +33,10 @@ try {
   // Watching a shared video. Its operator file sits beside this one (operator/providers/video.json, absent: the
   // capability is off); its cache and work directories are inside the media store's root, which the speech runner
   // may read. No new key in content.json, for the same reason as above.
-  const video = createVideoProvider({ configFile: path.join(path.dirname(file), 'providers/video.json'), cacheRoot: path.join(store.root, 'video-cache'), workRoot: path.join(store.root, 'video-work'), store, speech, summarize: gateway.summarize, jobs: () => jobs });
+  const video = createVideoProvider({ configFile: path.join(path.dirname(file), 'providers/video.json'), cacheRoot: path.join(store.root, 'video-cache'), workRoot: path.join(store.root, 'video-work'), store, speech, summarize: gateway.summarize, describeFrame: gateway.describeFrame, jobs: () => jobs });
   video.sweep({ start: true });
-  jobs = createJobs({ file: path.join(cfg.store.root, 'jobs.json'), runners: { demo: createDemoRunner(), video: video.runner }, worldStatus, usage: { reserve: capability => gateway.reserveUsage({ capability }), record: gateway.recordUsage } });
-  const { summarize: _summarize, ...ports } = gateway;
+  jobs = createJobs({ file: path.join(cfg.store.root, 'jobs.json'), runners: { demo: createDemoRunner(), video: video.runner, 'video-frames': video.framesRunner }, worldStatus, usage: { reserve: capability => gateway.reserveUsage({ capability }), record: gateway.recordUsage } });
+  const { summarize: _summarize, describeFrame: _describeFrame, ...ports } = gateway;
   const media = new MediaService({ store, speech, ...ports, normalizeImage, workRoot: cfg.workRoot, jobs, activities: { video } });
   // Every request somebody is waiting for goes through the gate, so a yielding background job lets it go first.
   const service = { call: (scope, input) => jobs.gate.timely(() => media.call(scope, input)) };

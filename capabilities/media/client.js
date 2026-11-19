@@ -54,7 +54,10 @@ export function capabilityGateway({ socketPath, tokenFile }) {
     // One of today's slots of a local capability that has a daily limit; CONTENT_BUDGET_EXHAUSTED when none is left.
     reserveUsage: body => unixJson({ socketPath, tokenFile, route: '/v1/usage/reserve', body, maxBytes: 4096, timeoutMs: 5000 }),
     // One bounded completion for an activity's own model work (no tools, thinking off; the `activity` spend category).
-    summarize: activityCompletion({ socketPath, tokenFile }) };
+    summarize: activityCompletion({ socketPath, tokenFile }),
+    // A still of a shared video, looked at by the vision model: marked `purpose: 'frame'`, so it takes a slot of the
+    // `video-frame` row instead of vision's. Only the video provider calls it; nothing a model sends reaches `purpose`.
+    describeFrame: ({ imageBase64, mime, question, signal }) => unixJson({ socketPath, tokenFile, route: '/v1/vision/describe', body: { imageBase64, mime, question, detail: 'low', purpose: 'frame' }, maxBytes: 65536, timeoutMs: 90000, signal }) };
 }
 /** `({ messages, maxTokens, signal }) -> { content }` through the gateway's /v1/activity/completions. Rejects with
  * CONTENT_SPEND_RESTRICTED when the spend tier refused it (no provider call was made), else CONTENT_OPERATION_UNAVAILABLE. */

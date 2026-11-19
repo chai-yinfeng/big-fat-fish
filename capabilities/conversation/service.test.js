@@ -605,7 +605,7 @@ const PINNED_NEUTRAL_SYSTEM_SHA256 = '2d3246158ecafc165c0be974c6ca02ab1bf60a5f78
 const PINNED_SYSTEM_SHA256 = 'e460174841df0a7c6f65c46cab6b297b889423b12345b96c4b6554da7e7e2f34', PINNED_TOOLS_SHA256 = '7047ad04c0b28d0565d24b6946884934289eac5a0ebb303670d62e10cc1ae2ba';
 // With companion_activity (the first tool added since): the two earlier definitions are still the pinned bytes above,
 // and the third follows them. PINNED_ALL_TOOLS_SHA256 is the three together, to be changed only on purpose.
-const PINNED_ALL_TOOLS_SHA256 = '5d05d1fd915b4d65cefb295bcc299fcee9653d02e65a7c6650e4a27f65a32a7d';
+const PINNED_ALL_TOOLS_SHA256 = '29a5849868e32b19b634a2fce08b6275df3b877e6a392622c62b764010a503ab';
 test('the cached prefix is pinned: the base prompt and the two earlier tool definitions are byte-for-byte what they were before background jobs, the third tool follows them, in every kind of run', async t => {
   const f = await setup(t);
   f.gateway.state.script.push(reply('一'), reply('二'), reply('三'), reply('四'));
