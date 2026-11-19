@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { DECLARATIONS, CAPABILITIES, ACTIVITIES, ACTIVITY_TOOL, CONTENT_TOOL, MODEL_ACTIONS, ACTIVITY_TOOL_DEFINITION, CONTENT_SCOPE_FIELDS, CONTENT_ACTIONS, CONTENT_FIELDS, GATEWAY_PURPOSES, SPEND_CATEGORIES, SPEND_STOP, GATEWAY_DEFAULT_LIMITS, CONFIGS, FORGET_OWNERS } from './index.js';
 import { TOOL_RULES } from '../conversation/tool-rules.js';
 import { ACTIVITY_TOOL_SCHEMA, CONTENT_TOOL_SCHEMA, createCompanionTools } from '../conversation/tools.js';
-import { CATEGORIES } from '../../model-gateway/spend.mjs';
+import { CATEGORIES, STOP, RESERVED_STOP } from '../../model-gateway/spend.mjs';
 import { CONTENT_SERVICE_ACTIONS, checkContentActions } from '../media/service.js';
 
 const KNOWN_DRIFT = {
@@ -19,8 +19,6 @@ const KNOWN_DRIFT = {
   authorityFieldsNobodyUses: ['quality'],
   // The content service refuses stickerPick without a source message; Authority only insists on one for ingest and synthesize.
   sourceRequiredButNotByAuthority: ['stickerPick'],
-  // A spend category kept for provider adapters (model-gateway/providers.mjs); no declaration is charged to it yet.
-  spendCategoriesNotDeclared: ['generation'],
   // The console's spend card lists four categories by hand; these have money and no line.
   spendCategoriesNotOnConsole: ['proactive', 'activity'],
   // Stopped by the offline purge script, but no declaration names it as the owner of anything to forget (a channel, not a capability).
@@ -30,8 +28,6 @@ const KNOWN_DRIFT = {
 const source = file => fs.readFileSync(fileURLToPath(new URL(`../../${file}`, import.meta.url)), 'utf8');
 const sorted = list => [...list].sort();
 const quoted = text => [...text.matchAll(/'([^']+)'/g)].map(match => match[1]);
-/** The keys and values of a one-line object literal such as `{ a: 'x', 'b-c': 2 }`. */
-const literal = text => Object.fromEntries([...text.matchAll(/(?:'([\w-]+)'|(\w+)): ('[^']*'|\d+)/g)].map(match => [match[1] ?? match[2], match[3].startsWith("'") ? match[3].slice(1, -1) : Number(match[3])]));
 const keysOf = text => text.split(',').map(part => part.trim().replace(/:.*$/s, '').replace(/'/g, '')).filter(Boolean);
 const found = (text, pattern, what) => { const match = pattern.exec(text); assert.ok(match, `${what}: the hand-written list was not found where this test looks for it`); return match[1]; };
 
@@ -169,22 +165,30 @@ test('content service (media/service.js, main.mjs, video/provider.js): what is d
   assert.deepEqual(runners.filter(kind => !DECLARATIONS.some(item => item.id === kind)), named);
 });
 
-test('model gateway (server.mjs): purposes, default daily limits and ledger rows match the declarations', () => {
+test('model gateway (server.mjs): purposes and default daily limits are read from the derived tables', () => {
   const server = source('model-gateway/server.mjs');
-  assert.deepEqual(literal(found(server, /const PURPOSES = Object\.freeze\(\{ __proto__: null, ([^}]*) \}\)/, 'PURPOSES')), { ...GATEWAY_PURPOSES.vision });
+  assert.ok(server.includes('const PURPOSES = Object.freeze({ __proto__: null, ...GATEWAY_PURPOSES.vision });'), 'PURPOSES from GATEWAY_PURPOSES');
   assert.deepEqual(Object.keys(GATEWAY_PURPOSES), ['vision']);
-  // The default limits are written twice in server.mjs.
-  assert.deepEqual(literal(found(server, /budgets = \{ ([^}]*) \}/, 'budgets default')), { ...GATEWAY_DEFAULT_LIMITS });
-  assert.deepEqual(sorted(Object.entries(literal(found(server, /const limits = \{ ([^}]*), \.\.\.budgets \}/, 'limits')))), sorted(Object.entries(GATEWAY_DEFAULT_LIMITS)));
+  assert.ok(server.includes('budgets = GATEWAY_DEFAULT_LIMITS,') && server.includes('const limits = { ...GATEWAY_DEFAULT_LIMITS, ...budgets };'), 'default limits from GATEWAY_DEFAULT_LIMITS');
+  assert.doesNotMatch(server, /web: 20|vision: 12/, 'no hand-written default limit left');
+  // The values the gateway had written by hand before it read the tables: the same, so nothing it decides changes.
+  assert.deepEqual({ ...GATEWAY_PURPOSES.vision }, { sticker: 'sticker', frame: 'video-frame' });
+  assert.deepEqual({ ...GATEWAY_DEFAULT_LIMITS }, { web: 20, vision: 12 });
   // Every row the gateway counts itself is named in it as a literal.
   for (const item of CAPABILITIES.filter(item => item.meter.source === 'gateway')) assert.ok(server.includes(`'${item.id}'`), `${item.id}: counted by the gateway`);
 });
 
-test('model gateway (spend.mjs): categories and stop tiers match the declarations', () => {
-  const stop = literal(found(source('model-gateway/spend.mjs'), /const STOP = \{ ([^}]*) \}/, 'STOP'));
-  assert.deepEqual(sorted(CATEGORIES), sorted([...SPEND_CATEGORIES.map(row => row.category), ...KNOWN_DRIFT.spendCategoriesNotDeclared]));
-  assert.deepEqual(sorted(Object.keys(stop)), sorted(CATEGORIES));
-  for (const [category, tier] of Object.entries(SPEND_STOP)) assert.equal(stop[category], tier, category);
+test('model gateway (spend.mjs): categories and stop tiers are the derived ones plus the reserved `generation`', () => {
+  const spend = source('model-gateway/spend.mjs');
+  assert.doesNotMatch(spend, /const STOP = \{ /, 'no hand-written stop table left');
+  assert.deepEqual(CATEGORIES, [...SPEND_CATEGORIES.map(row => row.category), ...Object.keys(RESERVED_STOP)]);
+  assert.deepEqual({ ...STOP }, { ...SPEND_STOP, ...RESERVED_STOP });
+  // A reserved category has no declaration charged to it; a declaration that claims it moves it out of RESERVED_STOP.
+  assert.deepEqual(Object.keys(RESERVED_STOP), ['generation']);
+  assert.deepEqual(Object.keys(RESERVED_STOP).filter(category => Object.hasOwn(SPEND_STOP, category)), []);
+  // The tables spend.mjs had written by hand before it read the declarations: the same categories and stop tiers.
+  assert.deepEqual(sorted(CATEGORIES), sorted(['conversation', 'maintenance', 'vision', 'web', 'generation', 'proactive', 'activity']));
+  assert.deepEqual({ ...STOP }, { proactive: 'reduced', maintenance: 'restricted', vision: 'restricted', web: 'restricted', generation: 'restricted', activity: 'restricted', conversation: 'exhausted' });
   // One category, one stop tier, whichever capability is charged to it.
   for (const item of CAPABILITIES.filter(item => item.meter.spendCategory)) assert.equal(item.meter.stopTier, SPEND_STOP[item.meter.spendCategory], item.id);
 });

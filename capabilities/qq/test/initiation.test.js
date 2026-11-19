@@ -111,7 +111,10 @@ test('a send without a receipt is unknown and is never sent again, even if the s
   const f = await fixture(t);
   f.sendError = () => true; f.offers.push(offer('mock-1'));
   await f.bridge.pollInitiations();
-  assert.deepEqual([f.sends.length, f.runs.length, f.observations.length, f.record('mock-1').status], [1, 1, 0, 'unknown']);
+  assert.deepEqual([f.sends.length, f.runs.length, f.record('mock-1').status], [1, 1, 'unknown']);
+  // Not observed as said: observed as of unknown status, once, as the run ends.
+  assert.deepEqual(f.observations.map(o => [o.eventId, o.role]), [['qq:undelivered:qq:init:mock-1', 'assistant']]);
+  assert.match(f.observations[0].text, /\n\[送达情况：这条回复的发送状态未知，不确定对方有没有收到\]$/);
   assert.deepEqual(f.acks, [{ id: 'mock-1', outcome: 'unknown' }]);
   // Authority never offers a request twice; if it did, the bridge would still do nothing.
   f.sendError = null;
@@ -131,7 +134,7 @@ test('a long reply is split, each message with its own receipt; the first withou
   await f.bridge.pollInitiations();
   assert.equal(f.sends.length, 6);
   assert.deepEqual([f.record('mock-2').status, f.record('mock-2').receipts.length, f.acks[1].outcome], ['unknown', 1, 'unknown']);
-  assert.deepEqual(f.observations.map(o => o.text), [1, 2, 3, 4, 1].map(sentence));
+  assert.deepEqual(f.observations.map(o => o.text), [...[1, 2, 3, 4, 1].map(sentence), [sentence(2), '[送达情况：这条回复的发送状态未知，不确定对方有没有收到]', sentence(3), '[送达情况：这条回复没有发出]', sentence(4), '[送达情况：这条回复没有发出]'].join('\n')]);
   await f.bridge.pollInitiations();
   assert.equal(f.sends.length, 6);
 });
@@ -244,7 +247,8 @@ test('an initiated run sends no sticker yet: her [表情:词] is taken out and d
   f.offers.push(offer('mock-sticker'));
   await f.bridge.pollInitiations();
   assert.deepEqual(f.sends.map(s => s.message), [[{ type: 'text', data: { text: 'MOCK 早呀' } }]]);
-  assert.deepEqual(f.observations.map(o => o.text), ['MOCK 早呀']);
+  // The dropped marker is observed as not sent, worded as her replayed history words it.
+  assert.deepEqual(f.observations.map(o => [o.eventId, o.text]), [['qq:sent:501', 'MOCK 早呀'], ['qq:undelivered:qq:init:mock-sticker', '[表情包：没发出]']]);
   assert.equal(f.record('mock-sticker').status, 'sent');
 });
 
