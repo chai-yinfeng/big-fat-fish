@@ -35,5 +35,5 @@ export const TOOL_RULES = Object.freeze({
   derivedNotEvidence: rule('result', 'The result is marked isNewEvidence:false, isVerbatimUserText:false and kept within the tool output limit.',
     ({ value, boundedContent }) => boundedContent(value)),
   queuedNotDelivered: rule('result', 'The result is marked delivered:false: queued for this reply, not sent.',
-    ({ value }) => ({ ...value, delivered: false })),
+    ({ value }) => isObject(value) ? { ...value, delivered: false } : value),
 });

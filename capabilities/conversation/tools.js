@@ -116,7 +116,10 @@ const result = value => ({ content: [{ type: 'text', text: JSON.stringify(value)
 
 // What a tool does for an action is its declaration's (MODEL_ACTIONS): the fields it takes, the content action behind
 // it and the named rules (tool-rules.js) that apply, run stage by stage.
-const rulesOf = (declared, stage) => declared.rules.map(name => TOOL_RULES[name]).filter(rule => rule.stage === stage);
+// The safety boundary does not depend on a declaration: the scope is bound and the world re-checked for every model
+// action, whether or not its `rules` name them (there the two names are documentation; each runs once).
+const ALWAYS_RULES = ['scopeBound', 'worldGuard'];
+export const rulesOf = (declared, stage) => [...new Set([...ALWAYS_RULES, ...declared.rules])].map(name => TOOL_RULES[name]).filter(rule => rule.stage === stage);
 // What a refused field is told. The wording of a field that had its own line is kept; any other gets the general one.
 const FIELD_REFUSAL = { page: 'input.page 必须是从 1 开始的页码' };
 /** The declared shape of each field the model gave (a generated tool's `schema` and `max`; string or integer). */

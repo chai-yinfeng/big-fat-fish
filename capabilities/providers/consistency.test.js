@@ -1,6 +1,6 @@
 // Consistency: every hand-written list of capabilities, actions, fields, purposes and spend categories in the
-// product, held against the capability declarations and the tables derived from them (./index.js). Nothing reads the
-// derived tables yet, so each test here names one list that a later step replaces with its table.
+// product, held against the capability declarations and the tables derived from them (./index.js). The executor
+// (tools.js) reads its tables already; each other test here names one list that a later step replaces with its table.
 //
 // Where a list and the declarations disagree today, the difference is written down in KNOWN_DRIFT and asserted
 // exactly: fixing one (or adding a new one) fails the test until this table is updated on purpose.
