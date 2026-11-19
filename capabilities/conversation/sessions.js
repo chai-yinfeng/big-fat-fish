@@ -79,3 +79,29 @@ export class SessionStore {
     } finally { fs.closeSync(fd); }
   }
 }
+
+/** Offline forgetting (deploy/authority/purge-execution.mjs, with this executor stopped and the world paused): every
+ * earlier memory epoch of an affected stream is a retired session, and its file goes. A scoped forget carries each
+ * stream's own new epoch; older plans use the job's. `storage` is the deployment's operator/execution-storage.json,
+ * `inside(root, file)` the caller's guard (absolute, under root, no symlink). `dryRun` only validates and counts; a
+ * file already gone is not counted, so running the same plan again is harmless. -> { sessionsRemoved } */
+export function forget(plan, { base, storage, inside, dryRun = false }) {
+  if (storage?.sessionsRoot !== 'conversation-data/sessions') throw fail('EXECUTION_STORAGE_UNVERIFIED');
+  const root = inside(base, path.join(base, storage.sessionsRoot));
+  if (!fs.statSync(root).isDirectory()) throw fail('EXECUTION_STORAGE_UNVERIFIED');
+  const files = [];
+  for (const entry of plan.affectedStreams) {
+    if (typeof entry?.capabilityId !== 'string' || typeof entry.streamId !== 'string') throw fail('EXECUTION_PLAN_INVALID');
+    const current = entry.memoryEpoch ?? plan.memoryEpoch;
+    if (!Number.isSafeInteger(current) || current < 1 || current > plan.memoryEpoch) throw fail('EXECUTION_PLAN_INVALID');
+    for (let epoch = 0; epoch < current; epoch++) {
+      const file = inside(root, path.join(root, conversationSessionId(entry.streamId, epoch) + '.jsonl'));
+      if (!fs.existsSync(file)) continue;
+      if (!fs.lstatSync(file).isFile()) throw fail('EXECUTION_UNKNOWN_ARTIFACT');
+      files.push(file);
+    }
+  }
+  // Every target was checked above; recheck immediately before mutation.
+  if (!dryRun) for (const file of files) { inside(root, file); fs.unlinkSync(file); }
+  return { sessionsRemoved: files.length };
+}

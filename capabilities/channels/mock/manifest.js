@@ -7,6 +7,7 @@ export default {
   expression: { voice: false, images: false, faces: false, stickers: false, split: false },
   friends: true, account: '^MOCK-[A-Z0-9-]{1,24}$',
   receipts: 'unreliable',
+  forget: null,
   faceNames: [],
   prompt: '这段私聊在一个只能发文字的测试渠道（MOCK-CHANNEL）里：这里没有语音、图片和小表情。',
   turnPolicy: {},

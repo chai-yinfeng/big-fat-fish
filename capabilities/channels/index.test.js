@@ -11,11 +11,12 @@ test('the registry lists every declared channel once, as frozen dependency-free 
   for (const id of directories) assert.doesNotMatch(fs.readFileSync(fileURLToPath(new URL(`./${id}/manifest.js`, import.meta.url)), 'utf8'), /^\s*import\s|require\(/m, `${id}: a declaration imports nothing`);
   assert.ok(Object.isFrozen(CHANNELS) && CHANNELS.every(item => Object.isFrozen(item) && Object.isFrozen(item.expression) && Object.isFrozen(item.turnPolicy) && Object.isFrozen(item.faceNames)));
   for (const item of CHANNELS) {
-    assert.deepEqual(Object.keys(item).sort(), ['account', 'expression', 'faceNames', 'friends', 'id', 'prompt', 'receipts', 'testOnly', 'title', 'turnPolicy'], item.id);
+    assert.deepEqual(Object.keys(item).sort(), ['account', 'expression', 'faceNames', 'forget', 'friends', 'id', 'prompt', 'receipts', 'testOnly', 'title', 'turnPolicy'], item.id);
     assert.match(item.id, /^[a-z][a-z0-9-]{1,31}$/); assert.ok(item.title.length > 0 && item.title.length <= 12);
     assert.deepEqual(Object.keys(item.expression).sort(), ['faces', 'images', 'split', 'stickers', 'voice']);
     assert.ok(Object.values(item.expression).every(value => typeof value === 'boolean') && typeof item.friends === 'boolean' && typeof item.testOnly === 'boolean', item.id);
     assert.ok(['reliable', 'unreliable'].includes(item.receipts), item.id);
+    if (item.forget !== null) assert.deepEqual([Object.keys(item.forget), typeof item.forget.owner, typeof item.forget.what], [['owner', 'what'], 'string', 'string'], item.id);
     // A channel with friends says what an account name looks like there; one without names none.
     if (item.friends) assert.doesNotThrow(() => new RegExp(item.account, 'u'), item.id); else assert.equal(item.account, null, item.id);
     // The channel's part of the system message: fixed, bounded, one paragraph, and never a memory-hub delimiter.

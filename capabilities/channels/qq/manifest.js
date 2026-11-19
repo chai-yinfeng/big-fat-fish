@@ -13,6 +13,8 @@ export default {
   expression: { voice: true, images: true, faces: FACES, stickers: true, split: true },
   friends: true, account: '^[1-9]\\d{0,19}$',
   receipts: 'reliable',
+  // The bridge forgets its own files (capabilities/qq/dispatch-forget.js): the offline purge stops it and calls that.
+  forget: { owner: 'companion-qq', what: 'the dispatch record of the forgotten message, left as a tombstone' },
   faceNames: FACES ? FACE_NAMES : [],
   prompt: `这段私聊在 QQ 里。对方想听你说话时，你的回复会用你自己的声音以语音发出。${FACES ? `你可以像真人一样偶尔在文字里夹一个小表情，写成方括号里的名字，比如[微笑]，一条消息最多三个；常用的有：${FACE_NAMES.join('、')}。名字要写得一字不差，名单外的只会被当成普通文字。` : ''}想配一张表情包时可以写[表情:词]，词是心情或场合（如开心、晚安），有合适的会在你的话之后单独发一张，没有就不发，这个标记不会出现在聊天里；不用每次都发。`,
   turnPolicy: {

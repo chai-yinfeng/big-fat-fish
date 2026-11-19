@@ -4,8 +4,14 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 const released = path.basename(path.dirname(fileURLToPath(import.meta.url))) === 'ops';
-const { conversationSessionId } = await import(released ? '../capabilities/conversation/sessions.js' : '../../capabilities/conversation/sessions.js');
-const { qqRequestId } = await import(released ? '../capabilities/qq/worker-route.js' : '../../capabilities/qq/worker-route.js');
+const from = file => import((released ? '../' : '../../') + file);
+// Each service that keeps files forgets its own: forget(plan, { base, storage, inside, dryRun }). This script knows
+// none of their layouts; it checks the plan and the root, keeps the writers stopped, and runs them in this order.
+const owners = [
+  ['companion-conversation', (await from('capabilities/conversation/sessions.js')).forget],
+  ['companion-qq', (await from('capabilities/qq/dispatch-forget.js')).forget],
+  ['companion-content', (await from('capabilities/media/forget.js')).forget],
+];
 
 const fail = code => Object.assign(new Error(code), { code });
 const read = file => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw fail('EXECUTION_LOCAL_FORMAT_INVALID'); } };
@@ -25,17 +31,6 @@ function inside(root, candidate) {
   if (fs.existsSync(absolute) && fs.realpathSync(absolute) !== absolute) throw fail('EXECUTION_SYMLINK_REFUSED');
   return absolute;
 }
-function noLinks(directory) {
-  for (const e of fs.readdirSync(directory, { withFileTypes: true })) {
-    if (e.isSymbolicLink()) throw fail('EXECUTION_SYMLINK_REFUSED');
-    if (e.isDirectory()) noLinks(path.join(directory, e.name));
-    else if (!e.isFile()) throw fail('EXECUTION_UNKNOWN_ARTIFACT');
-  }
-}
-function rewrite(file, value) {
-  fs.writeFileSync(file + '.purge-tmp', JSON.stringify(value) + '\n', { mode: 0o600 });
-  fs.renameSync(file + '.purge-tmp', file);
-}
 
 /** Trusted operator-only maintenance. Caller must hold world pause through completion.
  * A deployment descriptor is mandatory: no guessed session roots or live unlink.
@@ -48,72 +43,14 @@ export async function purgeExecution({ base, plan, checkStopped = stopped }) {
   const descriptorFile = inside(base, path.join(base, 'operator/execution-storage.json'));
   if (!fs.existsSync(descriptorFile)) throw fail('EXECUTION_STORAGE_UNVERIFIED');
   const layout = read(descriptorFile);
-  if (layout.version !== 2 || layout.sessionsRoot !== 'conversation-data/sessions') throw fail('EXECUTION_STORAGE_UNVERIFIED');
-  const sessionsRoot = inside(base, path.join(base, layout.sessionsRoot));
-  if (!fs.statSync(sessionsRoot).isDirectory()) throw fail('EXECUTION_STORAGE_UNVERIFIED');
+  if (layout.version !== 2) throw fail('EXECUTION_STORAGE_UNVERIFIED');
   await checkStopped();
-  // Every earlier memory epoch of an affected stream is a retired session. A
-  // scoped forget carries each stream's own new epoch; older plans use the job's.
-  const sessions = [];
-  for (const entry of plan.affectedStreams) {
-    if (typeof entry?.capabilityId !== 'string' || typeof entry.streamId !== 'string') throw fail('EXECUTION_PLAN_INVALID');
-    const current = entry.memoryEpoch ?? plan.memoryEpoch;
-    if (!Number.isSafeInteger(current) || current < 1 || current > plan.memoryEpoch) throw fail('EXECUTION_PLAN_INVALID');
-    for (let epoch = 0; epoch < current; epoch++) {
-      const file = inside(sessionsRoot, path.join(sessionsRoot, conversationSessionId(entry.streamId, epoch) + '.jsonl'));
-      if (!fs.existsSync(file)) continue;
-      if (!fs.lstatSync(file).isFile()) throw fail('EXECUTION_UNKNOWN_ARTIFACT');
-      sessions.push(file);
-    }
-  }
-  // Dispatch records keep only opaque request hashes; forgotten inputs become tombstones.
-  const dispatchFile = inside(base, path.join(base, 'qq-data/dispatch.json'));
-  const writes = [];
-  if (fs.existsSync(dispatchFile) && Array.isArray(plan.sourceEvents) && plan.sourceEvents.length) {
-    const state = read(dispatchFile);
-    if (!state.records || typeof state.records !== 'object') throw fail('EXECUTION_UNKNOWN_DISPATCH_FORMAT');
-    let changed = false;
-    for (const source of plan.sourceEvents) {
-      if (typeof source?.streamId !== 'string' || typeof source.eventId !== 'string') throw fail('EXECUTION_PLAN_INVALID');
-      const id = qqRequestId(source);
-      if (Object.hasOwn(state.records, id)) { state.records[id] = { status: 'forgotten' }; changed = true; }
-    }
-    if (changed) writes.push([dispatchFile, state]);
-  }
-  let mediaStore, stickers, forgetJobs, jobsPlan, mediaRemoved = 0, stickersRemoved = 0, stickersDetached = 0, jobsRemoved = 0;
-  const speechScratch = [];
-  if (layout.media) {
-    if (layout.media.root !== 'media-data' || layout.media.workRoot !== 'speech-data' || typeof plan.entityId !== 'string' || !Array.isArray(plan.sourceEvents)) throw fail('EXECUTION_STORAGE_UNVERIFIED');
-    const mediaRoot = inside(base, path.join(base, layout.media.root)), workRoot = inside(base, path.join(base, layout.media.workRoot));
-    if (fs.existsSync(mediaRoot)) {
-      const { ArtifactStore } = await import(path.basename(path.dirname(fileURLToPath(import.meta.url))) === 'ops' ? '../capabilities/media/artifacts.js' : '../../capabilities/media/artifacts.js');
-      mediaStore = new ArtifactStore({ root: mediaRoot });
-      mediaStore.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents, dryRun: true });
-      // Her sticker library: a picture the owner had her keep goes when the message it came from is forgotten. One
-      // collected from the forgotten message goes too (with what the description cache says of it) when nobody else
-      // sent it; when others did, only this sender is taken off it (`stickersDetached`).
-      const { createStickers } = await import(path.basename(path.dirname(fileURLToPath(import.meta.url))) === 'ops' ? '../capabilities/media/stickers.js' : '../../capabilities/media/stickers.js');
-      stickers = createStickers({ root: mediaStore.root });
-      stickers.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents, dryRun: true });
-      // Background jobs (capabilities/media/jobs.js): the records of jobs a forgotten message asked for, and of jobs
-      // registered in a retired epoch of an affected conversation, go with their results; a waiting one never starts.
-      ({ forgetJobs } = await import(path.basename(path.dirname(fileURLToPath(import.meta.url))) === 'ops' ? '../capabilities/media/jobs.js' : '../../capabilities/media/jobs.js'));
-      jobsPlan = { file: inside(base, path.join(mediaRoot, 'jobs.json')), entityId: plan.entityId, sourceEvents: plan.sourceEvents, affectedStreams: plan.affectedStreams.map(entry => ({ streamId: entry.streamId, memoryEpoch: entry.memoryEpoch ?? plan.memoryEpoch })) };
-      forgetJobs({ ...jobsPlan, dryRun: true });
-    }
-    if (fs.existsSync(workRoot)) for (const name of fs.readdirSync(workRoot)) if (/^tts-[a-f0-9-]{36}\.wav$|^speech-job-[A-Za-z0-9]+$/.test(name)) {
-      const target = inside(base, path.join(workRoot, name)); if (fs.statSync(target).isDirectory()) noLinks(target); speechScratch.push(target);
-    }
-  } else if (fs.existsSync(path.join(base, 'media-data')) && fs.readdirSync(path.join(base, 'media-data')).length) throw fail('EXECUTION_STORAGE_UNVERIFIED');
+  // Every owner validates and counts first; nothing is erased unless all of them can go ahead.
+  const context = { base, storage: layout, inside };
+  for (const [, forget] of owners) forget(plan, { ...context, dryRun: true });
   await checkStopped();
-  // Every absolute target was checked above; recheck immediately before mutation.
-  for (const file of sessions) { inside(sessionsRoot, file); fs.unlinkSync(file); }
-  for (const [file, value] of writes) { inside(base, file); rewrite(file, value); }
-  if (mediaStore) mediaRemoved = mediaStore.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents }).removed;
-  if (stickers) ({ removed: stickersRemoved, detached: stickersDetached = 0 } = stickers.forget({ entityId: plan.entityId, sourceEvents: plan.sourceEvents }));
-  if (jobsPlan) jobsRemoved = forgetJobs(jobsPlan).removed;
-  for (const target of speechScratch) { inside(base, target); if (fs.statSync(target).isDirectory()) { noLinks(target); fs.rmSync(target, { recursive: true }); } else fs.unlinkSync(target); }
-  return { sdkPurged: true, localSourcesPurged: true, platform: 'outside-control', executionSessionsRemoved: sessions.length, mediaArtifactsRemoved: mediaRemoved, stickersRemoved, stickersDetached, jobRecordsRemoved: jobsRemoved, speechScratchRemoved: speechScratch.length };
+  const [conversation, qq, content] = owners.map(([, forget]) => forget(plan, context));
+  return { sdkPurged: true, localSourcesPurged: true, platform: 'outside-control', executionSessionsRemoved: conversation.sessionsRemoved, mediaArtifactsRemoved: content.artifactsRemoved, stickersRemoved: content.stickersRemoved, stickersDetached: content.stickersDetached, jobRecordsRemoved: content.jobRecordsRemoved, speechScratchRemoved: content.speechScratchRemoved };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {

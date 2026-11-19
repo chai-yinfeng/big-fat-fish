@@ -14,6 +14,7 @@ import { TOOL_RULES } from '../conversation/tool-rules.js';
 import { ACTIVITY_TOOL_SCHEMA, CONTENT_TOOL_SCHEMA, SCOPE_TOOL_SCHEMA, createCompanionTools } from '../conversation/tools.js';
 import { CATEGORIES, STOP, RESERVED_STOP } from '../../model-gateway/spend.mjs';
 import { CONTENT_SERVICE_ACTIONS, checkContentActions } from '../media/service.js';
+import { CHANNELS } from '../channels/index.js';
 
 const KNOWN_DRIFT = {
   // authority/src/server.js accepts a /v1/content field no action takes and nothing sends.
@@ -22,8 +23,6 @@ const KNOWN_DRIFT = {
   sourceRequiredButNotByAuthority: ['stickerPick'],
   // The console's spend card lists four categories by hand; these have money and no line.
   spendCategoriesNotOnConsole: ['proactive', 'activity'],
-  // Stopped by the offline purge script, but no declaration names it as the owner of anything to forget (a channel, not a capability).
-  purgeUnitsNotDeclared: ['companion-qq'],
 };
 
 const source = file => fs.readFileSync(fileURLToPath(new URL(`../../${file}`, import.meta.url)), 'utf8');
@@ -237,7 +236,12 @@ test('configuration and forgetting: each declared loader exists, and the owners 
   assert.deepEqual(DECLARATIONS.filter(item => item.forget === null).map(item => item.id), ['web']);
   assert.deepEqual(sorted(Object.values(FORGET_OWNERS).flat()), sorted(DECLARATIONS.filter(item => item.forget).map(item => item.id)));
   assert.deepEqual(Object.keys(FORGET_OWNERS), ['companion-conversation', 'authority', 'companion-content']);
-  const units = quoted(found(source('deploy/authority/purge-execution.mjs'), /const units = \[([^\]]*)\]/, 'purge units')).map(unit => unit.replace(/\.service$/, ''));
-  // The offline purge stops the services whose files it rewrites; Authority's own rows are Authority's.
-  assert.deepEqual(sorted(units), sorted([...Object.keys(FORGET_OWNERS).filter(owner => owner !== 'authority'), ...KNOWN_DRIFT.purgeUnitsNotDeclared]));
+  const purge = source('deploy/authority/purge-execution.mjs');
+  const units = quoted(found(purge, /const units = \[([^\]]*)\]/, 'purge units')).map(unit => unit.replace(/\.service$/, ''));
+  const called = [...found(purge, /const owners = \[([^]*?)\n\];/, 'purge owners').matchAll(/\['([^']+)',/g)].map(match => match[1]);
+  // The offline purge stops the services whose files are forgotten and calls each one's forget; Authority's own rows
+  // are Authority's. A channel's bridge is declared in its channel's manifest.
+  const owners = [...Object.keys(FORGET_OWNERS).filter(owner => owner !== 'authority'), ...CHANNELS.filter(item => item.forget).map(item => item.forget.owner)];
+  assert.deepEqual(sorted(units), sorted(owners));
+  assert.deepEqual(sorted(called), sorted(owners));
 });

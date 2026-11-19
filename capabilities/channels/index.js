@@ -12,6 +12,8 @@
 //               outside, for instance): a send without a confirmed receipt is `unknown` and is never sent again.
 //   prompt      the channel's part of the system message: fixed text from this repository, the same bytes on
 //               every request of that channel (provider prefix cache), at most CHANNEL_PROMPT_CHARS.
+//   forget      who forgets the bridge's own files of a forgotten message ({ owner: the process, what }), or null
+//               when the bridge keeps none (the same shape as a capability's `forget`)
 //   turnPolicy  fixed lines the bridge adds to a turn's input (e.g. when the reply will be spoken).
 //   testOnly    never a production channel: Authority's entry point (and the deploy preflight) refuse a
 //               configuration that registers it unless that configuration also sets operator.allowTestChannels
