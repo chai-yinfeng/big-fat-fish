@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { messageFromOneBot, imageProbeLines } from './source.js';
+import { messageFromOneBot, imageProbeLines, replyProbeLines, quotedText, quoteLine, pokeFromOneBot, pokeProbeLine } from './source.js';
 import { qqRequestId } from './worker-route.js';
 import { executeConversation, DECLINE_MARK } from '../conversation/executor.js';
 import { splitReply } from './split.js';
@@ -29,6 +29,12 @@ function completionEvent(result) {
   if (['failed', 'expired'].includes(result?.status) && typeof result.failureCode === 'string' && /^[a-z_]{1,32}$/.test(result.failureCode)) return `你之前答应对方去做的事（${title}）没有做成（原因代码：${result.failureCode}）。可以如实告诉对方这次没做成。`;
   throw new Error('QQ_JOB_RESULT');
 }
+/** A poke (QQ 戳一戳) at her with nothing said after it: what she is told in place of a message, in a turn of the same
+ * kind as a run she starts herself (she may say nothing). A poke among the person's messages is this line instead. */
+const POKE_EVENT = '对方在 QQ 上戳了你一下（拍一拍），没有说话。';
+const POKE_FACT = '[渠道事实：对方在 QQ 上戳了你一下（拍一拍）。]';
+/** Her latest delivered messages kept in memory (a restart forgets them), so that a quote of one needs no platform call. */
+const SENT_TEXTS = 500;
 // She chose to say nothing: the mark anywhere in the reply (full-width brackets too) means nothing is sent.
 const DECLINED = new RegExp(`[<＜]\\s*${DECLINE_MARK.slice(1, -1)}\\s*[>＞]`, 'u');
 export const OWNER_BUDGET_NOTICE = '提醒：今天的模型开销已经到达每日上限，大肥鱼今天先不再回复任何人，北京时间零点后自动恢复。可以在控制台查看今日开销或调整上限。';
@@ -52,6 +58,9 @@ export class QQBridge {
     // Per conversation, in memory only (a restart forgets both): whether each of her latest replies carried a sticker
     // (for the frequency line), and the last picture received (what "收下这个" refers to).
     this.recentStickers = new Map(); this.lastPicture = new Map();
+    // In memory only: the text of her latest delivered messages by platform message id (what a quote of one says),
+    // and per conversation when a poke was last taken (pacing.pokeCooldownMs).
+    this.sentTexts = new Map(); this.lastPoke = new Map();
   }
   write(file, value) {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -120,25 +129,32 @@ export class QQBridge {
   async receive(event) {
     const cfg = this.settings, arrival = ++this.arrivals;
     if (event?.post_type === 'notice' && event.notice_type === 'friend_add') { this.friends = null; void this.refreshFriends(); return; }
-    if (!cfg || !this.connected || this.selfId !== cfg.expectedSelfId || event?.post_type !== 'message' || event.message_type !== 'private' || event.anonymous) return;
+    // A poke at her in a private conversation is taken like a message with no words (see process); any other is ignored.
+    const poke = event?.post_type === 'notice' && event.notice_type === 'notify' && event.sub_type === 'poke';
+    if (poke) this.log(pokeProbeLine(event));
+    if (!cfg || !this.connected || this.selfId !== cfg.expectedSelfId || !poke && (event?.post_type !== 'message' || event.message_type !== 'private' || event.anonymous)) return;
     const uid = String(event.user_id), owner = uid === cfg.allowedCallerUID;
     // Others: bot friends only. Temporary (group) sessions wait for group support.
-    if (!owner && (event.sub_type !== undefined && event.sub_type !== 'friend' || !identifier(uid) || !await this.isFriend(uid))) return;
-    let message; try { message = messageFromOneBot(event, cfg); } catch { return; }
+    if (!owner && (!poke && event.sub_type !== undefined && event.sub_type !== 'friend' || !identifier(uid) || !await this.isFriend(uid))) return;
+    let message; try { message = poke ? pokeFromOneBot(event, cfg) : messageFromOneBot(event, cfg); } catch { return; }
     if (!message || message.observation.at < this.connectedAt - 1000) return;
+    // One poke per conversation in pacing.pokeCooldownMs; the rest are ignored.
+    if (poke && this.clock() - (this.lastPoke.get(message.observation.streamId) ?? -Infinity) < this.pacing.pokeCooldownMs) return;
     if (!owner && !this.admitted.has(uid)) {
       // Authority is told the account and, in QQ's own terms, its actor and its conversation.
       try { await this.authority.admitPerson({ uid, actorId: message.observation.actorId, streamId: message.observation.streamId }); this.admitted.add(uid); } catch { return; }
     }
     const observation = message.observation, requestId = qqRequestId(observation);
     if (this.state.records[requestId]) return;
-    for (const line of imageProbeLines(event)) this.log(line);
+    for (const line of [...imageProbeLines(event), ...replyProbeLines(event)]) this.log(line);
+    if (poke) { this.lastPoke.delete(observation.streamId); this.lastPoke.set(observation.streamId, this.clock()); while (this.lastPoke.size > 200) this.lastPoke.delete(this.lastPoke.keys().next().value); }
     const item = this.state.records[requestId] = { status: 'queued' }; this.save();
     const world = (await this.authority.health()).world; item.worldRevision = world.revision;
     if (world.paused || (this.streams.get(observation.streamId)?.queued ?? 0) >= STREAM_QUEUE_LIMIT) { item.status = 'paused'; this.save(); return; }
     const scope = await this.authority.context({ streamId: observation.streamId, query: observation.text.slice(0, 512), budgetChars: 1 });
     if (!Number.isSafeInteger(scope.memoryEpoch) || scope.memoryEpoch < 0 || typeof scope.entityId !== 'string') { item.status = 'failed'; this.save(); return; }
     item.memoryEpoch = scope.memoryEpoch; item.entityId = scope.entityId;
+    if (message.replyTo) message.quote = await this.quoteOf(message.replyTo, uid);
     return this.gather(observation.streamId, { cfg, message, requestId, item, userId: uid, arrival });
   }
   /** Adds a message to its conversation's burst; resolves when the turn that answers the burst has ended. The burst
@@ -163,6 +179,23 @@ export class QQBridge {
       burst.timer = this.setTimer(() => this.flush(streamId, burst), wait);
     }
     return burst.done;
+  }
+  /** The line put before a message that quotes another (only one level; see quotedText). Her own message is read from
+   * what this bridge delivered, otherwise from the platform (get_msg); in this private conversation the quoted words
+   * are hers or the person's. Unreadable, or anyone else's: only that a message was quoted. */
+  async quoteOf(messageId, userId) {
+    let line = null, found = 'none';
+    if (this.sentTexts.has(messageId)) { line = quoteLine('self', quotedText(this.sentTexts.get(messageId))); found = 'sent'; }
+    else {
+      try {
+        const quoted = await this.onebot.call('get_msg', { message_id: Number(messageId) }), from = String(quoted?.sender?.user_id ?? quoted?.user_id);
+        const who = from === this.selfId ? 'self' : from === userId ? 'person' : null;
+        found = 'get_msg:' + (who ?? 'other');
+        if (who) line = quoteLine(who, quotedText(quoted.message));
+      } catch { found = 'get_msg:failed'; }
+    }
+    this.log(`qq reply lookup: ${found}`);
+    return line ?? quoteLine(null, '');
   }
   flush(streamId, burst) {
     if (burst.queued) return;
@@ -193,6 +226,7 @@ export class QQBridge {
   }
   async delivered(observation, item, receipt) {
     item.receipts ||= []; item.receipts.push({ messageId: receipt.messageId, type: receipt.type }); item.messageId = receipt.messageId; this.save();
+    this.sentTexts.set(receipt.messageId, receipt.text); while (this.sentTexts.size > SENT_TEXTS) this.sentTexts.delete(this.sentTexts.keys().next().value);
     try { await this.port.observe({ eventId: 'qq:sent:' + receipt.messageId, streamId: observation.streamId, actorId: 'qq:model', role: 'assistant', text: receipt.text, at: Date.now() }); }
     catch { item.unobserved = true; this.save(); }
   }
@@ -251,7 +285,7 @@ export class QQBridge {
   /** The initiated run itself, in its conversation's queue: a turn with no message of the person. Her reply is split
    * and sent like any reply, each message with its own receipt; the first that fails or is unknown ends it, and
    * nothing is sent twice. Only delivered messages are observed as hers. */
-  async initiated({ cfg, kind, requestId, item, streamId, userId, jobRef }) {
+  async initiated({ cfg, kind, requestId, item, streamId, userId, jobRef, event: given }) {
     const scope = { streamId, memoryEpoch: item.memoryEpoch }, stream = { streamId, text: '' };
     const end = status => { item.status = status; this.save(); };
     let sending = false;
@@ -260,7 +294,7 @@ export class QQBridge {
       item.status = 'processing'; this.save();
       // A finished job's result is read from the content service inside this conversation's own scope; Authority never
       // carries the text, and a job of another conversation cannot be read here.
-      const event = jobRef ? completionEvent(await this.media.call(scope, 'jobResult', { ref: jobRef })) : INITIATION_EVENTS[kind];
+      const event = given ?? (jobRef ? completionEvent(await this.media.call(scope, 'jobResult', { ref: jobRef })) : INITIATION_EVENTS[kind]);
       // A sticker marker is taken out and dropped: a run she starts herself sends no sticker yet.
       const text = takeStickerMarker(await executeConversation(this.executor, { scope, requestId, input: { text: event, initiated: true } })).text;
       if (DECLINED.test(text)) return end('declined');
@@ -299,6 +333,15 @@ export class QQBridge {
       } catch { item.status = 'failed'; this.save(); return null; }
     } catch { return null; }
   }
+  /** A turn of pokes alone (one, unless pacing.pokeCooldownMs is short): a turn with no message of the person, run like
+   * one she starts herself, so she may say nothing (DECLINE_MARK) and nothing is sent. Nothing of the person is
+   * observed; only her delivered messages are. Its model work is counted like a run she starts herself (proactive). */
+  async poked(turn) {
+    const last = turn.at(-1), { streamId } = last.message.observation;
+    await this.initiated({ cfg: last.cfg, requestId: last.requestId, item: last.item, streamId, userId: last.userId, event: POKE_EVENT });
+    for (const entry of turn) entry.item.status = last.item.status;
+    this.save();
+  }
   noteSticker(streamId, sent) {
     const recent = [...(this.recentStickers.get(streamId) ?? []), sent].slice(-RECENT_REPLIES);
     this.recentStickers.delete(streamId); this.recentStickers.set(streamId, recent);
@@ -325,7 +368,9 @@ export class QQBridge {
   /** One turn answering a burst of the person's messages (one or more, in the order they arrived; see gather). Each
    * message is still observed on its own, under its own record; the turn's input carries them in order, one evidence
    * ref each. The reply belongs to the last message (its request id and source event); its receipts are kept on that
-   * message's record, and every message of the turn ends with the same status. */
+   * message's record, and every message of the turn ends with the same status. A message that quotes another has
+   * the quote line before its own text. A poke among the messages is a channel-fact line where it stands: it is not
+   * observed and is no evidence. Pokes alone make a turn with no message of the person (see poked). */
   async process(entries) {
     const turn = [];
     for (const entry of entries) {
@@ -333,8 +378,9 @@ export class QQBridge {
       if (current) turn.push(entry); else { entry.item.status = 'paused'; this.save(); }
     }
     if (!turn.length) return;
-    const { cfg, userId = cfg.allowedCallerUID } = turn.at(-1);
-    let { observation } = turn.at(-1).message, { item } = turn.at(-1);
+    if (turn.every(entry => entry.message.poke)) return this.poked(turn);
+    const { cfg, userId = cfg.allowedCallerUID } = turn.at(-1), said = () => turn.findLast(entry => !entry.message.poke);
+    let { observation } = said().message, { item } = said();
     const scope = { streamId: observation.streamId, memoryEpoch: item.memoryEpoch };
     const end = status => { for (const entry of turn) entry.item.status = status; this.save(); };
     let sending = false, prepared, carry = null;
@@ -342,29 +388,36 @@ export class QQBridge {
       end('processing');
       // Observed one by one, in order. A forgotten one leaves the turn as a tombstone; the rest are still answered.
       for (const entry of [...turn]) {
+        if (entry.message.poke) continue;
         const observed = await this.port.observe(entry.message.observation);
         if (observed?.forgotten) { entry.item.status = 'forgotten'; this.save(); turn.splice(turn.indexOf(entry), 1); continue; }
         if (typeof observed?.observationId !== 'string' || !observed.observationId) throw new Error('QQ_OBSERVATION_UNAVAILABLE');
         entry.observationId = observed.observationId;
       }
-      if (!turn.length) return;
-      ({ observation } = turn.at(-1).message); ({ item } = turn.at(-1));
+      // Only pokes left: they go with the turn's status, unanswered.
+      if (!said()) { for (const entry of turn) { entry.item.status = 'dropped:forgotten'; } this.save(); return; }
+      ({ observation } = said().message); ({ item } = said());
       if (turn.some(entry => entry.message.media.length) && !this.media) throw new Error('QQ_MEDIA_UNAVAILABLE');
       const each = [];
-      for (const { message } of turn) each.push(this.media ? await this.media.prepare(message, scope) : { executionText: message.observation.text, queryText: message.observation.text.slice(0, 512), mediaRefs: [], voiceRequested: false });
+      for (const { message } of turn) {
+        if (message.poke) { each.push({ executionText: POKE_FACT, queryText: '', mediaRefs: [], voiceRequested: false }); continue; }
+        const part = this.media ? await this.media.prepare(message, scope) : { executionText: message.observation.text, queryText: message.observation.text.slice(0, 512), mediaRefs: [], voiceRequested: false };
+        if (message.quote) part.executionText = message.quote + '\n' + part.executionText;
+        each.push(part);
+      }
       if (!await this.current(cfg, observation, item)) { end('paused'); return; }
       // A message's channel fact (收下这个) right after it; how often she sent a sticker lately once, at the end.
       if (this.media) for (const [index, part] of each.entries()) part.executionText += await this.stickerFacts({ cfg, message: turn[index].message, scope, userId, prepared: part });
       const voice = each.find(part => part.voiceRequested);
-      prepared = { executionText: each.map(part => part.executionText).join('\n'), queryText: each.map(part => part.queryText).join('\n').slice(-512), mediaRefs: each.flatMap(part => part.mediaRefs), voiceRequested: Boolean(voice), voiceProfile: voice?.voiceProfile };
+      prepared = { executionText: each.map(part => part.executionText).join('\n'), queryText: each.map(part => part.queryText).filter(Boolean).join('\n').slice(-512), mediaRefs: each.flatMap(part => part.mediaRefs), voiceRequested: Boolean(voice), voiceProfile: voice?.voiceProfile };
       if (this.media && !prepared.voiceRequested) prepared.executionText += frequencyLine(this.recentStickers.get(observation.streamId));
       if (prepared.executionText.length > 24000) throw Object.assign(new Error('QQ_MEDIA_CONTEXT_LIMIT'), { code: 'QQ_MEDIA_CONTEXT_LIMIT' });
       // The executor derives its session from this scope. Only the original
       // observations are memory evidence; ASR/OCR/vision stay execution context.
       carry = await this.carry(scope);
-      const evidence = turn.map(entry => ({ ref: entry.observationId, eventId: entry.message.observation.eventId, role: entry.message.observation.role }));
+      const evidence = turn.filter(entry => !entry.message.poke).map(entry => ({ ref: entry.observationId, eventId: entry.message.observation.eventId, role: entry.message.observation.role }));
       const input = { text: prepared.executionText, queryText: prepared.queryText, mediaRefs: prepared.mediaRefs, evidence, ...(carry ? { event: carry.event } : {}) };
-      const requestId = turn.at(-1).requestId;
+      const requestId = said().requestId;
       // `[表情:词]` never reaches the chat: taken out here, its word picks a sticker below.
       const { text, word } = takeStickerMarker(await executeConversation(this.executor, { scope, requestId, input, timeoutMs: this.media && (prepared.mediaRefs.length || /音频|语音|转写|识别|qwen/i.test(prepared.queryText)) ? 420000 : 120000 }));
       // She has the result now, in a stored turn: it counts as told, whatever becomes of sending the reply.
