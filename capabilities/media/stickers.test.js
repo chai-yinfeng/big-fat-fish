@@ -288,6 +288,23 @@ test('collecting: the owner lets a waiting sticker go to everyone, or refuses it
   assert.deepEqual([f.stickers.list().stickers[2].level, f.stickers.list().stickers[2].senders], ['owner', 2]);
 });
 
+test('collecting: a picture the owner approved stays when its only sender forgets; the owner counts as one of the three', async t => {
+  const f = fixture(t), shared = png('MOCK-A1'), mine = png('MOCK-A2');
+  const hash = await sends(f, JIA, shared, 'event:jia-approved');
+  f.stickers.approve(hash);
+  assert.deepEqual(f.stickers.forget(planOf(JIA, 'event:jia-approved')), { removed: 0, detached: 1 });
+  assert.deepEqual(f.stickers.list().stickers.map(item => [item.hash, item.level, item.senders]), [[hash, 'owner', 0]]);
+  assert.ok(fs.existsSync(path.join(f.store.root, 'stickers', hash + '.png')));
+  assert.equal(f.stickers.described(hash).description, 'MOCK 一只猫在笑');
+  assert.deepEqual(Object.keys(libraryOf(f).entries[0].senders), []);
+  assert.equal((await picks(f, YI)).found, true, 'still matched for everybody');
+  // The owner is one of the three different people.
+  const two = await sends(f, OWNER, mine, 'event:owner-sent'); await sends(f, JIA, mine, 'event:jia-m'); 
+  assert.equal(f.stickers.list().stickers.find(item => item.hash === two).level, 'pending');
+  await sends(f, YI, mine, 'event:yi-m');
+  assert.deepEqual(f.stickers.list().stickers.find(item => item.hash === two), { ...f.stickers.list().stickers.find(item => item.hash === two), level: 'public', senders: 3 });
+});
+
 test('collecting: 甲 forgets the message: a sticker only 甲 sent is gone from the library and the cache; one others also sent only loses 甲', async t => {
   const f = fixture(t), own = png('MOCK-F1'), shared = png('MOCK-F2');
   const hash = await sends(f, JIA, own, 'event:jia-own');
@@ -315,9 +332,7 @@ test('collecting: 甲 forgets the message: a sticker only 甲 sent is gone from 
   assert.equal(f.stickers.list().stickers[0].senders, 2);
   assert.deepEqual(f.stickers.forget(planOf(YI, 'event:yi-again')), { removed: 0, detached: 1 });
   assert.equal(f.stickers.list().stickers[0].senders, 1);
-  // The owner let it go to everyone, but the bytes came only from 丙's message: forgetting that message removes it.
-  f.stickers.approve(common);
-  assert.equal((await picks(f, JIA)).found, true);
+  // Not approved by the owner, and the bytes came only from 丙's message: forgetting that message removes it.
   assert.deepEqual(f.stickers.forget(planOf(BING, 'event:bing-shared')), { removed: 1 });
   assert.deepEqual([f.stickers.list().stickers, f.stickers.described(common)], [[], null]);
   // A picture the owner uploaded, or kept from a message of the owner's own, does not go with someone else's message.
