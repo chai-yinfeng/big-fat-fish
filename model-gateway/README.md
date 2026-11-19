@@ -158,6 +158,12 @@ and a ledger that cannot be written never fails or delays one.
   `ok`, `failed`, `denied` by reason (`daily_limit`, `spend_tier`, `paused`, `quiet_hours`,
   `cooldown`, `not_configured`, `busy`, `blocked`), `units` (chat and consolidation: reported
   `inputTokens` / `outputTokens`; speech: `chars`, `audioSeconds`), `costYuan`, `busyMs`.
+- A picture of `/v1/vision/describe` marked `purpose` takes a slot of its own row instead of vision's daily
+  count: `sticker` (a first look at a sticker, 20 a day) or `frame` (a still of a shared video, row `video-frame`,
+  6 a day); the money stays in the `vision` spend category, so the restricted tier stops them like vision. Any
+  other `purpose` is 400. The mark is set by the content service; the gateway does not tell the holders of the
+  inference token apart (they share it). What keeps the model from setting it is the executor's tool layer: no
+  model tool has a field that reaches `purpose`, and Authority's `/v1/content` passes none.
   Chat and consolidation rows count model requests, not turns or batches. A malformed request
   is not counted.
 - Inference socket (the `inference.token` holders): `POST /v1/usage/record

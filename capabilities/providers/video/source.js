@@ -10,7 +10,9 @@ export const fail = code => Object.assign(new Error(code), { code });
 export const LIMITS = Object.freeze({
   /** Default bounds of one video; `limits` in the operator file may lower or raise them within these ceilings. */
   maxDurationSeconds: 3600, maxFilesizeMiB: 300, pieceSeconds: 120,
-  ceilings: Object.freeze({ maxDurationSeconds: 4 * 3600, maxFilesizeMiB: 2048, pieceSeconds: 500 }),
+  /** Stills of one video the vision model may look at (they are cached with the video, so this is per video). */
+  framesPerVideo: 3,
+  ceilings: Object.freeze({ maxDurationSeconds: 4 * 3600, maxFilesizeMiB: 2048, pieceSeconds: 500, framesPerVideo: 6 }),
   /** yt-dlp's JSON answer and what is kept of a child's stderr (its end; never written to a log as it is). */
   jsonBytes: 2 * 1024 * 1024, stderrBytes: 65536,
   url: 2048,
@@ -25,7 +27,7 @@ const SITE_KEYS = ['id', 'patterns', 'skipHosts', 'blocked', 'loginRequired', 'u
  * `{ schemaVersion: 1, ytdlp: [executable, ...fixed arguments], ffmpeg: [executable, ...],
  *    sandbox: { kind: 'bwrap', bwrap, readOnly: [path...] } | { kind: 'none' },
  *    sites: [{ id, patterns: ['^https://…'], skipHosts?, blocked?, loginRequired?, unavailable? }],
- *    limits?: { maxDurationSeconds?, maxFilesizeMiB?, pieceSeconds? } }`
+ *    limits?: { maxDurationSeconds?, maxFilesizeMiB?, pieceSeconds?, framesPerVideo? } }`
  * A pattern is a regular expression a whole link must match, beginning `^https://`; its named group `id` (and
  * optionally `part`) is the video's own number, when the link carries it. `skipHosts` are media hosts never
  * downloaded from; the three lists of expressions say how that site's refusals look in yt-dlp's error output.
@@ -80,6 +82,15 @@ export const videoKey = (siteId, id, part = 1) => `${siteId}:${id}${part > 1 ? `
 const COMMON = ['--ignore-config', '--no-cache-dir', '--no-playlist', '--socket-timeout', '20'];
 export const metadataArgs = url => [...COMMON, '--retries', '1', '-J', '--', url];
 export const downloadArgs = ({ format, maxFilesizeMiB }) => [...COMMON, '--retries', '2', '--max-filesize', `${maxFilesizeMiB}M`, '--load-info-json', 'info.json', '-f', format, '-o', 'audio.%(ext)s'];
+/** The lowest-quality video stream, for stills only (no sound needed). */
+export const videoDownloadArgs = ({ format, maxFilesizeMiB }) => [...COMMON, '--retries', '2', '--max-filesize', `${maxFilesizeMiB}M`, '--load-info-json', 'info.json', '-f', format, '-o', 'video.%(ext)s'];
+/** Where the picture changes (ffmpeg's scene score over FRAMES.sceneThreshold): the times go to `scenes.txt`, nothing else is written. */
+export const sceneArgs = ({ input }) => ['-nostdin', '-v', 'error', '-i', './' + input, '-an', '-sn', '-dn', '-vf', `select=gt(scene\\,${FRAMES.sceneThreshold}),metadata=print:file=scenes.txt`, '-f', 'null', '-'];
+/** One still at `seconds`: a JPEG of at most 512x512 for the vision model, and the same picture as 8x8 grey bytes for its hash. */
+export const grabArgs = ({ input, seconds, name }) => ['-nostdin', '-v', 'error', '-ss', seconds.toFixed(3), '-i', './' + input, '-an', '-sn', '-dn',
+  '-frames:v', '1', '-vf', 'scale=w=512:h=512:force_original_aspect_ratio=decrease', '-q:v', '5', `${name}.jpg`,
+  '-frames:v', '1', '-vf', 'scale=8:8:flags=area,format=gray', '-f', 'rawvideo', `${name}.gray`];
+export const FRAMES = Object.freeze({ sceneThreshold: 0.3 });
 export const convertArgs = ({ input, pieceSeconds }) => ['-nostdin', '-v', 'error', '-i', './' + input, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', '-f', 'segment', '-segment_time', String(pieceSeconds), '-reset_timestamps', '1', 'piece-%04d.wav'];
 
 /**
@@ -163,4 +174,16 @@ export function audioFormat(info, site) {
   const rate = format => [format.abr, format.tbr].find(value => Number.isFinite(value) && value > 0) ?? Infinity;
   const audioOnly = usable.filter(format => format.vcodec === 'none').sort((a, b) => rate(a) - rate(b));
   return (audioOnly[0] ?? usable.sort((a, b) => rate(a) - rate(b))[0])?.format_id ?? null;
+}
+/**
+ * The format to download for stills: the video stream with the fewest lines (then the lowest bitrate) whose media host
+ * is not one the operator said to skip; sound does not matter. Null when there is none.
+ */
+export function videoFormat(info, site) {
+  const host = format => { try { return new URL(format.url).hostname.toLowerCase(); } catch { return ''; } };
+  const usable = (Array.isArray(info?.formats) ? info.formats : []).filter(format => plainObject(format) && typeof format.format_id === 'string' && /^[A-Za-z0-9_.+-]{1,64}$/.test(format.format_id) && !format.format_id.startsWith('-')
+    && typeof format.vcodec === 'string' && format.vcodec !== 'none' && format.ext !== 'mhtml' && !site.skipHosts.includes(host(format)));
+  const lines = format => Number.isFinite(format.height) && format.height >= 100 ? format.height : Infinity;
+  const rate = format => [format.tbr, format.vbr].find(value => Number.isFinite(value) && value > 0) ?? Infinity;
+  return usable.sort((a, b) => lines(a) - lines(b) || rate(a) - rate(b))[0]?.format_id ?? null;
 }

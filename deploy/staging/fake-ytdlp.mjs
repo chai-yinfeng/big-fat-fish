@@ -9,6 +9,8 @@
 // makes the answer take four seconds (a scenario's turn has ended by then) and is otherwise not part of the id's meaning.
 // `--load-info-json info.json … -o audio.%(ext)s`: writes a one-second silent WAV as audio.wav in the working
 // directory (MOCKHUGE writes nothing, as yt-dlp does for a file over --max-filesize).
+// `--load-info-json info.json -f mock-video … -o video.%(ext)s`: writes video.mp4, a stand-in that only fake-ffmpeg.mjs
+// reads (it names the video and its length); MOCKHUGE writes nothing, MOCKNOVIDEO has no video stream at all.
 // It is stateless: it keeps no log. That a cached video is not fetched again shows in the job list and the ledger.
 // `--mock-site` alone prints the MOCK site's entry for operator/providers/video.json (what staging writes there).
 import fs from 'node:fs';
@@ -49,9 +51,17 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
         { format_id: 'mock-skip', vcodec: 'none', acodec: 'mock', abr: 16, url: 'https://skip.mock.invalid/a' },
         { format_id: 'mock-audio-high', vcodec: 'none', acodec: 'mock', abr: 192, url: 'https://media.mock.invalid/b' },
         { format_id: 'mock-audio', vcodec: 'none', acodec: 'mock', abr: 48, url: 'https://media.mock.invalid/a' },
-        { format_id: 'mock-video', vcodec: 'mock', acodec: 'none', tbr: 800, url: 'https://media.mock.invalid/v' },
+        ...(id === 'MOCKNOVIDEO' ? [] : [
+          { format_id: 'mock-video-high', vcodec: 'mock', acodec: 'none', height: 1080, tbr: 3000, url: 'https://media.mock.invalid/vh' },
+          { format_id: 'mock-video', vcodec: 'mock', acodec: 'none', height: 360, tbr: 800, url: 'https://media.mock.invalid/v' },
+          { format_id: 'mock-video-skip', vcodec: 'mock', acodec: 'none', height: 144, tbr: 100, url: 'https://skip.mock.invalid/v' },
+        ]),
       ],
     }) + '\n');
+  } else if (args.includes('--load-info-json') && args[args.indexOf('-o') + 1] === 'video.%(ext)s') {
+    const info = JSON.parse(fs.readFileSync(args[args.indexOf('--load-info-json') + 1], 'utf8'));
+    if (args[args.indexOf('-f') + 1] !== 'mock-video' || !args.includes('--max-filesize')) refuse('MOCK-USAGE unexpected video download options');
+    if (!String(info.id).startsWith('MOCKHUGE')) fs.writeFileSync('video.mp4', JSON.stringify({ mock: 'video', id: info.id, duration: info.duration }), { mode: 0o600 });
   } else if (args.includes('--load-info-json')) {
     const info = JSON.parse(fs.readFileSync(args[args.indexOf('--load-info-json') + 1], 'utf8'));
     if (args[args.indexOf('-f') + 1] !== 'mock-audio' || args[args.indexOf('-o') + 1] !== 'audio.%(ext)s' || !args.includes('--max-filesize')) refuse('MOCK-USAGE unexpected download options');

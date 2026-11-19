@@ -1,6 +1,9 @@
 // "Watch" a video somebody shared as a link (run by the content service; declared in ./manifest.js).
 // A new video is a background job: metadata -> audio -> 16 kHz pieces -> local speech recognition, piece by piece
 // with their offsets -> a summary by the model -> a note. A video already in the cache is answered at once.
+// Stills (`frames`, a job of its own; or inside `watch` when the video has no usable voice): the lowest-quality video
+// stream -> where the scene changes -> the middles of the longest shots, near-duplicates dropped (./frames.js) -> each
+// still described by the vision model (`purpose: 'frame'`) -> added to the cached note.
 //
 // What is kept:
 // - The cache (`cacheRoot`, one JSON per video, seven days): metadata, timed transcript, summary, the note. It is
@@ -12,8 +15,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { NOTE, tooLittleSpeech, sectionsOf, pagesOf, summaryRequests, mergeRequest, parseSummary, renderNote } from './note.js';
-import { fail, LIMITS, loadVideoConfig, matchSite, videoKey, metadataArgs, downloadArgs, convertArgs, childCommand, runChild, refusalCode, metadataOf, audioFormat } from './source.js';
+import { NOTE, tooLittleSpeech, sectionsOf, pagesOf, summaryRequests, mergeRequest, parseSummary, renderNote, mergeFrames, framesText, FRAME_QUESTION } from './note.js';
+import { fail, LIMITS, loadVideoConfig, matchSite, videoKey, metadataArgs, downloadArgs, videoDownloadArgs, convertArgs, sceneArgs, grabArgs, childCommand, runChild, refusalCode, metadataOf, audioFormat, videoFormat } from './source.js';
+import { sceneCuts, candidateTimes, averageHash, nearlySame } from './frames.js';
 
 export const VIDEO = Object.freeze({
   /** Stage limits (the waits before a slice do not count; the job's overall deadline does). */
@@ -27,20 +31,30 @@ export const VIDEO = Object.freeze({
   unheardTtlMs: 3600000,
   /** Output cap of one summary request. */
   summaryTokens: 900,
+  /** Stills: finding the cuts may take this plus this share of the video's length; taking and describing them, these. */
+  sceneBaseMs: 2 * 60000, sceneFactor: 0.2, stillsMs: 2 * 60000, lookMs: 4 * 60000,
+  /** The largest still sent to the vision model (ffmpeg scales it to 512x512 at most; a JPEG of that is far smaller). */
+  stillBytes: 1024 * 1024,
 });
 const NOTE_MIME = 'application/vnd.companion.video-note+json';
 const WORK_PREFIX = 'video-job-';
 const derived = value => ({ ...value, derived: true, isNewEvidence: false, isVerbatimUserText: false });
 const refused = code => derived({ status: 'failed', code });
 const source = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
+const JPEG = Buffer.from([255, 216, 255]);
+/** A regular file in the work directory of at most `max` bytes, or null. */
+const small = (file, max) => { try { const stat = fs.lstatSync(file); return stat.isFile() && stat.size <= max ? fs.readFileSync(file) : null; } catch { return null; } };
 
 /**
  * `store`: the media ArtifactStore. `speech`: the local speech runner. `summarize({ messages, maxTokens, signal })`
  * -> `{ content }`: one model completion through the gateway (it throws when the spend tier refuses or the call
- * fails; the note is then filed without a summary). `jobs()`: the background jobs (resolved late: they are created
- * with this provider's runner). `workRoot` must be inside one of the speech runner's input roots.
+ * fails; the note is then filed without a summary). `describeFrame({ imageBase64, mime, question, signal })` ->
+ * `{ description }`: one still looked at through the gateway's vision route marked `purpose: 'frame'` (rejects with
+ * CONTENT_BUDGET_EXHAUSTED or CONTENT_SPEND_RESTRICTED when the day's stills or the spend tier refuse it; absent: no
+ * stills). `jobs()`: the background jobs (resolved late: they are created with this provider's runners). `workRoot`
+ * must be inside one of the speech runner's input roots.
  */
-export function createVideoProvider({ configFile, cacheRoot, workRoot, store, speech, summarize, jobs, spawn, clock = Date.now, log = line => process.stderr.write(line + '\n') }) {
+export function createVideoProvider({ configFile, cacheRoot, workRoot, store, speech, summarize, describeFrame, jobs, spawn, clock = Date.now, log = line => process.stderr.write(line + '\n') }) {
   for (const directory of [cacheRoot, workRoot]) {
     if (!path.isAbsolute(directory)) throw fail('VIDEO_CONFIG');
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -58,8 +72,18 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
       return entry?.schema === 1 && entry.key === key && entry.expiresAt > clock() && typeof entry.note === 'string' && Array.isArray(entry.pages) ? entry : null;
     } catch { return null; }
   }
-  /** This share's own reference to a cached note, in the conversation and under the message that shared the link. */
-  const fileNote = (scope, sourceEventId, entry) => store.put({ scope, sourceEventId, kind: 'note', mime: NOTE_MIME, data: Buffer.from(JSON.stringify({ key: entry.key })) }).id;
+  /** This share's own reference to a cached note, in the conversation and under the message that shared the link. The
+   * link itself is kept here (it may carry the sharer's share parameters), never in the public cache: `frames` needs it. */
+  const fileNote = (scope, sourceEventId, entry, url) => store.put({ scope, sourceEventId, kind: 'note', mime: NOTE_MIME, data: Buffer.from(JSON.stringify({ key: entry.key, url })) }).id;
+  /** This conversation's newest share: its reference, the cached entry it points at and the link, or nulls. */
+  function lastShare(scope) {
+    const reference = store.latest(scope, 'note');
+    if (!reference) return { reference: null, entry: null, url: null };
+    try {
+      const data = JSON.parse(store.read(reference.id, scope).data.toString('utf8'));
+      return { reference, entry: cached(data.key), url: typeof data.url === 'string' ? data.url : null };
+    } catch { return { reference, entry: null, url: null }; }
+  }
 
   /** One yt-dlp run. `stdoutBytes: 0` for a download: what it prints there is progress, however long that gets. */
   async function yt(configNow, site, workDir, args, { signal, stdoutBytes }) {
@@ -135,7 +159,7 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
     if (!source(asked?.sourceEventId)) throw fail('failed');
     // Somebody else's share of the same video may have finished while this one waited.
     const ready = matched.key && cached(matched.key);
-    if (ready) { fileNote(scope, asked.sourceEventId, ready); return { text: ready.note }; }
+    if (ready) { fileNote(scope, asked.sourceEventId, ready, input.url); return { text: ready.note }; }
     const workDir = fs.mkdtempSync(path.join(workRoot, WORK_PREFIX));
     try {
       const raw = await stage('metadata', VIDEO.metadataMs, step => step.slice(inner => yt(configNow, site, workDir, metadataArgs(input.url), { signal: inner, stdoutBytes: LIMITS.jsonBytes })));
@@ -144,7 +168,7 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
       if (!key) throw fail('failed');
       // The link did not carry the video's number: only now is it known whether this video is already in the cache.
       const known = cached(key);
-      if (known) { fileNote(scope, asked.sourceEventId, known); return { text: known.note }; }
+      if (known) { fileNote(scope, asked.sourceEventId, known, input.url); return { text: known.note }; }
       if (meta.durationMs > configNow.limits.maxDurationSeconds * 1000) throw fail('too_long');
       let heard = null, state = 'unavailable';
       // Without a usable recognizer nothing is downloaded: the note then has the title and the description only.
@@ -171,11 +195,96 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
       const sections = sectionsOf({ durationMs: meta.durationMs, chapters: meta.chapters, segments }), pages = pagesOf(segments);
       const summary = state === 'asr' ? await summarized(meta, sections, stage, signal) : null;
       const { id: _id, chapters: _chapters, ...described } = meta;
-      const note = renderNote({ meta: described, source: state, engine: heard?.engine, sections, summary, pages: pages.length });
-      const now = clock(), entry = { schema: 1, key, site: site.id, fetchedAt: now, expiresAt: now + (state === 'unavailable' ? VIDEO.unheardTtlMs : VIDEO.cacheTtlMs), meta: described, source: state, engine: state === 'asr' ? heard.engine : null, summarized: Boolean(summary), note, pages };
+      let note = renderNote({ meta: described, source: state, engine: heard?.engine, sections, summary, pages: pages.length });
+      // No usable voice: the picture is all there is to go on, so a few stills are looked at without being asked.
+      // Whatever stops them (no video stream, the day's stills used up, the spend tier) leaves the note as it is.
+      let frames = null;
+      if (state === 'empty_unconfirmed' && describeFrame) {
+        try {
+          const looked = await stills({ configNow, site, workDir, raw, info, meta, stage });
+          if (looked.frames.length) { frames = looked.frames; note = mergeFrames(note, frames); }
+          else log(`VIDEO_FRAMES_SKIPPED ${looked.refusal ?? 'failed'}`);
+        } catch (error) {
+          if (signal.aborted || error?.code === 'timeout') throw error;
+          log(`VIDEO_FRAMES_SKIPPED ${/^[a-z_]{1,32}$/.test(error?.code ?? '') ? error.code : 'failed'}`);
+        }
+      }
+      const now = clock(), entry = { schema: 1, key, site: site.id, fetchedAt: now, expiresAt: now + (state === 'unavailable' ? VIDEO.unheardTtlMs : VIDEO.cacheTtlMs), meta: described, source: state, engine: state === 'asr' ? heard.engine : null, summarized: Boolean(summary), note, pages, ...(frames ? { frames } : {}) };
       writeJson(cacheFile(key), entry);
-      fileNote(scope, asked.sourceEventId, entry);
+      fileNote(scope, asked.sourceEventId, entry, input.url);
       return { text: note };
+    } finally { removeWork(workDir); }
+  }
+  /**
+   * A few stills of the video, each described by the vision model. -> `{ frames: [{ atMs, text }], refusal }`, frames
+   * in time order (empty when none could be looked at; `refusal` then says why: `daily_limit`, `spend_tier`).
+   * At most `framesPerVideo` are looked at; they are cached with the video, so that is all one video ever costs.
+   */
+  async function stills({ configNow, site, workDir, raw, info, meta, stage }) {
+    const format = videoFormat(info, site), wanted = configNow.limits.framesPerVideo;
+    if (!format) throw fail('unavailable');
+    fs.writeFileSync(path.join(workDir, 'info.json'), raw, { mode: 0o600 });
+    await stage('video', VIDEO.downloadMs, step => step.slice(inner => yt(configNow, site, workDir, videoDownloadArgs({ format, maxFilesizeMiB: configNow.limits.maxFilesizeMiB }), { signal: inner, stdoutBytes: 0 })));
+    fs.rmSync(path.join(workDir, 'info.json'), { force: true });
+    const video = fs.readdirSync(workDir).find(name => /^video\.[A-Za-z0-9]{1,8}$/.test(name) && fs.lstatSync(path.join(workDir, name)).isFile());
+    if (!video) throw fail('too_large');
+    const ffmpeg = (args, signal) => runChild(childCommand(configNow, { workDir, network: false }, [...configNow.ffmpeg, ...args]), { signal, spawn });
+    await stage('scenes', VIDEO.sceneBaseMs + Math.round(meta.durationMs * VIDEO.sceneFactor), step => step.slice(async signal => { if ((await ffmpeg(sceneArgs({ input: video }), signal)).code !== 0) throw fail('failed'); }));
+    const times = candidateTimes({ cuts: sceneCuts(small(path.join(workDir, 'scenes.txt'), 1024 * 1024)?.toString('utf8') ?? ''), durationMs: meta.durationMs, wanted });
+    const kept = [];
+    await stage('stills', VIDEO.stillsMs, async step => {
+      for (const [index, seconds] of times.entries()) {
+        if (kept.length >= wanted) break;
+        const name = `frame-${String(index).padStart(2, '0')}`;
+        const result = await step.slice(signal => ffmpeg(grabArgs({ input: video, seconds, name }), signal));
+        const image = small(path.join(workDir, name + '.jpg'), VIDEO.stillBytes), hash = averageHash(small(path.join(workDir, name + '.gray'), 64));
+        for (const suffix of ['.jpg', '.gray']) fs.rmSync(path.join(workDir, name + suffix), { force: true });
+        if (result.code !== 0 || !image || !image.subarray(0, 3).equals(JPEG) || !hash || kept.some(still => nearlySame(still.hash, hash))) continue;
+        kept.push({ atMs: Math.round(seconds * 1000), hash, image });
+        step.progress(kept.length / wanted * 100);
+      }
+    });
+    fs.rmSync(path.join(workDir, video));
+    if (!kept.length) throw fail('failed');
+    const frames = []; let refusal = null;
+    await stage('look', VIDEO.lookMs, async step => {
+      for (const still of kept.sort((a, b) => a.atMs - b.atMs)) {
+        try {
+          const answer = await step.slice(signal => describeFrame({ imageBase64: still.image.toString('base64'), mime: 'image/jpeg', question: FRAME_QUESTION, signal }));
+          if (typeof answer?.description === 'string' && answer.description.trim()) frames.push({ atMs: still.atMs, text: answer.description.trim().slice(0, 400) });
+        } catch (error) {
+          if (error?.code === 'timeout') throw error;
+          if (error?.code === 'CONTENT_BUDGET_EXHAUSTED' || error?.code === 'CONTENT_SPEND_RESTRICTED') { refusal = error.code === 'CONTENT_BUDGET_EXHAUSTED' ? 'daily_limit' : 'spend_tier'; break; }
+          if (!String(error?.code ?? '').startsWith('CONTENT_')) throw error;
+        }
+        step.progress(frames.length / kept.length * 100);
+      }
+    });
+    return { frames, refusal };
+  }
+
+  /** The `frames` job: stills of a video this conversation watched (its link from this share's own reference). */
+  async function frames({ input, signal, stage }) {
+    const configNow = config(), matched = configNow && matchSite(configNow, input.url);
+    if (!matched) throw fail('not_configured');
+    const entry = cached(input.key);
+    if (!entry) throw fail('unavailable');
+    if (entry.frames) return { text: framesText(entry) };
+    if (!describeFrame) throw fail('not_configured');
+    if (fs.existsSync(blockedFile(matched.site.id))) throw fail('blocked');
+    const workDir = fs.mkdtempSync(path.join(workRoot, WORK_PREFIX));
+    try {
+      const raw = await stage('metadata', VIDEO.metadataMs, step => step.slice(inner => yt(configNow, matched.site, workDir, metadataArgs(input.url), { signal: inner, stdoutBytes: LIMITS.jsonBytes })));
+      let info; try { info = JSON.parse(raw); } catch { throw fail('failed'); }
+      const meta = metadataOf(info);
+      // The link must still be the same video the note is about.
+      if ((matched.key ?? (meta.id ? videoKey(matched.site.id, meta.id) : null)) !== input.key) throw fail('failed');
+      const looked = await stills({ configNow, site: matched.site, workDir, raw, info, meta, stage });
+      if (!looked.frames.length) throw fail(looked.refusal ?? 'failed');
+      signal.throwIfAborted();
+      const current = cached(input.key) ?? entry, next = { ...current, frames: looked.frames, note: mergeFrames(current.note, looked.frames) };
+      writeJson(cacheFile(input.key), next);
+      return { text: framesText(next) };
     } finally { removeWork(workDir); }
   }
   function removeWork(directory) {
@@ -195,11 +304,25 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
       dedupe: input => input.dedupe,
       run: watch,
     },
+    /** The stills job (`frames`). It takes no slot of the day's videos: each still takes one of the `video-frame` row's
+     * at the gateway, and the job reports nothing of its own. */
+    framesRunner: {
+      title: '看视频画面', action: 'frames', priority: 'yielding', deadlineMs: VIDEO.deadlineMs, ledger: false,
+      input(raw) {
+        const configNow = config(), ok = raw && typeof raw === 'object' && !Array.isArray(raw) && Object.keys(raw).sort().join() === 'key,url' && typeof raw.key === 'string' && raw.key.length <= 256;
+        if (!ok || !configNow || !matchSite(configNow, raw.url)) throw fail('MEDIA_INPUT_INVALID');
+        return { url: raw.url, key: raw.key };
+      },
+      dedupe: input => 'frames:' + input.key,
+      run: frames,
+    },
     /**
      * The model's side (through the content service's `activity` action, inside the scope Authority derived).
      * `watch { url }` -> the note at once when the video is cached, `processing` when a job was queued (or already is
      * for this link), or `failed` with a fixed code. `status` -> how this conversation's newest watch stands.
      * `page { page }` -> one page of the full transcript of the video this conversation watched last.
+     * `frames` -> stills of that same video: at once when they were looked at before (by anyone: they are about the
+     * video), else `processing` (a job of its own), or `failed` with a fixed code.
      */
     async call(scope, { activity, input = {}, sourceEventId, requestId } = {}) {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw fail('MEDIA_INPUT_INVALID');
@@ -214,13 +337,28 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
       if (activity === 'page') {
         const page = input.page ?? 1;
         if (Object.keys(input).some(key => key !== 'page') || !Number.isSafeInteger(page) || page < 1 || page > 999) throw fail('MEDIA_INPUT_INVALID');
-        const reference = store.latest(scope, 'note');
-        let entry = null;
-        if (reference) { try { entry = cached(JSON.parse(store.read(reference.id, scope).data.toString('utf8')).key); } catch { entry = null; } }
+        const { entry } = lastShare(scope);
         if (!entry) return refused('nothing_watched');
         if (!entry.pages.length) return derived({ status: 'done', page: 0, pages: 0, text: '', note: entry.note });
         if (page > entry.pages.length) return refused('no_such_page');
         return derived({ status: 'done', page, pages: entry.pages.length, text: entry.pages[page - 1] });
+      }
+      if (activity === 'frames') {
+        if (Object.keys(input).length) throw fail('MEDIA_INPUT_INVALID');
+        // Only the video this conversation watched last, found through its own reference (as `page`): another
+        // conversation's videos, or a video only somebody else shared, cannot be named here.
+        const { reference, entry, url } = lastShare(scope);
+        if (!entry) return refused('nothing_watched');
+        if (entry.frames) return derived({ status: 'done', text: framesText(entry), frames: entry.frames.length, cached: true });
+        const configNow = config();
+        if (!configNow || !describeFrame) return refused('not_configured');
+        const matched = url && matchSite(configNow, url);
+        if (!matched) return refused('unavailable');
+        if (fs.existsSync(blockedFile(matched.site.id))) return refused('blocked');
+        // Filed under the message that shared the link: forgetting it removes this job as it removes the note.
+        const job = await jobs().register(scope, { capability: 'video-frames', input: { url, key: entry.key }, source: { sourceEventId: reference.sourceEventId, ...(requestId === undefined ? {} : { requestId }) } });
+        if (job.status === 'rejected') return refused(job.failureCode);
+        return derived({ status: 'processing', minutes: 3 + 5 * Math.max(0, jobs().waiting - 1), ...(job.duplicate ? { already: true } : {}) });
       }
       if (activity !== 'watch') throw fail('MEDIA_ACTION_DENIED');
       if (Object.keys(input).some(key => key !== 'url') || typeof input.url !== 'string' || !source(sourceEventId)) throw fail('MEDIA_INPUT_INVALID');
@@ -231,7 +369,7 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
       if (!matched) return refused('unsupported_link');
       if (fs.existsSync(blockedFile(matched.site.id))) return refused('blocked');
       const known = matched.key && cached(matched.key);
-      if (known) { fileNote(scope, sourceEventId, known); return derived({ status: 'done', note: known.note, pages: known.pages.length, cached: true }); }
+      if (known) { fileNote(scope, sourceEventId, known, input.url); return derived({ status: 'done', note: known.note, pages: known.pages.length, cached: true }); }
       const job = await jobs().register(scope, { capability: 'video', input: { url: input.url }, source: { sourceEventId, ...(requestId === undefined ? {} : { requestId }) } });
       if (job.status === 'rejected') return refused(job.failureCode);
       // A guess: the length is only known once the job has asked. A few minutes for the video, more behind others.

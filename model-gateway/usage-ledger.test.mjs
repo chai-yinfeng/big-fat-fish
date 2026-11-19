@@ -26,7 +26,7 @@ test('ledger: one row per declared capability; outcomes, denials by reason, unit
   const open = async () => { const ledger = createUsageLedger({ directory, capabilities: CAPABILITIES, defaults: { vision: 12, web: 20 }, external: () => counters, clock: () => Date.parse('2026-11-12T04:00:00Z') }); await ledger.start(); return ledger; };
   let ledger = await open();
   let status = await ledger.status();
-  assert.deepEqual([status.day, status.timezone, status.rows.map(row => row.id)], ['2026-11-12', 'Asia/Shanghai', ['chat', 'consolidation', 'vision', 'sticker', 'web', 'speech-tts', 'speech-asr', 'proactive', 'demo', 'video', 'video-note']]);
+  assert.deepEqual([status.day, status.timezone, status.rows.map(row => row.id)], ['2026-11-12', 'Asia/Shanghai', ['chat', 'consolidation', 'vision', 'sticker', 'web', 'speech-tts', 'speech-asr', 'proactive', 'demo', 'video', 'video-note', 'video-frame']]);
   assert.deepEqual(rowsOf(status).chat, { id: 'chat', title: '聊天', kind: 'paid', unit: 'requests', used: 0, limit: null, calls: 0, ok: 0, failed: 0, denied: {}, units: {}, busyMs: 0, limitDefault: null, costYuan: 0, spendCategory: 'conversation', stopTier: 'exhausted' });
   await ledger.record('chat', { outcome: 'ok', busyMs: 1200, costMicros: 2500 });
   await ledger.record('chat', { outcome: 'failed', busyMs: 300 });
@@ -194,7 +194,7 @@ test('gateway: every exit lands in its row, and the rows add up to what the spen
   assert.deepEqual(Object.fromEntries(Object.entries(rows).map(([id, row]) => [id, [row.used, row.limit, row.calls, row.ok, row.failed, row.denied]])), {
     chat: [2, null, 2, 2, 0, {}], consolidation: [1, null, 1, 1, 0, {}], vision: [1, 12, 1, 1, 0, {}], sticker: [0, 20, 0, 0, 0, {}], web: [1, 20, 1, 1, 0, {}], 'speech-tts': [0, null, 0, 0, 0, {}], 'speech-asr': [0, null, 0, 0, 0, {}], proactive: [0, null, 0, 0, 0, {}], demo: [0, 10, 0, 0, 0, {}],
     // Watching a video: the local row has a daily count and no money; the summary's request is the paid row.
-    video: [0, 6, 0, 0, 0, {}], 'video-note': [1, null, 1, 1, 0, {}],
+    video: [0, 6, 0, 0, 0, {}], 'video-note': [1, null, 1, 1, 0, {}], 'video-frame': [0, 6, 0, 0, 0, {}],
   });
   // The summary is charged to `activity`, not to maintenance, and is sent like a maintenance completion: thinking off, no tools.
   assert.deepEqual([rows['video-note'].spendCategory, rows['video-note'].stopTier, rows['video-note'].costYuan > 0, rows.consolidation.calls], ['activity', 'restricted', true, 1]);
@@ -265,7 +265,31 @@ test('gateway: a first look at a sticker takes a slot of its own row, not one of
   rows = await f.usage(seen => seen.sticker.denied.daily_limit === 1);
   assert.deepEqual([rows.sticker.denied, rows.sticker.calls, rows.vision.denied], [{ daily_limit: 1 }, 2, {}]);
   // Any other purpose is a malformed request.
-  assert.equal((await f.inference('/v1/vision/describe', { imageBase64: PNG, mime: 'image/png', purpose: 'frame' })).status, 400);
+  for (const purpose of ['other', 'toString', 'vision', '', 1, null]) assert.equal((await f.inference('/v1/vision/describe', { imageBase64: PNG, mime: 'image/png', purpose })).status, 400, String(purpose));
+});
+
+test('gateway: a still of a video takes a slot of the video-frame row (six a day by default), not vision\'s; the money stays in vision and the restricted tier stops it', async t => {
+  const f = await gateway(t, { budgets: { vision: 1, web: 20 } });
+  const frame = () => f.inference('/v1/vision/describe', { imageBase64: PNG, mime: 'image/png', question: 'MOCK still', detail: 'low', purpose: 'frame' });
+  assert.equal((await f.vision()).status, 200);
+  for (let n = 0; n < 6; n++) assert.equal((await frame()).status, 200, 'vision is used up, the video-frame row is not');
+  let rows = await f.usage(seen => seen['video-frame'].ok === 6);
+  assert.deepEqual([rows['video-frame'].used, rows['video-frame'].limit, rows['video-frame'].calls, rows.vision.used, rows.vision.calls, rows.sticker.used], [6, 6, 6, 1, 1, 0]);
+  assert.deepEqual([rows['video-frame'].spendCategory, rows['video-frame'].stopTier, rows['video-frame'].costYuan, (await f.control('/spend')).json().value.byTier.vision], ['vision', 'restricted', 0.06, 0.07]);
+  assert.equal(JSON.parse(await fs.readFile(path.join(f.directory, 'capability-usage.json'), 'utf8')).visionCalls, 1, 'the legacy vision count is not touched');
+  // The seventh of the day: refused as daily_limit, nothing sent to the provider.
+  let calls = f.calls.length, refused = await frame();
+  assert.deepEqual([refused.status, refused.json().error.code, f.calls.length], [429, 'BUDGET_EXHAUSTED', calls]);
+  rows = await f.usage(seen => seen['video-frame'].denied.daily_limit === 1);
+  assert.deepEqual([rows['video-frame'].denied, rows['video-frame'].calls, rows.vision.denied], [{ daily_limit: 1 }, 6, {}]);
+  // The operator raises the count; then the restricted tier (80% by default) stops stills before the provider is asked.
+  assert.equal((await f.control('/usage/limits', { limits: { 'video-frame': 10 } })).status, 200);
+  assert.equal((await frame()).status, 200);
+  assert.equal((await f.control('/spend/settings', { dailyCapYuan: 0.01, reducedPercent: 1, restrictedPercent: 2 })).status, 200);
+  calls = f.calls.length; refused = await frame();
+  assert.deepEqual([refused.status, refused.json().error.code, f.calls.length], [429, 'SPEND_RESTRICTED', calls]);
+  rows = await f.usage(seen => seen['video-frame'].denied.spend_tier === 1);
+  assert.deepEqual([rows['video-frame'].denied, rows['video-frame'].used, rows['video-frame'].calls], [{ daily_limit: 1, spend_tier: 1 }, 7, 7]);
 });
 
 test('gateway: operator reads /usage and history and changes a daily limit; the limit applies to the next call', async t => {
