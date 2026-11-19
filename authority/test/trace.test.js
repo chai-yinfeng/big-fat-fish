@@ -43,7 +43,7 @@ test('context() records what it injected: entry IDs per block and sizes, for an 
   const other = tell(B, 'fact.report', { key: 'MOCK-代号', value: 'MOCK-蓝鲸队长二号' }, 'MOCK-蓝鲸队长二号');
   assert.deepEqual(a.contextTrace(), { capacity: TRACE_LIMIT, recorded: 0, traces: [] });
   const query = 'MOCK-蓝鲸队长 是谁', context = a.context('qq', { streamId: stream(A), query });
-  assert.deepEqual(Object.keys(context).sort(), ['capabilityId', 'entityId', 'memoryEpoch', 'memoryIds', 'memoryText', 'personaRevision', 'personaText', 'profileText', 'revision', 'scope', 'text', 'world']);
+  assert.deepEqual(Object.keys(context).sort(), ['capabilityId', 'continuationIds', 'continuationText', 'entityId', 'memoryEpoch', 'memoryIds', 'memoryText', 'personaRevision', 'personaText', 'profileText', 'revision', 'scope', 'text', 'world']);
   assert.deepEqual([...context.memoryIds].sort(), [fact, experience].sort(), 'the response names the entries it rendered');
   const { traces: [trace], recorded } = a.contextTrace();
   assert.equal(recorded, 1);
@@ -51,9 +51,12 @@ test('context() records what it injected: entry IDs per block and sizes, for an 
     seq: 1, at: 1_800_000_000_000, capabilityId: 'qq', stream: trace.stream, person: opaquePerson(`person:qq:${A}`), owner: false, audience: 'private',
     entityId: 'entity:big-fat-fish', memoryEpoch: context.memoryEpoch, revision: context.revision, personaRevision: context.personaRevision,
     queryChars: query.length, budgetChars: 4000, candidates: 2,
-    chars: { total: context.text.length, persona: context.personaText.length, memory: context.memoryText.length, profile: 0 },
-    sections: trace.sections, profile: [],
+    chars: { total: context.text.length, persona: context.personaText.length, memory: context.memoryText.length, profile: 0, continuation: 0 },
+    sections: trace.sections, profile: [], continuation: [], queryTokens: trace.queryTokens, hits: trace.hits,
   });
+  // How well each injected entry matched: counts only (distinct query tokens, and how many each entry holds).
+  assert.deepEqual(Object.keys(trace.hits).sort(), [fact, experience].sort());
+  assert.ok(trace.queryTokens >= 2 && Object.values(trace.hits).every(hits => Number.isInteger(hits) && hits >= 1 && hits <= trace.queryTokens));
   assert.equal(context.profileText, '', 'no profile unless it is asked for');
   assert.match(trace.stream, /^s-[0-9a-f]{6}$/);
   // Every block of the rendered text is accounted for, and each traced ID is an entry whose text is in it.
