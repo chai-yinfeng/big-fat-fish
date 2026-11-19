@@ -38,10 +38,11 @@ test('group, other caller, self echoes and paused input do not invoke model or s
   f.world.paused = false; f.world.revision++; await f.bridge.receive(f.event);
   assert.equal(f.executions(), 0); assert.equal(f.sends.length, 0); assert.equal(f.observations.length, 0);
 });
-test('lost send receipt remains unknown, never blindly resends or records a sent experience', async t => {
+test('lost send receipt remains unknown, never blindly resends or records a sent experience: her reply is observed as of unknown status', async t => {
   const f = await fixture(t, true); await f.bridge.receive(f.event); await f.bridge.receive(f.event);
   const requestId = qqRequestId(observationFromOneBot(f.event, { expectedSelfId: '100' }));
-  assert.equal(f.bridge.state.records[requestId].status, 'unknown'); assert.equal(f.sends.length, 1); assert.equal(f.observations.length, 1);
+  assert.equal(f.bridge.state.records[requestId].status, 'unknown'); assert.equal(f.sends.length, 1);
+  assert.deepEqual(f.observations.slice(1).map(o => [o.eventId, o.role, o.text]), [['qq:undelivered:' + requestId, 'assistant', '[CQ:file,file=/secret] just text\n[送达情况：这条回复的发送状态未知，不确定对方有没有收到]']]);
 });
 
 test('slow QQ login retries on the same socket once at a time and ignores disconnected probe results', async t => {
@@ -124,15 +125,18 @@ test('a short reply is one message with the model text unchanged, after only the
   assert.deepEqual(f.sends.map(send => send.message), [[{ type: 'text', data: { text: '[CQ:file,file=/secret] just text' } }]]);
   assert.deepEqual(gaps, [950]); assert.equal(f.observations[1].text, '[CQ:file,file=/secret] just text');
 });
-test('a message of a split reply without a receipt stops the rest: nothing is resent, only delivered text is recorded', async t => {
+test('a message of a split reply without a receipt stops the rest: nothing is resent, only delivered text is recorded as said', async t => {
   const f = await longReply(t, { failAt: 2 }); await f.bridge.receive(f.event); await f.bridge.receive(f.event);
   assert.deepEqual(f.texts, [sentence(1), sentence(2)]); assert.equal(f.runs(), 1);
   assert.equal(f.record().status, 'partial_unknown');
   assert.deepEqual(f.record().receipts, [{ messageId: '501', type: 'text' }]);
-  assert.deepEqual(f.observations.map(o => [o.role, o.text]), [['user', 'Hello'], ['assistant', sentence(1)]]);
+  // The rest is observed once, as the turn ends, each message with what became of it.
+  assert.deepEqual(f.observations.map(o => [o.role, o.text]), [['user', 'Hello'], ['assistant', sentence(1)], ['assistant', [sentence(2), '[送达情况：这条回复的发送状态未知，不确定对方有没有收到]', sentence(3), '[送达情况：这条回复没有发出]', sentence(4), '[送达情况：这条回复没有发出]'].join('\n')]]);
+  assert.equal(f.observations[2].eventId, 'qq:undelivered:' + qqRequestId(observationFromOneBot(f.event, { expectedSelfId: '100' })));
   // The first message failing leaves nothing recorded as said.
   const g = await longReply(t, { failAt: 1 }); await g.bridge.receive(g.event); await g.bridge.receive(g.event);
-  assert.deepEqual(g.texts, [sentence(1)]); assert.equal(g.record().status, 'unknown'); assert.equal(g.observations.length, 1);
+  assert.deepEqual(g.texts, [sentence(1)]); assert.equal(g.record().status, 'unknown');
+  assert.deepEqual(g.observations.slice(1).map(o => o.text), [[sentence(1), '[送达情况：这条回复的发送状态未知，不确定对方有没有收到]', sentence(2), '[送达情况：这条回复没有发出]', sentence(3), '[送达情况：这条回复没有发出]', sentence(4), '[送达情况：这条回复没有发出]'].join('\n')]);
 });
 test('a pause between the messages of a split reply stops the rest', async t => {
   const f = await longReply(t, { onGap: (f, n) => { if (n === 3) { f.world.paused = true; f.world.revision++; } } });
