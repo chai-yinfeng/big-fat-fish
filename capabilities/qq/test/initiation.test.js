@@ -4,7 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { QQBridge } from '../bridge.js';
+import { PACING } from '../pacing.js';
 import { DECLINE_MARK } from '../../conversation/executor.js';
+
+// No burst wait (each message is its own turn unless they arrive together) and a fixed random source.
+const QUICK = { pacing: { ...PACING, burstQuietMs: 0, burstMaxWaitMs: 0 }, random: () => 0.5 };
 
 // Bot 100, owner 200, a friend 201. Authority hands out what `f.offers` holds, one per poll.
 const OWNER_STREAM = 'qq:100:private:200';
@@ -27,7 +31,7 @@ async function fixture(t, { stateFile, faces } = {}) {
     return { message_id: 500 + sends.length };
   } };
   const executor = { execute: async request => { runs.push(request); if (typeof f.reply === 'function') return f.reply(request); return f.reply; } };
-  const bridge = new QQBridge({ authority, port: { observe: async value => { observations.push(value); return { observationId: 'observation-' + observations.length }; } }, onebot, executor, settingsFile: path.join(dir, 'settings.json'), stateFile: path.join(dir, 'state.json'), sleep: async () => {} , ...(faces === undefined ? {} : { faces }) });
+  const bridge = new QQBridge({ ...QUICK, authority, port: { observe: async value => { observations.push(value); return { observationId: 'observation-' + observations.length }; } }, onebot, executor, settingsFile: path.join(dir, 'settings.json'), stateFile: path.join(dir, 'state.json'), sleep: async () => {} , ...(faces === undefined ? {} : { faces }) });
   await bridge.connection(true); await bridge.configure({ expectedSelfId: '100', allowedCallerUID: '200' });
   world.paused = false; world.revision++;
   const message = (userId, id) => ({ post_type: 'message', message_type: 'private', sub_type: 'friend', self_id: 100, user_id: userId, sender: { user_id: userId }, message_id: id, time: Math.floor(Date.now() / 1000), message: [{ type: 'text', data: { text: 'Hello' } }] });

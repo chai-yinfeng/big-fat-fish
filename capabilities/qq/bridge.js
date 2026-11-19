@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { messageFromOneBot } from './source.js';
+import { messageFromOneBot, imageProbeLines } from './source.js';
 import { qqRequestId } from './worker-route.js';
 import { executeConversation, DECLINE_MARK } from '../conversation/executor.js';
-import { splitReply, SPLIT_GAP_MS } from './split.js';
+import { splitReply } from './split.js';
+import { PACING, BURST_MAX_MEDIA, BURST_MAX_CHARS, segmentGap, firstDelay } from './pacing.js';
 import { replySegments } from './faces.js';
 import { channel } from '../channels/index.js';
 import { takeStickerMarker, asksToKeep, frequencyLine, RECENT_REPLIES, KEEP_WINDOW_MS } from './stickers.js';
@@ -33,9 +34,11 @@ const DECLINED = new RegExp(`[<＜]\\s*${DECLINE_MARK.slice(1, -1)}\\s*[>＞]`, 
 export const OWNER_BUDGET_NOTICE = '提醒：今天的模型开销已经到达每日上限，大肥鱼今天先不再回复任何人，北京时间零点后自动恢复。可以在控制台查看今日开销或调整上限。';
 export class QQBridge {
   /** faces: send her `[名字]` as small faces (only where the bridge sends without the content service); by default
-   * what QQ's channel declaration says (`expression.faces`). */
-  constructor({ authority, port, onebot, executor, media, settingsFile, stateFile, clock = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), faces = channel('qq').expression.faces }) {
-    Object.assign(this, { authority, port, onebot, executor, media, settingsFile, stateFile, clock, sleep, faces });
+   * what QQ's channel declaration says (`expression.faces`). pacing: see pacing.js. random, setTimer, clearTimer: the
+   * random source and the timer of the burst wait (tests pass their own). log: one line to the service's output. */
+  constructor({ authority, port, onebot, executor, media, settingsFile, stateFile, clock = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), faces = channel('qq').expression.faces,
+    pacing = PACING, random = Math.random, setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = timer => clearTimeout(timer), log = line => process.stderr.write(line + '\n') }) {
+    Object.assign(this, { authority, port, onebot, executor, media, settingsFile, stateFile, clock, sleep, faces, pacing, random, setTimer, clearTimer, log });
     this.settings = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile, 'utf8')) : null;
     this.state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : { records: {} };
     for (const item of Object.values(this.state.records)) { if (['queued', 'processing'].includes(item.status)) item.status = 'interrupted'; else if (item.status === 'sending') item.status = 'unknown'; }
@@ -44,6 +47,8 @@ export class QQBridge {
     this.friends = null; this.friendsAt = 0; this.friendProbe = null; this.admitted = new Set();
     // One serial queue per conversation, at most CONCURRENCY conversations at once.
     this.streams = new Map(); this.active = 0; this.waiting = [];
+    // Per conversation, the burst of the person's messages not yet taken by a turn (see gather), and the arrival order.
+    this.bursts = new Map(); this.arrivals = 0;
     // Per conversation, in memory only (a restart forgets both): whether each of her latest replies carried a sticker
     // (for the frequency line), and the last picture received (what "收下这个" refers to).
     this.recentStickers = new Map(); this.lastPicture = new Map();
@@ -113,7 +118,7 @@ export class QQBridge {
   }
   loginIdentity() { return this.selfId; }
   async receive(event) {
-    const cfg = this.settings;
+    const cfg = this.settings, arrival = ++this.arrivals;
     if (event?.post_type === 'notice' && event.notice_type === 'friend_add') { this.friends = null; void this.refreshFriends(); return; }
     if (!cfg || !this.connected || this.selfId !== cfg.expectedSelfId || event?.post_type !== 'message' || event.message_type !== 'private' || event.anonymous) return;
     const uid = String(event.user_id), owner = uid === cfg.allowedCallerUID;
@@ -127,13 +132,46 @@ export class QQBridge {
     }
     const observation = message.observation, requestId = qqRequestId(observation);
     if (this.state.records[requestId]) return;
+    for (const line of imageProbeLines(event)) this.log(line);
     const item = this.state.records[requestId] = { status: 'queued' }; this.save();
     const world = (await this.authority.health()).world; item.worldRevision = world.revision;
     if (world.paused || (this.streams.get(observation.streamId)?.queued ?? 0) >= STREAM_QUEUE_LIMIT) { item.status = 'paused'; this.save(); return; }
     const scope = await this.authority.context({ streamId: observation.streamId, query: observation.text.slice(0, 512), budgetChars: 1 });
     if (!Number.isSafeInteger(scope.memoryEpoch) || scope.memoryEpoch < 0 || typeof scope.entityId !== 'string') { item.status = 'failed'; this.save(); return; }
     item.memoryEpoch = scope.memoryEpoch; item.entityId = scope.entityId;
-    return this.enqueue(observation.streamId, () => this.process({ cfg, message, requestId, item, userId: uid }));
+    return this.gather(observation.streamId, { cfg, message, requestId, item, userId: uid, arrival });
+  }
+  /** Adds a message to its conversation's burst; resolves when the turn that answers the burst has ended. The burst
+   * waits for the person to be quiet for burstQuietMs (each message restarts the wait), at most burstMaxWaitMs after its
+   * first message, then queues one turn in the conversation's queue. Until that turn starts (e.g. while an earlier turn
+   * of the conversation is still running) later messages still join it; once it has started they begin the next burst.
+   * A message that would make the burst too big (pacing.burstMaxMessages, BURST_MAX_MEDIA, BURST_MAX_CHARS) closes it
+   * and begins the next one. */
+  gather(streamId, entry) {
+    let burst = this.bursts.get(streamId);
+    const media = entry.message.media.length, chars = entry.message.authoredText.length;
+    if (burst && (burst.entries.length >= this.pacing.burstMaxMessages || burst.media + media > BURST_MAX_MEDIA || burst.chars + chars > BURST_MAX_CHARS)) { this.bursts.delete(streamId); if (!burst.queued) this.flush(streamId, burst); burst = null; }
+    if (!burst) {
+      burst = { entries: [], media: 0, chars: 0, firstAt: this.clock(), timer: null, queued: false };
+      burst.done = new Promise((resolve, reject) => { burst.resolve = resolve; burst.reject = reject; });
+      this.bursts.set(streamId, burst);
+    }
+    burst.entries.push(entry); burst.media += media; burst.chars += chars;
+    if (!burst.queued) {
+      if (burst.timer !== null) this.clearTimer(burst.timer);
+      const wait = Math.max(0, Math.min(this.pacing.burstQuietMs, burst.firstAt + this.pacing.burstMaxWaitMs - this.clock()));
+      burst.timer = this.setTimer(() => this.flush(streamId, burst), wait);
+    }
+    return burst.done;
+  }
+  flush(streamId, burst) {
+    if (burst.queued) return;
+    if (burst.timer !== null) { this.clearTimer(burst.timer); burst.timer = null; }
+    burst.queued = true;
+    this.enqueue(streamId, () => {
+      if (this.bursts.get(streamId) === burst) this.bursts.delete(streamId);
+      return this.process(burst.entries.sort((a, b) => a.arrival - b.arrival));
+    }).then(burst.resolve, burst.reject);
   }
   /** Daily cap reached: the sender gets silence; the owner gets one QQ notice per Beijing day. */
   async budgetExhausted(cfg, item) {
@@ -205,7 +243,7 @@ export class QQBridge {
       if (scope.memoryEpoch !== memoryEpoch || typeof scope.entityId !== 'string') return end('dropped:epoch');
       // The person spoke first: their message is ahead in this conversation's queue and gets an ordinary reply.
       // Checked right before queueing, so a message that arrives later waits behind this run instead.
-      if (this.streams.get(streamId)?.queued) return end('dropped:person_spoke');
+      if (this.streams.get(streamId)?.queued || this.bursts.has(streamId)) return end('dropped:person_spoke');
       Object.assign(item, { memoryEpoch, entityId: scope.entityId, worldRevision: world.revision }); this.save();
       await this.enqueue(streamId, () => this.initiated({ cfg, kind, requestId, item, streamId, userId: target[2], ...(completion ? { jobRef } : {}) }));
     } catch { if (['queued', 'processing'].includes(item.status)) end('failed'); }
@@ -227,7 +265,7 @@ export class QQBridge {
       const text = takeStickerMarker(await executeConversation(this.executor, { scope, requestId, input: { text: event, initiated: true } })).text;
       if (DECLINED.test(text)) return end('declined');
       for (const [index, piece] of splitReply(text).entries()) {
-        if (index) await this.sleep(SPLIT_GAP_MS);
+        if (index) await this.sleep(segmentGap(piece, this.pacing, this.random));
         if (!await this.current(cfg, stream, item)) return end(item.receipts?.length ? 'partial' : 'dropped:stale');
         sending = true; item.status = 'sending'; this.save();
         let receipt;
@@ -267,9 +305,9 @@ export class QQBridge {
     // Bounded: the conversations heard from longest ago are forgotten first.
     while (this.recentStickers.size > 200) this.recentStickers.delete(this.recentStickers.keys().next().value);
   }
-  /** Lines added to what the model reads this turn: how often she sent a sticker lately (not on a voice turn) and, when
-   * the owner says 收下这个 in the owner's own conversation, whether the picture went into her library. Anyone else
-   * saying it changes nothing. */
+  /** The line added after a message of the turn when the owner says 收下这个 in the owner's own conversation: whether
+   * the picture went into her library. Anyone else saying it changes nothing. (How often she sent a sticker lately is
+   * added once per turn, in process.) */
   async stickerFacts({ cfg, message, scope, userId, prepared }) {
     const streamId = message.observation.streamId, picture = prepared.mediaRefs.find(ref => ref.kind === 'image');
     let kept = '';
@@ -282,44 +320,72 @@ export class QQBridge {
       }
     }
     if (picture) { this.lastPicture.delete(streamId); this.lastPicture.set(streamId, { ref: picture.id, at: this.clock() }); while (this.lastPicture.size > 200) this.lastPicture.delete(this.lastPicture.keys().next().value); }
-    return kept + (prepared.voiceRequested ? '' : frequencyLine(this.recentStickers.get(streamId)));
+    return kept;
   }
-  async process({ cfg, message, requestId, item, userId = cfg.allowedCallerUID }) {
-    const observation = message.observation, scope = { streamId: observation.streamId, memoryEpoch: item.memoryEpoch };
+  /** One turn answering a burst of the person's messages (one or more, in the order they arrived; see gather). Each
+   * message is still observed on its own, under its own record; the turn's input carries them in order, one evidence
+   * ref each. The reply belongs to the last message (its request id and source event); its receipts are kept on that
+   * message's record, and every message of the turn ends with the same status. */
+  async process(entries) {
+    const turn = [];
+    for (const entry of entries) {
+      let current; try { current = await this.current(entry.cfg, entry.message.observation, entry.item); } catch { entry.item.status = 'failed'; this.save(); continue; }
+      if (current) turn.push(entry); else { entry.item.status = 'paused'; this.save(); }
+    }
+    if (!turn.length) return;
+    const { cfg, userId = cfg.allowedCallerUID } = turn.at(-1);
+    let { observation } = turn.at(-1).message, { item } = turn.at(-1);
+    const scope = { streamId: observation.streamId, memoryEpoch: item.memoryEpoch };
+    const end = status => { for (const entry of turn) entry.item.status = status; this.save(); };
     let sending = false, prepared, carry = null;
     try {
-      if (!await this.current(cfg, observation, item)) { item.status = 'paused'; this.save(); return; }
-      item.status = 'processing'; this.save();
-      const observed = await this.port.observe(observation);
-      if (observed?.forgotten) { item.status = 'forgotten'; this.save(); return; }
-      if (typeof observed?.observationId !== 'string' || !observed.observationId) throw new Error('QQ_OBSERVATION_UNAVAILABLE');
-      if (message.media.length && !this.media) throw new Error('QQ_MEDIA_UNAVAILABLE');
-      prepared = this.media ? await this.media.prepare(message, scope) : { executionText: observation.text, queryText: observation.text.slice(0, 512), mediaRefs: [], voiceRequested: false };
-      if (!await this.current(cfg, observation, item)) { item.status = 'paused'; this.save(); return; }
-      if (this.media) prepared = { ...prepared, executionText: prepared.executionText + await this.stickerFacts({ cfg, message, scope, userId, prepared }) };
+      end('processing');
+      // Observed one by one, in order. A forgotten one leaves the turn as a tombstone; the rest are still answered.
+      for (const entry of [...turn]) {
+        const observed = await this.port.observe(entry.message.observation);
+        if (observed?.forgotten) { entry.item.status = 'forgotten'; this.save(); turn.splice(turn.indexOf(entry), 1); continue; }
+        if (typeof observed?.observationId !== 'string' || !observed.observationId) throw new Error('QQ_OBSERVATION_UNAVAILABLE');
+        entry.observationId = observed.observationId;
+      }
+      if (!turn.length) return;
+      ({ observation } = turn.at(-1).message); ({ item } = turn.at(-1));
+      if (turn.some(entry => entry.message.media.length) && !this.media) throw new Error('QQ_MEDIA_UNAVAILABLE');
+      const each = [];
+      for (const { message } of turn) each.push(this.media ? await this.media.prepare(message, scope) : { executionText: message.observation.text, queryText: message.observation.text.slice(0, 512), mediaRefs: [], voiceRequested: false });
+      if (!await this.current(cfg, observation, item)) { end('paused'); return; }
+      // A message's channel fact (收下这个) right after it; how often she sent a sticker lately once, at the end.
+      if (this.media) for (const [index, part] of each.entries()) part.executionText += await this.stickerFacts({ cfg, message: turn[index].message, scope, userId, prepared: part });
+      const voice = each.find(part => part.voiceRequested);
+      prepared = { executionText: each.map(part => part.executionText).join('\n'), queryText: each.map(part => part.queryText).join('\n').slice(-512), mediaRefs: each.flatMap(part => part.mediaRefs), voiceRequested: Boolean(voice), voiceProfile: voice?.voiceProfile };
+      if (this.media && !prepared.voiceRequested) prepared.executionText += frequencyLine(this.recentStickers.get(observation.streamId));
+      if (prepared.executionText.length > 24000) throw Object.assign(new Error('QQ_MEDIA_CONTEXT_LIMIT'), { code: 'QQ_MEDIA_CONTEXT_LIMIT' });
       // The executor derives its session from this scope. Only the original
-      // observation is memory evidence; ASR/OCR/vision stay execution context.
+      // observations are memory evidence; ASR/OCR/vision stay execution context.
       carry = await this.carry(scope);
-      const input = { text: prepared.executionText, queryText: prepared.queryText, mediaRefs: prepared.mediaRefs, evidence: [{ ref: observed.observationId, eventId: observation.eventId, role: observation.role }], ...(carry ? { event: carry.event } : {}) };
+      const evidence = turn.map(entry => ({ ref: entry.observationId, eventId: entry.message.observation.eventId, role: entry.message.observation.role }));
+      const input = { text: prepared.executionText, queryText: prepared.queryText, mediaRefs: prepared.mediaRefs, evidence, ...(carry ? { event: carry.event } : {}) };
+      const requestId = turn.at(-1).requestId;
       // `[表情:词]` never reaches the chat: taken out here, its word picks a sticker below.
       const { text, word } = takeStickerMarker(await executeConversation(this.executor, { scope, requestId, input, timeoutMs: this.media && (prepared.mediaRefs.length || /音频|语音|转写|识别|qwen/i.test(prepared.queryText)) ? 420000 : 120000 }));
       // She has the result now, in a stored turn: it counts as told, whatever becomes of sending the reply.
       if (carry) { carry.item.status = 'carried'; this.save(); }
-      if (!await this.current(cfg, observation, item)) { item.status = 'paused'; this.save(); return; }
+      if (!await this.current(cfg, observation, item)) { end('paused'); return; }
       const planned = this.media ? await this.media.plan({ scope, requestId, sourceEventId: observation.eventId, text, voiceRequested: prepared.voiceRequested, voiceProfile: prepared.voiceProfile }) : [{ type: 'text', text }];
       // A long text reply goes out as a few short messages. Each is its own send with its own receipt, so the
       // loop below stops at the first one that fails or is unknown, and only delivered ones are observed.
-      // A voice reply (and its text fallback) is never split.
+      // A voice reply (and its text fallback) is never split and goes without the pauses.
       const parts = planned.flatMap(part => part.type === 'text' && !prepared.voiceRequested ? splitReply(part.text).map((piece, index) => ({ type: 'text', text: piece, ...(index ? { follows: true } : {}) })) : [part]).filter(part => part.type !== 'text' || part.text.trim());
       // A library sticker close to her word goes last, as a message of its own with its own receipt. Not with a voice
       // reply. Not found, or the content service failing: no sticker, the text goes as it is.
       const sticker = word && this.media && !prepared.voiceRequested ? await this.media.pickSticker(scope, word, observation.eventId).catch(() => null) : null;
       if (sticker) parts.push(sticker);
       if (this.media && !prepared.voiceRequested) this.noteSticker(observation.streamId, Boolean(sticker));
-      for (const part of parts) {
-        if (part.follows) await this.sleep(SPLIT_GAP_MS);
-        if (!await this.current(cfg, observation, item)) { item.status = item.receipts?.length ? 'partial' : 'paused'; this.save(); return; }
-        sending = true; item.status = 'sending'; this.save();
+      for (const [index, part] of parts.entries()) {
+        // A short random pause before a text reply, and one growing with its length before each following message.
+        if (part.follows) await this.sleep(segmentGap(part.text, this.pacing, this.random));
+        else if (!index && part.type === 'text' && !prepared.voiceRequested) await this.sleep(firstDelay(this.pacing, this.random));
+        if (!await this.current(cfg, observation, item)) { end(item.receipts?.length ? 'partial' : 'paused'); return; }
+        sending = true; end('sending');
         let receipt;
         if (this.media) receipt = await this.media.send({ scope, userId, part });
         else {
@@ -329,20 +395,20 @@ export class QQBridge {
         }
         await this.delivered(observation, item, receipt); sending = false;
       }
-      item.status = item.unobserved ? 'sent_unobserved' : 'sent'; this.save();
+      end(item.unobserved ? 'sent_unobserved' : 'sent');
     } catch (error) {
-      if (error?.code === 'BUDGET_EXHAUSTED' && !sending && !item.receipts?.length) { await this.budgetExhausted(cfg, item); return; }
+      if (error?.code === 'BUDGET_EXHAUSTED' && !sending && !item.receipts?.length) { await this.budgetExhausted(cfg, item); end(item.status); return; }
       // The spend tier stopped vision/web (>= restricted): silence, like the daily cap, not an apology per image.
       const restricted = error?.code === 'CONTENT_SPEND_RESTRICTED' && !sending && !item.receipts?.length;
-      item.status = restricted ? 'budget_restricted' : sending ? item.receipts?.length ? 'partial_unknown' : 'unknown' : item.receipts?.length ? 'partial' : 'failed'; this.save();
+      end(restricted ? 'budget_restricted' : sending ? item.receipts?.length ? 'partial_unknown' : 'unknown' : item.receipts?.length ? 'partial' : 'failed');
       // A failed perception must not be replaced by a hallucinated description.
-      if (!restricted && !sending && !prepared && message.media.length && await this.current(cfg, observation, item).catch(() => false)) {
+      if (!restricted && !sending && !prepared && turn.some(entry => entry.message.media.length) && await this.current(cfg, observation, item).catch(() => false)) {
         const text = '这条附件暂时没有处理完成，我没有识别其内容。可以重试或改用文字。';
         try {
           const sent = await this.onebot.call('send_private_msg', { user_id: userId, message: [{ type: 'text', data: { text } }], auto_escape: true });
           const messageId = String(sent.message_id); if (!/^-?\d{1,20}$/.test(messageId)) throw new Error();
-          await this.delivered(observation, item, { messageId, type: 'text', text }); item.status = 'failed_notified'; this.save();
-        } catch { item.status = 'unknown'; this.save(); }
+          await this.delivered(observation, item, { messageId, type: 'text', text }); end('failed_notified');
+        } catch { end('unknown'); }
       }
     } finally {
       // The turn ended before she had the carried result: reported as failed, so it rides on a later message.
