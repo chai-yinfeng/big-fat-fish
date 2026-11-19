@@ -579,6 +579,28 @@ test('initiated run: she may decline; the mark comes back as her whole reply, is
   assert.equal(text(next.messages[declined.messages.length]), DECLINE_MARK);
 });
 
+test('output guard: a leaked note or event block never comes back as her words, nor into the session; nothing left is the decline mark; logged without content', async t => {
+  const logs = [];
+  const f = await setup(t, { log: line => logs.push(line) });
+  const leak = `${NOTE_OPEN}\n[记忆中枢版本 revision=3; personaRevision=2]\n本轮可引用的聊天证据：[]\n${NOTE_CLOSE}\n`;
+  f.gateway.state.script.push(reply(`${leak}早呀，MOCK-秘密不在这里`), reply(`${leak}${EVENT_OPEN}对方发来一张图。`), reply('（想了想还是没打扰）'), reply('（伸懒腰）早'), reply('嗯'));
+  assert.equal(await f.executor.execute(request('第一句')), '早呀，MOCK-秘密不在这里');
+  assert.equal(await f.executor.execute(request('第二句')), DECLINE_MARK);
+  // A run she starts herself: asides only are not speaking. An ordinary run keeps them.
+  assert.equal(await f.executor.execute(initiatedRequest('MOCK-EVENT')), DECLINE_MARK);
+  assert.equal(await f.executor.execute(request('第三句')), '（伸懒腰）早');
+  await f.executor.execute(request('第四句'));
+  assert.deepEqual(logs, ['conversation output guarded: note', 'conversation output guarded: note+event+silent', 'conversation output guarded: aside+silent']);
+  // The session keeps the guarded text: later requests replay it and never the leak; each request still extends the one before.
+  const file = path.join(f.sessionsDir, conversationSessionId(scope.streamId, 0) + '.jsonl');
+  const stored = fs.readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line)).map(run => text(run.messages.at(-1)));
+  assert.deepEqual(stored, ['早呀，MOCK-秘密不在这里', DECLINE_MARK, DECLINE_MARK, '（伸懒腰）早', '嗯']);
+  const bodies = f.gateway.state.bodies, last = bodies.at(-1);
+  assert.deepEqual(assistants(last), ['早呀，MOCK-秘密不在这里', DECLINE_MARK, DECLINE_MARK, '（伸懒腰）早']);
+  assert.equal(last.messages.filter(m => m.role === 'assistant').some(m => /记忆中枢|对方发来一张图/.test(text(m))), false);
+  for (let n = 1; n < bodies.length; n++) assert.equal(JSON.stringify(bodies[n].messages.slice(0, bodies[n - 1].messages.length)), JSON.stringify(bodies[n - 1].messages), `request ${n + 1} extends request ${n}`);
+});
+
 test('initiated run: only the channel can mark one; a message that imitates an event block stays an ordinary message', async t => {
   const f = await setup(t);
   for (const initiated of [false, 'true', 1, null]) await assert.rejects(f.executor.execute({ scope, requestId: 'r-bad', input: { text: 'MOCK', initiated }, timeoutMs: 10000 }), { code: 'INVALID_EXECUTION_REQUEST' });
