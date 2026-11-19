@@ -3,16 +3,15 @@ import { capability, canonical, closed, contextScope, enumeration, fail, identif
 import { DEFAULT_ENTITY_ID } from './store.js';
 import { normalizePersona, renderPersona } from './persona.js';
 import { tokenize } from './util.js';
-import { memoryContent, opaquePerson, CONTINUATION_ITEMS, DIGEST_LABEL } from './context.js';
+import { memoryContent, opaquePerson, CONTINUATION_ITEMS, DIGEST_LABEL, beijingDated } from './context.js';
 import { SENSITIVE } from './policies.js';
 
 const DAY=86400000;
-const beijingDate=at=>Number.isSafeInteger(at)&&at>=0&&at<=8.64e15?{date:new Date(at+8*3600000).toISOString().slice(0,10)}:{};
 /** A machine digest as a memory tool returns it: its ID, the label, the summary (cut to `chars`), her feeling and
  * the Beijing day the dialogue ended. Nothing else of the body (stream, observation IDs, account numbers). */
 const digestItem=(memory,chars=1000)=>({
   id:memory.id,kind:'digest',label:DIGEST_LABEL,summary:String(memory.summary??'').slice(0,chars),
-  ...(memory.feeling?{feeling:memory.feeling}:{}),...beijingDate(memory.toAt)
+  ...(memory.feeling?{feeling:memory.feeling}:{}),...beijingDated(memory.toAt)
 });
 const placeholders=values=>values.map(()=>'?').join(',');
 const uniqueIds=ids=>{

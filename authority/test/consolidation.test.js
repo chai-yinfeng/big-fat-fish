@@ -100,7 +100,7 @@ test('read-back: the person\'s own private conversation gets their newest digest
   const ask = (uid, extra = {}) => a.context('qq', { streamId: stream(uid), query: 'MOCK-摘要 周末 海边', profile: true, ...extra });
   const before = ask(A), own = ask(A, { windowFromAt: clock.now });
   // Summary and feeling, labelled as machine text, dated by the end of the dialogue; outside the retrieved memory.
-  assert.equal(own.continuationText, `${CONTINUATION}\n${JSON.stringify({ summary: 'MOCK-摘要：对方说起周末去了海边。', feeling: 'MOCK-感受：听着很开心。', date: new Date(toAt).toISOString().slice(0, 10) })}`);
+  assert.equal(own.continuationText, `${CONTINUATION}\n${JSON.stringify({ summary: 'MOCK-摘要：对方说起周末去了海边。', feeling: 'MOCK-感受：听着很开心。', date: '2027-01-15' })}`);
   assert.deepEqual(own.continuationIds, [id]);
   assert.ok(!own.memoryIds.includes(id) && !own.memoryText.includes('MOCK-摘要') && !own.text.includes('MOCK-摘要'), 'what the block shows is not retrieved as well');
   // The stable parts are the same bytes with and without it: the digest is in no persona or profile text.
@@ -157,6 +157,8 @@ test('memory tools: the person\'s own private chat finds their digests by search
   assert.ok(search.text.split('\n').includes(JSON.stringify({ id, label: expected.label, text: expected.summary, feeling: expected.feeling, date: expected.date })));
   const read = a.memoryRead('qq', { ...own, id });
   assert.deepEqual(read.item, expected);
+  // The continuation block dates it the same way.
+  assert.ok(a.context('qq', { ...own, query: 'MOCK' }).continuationText.endsWith(`"date":"2027-01-16"}`));
   const recall = a.memoryRecall('qq', { ...own, fromAt: 0, toAt: 2_000_000_000_000 });
   assert.deepEqual(recall.items.filter(item => item.id === id), [expected]);
   // Nothing else of the body: no stream, observation, task or capability ID, no account number, no raw times.
@@ -190,6 +192,8 @@ test('memory tools: the person\'s own private chat finds their digests by search
 
 test('read-back bounds: the two newest digests continue, older ones are retrieved by the query as machine text (summary only) within the retrieval cap', t => {
   const f = fixture(t), { a, clock } = f;
+  // 01:00 Beijing on 2027-01-16 is still 2027-01-15 in UTC: a digest is dated by the Beijing day.
+  clock.now += 9 * HOUR;
   const first = digested(f, A, '我周末去了MOCK-海边', { summary: 'MOCK-摘要一：对方说起周末去了海边。', feeling: 'MOCK-感受一' });
   const second = digested(f, A, '我今天吃了MOCK-火锅', { summary: 'MOCK-摘要二：对方说起吃了火锅。', feeling: 'MOCK-感受二' });
   clock.now += DAY;   // two batches a conversation a day
@@ -200,7 +204,8 @@ test('read-back bounds: the two newest digests continue, older ones are retrieve
   assert.ok(context.continuationText.indexOf('MOCK-摘要二') < context.continuationText.indexOf('MOCK-摘要三') && !context.continuationText.includes('MOCK-摘要一'));
   // It is retrieved by the query instead: its own block, the summary only (no feeling), dated by the dialogue.
   assert.deepEqual(context.memoryIds, [first.id]);
-  assert.equal(context.memoryText, `${RETRIEVED}\n${JSON.stringify({ content: 'MOCK-摘要一：对方说起周末去了海边。', date: new Date(first.toAt).toISOString().slice(0, 10) })}`);
+  assert.equal(context.memoryText, `${RETRIEVED}\n${JSON.stringify({ content: 'MOCK-摘要一：对方说起周末去了海边。', date: '2027-01-16' })}`);
+  assert.ok(context.continuationText.includes(`"feeling":"MOCK-感受二","date":"2027-01-16"`) && context.continuationText.includes(`"feeling":"MOCK-感受三","date":"2027-01-17"`));
   assert.ok(!context.memoryText.includes('MOCK-感受') && context.memoryText.length <= RETRIEVED_CHARS);
   assert.deepEqual(a.contextTrace().traces[0].sections.map(section => [section.kind, section.ids]), [['digest', [first.id]]]);
   // Retrieval obeys the window as well: with the window starting before the oldest digest's dialogue ended, none comes back.
