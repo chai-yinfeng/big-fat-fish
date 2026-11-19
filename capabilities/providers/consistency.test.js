@@ -1,6 +1,7 @@
 // Consistency: every hand-written list of capabilities, actions, fields, purposes and spend categories in the
 // product, held against the capability declarations and the tables derived from them (./index.js). The executor
-// (tools.js) and the model gateway read their tables already; each other test here names one list that a later step replaces with its table.
+// (tools.js), the model gateway and the content service read their tables already; each other test here names one
+// list that a later step replaces with its table.
 //
 // Where a list and the declarations disagree today, the difference is written down in KNOWN_DRIFT and asserted
 // exactly: fixing one (or adding a new one) fails the test until this table is updated on purpose.
@@ -12,16 +13,13 @@ import { DECLARATIONS, CAPABILITIES, ACTIVITIES, ACTIVITY_TOOL, CONTENT_TOOL, MO
 import { TOOL_RULES } from '../conversation/tool-rules.js';
 import { ACTIVITY_TOOL_SCHEMA, CONTENT_TOOL_SCHEMA, SCOPE_TOOL_SCHEMA, createCompanionTools } from '../conversation/tools.js';
 import { CATEGORIES, STOP, RESERVED_STOP } from '../../model-gateway/spend.mjs';
+import { CONTENT_SERVICE_ACTIONS, checkContentActions } from '../media/service.js';
 
 const KNOWN_DRIFT = {
   // authority/src/server.js accepts a /v1/content field no action takes and nothing sends.
   authorityFieldsNobodyUses: ['quality'],
   // The content service refuses stickerPick without a source message; Authority only insists on one for ingest and synthesize.
   sourceRequiredButNotByAuthority: ['stickerPick'],
-  // Implemented by the content service, deliberately not an action of /v1/content: only Authority's operator route sends it.
-  contentServiceOnly: ['jobStart'],
-  // A job kind of the content service that is not a declared capability (the stills job of `video`; its ledger row is `video-frame`).
-  jobRunnersNotDeclared: ['video-frames'],
   // The console's spend card lists four categories by hand; these have money and no line.
   spendCategoriesNotOnConsole: ['proactive', 'activity'],
   // Stopped by the offline purge script, but no declaration names it as the owner of anything to forget (a channel, not a capability).
@@ -176,18 +174,26 @@ test('PROTOCOL.md: the list of /v1/content actions is the derived one', () => {
 });
 
 test('content service (media/service.js, main.mjs, video/provider.js): what is dispatched is what is declared', () => {
-  const service = source('capabilities/media/service.js');
-  const call = service.slice(service.indexOf('async call(scope, input)'), service.indexOf('async stickersCall('));
-  const dispatched = [...new Set([...call.matchAll(/action === '(\w+)'/g)].map(match => match[1]))];
-  assert.deepEqual(sorted(dispatched), sorted([...CONTENT_ACTIONS.map(row => row.action), ...KNOWN_DRIFT.contentServiceOnly]));
+  // The registry is what main.mjs checks before it starts: each declared action implemented, nothing else but the
+  // operator-only `jobStart` (only Authority's operator route sends it).
+  checkContentActions(CONTENT_ACTIONS);
+  const operatorOnly = Object.keys(CONTENT_SERVICE_ACTIONS).filter(name => CONTENT_SERVICE_ACTIONS[name].operatorOnly);
+  assert.deepEqual(operatorOnly, ['jobStart']);
+  assert.deepEqual(sorted(Object.keys(CONTENT_SERVICE_ACTIONS).filter(name => !operatorOnly.includes(name))), sorted(CONTENT_ACTIONS.map(row => row.action)));
+  assert.match(source('capabilities/media/main.mjs'), /checkContentActions\(CONTENT_ACTIONS\)/);
+  // Either side out of step refuses, naming the action.
+  assert.throws(() => checkContentActions([...CONTENT_ACTIONS, { action: 'paint' }]), /declared but not implemented: paint\./);
+  assert.throws(() => checkContentActions(CONTENT_ACTIONS.filter(row => row.action !== 'fetch')), /implemented but not declared: fetch\./);
+  assert.throws(() => checkContentActions([...CONTENT_ACTIONS, { action: 'jobStart' }]), /declared but operator only: jobStart\./);
   // The providers behind the `activity` action, and the activities each one answers.
   const main = source('capabilities/media/main.mjs');
   assert.deepEqual(keysOf(found(main, /activities: \{ ([^}]*) \}/, 'main.mjs activities')), ACTIVITIES.map(item => item.capability));
   const provider = source('capabilities/providers/video/provider.js');
   assert.deepEqual(sorted(new Set([...provider.matchAll(/activity [!=]== '(\w+)'/g)].map(match => match[1]))), sorted(ACTIVITIES.find(item => item.capability === 'video').actions));
-  // Job kinds: a declared capability each, but for the one written down above.
+  // Job kinds: a declared capability each, or the `job` an action of one names (the stills job of `video`).
   const runners = keysOf(found(main, /runners: \{ ([^}]*) \}/, 'main.mjs runners'));
-  assert.deepEqual(runners.filter(kind => !DECLARATIONS.some(item => item.id === kind)), KNOWN_DRIFT.jobRunnersNotDeclared);
+  const named = DECLARATIONS.flatMap(item => item.actions.filter(action => action.job).map(action => action.job));
+  assert.deepEqual(runners.filter(kind => !DECLARATIONS.some(item => item.id === kind)), named);
 });
 
 test('model gateway (server.mjs): purposes and default daily limits are read from the derived tables', () => {

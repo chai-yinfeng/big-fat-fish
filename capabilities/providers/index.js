@@ -17,10 +17,11 @@
 // it, the console's quota page, and by the executor (capabilities/conversation/tools.js): the whole definition of the
 // model tool `companion_activity` (ACTIVITY_TOOL_DEFINITION) and, for every model action of that tool and of
 // `companion_content`, its fields, the content action behind it and its named rules (MODEL_ACTIONS). The model gateway
-// reads GATEWAY_PURPOSES, SPEND_CATEGORIES, SPEND_STOP and GATEWAY_DEFAULT_LIMITS (server.mjs, spend.mjs). The texts of
-// the two older model tools, Authority's /v1/content allowlist, the content service and the console's spend card still
-// carry their own lists; the tables derived below say what those lists should be, and consistency.test.js holds the
-// two against each other.
+// reads GATEWAY_PURPOSES, SPEND_CATEGORIES, SPEND_STOP and GATEWAY_DEFAULT_LIMITS (server.mjs, spend.mjs), and the
+// content service refuses to start unless its registry of actions is CONTENT_ACTIONS (capabilities/media/service.js
+// checkContentActions). The texts of the two older model tools, Authority's /v1/content allowlist and the console's
+// spend card still carry their own lists; the tables derived below say what those lists should be, and
+// consistency.test.js holds the two against each other.
 //
 // The three model tools. A new action goes where its meaning puts it (按语义选工具：同步只读查阅→companion_content；
 // 她的记忆→companion_scope；要花时间或有副作用→companion_activity):

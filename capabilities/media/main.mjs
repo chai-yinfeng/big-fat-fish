@@ -4,7 +4,8 @@ import path from 'node:path';
 import { AuthorityClient } from '../../authority/src/client.js';
 import { createLocalSpeechRunner } from '../speech/runner.js';
 import { ArtifactStore } from './artifacts.js';
-import { MediaService } from './service.js';
+import { MediaService, checkContentActions } from './service.js';
+import { CONTENT_ACTIONS } from '../providers/index.js';
 import { createContentServer } from './server.mjs';
 import { capabilityGateway, meteredSpeech } from './client.js';
 import { createContentOperator } from './operator.js';
@@ -16,6 +17,8 @@ import { createVideoProvider } from '../providers/video/provider.js';
 process.umask(0o077);
 let server, timer, jobs;
 try {
+  // What this service implements must be what the capabilities declare (an operator-only action aside), or it does not start.
+  checkContentActions(CONTENT_ACTIONS);
   if (process.argv.length !== 4 || process.argv[2] !== '--config' || !path.isAbsolute(process.argv[3])) throw Error('CONFIG');
   const file = process.argv[3], stat = fs.lstatSync(file);
   if (!stat.isFile() || stat.size > 16384 || (stat.mode & 0o077) !== 0) throw Error('CONFIG');
@@ -49,8 +52,8 @@ try {
   const stop = async () => { if (stopping) return; stopping = true; clearInterval(timer); await jobs.close(); await server.close(); };
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { void stop(); });
   process.stdout.write('Companion content service ready; file speech has no audio-device dependency.\n');
-} catch {
+} catch (error) {
   clearInterval(timer); await jobs?.close().catch(() => {}); if (server) await server.close().catch(() => {});
-  process.stderr.write('Companion content service could not start; inspect private configuration and runtime components.\n');
+  process.stderr.write(error?.code === 'MEDIA_ACTIONS_UNDECLARED' ? `Companion content service could not start. ${error.message}\n` : 'Companion content service could not start; inspect private configuration and runtime components.\n');
   process.exitCode = 1;
 }
