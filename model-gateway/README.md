@@ -89,6 +89,10 @@ Successful upstream body bytes pass through unchanged (including SSE), without
 forwarding upstream headers. Client disconnection aborts upstream. Requests use
 redirect rejection and bounded deadlines. Failures expose only fixed safe
 codes/messages, never upstream error text or headers. No prompt/response/key logs.
+A failed vision/web/maintenance/activity call writes one stderr line, `gateway capability failed: <row>
+[<op>] status=<upstream HTTP status or -> code=<code> ms=<ms>`, plus at most a short upstream
+`error.code`/`error.type` (`upstream=`) or network cause (`cause=`), each ≤64 of `[A-Za-z0-9_.-]`;
+never a URL, query, content, key or request body.
 
 For model changes, pause the world, drain/stop the worker tool loop, call `/cancel`,
 then update settings and start a new conversation as appropriate before resuming.
