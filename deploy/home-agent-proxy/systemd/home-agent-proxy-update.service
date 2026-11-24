@@ -1,0 +1,20 @@
+[Unit]
+Description=Validate and atomically update Home Agent proxy subscription
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/lib/home-agent-proxy/releases/v1.19.33-2/helper.py update
+TimeoutStartSec=4min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/home-agent-proxy %h/.local/state/home-agent-proxy
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+LimitCORE=0
+StandardOutput=journal
+StandardError=null

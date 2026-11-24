@@ -1,0 +1,29 @@
+[Unit]
+Description=Home Agent private loopback Mihomo proxy
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=%h/.config/home-agent-proxy/config.json
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/state/home-agent-proxy/core
+ExecStart=%h/.local/lib/home-agent-proxy/releases/v1.19.33-2/mihomo -d %h/.local/state/home-agent-proxy/core -f %h/.config/home-agent-proxy/config.json
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/home-agent-proxy/core
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+LimitCORE=0
+MemoryMax=384M
+TasksMax=128
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=default.target

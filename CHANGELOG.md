@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- home-agent 下载代理迁入 `deploy/home-agent-proxy/`（主人 11-24；从归档 home-agent-ops `proxy/` 复制，归档不动；**用户 blackmagic 的用户级服务，不涉及 companion 与生产服务**）：订阅 `dns.nameserver-policy` 里覆盖节点域名的规则只取 `tls://`/`https://`，经 `proxy-server-nameserver-policy` 只用于解析节点域名，其余解析仍是系统 DNS、不开 DNS 监听，无 policy 时配置与以前相同（新错误码 `dns_policy_invalid`/`dns_policy_unsupported`）；恢复成功但上游仍不通报 `upstream_verification_failed`；新投影与现配置字节相同不提交不重启；失败时 journal 打印含 checks 与节点数的报告；新增只输出计数的 `diagnose`；安装脚本装新 release（`v1.19.33-2`，旧 release 保留）并在失败时切回。测试并入 `test:deploy`（无 PyYAML 时 skip）。
 - 记忆页按类型显示（主人 11-23；**纯前端，不改 /memory 返回，不迁移数据**）：条目上方一组按钮“全部 / 事实 / 经历 / 经历摘要 / 笔记”，列表里另有的类型（如关系评价）照实追加，只过滤已加载的条目，日记照常显示；所选类型记在 sessionStorage（`companion-world:memory-kind:v1`，读写失败退回“全部”）。默认人格 `identity` 末尾加自称一句（“小鱼”/“本鱼”；只影响新世界与新建空白卡）。“待审”没做：/memory 只列 active 条目，没有待审状态。验证：test:console/authority/conversation、本机临时世界浏览器点过过滤与刷新后保留。
 - 控制台“房间”入口（主人 11-23；**不改服务端、沙箱、部署单元，不新增凭据**）：`open-world.mjs` 的 SSH 隧道顺带把主机 4173 转到本机第一个空闲端口（4173–4182，都占用就跳过），端口随访问片段 `&room=` 交给控制台，总览出现“房间”按钮在新标签打开；没有端口不显示。家人仍走 tailnet 8443。已验证：test:console/room/deploy、本机浏览器点击；未验证：对生产主机的真实隧道。
 - 默认人格换成模板式陪伴卡（主人 11-23 决定；**只影响全新世界和卡库“新建空白卡”，已有世界库里的人格不变**，不迁移数据，`personaRevision` 语义与存储不变）：`DEFAULT_PERSONA` 改写，traits 为空。控制台人格页去掉“人格版本”标题与两个不进上下文的字段（用户称呼、关系阶段；schema/API 仍接受旧值，保存时原样带回），改显示卡的最后修改时间；世界概览去掉人格版本；导出 JSON 文件名改用日期。test:authority/console/conversation 通过，本机临时世界浏览器看过人格页与新建空白卡。
