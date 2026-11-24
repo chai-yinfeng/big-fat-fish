@@ -133,7 +133,8 @@ test('persona panel edits examples, previews the unsaved draft and warns when tr
   const render = () => { cursor = 0; refCursor = 0; return component({ t: key => key }); };
   const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...tree.children.flatMap(nodes)];
   const buttons = key => nodes(render()).filter(n => n.type === 'button' && n.children.includes(key));
-  assert.ok(nodes(render()).some(n => n.props.name === 'userCallName') && nodes(render()).some(n => n.props.name === 'relationshipStage'));
+  assert.ok(!nodes(render()).some(n => ['userCallName', 'relationshipStage'].includes(n.props.name)), 'the two legacy fields are not shown');
+  assert.doesNotMatch(JSON.stringify(render()), /personaRevision/, 'the persona page shows no revision number');
   assert.equal(buttons('personaPanel.moveUp')[0].props.disabled, true);
   buttons('personaPanel.moveDown')[0].props.onClick();
   assert.equal(states[3].examples.map(e => e.user).join(), 'b,a');
