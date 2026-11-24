@@ -56,3 +56,6 @@ __pycache__/
 # Rebuild console output from the checked-in source and lockfile.
 /console/client.js
 /capabilities/conversation/dist/
+
+# 主人的生图工作目录；定稿后整理进房间图片目录时删掉这一条
+room-art-draft/
