@@ -232,7 +232,7 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
   `expectDigest`、`expectNoDigest`、`expectExtracted`、`expectProvenance`、`expectConsolidationInput`、`expectNoChatContains`、
   `expectConsolidation`、`noteExtracted`、`expectRejected`、`forget`（带 `diaries` 时预览必须正好列出这么多篇将删的日记；清理由各服务自己确认，步骤只等确认表清空再恢复）、`resume`、
   `forgetMessage`（由某人的一条记忆找到它出自的那条消息，预览、暂停、忘记，停在清理任务待确认）、`expectCleanup`（`waiting`: 正好还差这几方且世界拒绝恢复；`complete`: 全部确认；`reports`: 各方报告的最少数量；`restarted`: 哪几方是忘记之后才启动的进程，其余必须是之前就在运行的）、`mockExecutor`（停/启第二渠道的执行器）、
-  `triggerDiary`、`expectDiary`、`expectNoDiary`、`expectDiaryInput`、
+  `triggerDiary`、`expectDiaryTriggerUsed`（等之前的触发用完：写了日记或遇到世界暂停的那一拍不算用完，这时把人加进明面名单会立刻用他当天已有的摘要写掉当天的明面日记）、`expectDiary`、`expectNoDiary`、`expectDiaryInput`、
   `openDiaryList`（主人把某人加进/移出明面日记名单）、`expectOpenDiary`、`expectOpenDiaryInput`（明面日记的请求里只有这个人自己的摘要）、
   `askDiaryCode`（这个人在私聊里发“日记口令”：桥直接回，不产生聊天请求、Authority 不多一行记录）、`renewDiaryCode`、
   `readDiary`（用拿到的口令经房间服务的 `POST /diary` 读笔记本；不带 `contains` 时要求和乱编的口令得到同一个 404）、`expectRoomState`

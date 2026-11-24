@@ -283,8 +283,9 @@ export class ConsolidationDomain extends MemoryDomain {
       // (`deferredAt`), or today's batches are used up.
       paused: deferredAt !== null && beijingDay(deferredAt) === day ? 'spend' : calls >= CONSOLIDATION.perDay ? 'daily' : null,
       streams,
-      // Her diary (diary.js): the last Beijing day that is done, when, and how many days were given up.
-      diary: { lastDay: own?.diary?.lastDay ?? null, lastAt: own?.diary?.lastAt ?? null, skipped: own?.diary?.skipped ?? 0 },
+      // Her diary (diary.js): the last Beijing day that is done, when, and how many days were given up. `liveDay`
+      // (staging and tests only): today while a `diaryTrigger` of the running day is not used up yet.
+      diary: { lastDay: own?.diary?.lastDay ?? null, lastAt: own?.diary?.lastAt ?? null, skipped: own?.diary?.skipped ?? 0, liveDay: own?.diary?.liveDay === day ? day : null },
       // What review() made of the facts consolidation extracted, by its own reason codes.
       extracted: this.store.db.prepare("SELECT status,json_extract(receipt,'$.reason') AS reason,COUNT(*) AS n FROM inbox WHERE entity_id=? AND proposal_id LIKE 'cons:%' GROUP BY status,reason").all(e.id)
         .reduce((counts, row) => { if (row.status === 'rejected') counts.rejected[row.reason ?? 'unknown'] = row.n; else counts[row.status] = row.n; return counts; }, { accepted: 0, pending: 0, rejected: {} }),
