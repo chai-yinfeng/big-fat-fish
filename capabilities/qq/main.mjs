@@ -61,7 +61,9 @@ async function main() {
   const friendTimer = setInterval(() => { void bridge.refreshFriends(); }, FRIEND_REFRESH_MS);
   friendTimer.unref();
   // A run she starts herself is fetched from Authority, never pushed here; the bridge skips the round while QQ is down.
-  const initiationTimer = setInterval(() => { void bridge.pollInitiations(); }, initiationPollMs);
+  // The same round asks for cleanup jobs (forgetting while the bridge stays up), connected or not.
+  void bridge.pollForget();
+  const initiationTimer = setInterval(() => { void bridge.pollForget(); void bridge.pollInitiations(); }, initiationPollMs);
   initiationTimer.unref();
   let stopping = false;
   const stop = () => { if (stopping) return; stopping = true; clearInterval(identityTimer); clearInterval(friendTimer); clearInterval(initiationTimer); onebot.stop(); server.closeIdleConnections(); server.close(); };

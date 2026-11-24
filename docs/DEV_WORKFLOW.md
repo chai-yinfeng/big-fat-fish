@@ -209,6 +209,7 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
 | B | B1 | 连发两条只回一次：两条都记下，模型一个回合按顺序读到两句（回放与 staging 把 `qq-bridge.json` 的 `pacing` 调短：等 0.5 秒、拆条不停） |
 | QT、PK | QT1、PK1 | 引用：被引用的话以“[引用 …]”一行放在对方这句前面（对方自己的话经 `get_msg` 取回，里面伪造的附注定界符被中和；她自己的话取自桥已送达的记录）；戳一戳：单独一下是一个她可以 `<不说>` 的回合，戳完紧接着说话合成一个回合（戳一戳是一行渠道事实）。QT1 另有两回合检查输出防护：模型回复里夹带的附注块、编造的后台事件段落不会发到对方，只有这些的回复什么都不发。本机回放栈把 `pacing.pokeCooldownMs` 设为 0，因为第二遍回放在同一个桥进程里；staging 每次回放前都重启桥，不需要 |
 | MOCK | MOCK-1–MOCK-4 | 第二个渠道：准入与对话、同一个人两个渠道共用记忆而窗口分开、“对我试一次”发到主人最近说话的渠道、回执不可靠时不重发 |
+| F | F1、F2 | 忘记之后服务在线清理：F1 忘记一条带图和视频笔记的消息，内容服务（图、笔记、任务记录）、QQ 桥（收发记录）、执行器（旧代次会话）各自确认，确认都来自忘记之前就在运行的进程（没有重启），全部确认后才能恢复世界；F2 第二渠道的执行器不在线时任务保持待清理、控制台看得到差谁、世界拒绝恢复，执行器回来后自己补做并确认 |
 
 回放装置要点：
 
@@ -229,7 +230,8 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
   `expectMemoryPages`、`expectPrompt`、`expectTrace`、`expectStablePrefix`、`expectBatchTrim`、`expectHistory`、
   `expectInjectedOnce`、`pinMemory`、`setPersona`、`restorePersona`、`expectNoModelCall`、`expectAdmitted`、`spendSettings`、`expectSpend`、
   `expectDigest`、`expectNoDigest`、`expectExtracted`、`expectProvenance`、`expectConsolidationInput`、`expectNoChatContains`、
-  `expectConsolidation`、`noteExtracted`、`expectRejected`、`forget`（带 `diaries` 时预览必须正好列出这么多篇将删的日记）、`resume`、
+  `expectConsolidation`、`noteExtracted`、`expectRejected`、`forget`（带 `diaries` 时预览必须正好列出这么多篇将删的日记；清理由各服务自己确认，步骤只等确认表清空再恢复）、`resume`、
+  `forgetMessage`（由某人的一条记忆找到它出自的那条消息，预览、暂停、忘记，停在清理任务待确认）、`expectCleanup`（`waiting`: 正好还差这几方且世界拒绝恢复；`complete`: 全部确认；`reports`: 各方报告的最少数量；`restarted`: 哪几方是忘记之后才启动的进程，其余必须是之前就在运行的）、`mockExecutor`（停/启第二渠道的执行器）、
   `triggerDiary`、`expectDiary`、`expectNoDiary`、`expectDiaryInput`、
   `openDiaryList`（主人把某人加进/移出明面日记名单）、`expectOpenDiary`、`expectOpenDiaryInput`（明面日记的请求里只有这个人自己的摘要）、
   `askDiaryCode`（这个人在私聊里发“日记口令”：桥直接回，不产生聊天请求、Authority 不多一行记录）、`renewDiaryCode`、
@@ -261,7 +263,7 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
 `ops/preflight.mjs`，用新包自己的校验逻辑检查现有数据根中的全部配置（speech 用
 loadSpeechConfig，对话用 loadConfig，其余与各服务启动检查一致），并拒绝指向某个具体
 release 目录的路径（`current/` 下的路径须在新包中存在）。失败时只输出稳定错误码、文件名和
-字段名，删除刚安装的包，生产不变。旧配置里已被忽略的 `purgeModule` 只给警告。
+字段名，删除刚安装的包，生产不变。旧配置里已被忽略的 `purgeModule` 只给警告（`base`、`operatorTokenFile`、`operatorPort` 从第 7c 步起也不读，但不警告，见“忘记之后的清理”）。
 
 ## 发布与回退
 
@@ -396,6 +398,58 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
 但它不认识摘要：①摘要会被当成普通“会话经验”检索进**本人**的对话（仍然只有本人，没有“机器整理”的提示）；②忘记一句
 原话时不会连带删除覆盖它的摘要；③控制台允许对摘要点“授权公开”。所以回退期间不要执行忘记，不要对摘要授权公开。重新
 升级后，记忆页“后台整合”卡片会列出仍覆盖已忘记原话的摘要，用正常的忘记流程清掉。
+
+### 忘记之后的清理（能力驱动层第 7b 步起）
+
+以前：记忆 worker 用 operator 令牌取清理任务，`systemctl` 停掉 QQ 桥、执行器、内容服务，跑 `ops/purge-execution.mjs`
+直接改它们的文件，再把服务启动。现在：三个服务都不停，各自在自己进程里清自己的文件，Authority 在清理任务上记
+“各方确认表”（协议见 `authority/PROTOCOL.md`“Operator API and forgetting”）。主人在控制台的操作不变：暂停 → 预览 →
+忘记 → 等清理完成 → 恢复。记忆页“刷新受控清理状态”现在会写出还没有确认的是谁（内容服务 / 渠道桥 qq / 会话执行器 qq）。
+正常情况下内容服务立刻确认，执行器 15 秒内、QQ 桥在下一次轮询（生产 60 秒）内确认；全部确认前“恢复世界”会被拒绝。
+某个服务没在运行时任务一直待清理，它起来后会自己补做，不需要别的操作。也可以直接看：
+
+```sh
+curl -sS -H "authorization: Bearer $TOKEN" http://127.0.0.1:3082/memory/cleanup/status   # 经控制台隧道，TOKEN 同控制台
+```
+
+回退兼容：
+- 第 7c 步起记忆 worker 不再读 `memory-worker.json` 的 `base`、`operatorTokenFile`、`operatorPort`（不持有 operator 令牌、
+  不调 `systemctl`、不连 TCP），这三个键和 `entityId` 等一样归入“本版本不读、但留在文件里”（`capabilities/memory/config.js`
+  的 ROLLBACK）：`prepare-memory` 照旧写 `base` 和 `operatorTokenFile`，生成的文件逐字节不变；运行时静默忽略，预检不警告。
+  选 ROLLBACK 而不是 LEGACY 的理由：7b 之前的 worker 缺 `base`/`operatorTokenFile` 就拒绝启动，回退的健康检查会失败；
+  staging 写的 `operatorPort` 让旧 worker 连不到生产端口。所以这三个键**不要删**。
+- 第 7c 步改了 unit：`companion-memory.service` 多了 `RestrictAddressFamilies=AF_UNIX`、`SystemCallArchitectures=native`、
+  `LockPersonality=true`、`RestrictRealtime=true`、`RestrictSUIDSGID=true` 五行和一段注释，其余不变。unit 随 release 安装、
+  回退时随旧 release 的快照装回，所以旧 worker 回退后仍能连 operator 端口、调 `systemctl`。部署时主人核对：
+  `sudo -u companion cat ~companion/.config/systemd/user/companion-memory.service` 与
+  `git show <sha>:deploy/authority/isolation/units/companion-memory.service` 一致；`journalctl _UID=$(id -u companion)` 里记忆
+  worker 启动行是 `Incremental memory maintenance ready`，没有 `Memory maintenance failed`。
+- 回退到 7b **之前**的版本：库里还待清理的任务旧版本照样看得到（`cleanup_jobs` 表没变；确认表在 metadata 键
+  `cleanupAcks` 里，旧 Authority 不读它），旧记忆 worker 走旧路径——停三个服务、离线清理、向 operator API 确认——把它
+  清完，已经确认过的一方被再清一遍也无害（每一步幂等）。所以 `memory-worker.json` 里的 `base`、`operatorTokenFile`
+  （以及 staging 写的 `operatorPort`）不要删，旧 worker 要读；回退时 companion-deploy 会连旧版本的 unit 一起装回去。
+- 回退后再升级：旧版本期间由旧 worker 确认完的任务已是 `complete`，新版本不再处理；仍待清理的任务由新版本的三个
+  服务按上面的流程接着做（参与方每次从任务本身算出，旧版本创建的任务也一样）。
+- staging 的升级 → 回退 → 再升级覆盖这两个方向：升级后和再升级后各重放一遍 F1、F2（见上表）；另有三步把一个待清理任务
+  带过回退再前滚——`forget-pending-before-rollback`（新版本下停掉 QQ 桥后忘记一条只涉及 QQ 的记忆，内容服务和执行器确认，
+  任务只差 `bridge:qq`，世界保持暂停）、`forget-pending-under-from`（回退后旧 Authority 仍把它列为待清理，恢复世界被 409 拒绝）、
+  `forget-closes-after-roll-forward`（再升级后新版本的服务自己确认，任务由各方关闭，世界恢复）。staging 里旧 worker 的真实清理
+  路径跑不了（记忆单元被限制为只能用 Unix socket，够不到 operator 端口，且它停的是生产单元名），这一点没有被 staging 验证。
+
+离线兜底（某个服务起不来、任务一直待清理时，主人手动；**未在生产主机上演练过**）：世界保持暂停，停掉三个服务，
+以 companion 身份对每个待清理任务跑一次 `ops/purge-execution.mjs`，再向 operator API 确认，最后启动服务：
+
+```sh
+sudo systemctl --user -M companion@ stop companion-qq.service companion-conversation.service companion-content.service
+sudo -u companion -H bash -c 'export XDG_RUNTIME_DIR=/run/user/$(id -u); cd ~ && B=~/.local/share/companion-world-v1 && N=~/.local/opt/companion/bin/node && T=$(cat $B/operator/console.token) && A="authorization: Bearer $T" && U=http://127.0.0.1:3082 \
+  && curl -sS -H "$A" $U/memory/cleanup/pending | $N -e "const jobs=JSON.parse(require(\"fs\").readFileSync(0)).value; jobs.forEach((job,i)=>require(\"fs\").writeFileSync(process.env.HOME+\"/cleanup-plan-\"+i+\".json\",JSON.stringify(job),{mode:0o600})); console.log(jobs.length+\" job(s)\")" \
+  && for P in ~/cleanup-plan-*.json; do $N ~/src/companion/current/ops/purge-execution.mjs --base $B --plan $P \
+     && curl -sS -H "$A" -H "content-type: application/json" -d "$($N -e "const j=JSON.parse(require(\"fs\").readFileSync(process.argv[1]));console.log(JSON.stringify({id:j.id,memoryEpoch:j.memoryEpoch,report:{sdkPurged:true,localSourcesPurged:true,platform:\"outside-control\"}}))" $P)" $U/memory/cleanup/complete && rm $P; done'
+sudo systemctl --user -M companion@ start companion-content.service companion-conversation.service companion-qq.service
+```
+
+每个任务 purge 打印一行报告（各类删除数量），确认返回 `"status":"complete"`；`/memory/cleanup/status` 里该任务
+`completedBy` 为 `operator`。之后再在控制台恢复世界。
 
 ## 数据库迁移
 

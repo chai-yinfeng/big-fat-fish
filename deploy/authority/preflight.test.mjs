@@ -86,7 +86,7 @@ test('bug (b): a config path pinned into a versioned release is refused; current
 test('runtime shape, permissions, token files and staging ports are checked like the services do', async t => {
   const w = world(t);
   w.edit('model-gateway.json', c => { c.upstream = 'https://example.invalid'; });
-  w.edit('memory-worker.json', c => { c.operatorPort = 0; });
+  w.edit('memory-worker.json', c => { c.tickMs = 0; });
   w.edit('qq-bridge.json', c => { c.onebotPort = 13001; });
   fs.chmodSync(path.join(w.base, 'operator/content.json'), 0o644);
   fs.rmSync(path.join(w.base, 'qq-runtime/private/onebot.token'));
@@ -383,10 +383,12 @@ test('memory-worker.json: an unknown key, a value out of range or a missing requ
   assert.deepEqual(codes((await run()).failures), ['memory-worker.json CONFIG_UNKNOWN_KEY future']);
   w.edit('memory-worker.json', c => { delete c.future; c.consolidationDeferMs = 86400001; });
   assert.deepEqual(codes((await run()).failures), ['memory-worker.json CONFIG_INVALID']);
-  w.edit('memory-worker.json', c => { delete c.consolidationDeferMs; delete c.operatorTokenFile; });
+  const gateway = JSON.parse(fs.readFileSync(path.join(w.base, 'operator/memory-worker.json'), 'utf8')).gateway;
+  w.edit('memory-worker.json', c => { delete c.consolidationDeferMs; delete c.gateway; });
   assert.deepEqual(codes((await run()).failures), ['memory-worker.json CONFIG_INVALID']);
-  // prepare-memory's entityId, stateFile and maxCallsPerDay are in every world: no warning for them.
-  w.edit('memory-worker.json', c => { c.operatorTokenFile = path.join(w.base, 'operator/console.token'); c.purgeModule = path.join(w.base, 'purge.mjs'); });
+  // prepare-memory's entityId, stateFile, maxCallsPerDay, base and operatorTokenFile are in every world, and staging
+  // writes operatorPort: the worker reads none of them, and there is no warning for them.
+  w.edit('memory-worker.json', c => { c.gateway = gateway; c.operatorPort = 13082; c.purgeModule = path.join(w.base, 'purge.mjs'); });
   const result = await run();
   assert.deepEqual([codes(result.failures), codes(result.warnings)], [[], ['memory-worker.json IGNORED_LEGACY_FIELD purgeModule']]);
 });
@@ -411,6 +413,6 @@ test('ops/config-keys.mjs prints only key names and the version, including every
   assert.deepEqual(Object.keys(printed.files), ['authority.json', 'content.json', 'memory-worker.json', 'model-gateway.json', 'providers/video.json', 'qq-bridge.json']);
   assert.ok(Object.values(printed.files).every(keys => keys.length && keys.every(key => /^[A-Za-z0-9.]+$/.test(key))));
   // deploy/staging/staging-agent.py writes these (or asks first).
-  for (const [label, key] of [['memory-worker.json', 'operatorPort'], ['memory-worker.json', 'tickMs'], ['memory-worker.json', 'consolidationDeferMs'], ['qq-bridge.json', 'onebotPort'], ['qq-bridge.json', 'initiationPollMs'], ['qq-bridge.json', 'pacing'], ['content.json', 'allowRawSmallPng'], ['authority.json', 'operator']]) assert.ok(printed.files[label].includes(key), `${label} ${key}`);
+  for (const [label, key] of [['memory-worker.json', 'tickMs'], ['memory-worker.json', 'consolidationDeferMs'], ['qq-bridge.json', 'onebotPort'], ['qq-bridge.json', 'initiationPollMs'], ['qq-bridge.json', 'pacing'], ['content.json', 'allowRawSmallPng'], ['authority.json', 'operator']]) assert.ok(printed.files[label].includes(key), `${label} ${key}`);
   assert.ok(printed.files['model-gateway.json'].includes('budgets.web'));
 });

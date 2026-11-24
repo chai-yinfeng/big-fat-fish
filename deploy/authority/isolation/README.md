@@ -66,6 +66,13 @@ sockets), `SystemCallArchitectures=native`, `LockPersonality`, `RestrictRealtime
 3082 (`companion-world-public.socket`) and 4173 (`companion-room.service`) are the companion-owned TCP listeners, both
 on loopback.
 
+The memory worker (`companion-memory.service`) carries the same seccomp/prctl options as the conversation executor,
+`RestrictAddressFamilies=AF_UNIX` included: it holds Authority's maintenance credential and the gateway's inference
+token, reaches both over Unix sockets, and no longer reads the operator token, dials the operator port or calls
+`systemctl` (the cleanup after a forget is each service's own). It has no filesystem isolation either: the operator
+token file and the operator Unix socket are still reachable by any process of the companion user, so this is the
+worker no longer using them, plus no TCP, not an enforced boundary against a compromised worker.
+
 The room page (`companion-room.service`) runs `room/serve.mjs` as the companion user, after the Authority, with the
 same seccomp/prctl options and `RestrictAddressFamilies=AF_UNIX AF_INET`. It is given two paths only: the Authority
 socket and `room-config/room.token`, a credential that may `GET /v1/room` and nothing else. Its hash is kept in

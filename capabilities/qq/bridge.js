@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { messageFromOneBot, imageProbeLines, replyProbeLines, quotedText, quoteLine, pokeFromOneBot, pokeProbeLine } from './source.js';
 import { qqRequestId } from './worker-route.js';
+import { forgetRecords } from './dispatch-forget.js';
+import { createCleanupParty } from '../../authority/src/cleanup-party.js';
 import { executeConversation, reportDelivery, DECLINE_MARK, MAX_DELIVERY_MARKER_CHARS, MAX_DELIVERY_DESCRIPTION_CHARS } from '../conversation/executor.js';
 import { replayDelivered } from '../conversation/delivery.js';
 import { splitReply } from './split.js';
@@ -92,6 +94,9 @@ export class QQBridge {
     // In memory only: the text of her latest delivered messages by platform message id (what a quote of one says),
     // and per conversation when a poke was last taken (pacing.pokeCooldownMs).
     this.sentTexts = new Map(); this.lastPoke = new Map();
+    // Forgetting while the bridge stays up (pollForget below); `startedAt` in a confirmation says which process forgot.
+    const startedAt = clock();
+    this.cleanup = createCleanupParty({ authority, party: 'bridge', forget: async job => ({ ...this.forgetDispatch(job), startedAt }) });
   }
   write(file, value) {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -307,6 +312,22 @@ export class QQBridge {
     try { await reportDelivery(this.executor, { scope, requestId, delivery: { parts } }); }
     catch (error) { this.log(`qq delivery report: ${typeof error?.code === 'string' && /^[A-Z_]{1,64}$/.test(error.code) ? error.code : 'failed'}`); }
   }
+  /** Forgetting inside the running bridge: this channel's part of a cleanup job, as Authority handed it out
+   * (`{ sourceEvents: [{ streamId, eventId }] }`). The dispatch record of each forgotten message becomes a tombstone
+   * in the records this process holds, and the file is written at once: one synchronous step, like every other write
+   * of that file, so none can fall in between, and a turn still holding the old record changes nothing that is
+   * stored. What is only kept in memory about recent messages (her sent texts for quotes, the last pictures, the
+   * sticker frequency) is dropped too, as a restart would. The same job again finds only tombstones. */
+  forgetDispatch(job) {
+    if (!Array.isArray(job?.sourceEvents)) throw new Error('QQ_FORGET_PLAN');
+    const dispatchForgotten = forgetRecords(this.state.records, job.sourceEvents);
+    if (dispatchForgotten) this.save();
+    this.sentTexts.clear(); this.lastPicture.clear(); this.recentPictures.clear(); this.recentStickers.clear();
+    return { dispatchForgotten };
+  }
+  /** One round of forgetting: ask Authority for the cleanup jobs this bridge has not confirmed, forget, confirm. The
+   * same timer as the initiated runs calls it, whether or not QQ is connected. */
+  pollForget() { return this.cleanup.runOnce(); }
   /** One round of initiated runs: report what earlier ones came to, ask Authority for the next, run it. A timer
    * calls this; nothing happens unless QQ is connected, logged in as the configured bot and idle here. */
   async pollInitiations() {

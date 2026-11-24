@@ -3,11 +3,20 @@ Description=Companion bounded incremental memory maintenance
 Requires=companion-authority.service companion-model.service
 After=companion-authority.service companion-model.service
 
+# The worker holds Authority's maintenance credential and the gateway's inference token, nothing else: no operator
+# token, no systemctl, no TCP. It reaches both services over Unix sockets, so the network is restricted to those.
+# Like the conversation executor it runs WITHOUT filesystem isolation (an unprivileged user manager on home-agent
+# silently skips mount/namespace options); only the seccomp- and prctl-based options below take effect.
 [Service]
 Type=exec
 ExecStart=%h/.local/opt/companion/bin/node %h/src/companion/current/capabilities/memory/main.mjs --config %h/.local/share/companion-world-v1/operator/memory-worker.json
 UMask=0077
 NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
 KillMode=control-group
 TimeoutStopSec=120s
 Restart=on-failure

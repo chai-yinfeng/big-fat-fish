@@ -39,7 +39,7 @@ export const INVENTORY = [
       { file: 'operator/model-gateway.json', field: 'operatorTokenHash', check: (json, hash) => json.operatorTokenHash === hash },
       { file: 'operator/qq-bridge.json', field: 'operatorTokenHash', check: (json, hash) => json.operatorTokenHash === hash },
     ],
-    readers: ['memory worker (memory-worker.json operatorTokenFile)', 'purge-execution.mjs', 'deploy/qq/*', 'open-world.mjs', 'browser console sessionStorage (re-enter)'] },
+    readers: ['purge-execution.mjs', 'deploy/qq/*', 'open-world.mjs', 'browser console sessionStorage (re-enter)'] },
   { file: 'service-config/health.token', format: 'base64url',
     hashes: [{ file: 'operator/authority.json', field: 'credentials[role=capability,capabilityId!=qq].hash', check: credentialCount(row => row.role === 'capability' && row.capabilityId !== 'qq') }],
     readers: ['content.json authority.tokenFile', 'model-gateway.json authority.tokenFile'] },

@@ -1,13 +1,9 @@
 #!/usr/bin/env node
-import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { MemoryCleanup, operatorURL } from './cleanup.js';
 import { AuthorityClient } from '../../authority/src/client.js';
 import { MemoryConsolidation } from './consolidation.js';
 import { MemoryDiary } from './diary.js';
 import { completeDiary } from './model-client.js';
-import { purgeModuleURL } from './purge-module.js';
 import { load as loadConfig, defaults } from './config.js';
 
 process.umask(0o077);
@@ -27,22 +23,10 @@ async function main() {
   const diary = new MemoryDiary({ authority, complete: completeDiary(cfg.gateway), ...(cfg.consolidationDeferMs === undefined ? {} : { deferMs: cfg.consolidationDeferMs }) });
   // Optional memory-worker.json `tickMs` / `consolidationDeferMs` (staging shortens both).
   const tickMs = cfg.tickMs ?? defaults.tickMs;
-  const operatorOrigin = operatorURL(cfg.operatorPort);
-  // A legacy cfg.purgeModule (a pinned release path) is ignored.
-  const { purgeExecution } = await import(purgeModuleURL());
-  const operator = async (route, payload) => {
-    if (!['/world', '/memory/cleanup/pending', '/memory/cleanup/complete'].includes(route)) throw new Error('MEMORY_CONTROL_ROUTE');
-    const token = fs.readFileSync(cfg.operatorTokenFile, 'utf8').trim();
-    const r = await fetch(operatorOrigin + route, { method: payload === undefined ? 'GET' : 'POST', headers: { authorization: 'Bearer ' + token, ...(payload === undefined ? {} : { 'content-type': 'application/json' }) }, ...(payload === undefined ? {} : { body: JSON.stringify(payload) }), signal: AbortSignal.timeout(10000) });
-    const value = await r.json(); if (!r.ok || !value.ok) throw new Error('MEMORY_CONTROL_UNAVAILABLE'); return value.value;
-  };
-  const service = (action, units) => { const r = spawnSync('systemctl', ['--user', action, ...units], { stdio: ['ignore', 'pipe', 'pipe'] }); if (r.status !== 0) throw new Error('MEMORY_EXECUTION_CONTROL'); };
-  const cleanup = new MemoryCleanup({ operator, purge: plan => purgeExecution({ base: cfg.base, plan }),
-    stopExecution: () => service('stop', ['companion-qq.service', 'companion-conversation.service', 'companion-content.service']),
-    startExecution: () => service('start', ['companion-content.service', 'companion-conversation.service', 'companion-qq.service']),
-  });
+  // Forgetting is no longer this worker's: each service forgets its own files while it stays up and Authority keeps
+  // who has confirmed (authority/PROTOCOL.md). This worker stops no service and runs no purge.
   let ticking = false;
-  const tick = async () => { if (ticking) return; ticking = true; try { await cleanup.runOnce(); await consolidation.runOnce(); await diary.runOnce(); } finally { ticking = false; } };
+  const tick = async () => { if (ticking) return; ticking = true; try { await consolidation.runOnce(); await diary.runOnce(); } finally { ticking = false; } };
   await tick();
   const timer = setInterval(() => { void tick(); }, tickMs);
   let stopping = false;

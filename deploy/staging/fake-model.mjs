@@ -11,6 +11,7 @@
 // makes the answer to the first tool result a second propose, without an id; `reply` follows its result.
 // `activity` makes the first answer a companion_activity tool call with exactly these arguments (only when the
 // request offers that tool); the answer after its result is `reply`.
+// A rule with both `propose` and `activity` makes the propose call first and the activity call after its result.
 // `scope` makes the first answer a companion_scope call with exactly these arguments (a search, read or recall);
 // the answer after its result is `reply`.
 // Each logged request also records `notes` (the memory-hub note of every user message, oldest first),
@@ -116,6 +117,7 @@ export function planReply(body, rules = []) {
   }
   if (base.stream && rule.scope && !afterTool && body.tools?.some(tool => tool?.function?.name === 'companion_scope')) return { ...base, kind: 'tool', call: { name: 'companion_scope', arguments: rule.scope } };
   if (base.stream && rule.activity && !afterTool && body.tools?.some(tool => tool?.function?.name === 'companion_activity')) return { ...base, kind: 'tool', call: { name: 'companion_activity', arguments: rule.activity } };
+  if (base.stream && rule.propose && rule.activity && !rule.retry && ref && messages.slice(last + 1).filter(message => message?.role === 'tool').length === 1 && body.tools?.some(tool => tool?.function?.name === 'companion_activity')) return { ...base, kind: 'tool', call: { name: 'companion_activity', arguments: rule.activity } };
   if (base.stream && rule.propose && rule.retry && ref && messages.slice(last + 1).filter(message => message?.role === 'tool').length === 1) {
     return { ...base, kind: 'tool', call: { name: 'companion_scope', arguments: { action: 'propose', ref, type: rule.retry.type, payload: rule.retry.payload } } };
   }

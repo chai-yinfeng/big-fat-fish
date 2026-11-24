@@ -23,6 +23,11 @@ database (new release migrates behind a backup, old release still opens and writ
 `companion-deploy rollback` returns to the from-release on the data root the new one
 used, and a second rollback rolls forward again before the from-release is pruned.
 
+Forgetting is followed across the round trip too: under the new release one message is
+forgotten while the QQ bridge is stopped, so its cleanup job waits for that one party; the
+from-release must list the job as pending and refuse to resume the world; after the
+roll-forward the new release's services close it by confirming, and the world resumes.
+
 The room page (companion-room unit) is followed through all of it: unprepared after the
 upgrade (page up, state 503), prepared by the release's ops/prepare-room.mjs, gone after
 the rollback while its credential files stay in the data root (the old Authority must
@@ -205,6 +210,7 @@ def initialize(release):
     # Staging-only values (old releases ignore the port fields; their units are Unix-only anyway).
     # The memory worker ticks every 5 s here (production: 60 s) and retries 10 s after the spend tier refused it
     # (production: 30 min), so the consolidation scenarios do not wait minutes.
+    # operatorPort: only a from-release from before driver step 7c reads it (its worker dialled the operator port).
     edit('memory-worker.json', lambda c: c.update(operatorPort=OPERATOR_PORT, tickMs=5000, consolidationDeferMs=10000))
     edit('qq-bridge.json', lambda c: c.update(onebotPort=ONEBOT_PORT))
     origins = ['http://127.0.0.1:%d' % OPERATOR_PORT, 'http://localhost:%d' % OPERATOR_PORT]
@@ -767,6 +773,87 @@ def ledger_survives(before, declared=None):
                                                                            '; not compared, unknown to the from-release: %s' % ', '.join(unknown) if unknown else '')
 
 
+def cleanup_waiting(job):
+    """The parties of cleanup job `job` that have not confirmed, or None once the job is closed."""
+    row = next((item for item in operator('GET', '/memory/cleanup/status')['jobs'] if item['id'] == job), None)
+    if row is None:
+        raise RuntimeError('cleanup job %s is not listed' % job)
+    return None if row['status'] == 'complete' else sorted(party['party'] for party in row['parties'] if not party['confirmed'])
+
+
+def cleanup_carry(deployer, carried):
+    """New release, before the rollback: with the QQ bridge stopped, forget one message that only QQ conversations
+    are affected by. The content service and the executor confirm while they run; the job is left waiting for the
+    bridge alone and the world paused. `carried` receives the job id."""
+    bridge = [name for name in deployer.installed_units() if name.endswith('-qq.service')]
+    if len(bridge) != 1:
+        raise RuntimeError('expected one QQ bridge unit, found %s' % bridge)
+    deployer.system.systemctl('stop', *bridge)
+    world = operator('GET', '/world')['world']
+    if not world['paused']:
+        operator('POST', '/world/pause', {'paused': True, 'expectedRevision': world['revision']})
+    chosen = None
+    for item in operator('GET', '/memory?limit=100')['items']:
+        observation = (item.get('evidence') or {}).get('observationId')
+        if item.get('status') != 'active' or not observation:
+            continue
+        preview = operator('POST', '/memory/forget-preview', {'entityId': item['entityId'], 'ids': [observation]})
+        if preview.get('epochScope') == 'streams' and preview['affectedStreams'] and all(stream['capabilityId'] == 'qq' for stream in preview['affectedStreams']):
+            chosen = (item['entityId'], observation, preview['memoryEpoch'])
+            break
+    if chosen is None:
+        raise RuntimeError('no memory of a QQ-only person to forget (the scenario replay leaves several)')
+    job = operator('POST', '/memory/forget', {'entityId': chosen[0], 'ids': [chosen[1]], 'expectedMemoryEpoch': chosen[2]})['id']
+    carried.append(job)
+    deadline, waiting = time.time() + 90, None
+    while time.time() < deadline:
+        waiting = cleanup_waiting(job)
+        if waiting == ['bridge:qq']:
+            return 'job %s: content and executor confirmed, waiting for bridge:qq (stopped); world paused' % job[:8]
+        time.sleep(1)
+    raise RuntimeError('cleanup job waits for %s, expected only bridge:qq' % waiting)
+
+
+def cleanup_under_from(job):
+    """From-release, after the rollback: the job the new release left is still pending there and still holds the world."""
+    if job is None:
+        raise RuntimeError('no cleanup job was carried over the rollback')
+    if not any(item.get('id') == job for item in operator('GET', '/memory/cleanup/pending')):
+        raise RuntimeError('the from-release does not list cleanup job %s as pending' % job)
+    world = operator('GET', '/world')['world']
+    if not world['paused']:
+        raise RuntimeError('the world is running with a cleanup pending')
+    try:
+        operator('POST', '/world/pause', {'paused': False, 'expectedRevision': world['revision']})
+    except RuntimeError as error:
+        if '-> 409' not in str(error):
+            raise
+        return 'job %s pending under the from-release; resume refused (409)' % job[:8]
+    raise RuntimeError('the from-release resumed the world with a cleanup pending')
+
+
+def cleanup_closes(job):
+    """New release again, after the roll-forward: its running services confirm what was left, and the world resumes."""
+    if job is None:
+        raise RuntimeError('no cleanup job was carried over the rollback')
+    deadline, waiting = time.time() + 150, None
+    while time.time() < deadline:
+        waiting = cleanup_waiting(job)
+        if waiting is None:
+            break
+        time.sleep(2)
+    if waiting is not None:
+        raise RuntimeError('after the roll-forward the cleanup still waits for %s' % waiting)
+    row = next(item for item in operator('GET', '/memory/cleanup/status')['jobs'] if item['id'] == job)
+    if row.get('completedBy') != 'parties':
+        raise RuntimeError('the cleanup was closed by %s, not by the services' % row.get('completedBy'))
+    world = operator('GET', '/world')['world']
+    operator('POST', '/world/pause', {'paused': False, 'expectedRevision': world['revision']})
+    if operator('GET', '/world')['world']['paused']:
+        raise RuntimeError('the world did not resume after the cleanup closed')
+    return 'job %s closed by %s; world resumed' % (job[:8], ', '.join(party['party'] for party in row['parties']))
+
+
 def migration_drill(deployer, from_name, to_name):
     """tools/migration-drill.mjs on a COPY of the staging database, taken while the units are stopped."""
     live = BASE / 'authority-data/authority.sqlite'
@@ -938,12 +1025,16 @@ def lifecycle(from_tarball, to_tarball):
     ledger = []
     step('ledger-before-rollback', lambda: ledger.append(usage_rows()) or 'day %s: %d capabilities used' % (ledger[0][0], sum(1 for row in ledger[0][1].values() if row['calls'])))
     step('migration-drill (copy)', lambda: migration_drill(deployer, from_name, to_name))
+    carried = []
+    step('forget-pending-before-rollback', lambda: cleanup_carry(deployer, carried))
     step('rollback (to from)', lambda: switch_back(from_name))
+    step('forget-pending-under-from', lambda: cleanup_under_from(carried[0] if carried else None))
     step('room-after-rollback', lambda: room_after_rollback(from_name))
     step('smoke-from', smoke)
     declared = []
     step('ledger-rows-of-from', lambda: declared.append(declared_rows()) or ('no usage ledger in the from-release' if declared[0] is None else 'declares %s' % ', '.join(declared[0])))
     step('roll-forward (rollback again)', lambda: switch_back(to_name))
+    step('forget-closes-after-roll-forward', lambda: cleanup_closes(carried[0] if carried else None))
     step('room-after-roll-forward', room_check)
     step('Q3 ledger-survives-rollback', lambda: ledger_survives(ledger[0] if ledger else None, declared[0] if declared else None))
     step('prune-from', prune)

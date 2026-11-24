@@ -93,6 +93,43 @@ test('QQ passes only the Core epoch scope and discards an in-flight reply after 
   assert.equal(Object.values(f.bridge.state.records)[0].status, 'paused');
 });
 
+test('forgetting inside the running bridge: the dispatch record becomes a tombstone at once, a turn still under way cannot write it back, and an unreachable Authority leaves the job pending', async t => {
+  const f = await fixture(t), stateFile = f.bridge.stateFile, id = qqRequestId({ streamId: 'qq:100:private:200', eventId: 'onebot:v11:message:7' });
+  const stored = () => JSON.parse(fs.readFileSync(stateFile, 'utf8')).records;
+  // A turn of the message is under way (the executor has not answered) when the world is paused and the message forgotten.
+  let answer; const answered = new Promise(resolve => { answer = resolve; });
+  f.bridge.executor.execute = async () => { await answered; return 'late reply'; };
+  const turn = f.bridge.receive(f.event);
+  for (let i = 0; i < 200 && stored()[id]?.status !== 'processing'; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(stored()[id].status, 'processing');
+  f.world.paused = true; f.world.revision++;
+  const job = { id: 'job-1', memoryEpoch: 1, affectedStreams: [{ streamId: 'qq:100:private:200', memoryEpoch: 1 }], sourceEvents: [{ streamId: 'qq:100:private:200', eventId: 'onebot:v11:message:7' }] };
+  // Authority cannot be reached: nothing is confirmed, nothing is forgotten yet.
+  const acks = []; let reachable = false, pending = [job];
+  f.bridge.authority.cleanupNext = async input => { if (!reachable) throw Object.assign(new Error('down'), { code: 'TRANSPORT_ERROR' }); assert.deepEqual(input, { party: 'bridge' }); return { job: pending[0] ?? null }; };
+  f.bridge.authority.cleanupAck = async input => { acks.push(input); pending = []; return { status: 'pending' }; };
+  assert.deepEqual(await f.bridge.pollForget(), { completed: 0, failed: 'TRANSPORT_ERROR' });
+  assert.deepEqual([acks.length, stored()[id].status], [0, 'processing']);
+  // It is back: one round forgets and confirms, whether or not QQ is connected.
+  reachable = true; f.bridge.connected = false;
+  f.bridge.sentTexts.set('99', 'MOCK earlier reply');
+  assert.deepEqual(await f.bridge.pollForget(), { completed: 1 });
+  assert.deepEqual(stored()[id], { status: 'forgotten' });
+  assert.deepEqual([acks.length, acks[0].id, acks[0].memoryEpoch, acks[0].party, acks[0].report.dispatchForgotten, Number.isSafeInteger(acks[0].report.startedAt), f.bridge.sentTexts.size], [1, 'job-1', 1, 'bridge', 1, true, 0]);
+  // The turn under way ends (it sees the pause) and writes the state file again: the tombstone stays, nothing is sent.
+  f.bridge.connected = true;
+  answer(); await turn;
+  assert.deepEqual([stored()[id], f.bridge.state.records[id], f.sends.length], [{ status: 'forgotten' }, { status: 'forgotten' }, 0]);
+  // The platform delivers the same message again after the resume: it is not taken a second time.
+  f.world.paused = false; f.world.revision++;
+  f.bridge.executor.execute = async () => 'second reply';
+  await f.bridge.receive(f.event);
+  assert.deepEqual([stored()[id], f.sends.length], [{ status: 'forgotten' }, 0]);
+  // The same job again finds only the tombstone.
+  assert.deepEqual(f.bridge.forgetDispatch(job), { dispatchForgotten: 1 });
+  assert.deepEqual(stored()[id], { status: 'forgotten' });
+});
+
 // A reply of four sentences, each too long to share a message with the next: four messages.
 const sentence = n => `这是第${n}句话，它的长度刚好让两句放不进同一条消息里面去，所以一句一条。`;
 const LONG = [1, 2, 3, 4].map(sentence).join('');

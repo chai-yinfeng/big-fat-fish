@@ -121,6 +121,10 @@ class ContractTests(unittest.TestCase):
         for option in ['ProtectSystem=', 'ReadWritePaths=', 'InaccessiblePaths=', 'PrivateTmp=', 'PrivateNetwork=', 'PrivateUsers=', 'bwrap']:
             self.assertNotIn(option, conversation)
         self.assertIn('Requires=companion-authority.service companion-conversation.service', units['companion-qq.service'])
+        # The memory worker gave up the operator token and systemctl: Unix sockets only, like the executor.
+        for line in ['NoNewPrivileges=true', 'RestrictAddressFamilies=AF_UNIX', 'SystemCallArchitectures=native', 'LockPersonality=true', 'RestrictRealtime=true', 'RestrictSUIDSGID=true']:
+            self.assertIn(line + '\n', units['companion-memory.service'])
+        self.assertNotIn('AF_INET', units['companion-memory.service'])
         self.assertNotIn('ExecStartPre', units['companion-qq.service'])
         # The room page: after Authority, loopback TCP and Unix sockets only, the room credential and nothing else.
         room = units['companion-room.service']

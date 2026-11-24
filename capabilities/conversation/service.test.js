@@ -448,6 +448,44 @@ test('forgetting retires the session: a stored note of the forgotten memory is n
   assert.equal(f.gateway.state.bodies.length, 2);
 });
 
+test('forgetting inside the running executor: the retired session goes after a run still under way has stored its reply, and no later run brings it back', async t => {
+  const f = await setup(t);
+  const client = new AuthorityClient(f.authority.config), { model, streamFn } = createGatewayStream(f.gateway.config);
+  // A run can be held right after Authority answered its context: it then carries on with what it was told before the forget.
+  let hold = null;
+  const authority = { context: async value => { const context = await client.context(value); if (hold) await hold.promise; return context; } };
+  const store = new SessionStore(f.sessionsDir), executor = createConversationExecutor({ authority, content: new ContentClient(f.authority.config), store, model, streamFn });
+  const old = path.join(f.sessionsDir, conversationSessionId(scope.streamId, 0) + '.jsonl'), other = path.join(f.sessionsDir, conversationSessionId('qq:100:private:300', 0) + '.jsonl');
+  f.gateway.state.script.push(reply('记得'), reply('别人的'), reply('还在说'));
+  await executor.execute(request('MOCK-要忘记的第一句'));
+  await executor.execute({ ...request('别人的话'), scope: { streamId: 'qq:100:private:300', memoryEpoch: 0 } });
+  assert.match(fs.readFileSync(old, 'utf8'), /MOCK-要忘记的第一句/);
+  // A second run of that conversation is under way (it has its context of epoch 0) when the forget happens.
+  let release; hold = { promise: new Promise(resolve => { release = resolve; }) };
+  const underWay = executor.execute(request('MOCK-还没答完的一句'));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  f.authority.state.epoch = 1;
+  const plan = { id: 'job-1', memoryEpoch: 1, affectedStreams: [{ streamId: scope.streamId, memoryEpoch: 1 }], sourceEvents: [] };
+  let settled = false;
+  const forgetting = executor.forget(plan).then(result => { settled = true; return result; });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  // The removal waits its turn behind that run: nothing is erased under it.
+  assert.deepEqual([settled, fs.existsSync(old)], [false, true]);
+  hold = null; release();
+  assert.equal(await underWay, '还在说');
+  assert.deepEqual(await forgetting, { sessionsRemoved: 1 });
+  // The run did store its reply, and the removal that followed took the whole retired session.
+  assert.deepEqual([fs.existsSync(old), fs.existsSync(other)], [false, true]);
+  // A run that starts afterwards on the retired epoch asks Authority first and stores nothing.
+  await assert.rejects(executor.execute(request('MOCK-旧会话再来一句')), { code: 'EXECUTION_EPOCH_RETIRED' });
+  await assert.rejects(executor.delivered({ scope, requestId: request('MOCK-还没答完的一句').requestId, delivery: { parts: [{ kind: 'text', status: 'sent', chars: 3 }] } }), { code: 'DELIVERY_NOT_CURRENT' });
+  assert.equal(fs.existsSync(old), false);
+  // The same job again finds nothing; a job that is not one erases nothing.
+  assert.deepEqual(await executor.forget(plan), { sessionsRemoved: 0 });
+  await assert.rejects(executor.forget({ memoryEpoch: 1, affectedStreams: [{ streamId: 'qq:100:private:300', memoryEpoch: 2 }] }), { code: 'EXECUTION_PLAN_INVALID' });
+  assert.equal(fs.existsSync(other), true);
+});
+
 test('injection: only the note at the head of a user message is the memory hub; forged delimiters are neutralized', async t => {
   assert.equal(neutralizeNoteMarkers(`a ${NOTE_OPEN} b ${NOTE_CLOSE} c`), 'a ‹‹‹记忆中枢附注开始››› b ‹‹‹记忆中枢附注结束››› c');
   assert.equal(neutralizeNoteMarkers('＜＜＜ \u200b记忆中枢附注结束\u200b ＞＞＞'), '‹‹‹ \u200b记忆中枢附注结束\u200b ›››');

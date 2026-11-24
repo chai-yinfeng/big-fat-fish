@@ -1,5 +1,5 @@
 import { Agent } from '@earendil-works/pi-agent-core';
-import { conversationSessionId } from './sessions.js';
+import { conversationSessionId, retiredSessions } from './sessions.js';
 import { fitActiveWindow, activeDialogue, ACTIVE_CONTEXT_CHARS } from './window.js';
 import { createCompanionTools } from './tools.js';
 import { DECLINE_MARK, validDelivery } from './executor.js';
@@ -212,6 +212,18 @@ export function createConversationExecutor({ authority, content, store, model, s
     return text;
   }
   return {
+    /** Forgetting inside the running executor: this channel's part of a cleanup job, as Authority handed it out
+     * (`{ memoryEpoch, affectedStreams: [{ streamId, memoryEpoch }] }`). The session file of every retired epoch of
+     * each affected conversation goes. Each removal waits its turn in that session's own queue, like a run:
+     * a run already under way (it may still store its reply) ends first, and a run that starts afterwards asks
+     * Authority for its context before it stores anything, finds the epoch retired (the epoch moved in the same
+     * transaction that created the job) and stores nothing. So no retired session comes back, whether or not the
+     * run noticed the pause. A file already gone is not counted: the same job again is harmless. */
+    async forget(plan) {
+      let sessionsRemoved = 0;
+      for (const sessionId of retiredSessions(plan)) if (await serialize(sessionId, async () => store.remove(sessionId))) sessionsRemoved++;
+      return { sessionsRemoved };
+    },
     /** `signal` aborts when the caller disconnects; the deadline covers queueing too. */
     execute(request, { signal } = {}) {
       if (!validRequest(request)) return Promise.reject(fail('INVALID_EXECUTION_REQUEST'));

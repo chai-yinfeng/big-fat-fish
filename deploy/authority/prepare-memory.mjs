@@ -22,11 +22,14 @@ export function prepareMemory(base = path.join(os.homedir(), '.local/share/compa
     gateway: { socketPath: path.join(base, 'ipc/model/inference.sock'), tokenFile: path.join(base, 'service-config/inference.token') },
     stateFile: path.join(base, 'memory-data', label + '.json'),
     maxCallsPerDay: 4,
+    // The worker of this release reads neither of these two: it holds no operator token and touches no file of the
+    // data root. They stay because a release rolled back to (before driver step 7c) refuses to start without them
+    // (capabilities/memory/config.js ROLLBACK).
     base,
     operatorTokenFile: path.join(base, 'operator/console.token'),
-    // No purgeModule: the worker resolves purge-execution from its own release.
   };
-  // The conversation executor keeps one JSONL transcript per derived session ID.
+  // The conversation executor keeps one JSONL transcript per derived session ID. This descriptor is read by the
+  // offline purge (ops/purge-execution.mjs, the owner's manual fallback), not by the worker.
   const layoutFile = path.join(base, 'operator/execution-storage.json');
   const layout = { version: 2, sessionsRoot: 'conversation-data/sessions' };
   if (fs.existsSync(layoutFile)) {

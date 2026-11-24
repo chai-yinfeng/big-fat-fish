@@ -29,7 +29,7 @@ function channelId(capabilityId,value){
 export class Authority extends InitiationDomain {
   constructor(options){
     super();
-    closed(options,['file','clock','persona','initialPaused','migrations'],['file']);
+    closed(options,['file','clock','persona','initialPaused','migrations','contentService'],['file']);
     text(options.file,4096);
     if(options.initialPaused!==undefined&&typeof options.initialPaused!=='boolean')fail('VALIDATION_ERROR','initialPaused must be boolean');
     if(options.clock!==undefined&&typeof options.clock!=='function')fail('VALIDATION_ERROR','clock must be function');
@@ -44,6 +44,8 @@ export class Authority extends InitiationDomain {
     },options.migrations?{
       migrations:options.migrations
     }:{});
+    // Whether this deployment has a content service: it is then a party of every cleanup job (memory.js cleanupParties).
+    this.contentService=options.contentService===true;
     this.processing=false;
     this.traces=[];
     this.traceSeq=0;

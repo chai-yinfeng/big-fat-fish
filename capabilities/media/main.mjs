@@ -9,12 +9,14 @@ import { createContentServer } from './server.mjs';
 import { capabilityGateway, meteredSpeech } from './client.js';
 import { createContentOperator } from './operator.js';
 import { createJobs } from './jobs.js';
+import { forgetLive } from './forget.js';
 import { createDemoRunner } from './demo-job.js';
 import { createNormalizeImage } from './normalize.js';
 import { createVideoProvider } from '../providers/video/provider.js';
 import { load as loadConfig } from './config.js';
 
 process.umask(0o077);
+const startedAt = Date.now();
 let server, timer, jobs;
 try {
   // What this service implements must be what the capabilities declare (an operator-only action aside), or it does not start.
@@ -42,7 +44,10 @@ try {
   // Every request somebody is waiting for goes through the gate, so a yielding background job lets it go first.
   const service = { call: (scope, input) => jobs.gate.timely(() => media.call(scope, input)) };
   const operator = createContentOperator({ speechConfigFile: cfg.speechConfigFile, worldStatus, speechFactory: () => speech });
-  server = createContentServer({ ...cfg.control, service, worldStatus, operatorCall: (input, options) => input?.action === 'test' ? jobs.gate.timely(() => operator.call(input, options)) : operator.call(input, options), jobsCall: input => jobs.control(input), stickersCall: input => jobs.gate.timely(() => media.stickersCall(input)) });
+  server = createContentServer({ ...cfg.control, service, worldStatus, operatorCall: (input, options) => input?.action === 'test' ? jobs.gate.timely(() => operator.call(input, options)) : operator.call(input, options), jobsCall: input => jobs.control(input), stickersCall: input => jobs.gate.timely(() => media.stickersCall(input)),
+    // Forgetting, asked by Authority while the world is paused (forget.js `forgetLive`): this process's own stores. A
+    // reply attachment still waiting to be picked up is dropped too. `startedAt` says which process confirmed.
+    forgetCall: plan => { const counts = forgetLive(plan, { store, stickers: media.stickers, jobs, workRoot: media.workRoot }); media.replies.clear(); return { ...counts, startedAt }; } });
   await server.start();
   jobs.start();
   store.expire(); timer = setInterval(() => { try { store.expire(); jobs.sweep(); video.sweep(); } catch { process.stderr.write('Media retention requires operator inspection.\n'); } }, 3600000);

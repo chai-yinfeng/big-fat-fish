@@ -6,8 +6,13 @@ import { tokenize, uniqueTokens } from './util.js';
 import { memoryContent, opaquePerson, CONTINUATION_ITEMS, DIGEST_LABEL, beijingDated } from './context.js';
 import { SENSITIVE } from './policies.js';
 import { DEFAULT_CARD_ID, feelingFor } from './cards.js';
+import { channel } from '../../capabilities/channels/index.js';
 
 const DAY=86400000;
+/** Closed cleanup jobs whose confirmations stay listed for the operator. */
+const CLEANUP_KEPT=20;
+/** The parties of a cleanup job that are processes of a channel (each asks with that channel's credential). */
+const CLEANUP_CHANNEL_PARTIES=['bridge','executor'];
 /** A machine digest as a memory tool returns it: its ID, the label, the summary (cut to `chars`), her feeling and
  * the Beijing day the dialogue ended. Nothing else of the body (stream, observation IDs, account numbers).
  * `cardId`: the persona card now current; a feeling written under another card is left out (cards.js). */
@@ -589,6 +594,105 @@ export class MemoryDomain {
   cleanupPending(){
     return this.store.db.prepare("SELECT body FROM cleanup_jobs WHERE status='pending' ORDER BY rowid").all().map(r=>JSON.parse(r.body));
   }
+  /** The confirmation table of the cleanup jobs, kept in the existing metadata table (no schema change):
+   * `{ [jobId]: { parties: { [party]: { at, report } }, completedAt?, by? } }`. Every pending job that somebody has
+   * confirmed is in it, and the newest CLEANUP_KEPT closed ones (for the operator's list). */
+  cleanupAcks(){
+    const row=this.store.db.prepare("SELECT value FROM metadata WHERE key='cleanupAcks'").get();
+    return row?JSON.parse(row.value):{};
+  }
+  saveCleanupAcks(acks){
+    const closedIds=Object.keys(acks).filter(id=>acks[id].completedAt!==undefined).sort((a,b)=>acks[a].completedAt-acks[b].completedAt);
+    for(const id of closedIds.slice(0,Math.max(0,closedIds.length-CLEANUP_KEPT)))delete acks[id];
+    this.store.db.prepare("INSERT INTO metadata(key,value) VALUES('cleanupAcks',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(acks));
+  }
+  /** Who keeps files of what a job forgets, and so must each confirm that theirs are gone before the world may
+   * resume: `content` (the content service, when this deployment has one), and for every conversation channel the
+   * job touches its `executor:<channel>` (the session files) and, when the channel's declaration names a forget
+   * owner, its `bridge:<channel>`. Worked out from the job and the declarations each time, so a job an earlier
+   * release created has the same parties. */
+  cleanupParties(job){
+    const channels=[...new Set([...job.affectedStreams,...job.sourceEvents].map(row=>row.capabilityId))].filter(id=>this.conversationChannel(id)).sort();
+    return[...(this.contentService?['content']:[]),...channels.flatMap(id=>[...(channel(id)?.forget?.owner?[`bridge:${id}`]:[]),`executor:${id}`])];
+  }
+  /** Operator: every pending job and the latest closed ones, each with who has confirmed and who has not. */
+  cleanupStatus(){
+    const acks=this.cleanupAcks();
+    return{
+      jobs:this.store.db.prepare('SELECT id,status,body FROM cleanup_jobs ORDER BY rowid').all().filter(row=>row.status==='pending'||acks[row.id]).map(row=>{
+        const job=JSON.parse(row.body),entry=acks[row.id]??{parties:{}},
+        names=[...new Set([...(row.status==='pending'?this.cleanupParties(job):[]),...Object.keys(entry.parties??{})])];
+        return{
+          id:row.id,entityId:job.entityId,memoryEpoch:job.memoryEpoch,epochScope:job.epochScope??null,status:row.status,completedAt:entry.completedAt??null,completedBy:entry.by??null,
+          parties:names.map(party=>({party,confirmed:Boolean(entry.parties?.[party]),at:entry.parties?.[party]?.at??null,report:entry.parties?.[party]?.report??null}))
+        };
+      })
+    };
+  }
+  /** The content service's part of every pending job it has not confirmed (the whole job: it files by entity,
+   * conversation and source message). Authority itself hands these over (server.js). */
+  cleanupForContent(){
+    const acks=this.cleanupAcks();
+    return this.cleanupPending().filter(job=>!acks[job.id]?.parties?.content&&this.cleanupParties(job).includes('content'));
+  }
+  /** A channel's bridge or executor asks, with the channel's own credential, for the oldest job it has not confirmed:
+   * only that channel's part of it (its conversations with their new epochs, its forgotten messages). */
+  cleanupNext(capabilityId,input){
+    closed(input,['party'],['party']);
+    enumeration(input.party,CLEANUP_CHANNEL_PARTIES);
+    if(!this.conversationChannel(capabilityId))fail('FORBIDDEN','Not a conversation channel',403);
+    const party=`${input.party}:${capabilityId}`,acks=this.cleanupAcks(),own=row=>row.capabilityId===capabilityId;
+    for(const job of this.cleanupPending()){
+      if(acks[job.id]?.parties?.[party]||!this.cleanupParties(job).includes(party))continue;
+      return{
+        job:{
+          id:job.id,memoryEpoch:job.memoryEpoch,
+          affectedStreams:job.affectedStreams.filter(own).map(stream=>({streamId:stream.streamId,memoryEpoch:stream.memoryEpoch??job.memoryEpoch})),
+          sourceEvents:job.sourceEvents.filter(own).map(event=>({streamId:event.streamId,eventId:event.eventId}))
+        }
+      };
+    }
+    return{job:null};
+  }
+  cleanupAck(capabilityId,input){
+    closed(input,['id','memoryEpoch','party','report'],['id','memoryEpoch','party']);
+    enumeration(input.party,CLEANUP_CHANNEL_PARTIES);
+    if(!this.conversationChannel(capabilityId))fail('FORBIDDEN','Not a conversation channel',403);
+    const{party,...rest}=input;
+    return this.cleanupConfirm(`${party}:${capabilityId}`,rest);
+  }
+  /** One party says its part of a job is gone (`report`: its own counts, numbers only). The first confirmation of a
+   * party stands and saying it again changes nothing. The job closes with the last party's confirmation; that never
+   * resumes the world. */
+  cleanupConfirm(party,input){
+    closed(input,['id','memoryEpoch','report'],['id','memoryEpoch']);
+    text(input.id);
+    integer(input.memoryEpoch);
+    const report=input.report??{};
+    if(report===null||typeof report!=='object'||Array.isArray(report)||Object.keys(report).length>16||Object.entries(report).some(([key,value])=>!/^[A-Za-z]{1,32}$/.test(key)||!Number.isSafeInteger(value)||value<0))fail('VALIDATION_ERROR','Cleanup report must be counts');
+    return this.store.transaction(()=>{
+      const row=this.store.db.prepare('SELECT * FROM cleanup_jobs WHERE id=?').get(input.id);
+      if(!row||row.epoch!==input.memoryEpoch)fail('CONFLICT','Cleanup generation conflicts',409);
+      if(row.status!=='pending')return{id:row.id,status:'complete',waiting:[]};
+      const parties=this.cleanupParties(JSON.parse(row.body));
+      if(!parties.includes(party))fail('FORBIDDEN','Not a party of this cleanup',403);
+      const acks=this.cleanupAcks(),entry=acks[row.id]||={parties:{}};
+      entry.parties[party]||={at:this.now(),report};
+      const waiting=parties.filter(name=>!entry.parties[name]);
+      if(!waiting.length){
+        entry.completedAt=this.now();
+        entry.by='parties';
+        this.store.db.prepare("UPDATE cleanup_jobs SET status='complete' WHERE id=?").run(row.id);
+        this.store.audit({
+          type:'memory.external-cleanup',entityId:row.entity_id,id:row.id,memoryEpoch:row.epoch,report:{sdkPurged:true,localSourcesPurged:true,platform:'outside-control'},parties:entry.parties,revision:this.store.nextRevision(),at:this.now()
+        });
+      }
+      this.saveCleanupAcks(acks);
+      return{id:row.id,status:waiting.length?'pending':'complete',waiting};
+    });
+  }
+  /** The operator's own word that a job's files are gone (the offline purge, ops/purge-execution.mjs): closes the
+   * job whatever the parties have confirmed. */
   cleanupComplete(input){
     closed(input,['id','memoryEpoch','report']);
     integer(input.memoryEpoch);
@@ -598,6 +702,11 @@ export class MemoryDomain {
       const row=this.store.db.prepare('SELECT * FROM cleanup_jobs WHERE id=?').get(input.id);
       if(!row||row.epoch!==input.memoryEpoch)fail('CONFLICT','Cleanup generation conflicts',409);
       this.store.db.prepare("UPDATE cleanup_jobs SET status='complete' WHERE id=?").run(row.id);
+      if(row.status==='pending'){
+        const acks=this.cleanupAcks();
+        Object.assign(acks[row.id]||={parties:{}},{completedAt:this.now(),by:'operator'});
+        this.saveCleanupAcks(acks);
+      }
       this.store.audit({
         type:'memory.external-cleanup',entityId:row.entity_id,id:row.id,memoryEpoch:row.epoch,report:input.report,revision:this.store.nextRevision(),at:this.now()
       });
