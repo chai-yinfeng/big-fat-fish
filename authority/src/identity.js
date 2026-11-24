@@ -1,3 +1,6 @@
+/** The reserved person her own conversation (her private wake-up, wake.js) is bound to. It is nobody: no account is
+ * ever bound to it, and no operator binding may name it. */
+export const SELF_PERSON = 'person:self';
 export class AuthorityError extends Error {
   /** `detail` ({ field, rule, limit? }): which field broke which rule, for the console; never the field's content. */
   constructor(code, message, statusCode = 400, detail) {

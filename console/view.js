@@ -1,7 +1,7 @@
 // Shared UI for the standalone browser entry. Styling lives in standalone.css.
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
-import { TOKEN_KEY, ROOM_PORT_KEY, validRoomPort, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validCards, cardTags, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, initiationResult, validJobs, jobNotice, validStickers, stickerDataUrl, stickerWords, readStickerFile } from './operator-client.js';
+import { TOKEN_KEY, ROOM_PORT_KEY, validRoomPort, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validCards, cardTags, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, validWake, initiationResult, validJobs, jobNotice, validStickers, stickerDataUrl, stickerWords, readStickerFile } from './operator-client.js';
 import { validRuntime, ttsBackend, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
@@ -167,6 +167,11 @@ export function WorldConsole({ t, standalone = false }) {
   const [openDiaryCode, setOpenDiaryCode] = useState(null);
   // Memory page type filter ('all' or a type), remembered for this browser tab (appended, same reason).
   const [memoryKind, setMemoryKind] = useState(() => { try { const value = sessionStorage.getItem(MEMORY_KIND_KEY); return typeof value === 'string' && /^[a-z_]{1,32}$/.test(value) ? value : 'all'; } catch { return 'all'; } });
+  // Her private wake-up (GET /initiative), the draft of "how many a day", and which log entry is unfolded (appended,
+  // same reason: tests address the states above by position).
+  const [wake, setWake] = useState(null);
+  const [wakeDraft, setWakeDraft] = useState('');
+  const [wakeOpen, setWakeOpen] = useState(null);
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -281,6 +286,12 @@ export function WorldConsole({ t, standalone = false }) {
     if (!mounted.current || generation.current !== current) return;
     setInitiations(validInitiations(value) ? value : null);
   }
+  // Her private wake-up; an Authority that cannot answer (an older one has no such route) leaves the card saying so.
+  async function loadWake(credential = token) {
+    const current = generation.current, value = await request('/initiative', undefined, credential).catch(caught => { if (caught.code === 'authorization_required') throw caught; return null; });
+    if (!mounted.current || generation.current !== current) return;
+    setWake(validWake(value) ? value : null);
+  }
   // Background jobs; a content service that cannot answer leaves the card saying so, the rest of the page still shows.
   async function loadJobs(credential = token) {
     const current = generation.current, value = await request('/jobs', undefined, credential).catch(caught => { if (caught.code === 'authorization_required') throw caught; return null; });
@@ -314,7 +325,7 @@ export function WorldConsole({ t, standalone = false }) {
     setRuntimeInfo(value); setSpeechDraft(value.speech.status === 'ready' ? { numThreads: value.speech.numThreads, maxTextChars: value.speech.maxTextChars } : null);
   }
   useEffect(() => { if (token) void run(async () => { await load(token); if (tab === 'runtime') await loadProviders(token); if (standalone && tab === 'runtime') await loadRuntime(token); }); }, [token]);
-  useEffect(() => { if (token && tab === 'channels') void run(async () => { await loadQQ(token); await loadStickers(token); await loadInitiations(token); await loadJobs(token); }); }, [token, tab]);
+  useEffect(() => { if (token && tab === 'channels') void run(async () => { await loadQQ(token); await loadStickers(token); await loadInitiations(token); await loadJobs(token); await loadWake(token); }); }, [token, tab]);
   useEffect(() => { if (token && tab === 'people') void run(() => loadPeople(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'persona') void run(() => loadCards(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'quota') void run(() => loadQuota(token)); }, [token, tab]);
@@ -823,6 +834,70 @@ export function WorldConsole({ t, standalone = false }) {
             h('td', null, reason ? named(`initiative.reason.${reason}`, reason) : named(`initiative.note.${result}`, '—')));
         })))));
   }
+  // Her private wake-up (step 6b of reaching out): the switch and how many a day, "wake now", her moods and notes
+  // (her own words; they are read here and in her next briefing, nowhere else), and the wake log: when and why she
+  // woke, what she was told as counts, what she did, and the pick of a person worked through. Nothing here sends
+  // anything to anybody: in this step the pick is only shown. People appear as opaque labels.
+  function wakeCard() {
+    const named = (key, fallback) => { const label = t(key); return label === key ? fallback : label; };
+    const head = cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('sparkles')), h('h2', null, t('wake.title'))),
+      button('refresh', () => run(() => loadWake()), { className: 'bff-ghost bff-sm', icon: 'refresh' }));
+    if (!wake) return h('section', { className: 'bff-card' }, head, text('wake.hint'), text('wake.unavailable'));
+    const { enabled, perDay, perDayMax = 24 } = wake.wake;
+    const words = (list, empty) => !list.length ? text(empty) : h('div', { className: 'bff-table' }, h('table', null, h('tbody', null, ...list.map((item, index) => h('tr', { key: `${item.at}:${index}` },
+      h('td', { style: { whiteSpace: 'nowrap' } }, time(item.at)), h('td', null, item.text))))));
+    const tail = outcome => outcome.replace(/^[a-z]+:/, '');
+    const did = entry => entry.outcome !== 'done' ? named(`wake.outcome.${entry.outcome.replace(/:.*$/, '')}`, entry.outcome) + (entry.outcome.includes(':') ? `（${named(`wake.skip.${tail(entry.outcome)}`, tail(entry.outcome))}）` : '')
+      : entry.did?.rested ? t('wake.did.rested') : ['mood', 'note'].filter(key => entry.did?.[key]).map(key => `${t(`wake.did.${key}`)}${entry.did[key] === 'accepted' ? '' : `（${t('wake.did.refused')}）`}`).concat(entry.did?.outreach ? [`${t('wake.did.outreach')} ${named(`wake.tier.${entry.did.outreach}`, entry.did.outreach)}`] : []).join('、');
+    const picked = selection => !selection ? '—' : selection.chance && !selection.chance.passed ? t('wake.pick.chanceMissed') : selection.result === 'none' ? t('wake.pick.none') : selection.result;
+    const factor = value => String(Math.round(value * 1000) / 1000);
+    const FACTORS = ['intent', 'chatter', 'gap', 'reached', 'unanswered', 'newcomer'];
+    const who = item => h('td', { className: 'bff-mono' }, item.person, item.owner ? ` ${t('wake.pick.owner')}` : '');
+    const detail = entry => h('tr', { key: entry.id + ':detail' }, h('td', { colSpan: 5 },
+      h('p', { className: 'bff-small bff-muted' }, `${t('wake.counts')}: ${['wokeToday', 'reachedToday', 'intentPeople', 'chattedPeople'].map(key => `${t(`wake.count.${key}`)} ${entry.counts?.[key] ?? '—'}`).join(' · ')}`),
+      !entry.selection ? h('p', { className: 'bff-small bff-muted' }, t('wake.pick.noPick')) : h(React.Fragment, null,
+        h('p', { className: 'bff-small bff-muted' }, t('wake.pick.dryRun')),
+        entry.selection.chance && h('p', { className: 'bff-small' }, `${t('wake.pick.chance')}: ${factor(entry.selection.chance.roll)} / ${factor(entry.selection.chance.needed)}`),
+        h('div', { className: 'bff-table' }, h('table', null,
+          h('thead', null, h('tr', null, h('th', { scope: 'col' }, t('wake.pick.person')), ...FACTORS.map(key => h('th', { key, scope: 'col' }, t(`wake.factor.${key}`))), h('th', { scope: 'col' }, t('wake.pick.weight')))),
+          h('tbody', null,
+            ...entry.selection.candidates.map(item => h('tr', { key: item.person }, who(item), ...FACTORS.map(key => h('td', { key }, `×${factor(item.weights[key])}`)), h('td', null, factor(item.weight)))),
+            ...entry.selection.excluded.map(item => h('tr', { key: item.person }, who(item), h('td', { colSpan: FACTORS.length + 1 }, `${t('wake.pick.excluded')}: ${named(`wake.excluded.${item.reason}`, item.reason)}`))),
+            h('tr', { key: 'none' }, h('td', null, t('wake.pick.none')), h('td', { colSpan: FACTORS.length }), h('td', null, factor(entry.selection.noneWeight)))))),
+        entry.selection.total !== null && h('p', { className: 'bff-small' }, `${t('wake.pick.total')} ${factor(entry.selection.total)} · ${t('wake.pick.random')} ${factor(entry.selection.random)} · ${t('wake.pick.result')} ${picked(entry.selection)}`),
+        entry.fuses?.length ? h('p', { className: 'bff-small' }, `${t('wake.pick.fuses')}: ${entry.fuses.join(', ')}`) : null)));
+    return h('section', { className: 'bff-card' }, head,
+      statusLine(t(enabled ? 'wake.on' : 'wake.off'), enabled ? 'primary' : 'ok'),
+      text('wake.hint'),
+      h('p', { className: 'bff-small bff-muted' }, `${t('wake.today')} ${wake.wokeToday ?? 0} / ${perDay} · ${t('wake.next')} ${enabled && Number.isFinite(wake.nextAt) ? time(wake.nextAt) : '—'} · ${t('wake.tierNow')} ${named(`wake.tier.${wake.outreach}`, String(wake.outreach ?? '—'))}`),
+      h('label', { className: 'bff-check' }, h('input', { type: 'checkbox', checked: enabled, disabled: busy, onChange: event => {
+        const next = event.target.checked;
+        void run(async () => { await request('/initiative/settings', { wake: { enabled: next } }); await loadWake(); setNotice(t('saved')); });
+      } }), h('span', null, t('wake.switch'))),
+      h('form', { className: 'bff-stack-sm', onSubmit: event => { event.preventDefault(); void run(async () => {
+        const count = Number(wakeDraft);
+        if (!Number.isInteger(count) || count < 1 || count > perDayMax) throw Object.assign(new Error('invalid_wake'), { code: 'invalid_wake' });
+        await request('/initiative/settings', { wake: { perDay: count } }); setWakeDraft(''); await loadWake(); setNotice(t('saved'));
+      }); } },
+        h('label', null, h('span', null, `${t('wake.perDay')}（${t('wake.perDayNow')} ${perDay}）`), h('input', { type: 'number', min: 1, max: perDayMax, step: 1, value: wakeDraft, placeholder: String(perDay), disabled: busy, onChange: event => setWakeDraft(event.target.value) })),
+        h('div', { className: 'bff-actions' }, h('button', { type: 'submit', className: 'bff-sm', disabled: busy || wakeDraft === '' }, t('wake.perDaySave')),
+          button('wake.now', () => run(async () => {
+            const value = await request('/initiative/wake', {});
+            await loadWake();
+            setNotice(value?.blocked ? `${t('wake.blocked')}${named(`wake.skip.${value.blocked}`, value.blocked)}` : t('wake.asked'));
+          }), { className: 'bff-primary bff-sm', icon: 'sparkles' }))),
+      h('h3', null, t('wake.moods')), words(wake.moods, 'wake.noMoods'),
+      h('h3', null, t('wake.notes')), words(wake.notes, 'wake.noNotes'),
+      h('h3', null, t('wake.log')),
+      !wake.log.length ? text('wake.noLog') : h('div', { className: 'bff-table' }, h('table', null,
+        h('thead', null, h('tr', null, ...['time', 'reason', 'did', 'pick', 'more'].map(key => h('th', { key, scope: 'col' }, t(`wake.columns.${key}`))))),
+        h('tbody', null, ...wake.log.slice(0, 40).flatMap(entry => entry.type === 'skip'
+          ? [h('tr', { key: 'skip:' + entry.day }, h('td', { style: { whiteSpace: 'nowrap' } }, entry.day), h('td', { colSpan: 4 }, `${t('wake.skipped')}: ${Object.entries(entry.counts ?? {}).map(([reason, count]) => `${named(`wake.skip.${reason}`, reason)} ×${count}`).join('、')}`))]
+          : [h('tr', { key: entry.id }, h('td', { style: { whiteSpace: 'nowrap' } }, time(entry.at)), h('td', null, named(`wake.reason.${entry.reason}`, entry.reason)), h('td', null, did(entry)),
+              h('td', null, entry.tier ? `${named(`wake.tier.${entry.tier}`, entry.tier)} → ${picked(entry.selection)}` : '—'),
+              h('td', null, h('button', { type: 'button', className: 'bff-ghost bff-sm', 'aria-expanded': wakeOpen === entry.id, onClick: () => setWakeOpen(wakeOpen === entry.id ? null : entry.id) }, t(wakeOpen === entry.id ? 'wake.fold' : 'wake.unfold')))),
+            ...(wakeOpen === entry.id ? [detail(entry)] : [])])))));
+  }
   // Background jobs: the demonstration job is registered here, in the owner's own QQ conversation (the request names
   // nobody), and the list shows each job's state, result, why one was refused and how telling the person ended.
   function jobsCard() {
@@ -861,6 +936,7 @@ export function WorldConsole({ t, standalone = false }) {
       qqSettings(),
       initiationCard(),
       jobsCard(),
+      wakeCard(),
       stickersCard(),
       h('section', { className: 'bff-card' }, h('h2', null, t('channels')), data.bindings.length ? h('div', { className: 'bff-table' }, h('table', null,
         h('thead', null, h('tr', null, ...['source', 'conversation', 'person', 'audience'].map(key => h('th', { key, scope: 'col' }, t(key))))),

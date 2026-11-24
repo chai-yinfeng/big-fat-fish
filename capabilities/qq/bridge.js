@@ -24,6 +24,9 @@ const INITIATION_PREFIX = 'qq:init:';
 /** What she is told in place of a message, by kind of initiated run (the executor frames it as a background event). */
 const INITIATION_EVENTS = { proactive: '现在没有人给你发消息。你可以主动找对方说一两句：想到什么、想问什么都行，照你平时的样子，简短一点。' };
 const JOB_REF = /^job:[a-f0-9-]{36}$/;
+/** Her own conversation on this channel, as Authority names it (authority/src/wake.js `selfStream`): where a private
+ * wake-up runs. It is nobody's: nothing is sent from it and nothing in it is observed. */
+const WAKE_STREAM = 'qq:self';
 /** What she is told when a background job of this conversation ended, from what the content service returned for it
  * (the result is machine-made text, labelled as such). Throws when that is not a finished job. */
 function completionEvent(result) {
@@ -336,7 +339,8 @@ export class QQBridge {
     this.initiating = true;
     try {
       await this.reportInitiations();
-      const { initiation } = await this.authority.initiationNext();
+      // `busy`: turns are queued or running here. Authority holds her private wake-up back meanwhile; nothing else changes.
+      const { initiation } = await this.authority.initiationNext({ busy: this.active > 0 || this.waiting.length > 0 || this.streams.size > 0 || this.bursts.size > 0 });
       if (initiation) { await this.initiate(cfg, initiation); await this.reportInitiations(); }
     } catch {} finally { this.initiating = false; }
   }
@@ -364,6 +368,7 @@ export class QQBridge {
     const item = this.state.records[requestId] = { status: 'queued' }; this.save();
     const end = status => { item.status = status; this.save(); };
     try {
+      if (kind === 'wake') return await this.wake({ requestId, item, end, streamId, memoryEpoch, expiresAt, briefing: initiation.briefing });
       const target = typeof streamId === 'string' ? /^qq:([1-9]\d{0,19}):private:([1-9]\d{0,19})$/.exec(streamId) : null;
       const completion = kind === 'completion';
       if (!completion && !Object.hasOwn(INITIATION_EVENTS, kind)) return end('dropped:unsupported');
@@ -379,6 +384,21 @@ export class QQBridge {
       Object.assign(item, { memoryEpoch, entityId: scope.entityId, worldRevision: world.revision }); this.save();
       await this.enqueue(streamId, () => this.initiated({ cfg, kind, requestId, item, streamId, userId: target[2], ...(completion ? { jobRef } : {}) }));
     } catch { if (['queued', 'processing'].includes(item.status)) end('failed'); }
+  }
+  /** Her private wake-up, as Authority handed it out: one run in her own conversation with Authority's briefing as its
+   * text. It is only run: whatever she replies, nothing is sent, nothing is observed and no delivery is reported.
+   * What she writes down goes from the executor straight to Authority. Reported once as `done`, or why it did not run. */
+  async wake({ requestId, item, end, streamId, memoryEpoch, expiresAt, briefing }) {
+    if (streamId !== WAKE_STREAM || !Number.isSafeInteger(memoryEpoch) || memoryEpoch < 0 || typeof briefing !== 'string' || !briefing || briefing.length > 2000) return end('dropped:target');
+    if (!(this.clock() < expiresAt)) return end('dropped:expired');
+    const world = (await this.authority.health()).world, scope = await this.authority.context({ streamId, query: '', budgetChars: 1 });
+    if (world.paused) return end('dropped:paused');
+    if (scope.memoryEpoch !== memoryEpoch) return end('dropped:epoch');
+    await this.enqueue(streamId, async () => {
+      item.status = 'processing'; this.save();
+      try { await executeConversation(this.executor, { scope: { streamId, memoryEpoch }, requestId, input: { text: briefing, wake: true } }); end('done'); }
+      catch (error) { end(error?.code === 'BUDGET_EXHAUSTED' ? 'deferred:budget' : error?.code === 'WORLD_PAUSED' ? 'dropped:paused' : 'failed'); }
+    });
   }
   /** The initiated run itself, in its conversation's queue: a turn with no message of the person. Her reply is split
    * and sent like any reply, each message with its own receipt; the first that fails or is unknown ends it, and

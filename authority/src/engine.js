@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Store, DEFAULT_ENTITY_ID } from './store.js';
-import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
+import { SELF_PERSON, capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
 import { POLICIES, validatePayload, review } from './policies.js';
 import { normalizePersona, validatePersonaPatch } from './persona.js';
 import { tokenize } from './util.js';
@@ -29,11 +29,14 @@ function channelId(capabilityId,value){
 export class Authority extends InitiationDomain {
   constructor(options){
     super();
-    closed(options,['file','clock','persona','initialPaused','migrations','contentService'],['file']);
+    closed(options,['file','clock','persona','initialPaused','migrations','contentService','random'],['file']);
     text(options.file,4096);
     if(options.initialPaused!==undefined&&typeof options.initialPaused!=='boolean')fail('VALIDATION_ERROR','initialPaused must be boolean');
     if(options.clock!==undefined&&typeof options.clock!=='function')fail('VALIDATION_ERROR','clock must be function');
     this.clock=options.clock??Date.now;
+    // The random source of her wake-up schedule and of the pick of a person (wake.js); tests give their own.
+    if(options.random!==undefined&&typeof options.random!=='function')fail('VALIDATION_ERROR','random must be function');
+    this.random=options.random??Math.random;
     jsonValue(options.persona??{});
     const persona=validated(()=>normalizePersona(options.persona??{})),
     at=this.now();
@@ -111,6 +114,8 @@ export class Authority extends InitiationDomain {
     closed(input,['capabilityId','externalActorId','personId']);
     identifier(input.externalActorId);
     identifier(input.personId);
+    // Her own conversation's person is nobody: no account is ever bound to it.
+    if(input.personId===SELF_PERSON)fail('VALIDATION_ERROR','Reserved person');
     return this.store.transaction(()=>{
       capability(this.store,input.capabilityId);
       const old=this.store.db.prepare('SELECT person_id FROM actors WHERE capability_id=? AND actor_id=?').get(input.capabilityId,input.externalActorId);
@@ -131,6 +136,7 @@ export class Authority extends InitiationDomain {
     closed(input,['capabilityId','streamId','personId','audience','entityId'],['capabilityId','streamId','personId','audience']);
     identifier(input.streamId);
     identifier(input.personId);
+    if(input.personId===SELF_PERSON)fail('VALIDATION_ERROR','Reserved person');
     enumeration(input.audience,['private','shared']);
     const entityId=input.entityId??DEFAULT_ENTITY_ID;
     this.entity(entityId);
@@ -199,6 +205,7 @@ export class Authority extends InitiationDomain {
   attachAccount(input){
     closed(input,['capabilityId','actorId','streamId','personId','move'],['capabilityId','actorId','streamId','personId']);
     identifier(input.personId);
+    if(input.personId===SELF_PERSON)fail('VALIDATION_ERROR','Reserved person');
     if(input.move!==undefined&&typeof input.move!=='boolean')fail('VALIDATION_ERROR','move must be boolean');
     const {capabilityId,actorId,streamId,personId}=input;
     if(!this.conversationChannel(capabilityId))fail('FORBIDDEN','Not a conversation channel',403);
@@ -240,7 +247,7 @@ export class Authority extends InitiationDomain {
     return this.store.db.prepare(`SELECT s.capability_id AS capabilityId,s.stream_id AS streamId,s.person_id AS personId,s.audience,s.entity_id AS entityId,
       (SELECT COUNT(*) FROM observations o WHERE o.capability_id=s.capability_id AND o.stream_id=s.stream_id AND o.forgotten=0) AS messages,
       (SELECT MAX(json_extract(o.body,'$.at')) FROM observations o WHERE o.capability_id=s.capability_id AND o.stream_id=s.stream_id) AS lastAt
-      FROM streams s ORDER BY s.capability_id,s.stream_id`).all().map(row=>({...row,label:opaquePerson(row.personId),owner:row.personId==='person:owner',memoryEpoch:this.streamEpoch(this.entity(row.entityId),row.capabilityId,row.streamId)}))
+      FROM streams s WHERE s.person_id<>? ORDER BY s.capability_id,s.stream_id`).all(SELF_PERSON).map(row=>({...row,label:opaquePerson(row.personId),owner:row.personId==='person:owner',memoryEpoch:this.streamEpoch(this.entity(row.entityId),row.capabilityId,row.streamId)}))
       .sort((a,b)=>(b.lastAt??0)-(a.lastAt??0));
   }
   adminAudit(type,input){
@@ -428,7 +435,9 @@ export class Authority extends InitiationDomain {
     integer(input.at);
     const encoded=canonical(input);
     return this.store.transaction(()=>{
-      const binding = this.store.db.prepare('SELECT entity_id FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId, input.streamId);
+      const binding = this.store.db.prepare('SELECT entity_id,person_id FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId, input.streamId);
+      // Her own conversation holds no observation: nobody speaks in it and nothing in it is sent.
+      if (binding?.person_id === SELF_PERSON) fail('FORBIDDEN', 'Nothing is observed in her own conversation', 403);
       const tombstone = this.store.db.prepare('SELECT observation_id FROM source_tombstones WHERE entity_id=? AND capability_id=? AND stream_id=? AND event_id=?').get(binding?.entity_id ?? DEFAULT_ENTITY_ID, capabilityId, input.streamId, input.eventId);
       if (tombstone) return { observationId: tombstone.observation_id, duplicate: true, forgotten: true };
       const previous=this.store.db.prepare('SELECT * FROM observations WHERE capability_id=? AND stream_id=? AND event_id=?').get(capabilityId,input.streamId,input.eventId);
@@ -596,6 +605,8 @@ export class Authority extends InitiationDomain {
       entityId:e.id,
       // The channel this conversation is on (the caller's own capability): the executor picks the channel's part of the system message by it.
       capabilityId,
+      // Her own conversation (wake.js): the executor runs her private wake-up there and nothing else, and never anywhere else.
+      ...(scope.personId===SELF_PERSON?{own:true}:{}),
       memoryEpoch:this.streamEpoch(e,capabilityId,input.streamId),
       personaRevision:e.persona_revision,
       // `text` is the whole context; personaText/memoryText are the same content apart (stable / per-query).

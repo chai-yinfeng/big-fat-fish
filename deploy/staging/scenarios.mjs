@@ -697,6 +697,71 @@ export const STEPS = {
     const set = (await run.operator('POST', '/initiative/settings', { quietHours })).quietHours;
     if (window !== 'default' && set.now !== (window === 'now')) fail(`the quiet hours ${set.from}-${set.to} ${set.now ? 'cover' : 'do not cover'} the present`);
   },
+  /** Her private wake-up through the operator route (POST /initiative/settings `wake`): the switch, and how many a day. */
+  async wake(run, _ctx, { enabled, perDay }) {
+    const set = (await run.operator('POST', '/initiative/settings', { wake: { enabled, ...(perDay === undefined ? {} : { perDay }) } })).wake;
+    if (set?.enabled !== enabled) fail(`the wake-up switch is ${set?.enabled}, expected ${enabled}`);
+  },
+  /** The operator's "wake now" (POST /initiative/wake with an empty body: it names nothing). `expect`: what must stand
+   * in its way as things are ("off", "quiet_hours", "paused", ...), or nothing (default). The wake-ups already logged
+   * are remembered, so `expectWake` finds the one this step asked for. */
+  async wakeNow(run, ctx, { expect = null } = {}) {
+    ctx.wakes = new Set((await run.operator('GET', '/initiative')).log.filter(entry => entry.type === 'wake').map(entry => entry.id));
+    const value = await run.operator('POST', '/initiative/wake', {});
+    if ((value.blocked ?? null) !== expect) fail(`the wake-up is held back by ${value.blocked ?? 'nothing'}, expected ${expect ?? 'nothing'}`);
+    if (expect === null && value.scheduledAt > Date.now() + 5000) fail('the wake-up was put off: an earlier one ran less than 45 minutes ago on this state');
+  },
+  /** The wake-up `wakeNow` asked for, as the operator's page shows it (GET /initiative): waits until it is logged and
+   * nothing is out, then checks how it ended (`outcome`), what she did (`did`: fields of the log entry's own), her
+   * `tier`, a `mood` she wrote in it, and with `picked: true` that the pick of a person was worked through: opaque
+   * labels only, six weights a candidate, a total that adds up, a result that is one of them or nobody, and marked as
+   * not acted on. The page never holds an account number. */
+  async expectWake(run, ctx, { outcome = 'done', did = {}, tier, mood, picked, timeoutMs = 60000 }) {
+    if (!ctx.wakes) fail('expectWake: no wakeNow in this scenario');
+    const fresh = value => value.log.find(entry => entry.type === 'wake' && !ctx.wakes.has(entry.id));
+    const page = await run.poll(async () => { const value = await run.operator('GET', '/initiative'); return fresh(value) && !value.out ? value : null; }, timeoutMs, 'she never woke');
+    const leaked = [run.data.bot, ...Object.values(run.data.people)].find(account => JSON.stringify(page).includes(account.qq));
+    if (leaked) fail(`the wake-up page contains the account number ${leaked.qq}`);
+    const entry = fresh(page);
+    if (entry.outcome !== outcome) fail(`the wake-up ended as ${entry.outcome}, expected ${outcome}`);
+    for (const [key, value] of Object.entries(did)) if (entry.did?.[key] !== value) fail(`the wake-up log says ${key}: ${JSON.stringify(entry.did?.[key])}, expected ${JSON.stringify(value)}`);
+    if (tier !== undefined && entry.tier !== tier) fail(`her tier in the wake-up log is ${entry.tier}, expected ${tier}`);
+    if (mood !== undefined && !page.moods.some(item => item.text === mood && item.wakeId === entry.id)) fail(`the page does not show the mood ${JSON.stringify(mood)} under this wake-up`);
+    if (entry.second !== null) fail('the wake-up log records a second stage: this release must not act on the pick');
+    if (picked) {
+      const selection = entry.selection, label = /^p-[0-9a-f]{6}$/;
+      if (!selection || selection.dryRun !== true) fail('the wake-up log has no pick worked through (marked as not acted on)');
+      if (![...selection.candidates, ...selection.excluded].every(item => label.test(item.person))) fail('the pick names a person by something other than an opaque label');
+      if (!selection.candidates.every(item => ['intent', 'chatter', 'gap', 'reached', 'unanswered', 'newcomer'].every(key => Number.isFinite(item.weights?.[key])) && Number.isFinite(item.weight))) fail('a candidate of the pick lacks one of its six weights');
+      if (!selection.excluded.every(item => typeof item.reason === 'string')) fail('someone kept out of the pick has no reason');
+      if (selection.total !== null && Math.abs(selection.total - selection.candidates.reduce((sum, item) => sum + item.weight, selection.noneWeight)) > 1e-4) fail('the total weight of the pick does not add up');
+      if (selection.total !== null && !(selection.random >= 0 && selection.random < 1)) fail('the pick was drawn without a logged roll');
+      if (selection.result !== 'none' && !selection.candidates.some(item => item.person === selection.result)) fail('the result of the pick is not one of its candidates');
+    }
+  },
+  /** The model requests of her wake-up in this scenario (the typed text starts with the wake-up marker): each offers
+   * the one tool companion_self and holds nothing of any person: no account number, no opaque person label, no
+   * conversation ID and none of the `absent` texts (what people said, her intents about them) anywhere in the request.
+   * Every other chat request of the scenario offers no such tool and holds none of the `onlyHere` texts (what she
+   * wrote down in the wake-up). */
+  async expectWakeRequest(run, ctx, { absent = [], onlyHere = [] }) {
+    const log = run.modelLog(ctx).filter(entry => entry.stream), OPEN = '[私下时间 · 这不是任何人发来的话]';
+    if (!log.every(entry => [entry.system, entry.context, entry.rest].every(value => typeof value === 'string') && Array.isArray(entry.tools))) fail('the model request log lacks system/context/rest/tools');
+    const whole = entry => [entry.system, entry.context, entry.userText, entry.rest].join('\n'), wakes = log.filter(entry => entry.userText.startsWith(OPEN));
+    if (!wakes.length) fail('the model received no wake-up request');
+    for (const entry of wakes) {
+      if (entry.tools.join(',') !== 'companion_self') fail(`a wake-up request offers the tools ${JSON.stringify(entry.tools)}`);
+      const text = whole(entry), account = [run.data.bot, ...Object.values(run.data.people)].find(item => text.includes(item.qq));
+      if (account) fail(`a wake-up request contains the account number ${account.qq}`);
+      const found = /p-[0-9a-f]{6}|private:|person:/.exec(text) ?? list(absent).find(value => text.includes(value));
+      if (found) fail(`a wake-up request contains ${JSON.stringify(typeof found === 'string' ? found : found[0])}`);
+    }
+    for (const entry of log.filter(item => !item.userText.startsWith(OPEN))) {
+      if (entry.tools.includes('companion_self')) fail(`the request for ${JSON.stringify(entry.userText.slice(0, 40))} offers companion_self`);
+      const found = list(onlyHere).find(value => whole(entry).includes(value));
+      if (found) fail(`the request for ${JSON.stringify(entry.userText.slice(0, 40))} contains ${JSON.stringify(found)}, which she wrote in her wake-up`);
+    }
+  },
   /** The operator's "try it on me" (POST /initiative/poke with an empty body: the route takes no target). `expect`:
    * "waiting" (registered for the bridge to fetch) or the outcome it must be closed with at once. The request is
    * remembered for `expectInitiation`. */

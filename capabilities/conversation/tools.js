@@ -100,6 +100,29 @@ export const CONTENT_TOOL_SCHEMA = {
 // definition is generated from the capability declarations (capabilities/providers).
 export const ACTIVITY_TOOL_SCHEMA = ACTIVITY_TOOL_DEFINITION;
 
+// The one tool of her private wake-up (agent.js `input.wake`): what she writes down for herself. It is offered in her
+// own conversation only and never beside the three above, whose definitions it does not touch. It names nobody and
+// sends nothing: Authority stores what passes its checks (authority/src/wake.js) for the wake-up that is out.
+export const SELF_MOOD_CHARS = 120, SELF_NOTE_CHARS = 400;
+export const SELF_TOOL_SCHEMA = {
+  name: 'companion_self',
+  description: 'Only in your own private time. Write down for yourself, any of: mood (how you feel right now, one sentence), note (a jotting of your own), outreach (whether you feel like reaching out to someone to chat: none / maybe / yes; it stays as it was if omitted). Nothing here is sent to anyone and nobody can be named. To do nothing, do not call this tool: just reply <休息>.',
+  parameters: {
+    type: 'object', additionalProperties: false,
+    properties: {
+      mood: { type: 'string', maxLength: SELF_MOOD_CHARS, description: 'One sentence, at most 120 characters.' },
+      note: { type: 'string', maxLength: SELF_NOTE_CHARS, description: 'At most 400 characters.' },
+      outreach: { type: 'string', enum: ['none', 'maybe', 'yes'] },
+    },
+  },
+};
+/** Authority's reasons for not keeping a mood or a note (authority/src/wake.js refusedText) as what she can do about them. */
+const SELF_REFUSALS = {
+  empty: '是空的，没有记下。', too_long: '太长了，没有记下；写短一点再试。',
+  sensitive: '涉及密码、证件、健康等敏感信息，按规定不保存。不要换说法重试。',
+  unsafe_text: '里面有一长串数字或记忆中枢的标记，没有记下；去掉以后可以再试一次。',
+};
+
 // Keep real URLs/refs intact; omit whole results or shorten content, never cut JSON.
 export function boundedContent(value) {
   if (!isObject(value)) throw fail('CONTENT_RESPONSE_INVALID');
@@ -254,4 +277,33 @@ export function createCompanionTools({ authority, content, scope, windowFromAt, 
     { ...CONTENT_TOOL_SCHEMA, label: 'Companion content', executionMode: 'sequential', execute: async (_id, params, signal) => contentRun(params, signal) },
     { ...ACTIVITY_TOOL_SCHEMA, label: 'Companion activity', executionMode: 'sequential', execute: async (_id, params, signal) => activityRun(params, signal) },
   ];
+}
+
+/** The tool of her private wake-up, in place of the three above.
+ * @param authority AuthorityClient bound to this channel's capability credential
+ * @param scope     {streamId, memoryEpoch} of her own conversation, from the trusted execution request
+ * @param guard     re-checks Authority pause/entity/epoch before anything is written */
+export function createSelfTools({ authority, scope, guard, log = line => process.stderr.write(line + '\n') }) {
+  async function run(args) {
+    const keys = ['mood', 'note', 'outreach'];
+    closed(args, keys, []);
+    if (!keys.some(key => args[key] !== undefined)) throw invalid('mood、note、outreach 至少给一个；什么都不想做就不用调用这个工具，直接回复 <休息>');
+    for (const [key, max] of [['mood', SELF_MOOD_CHARS], ['note', SELF_NOTE_CHARS]]) if (args[key] !== undefined && (typeof args[key] !== 'string' || !args[key].trim() || [...args[key]].length > max)) throw invalid(`${key} 必须是 1–${max} 个字符的文字`);
+    if (args.outreach !== undefined && !SELF_TOOL_SCHEMA.parameters.properties.outreach.enum.includes(args.outreach)) throw invalid('outreach 必须是 none、maybe、yes 之一');
+    await guard();
+    const stored = await authority.selfRecord({ streamId: scope.streamId, ...Object.fromEntries(keys.filter(key => args[key] !== undefined).map(key => [key, args[key]])) });
+    if (!isObject(stored)) throw fail('SELF_RESPONSE_INVALID');
+    const told = {};
+    for (const key of ['mood', 'note']) if (typeof stored[key] === 'string') told[key] = stored[key] === 'accepted' ? '记下了。' : `没有记下：${SELF_REFUSALS[stored[key].replace(/^rejected:/, '')] ?? '被拒收。'}`;
+    if (typeof stored.outreach === 'string') told.outreach = `档位现在是 ${stored.outreach}。`;
+    return told;
+  }
+  return [{ ...SELF_TOOL_SCHEMA, label: 'Companion self', executionMode: 'sequential', execute: async (_id, params) => {
+    try { return result(await run(params)); }
+    catch (error) {
+      const code = typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) ? error.code : 'ERROR';
+      try { log(`conversation tool failed: ${SELF_TOOL_SCHEMA.name} - ${code}`); } catch {}
+      throw error;
+    }
+  } }];
 }

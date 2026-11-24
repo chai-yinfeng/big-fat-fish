@@ -33,7 +33,7 @@ export const CONSOLIDATION = Object.freeze({
 export const BACKGROUND_PROPOSAL = 'cons:';
 const OMITTED = '[一条内容已省略]', CUT = '…[截断]';
 // A digest is machine text shown to the operator and, later, to the model: no note delimiter, no account-like number.
-const UNSAFE_DIGEST = /[<＜]{3,}|[>＞]{3,}|记忆中枢附注|\d{7,}/u;
+export const UNSAFE_DIGEST = /[<＜]{3,}|[>＞]{3,}|记忆中枢附注|\d{7,}/u;
 
 export const beijingDay = at => new Date(at + BEIJING).toISOString().slice(0, 10);
 const beijingMidnight = at => Math.floor((at + BEIJING) / DAY) * DAY - BEIJING;

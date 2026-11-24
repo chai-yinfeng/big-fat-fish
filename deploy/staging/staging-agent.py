@@ -477,12 +477,14 @@ def reset_consolidation(database):
 def reset_initiations(database):
     """Deterministic reruns of the initiation scenarios, while Authority is stopped: no request of an earlier
     replay is still open (one that was out when its replay died would hold the next ones back for minutes) and
-    the quiet hours are the default again. Returns whether there was anything to remove."""
+    the quiet hours are the default again. Her private wake-up starts over as well (its switch off, no wake-up of an
+    earlier replay counted against the day or the 45 minutes between two, her moods, notes and wake log gone).
+    Returns whether there was anything to remove."""
     if not Path(database).exists():
         return False
     db = sqlite3.connect(str(database))
     try:
-        removed = db.execute("DELETE FROM metadata WHERE key='initiations'").rowcount > 0
+        removed = db.execute("DELETE FROM metadata WHERE key IN ('initiations','initiative','initiative.log')").rowcount > 0
         db.commit()
         return removed
     finally:

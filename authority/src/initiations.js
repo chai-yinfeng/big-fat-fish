@@ -15,11 +15,16 @@
 //   once: in a turn she starts, or with the person's next message (`carried`), never both and never again.
 // Storage (no schema change): everything lives under the metadata key 'initiations': the requests and, once the
 // operator has changed them, the quiet hours.
+// A third kind is handed out through the same `next` and reported through the same `ack`, and reaches nobody:
+// - `wake`: her private wake-up (wake.js). It runs in her own conversation, sends nothing, and is kept apart from the
+//   requests above (metadata keys 'initiative' and 'initiative.log').
 import { randomUUID } from 'node:crypto';
 import { capability, closed, fail, identifier } from './identity.js';
 import { OpenDiaryDomain } from './open-diary.js';
 import { opaquePerson } from './context.js';
 import { roomProjection } from './room.js';
+import { DEFAULT_CARD_ID } from './cards.js';
+import { OUTREACH_TIERS, SELECTION, SELF_PERSON, WAKE, WAKE_OUTCOMES, afterQuiet, beijingDay, beijingMidnight, candidateWeights, nextDay, pick, refusedText, regularNext, renderBriefing, selfStream } from './wake.js';
 
 const MINUTE = 60000, BEIJING = 8 * 3600000;
 export const INITIATION = Object.freeze({
@@ -191,7 +196,9 @@ export class InitiationDomain extends OpenDiaryDomain {
    * request, and is only handed requests of its own channel. At most one request is out per channel. `jobs` is what the content service lists as finished and untold (the
    * transport asks it with Authority's own control credential; the caller of this route supplies nothing). */
   initiationNext(capabilityId, input = {}, jobs = []) {
-    closed(input, [], []);
+    // `busy`: the caller has turns queued or running. It only ever holds back her own wake-up.
+    closed(input, ['busy'], []);
+    if (input.busy !== undefined && typeof input.busy !== 'boolean') fail('VALIDATION_ERROR', 'busy must be boolean');
     if (capability(this.store, capabilityId).policy !== 'conversation.v1') fail('FORBIDDEN', 'Initiations are for conversation channels', 403);
     return this.store.transaction(() => {
       const state = this.#state(), stored = JSON.stringify(state), world = this.worldStatus(), now = this.now();
@@ -210,6 +217,11 @@ export class InitiationDomain extends OpenDiaryDomain {
           item.status = 'issued'; item.issuedAt = now;
           initiation = { id: item.id, kind: item.kind, streamId: item.streamId, memoryEpoch: item.memoryEpoch, expiresAt: item.expiresAt };
         } else if (ready.length) initiation = this.#issue(state, ready[0], capabilityId, now, false);
+        // Nothing for anybody: her own wake-up may be due (a request to a person always goes first).
+        else {
+          const wake = this.#wakeNext(capabilityId, { busy: input.busy === true, quiet, world, now, items: state.items });
+          if (wake === 'out') reason = 'busy'; else if (wake) initiation = wake;
+        }
       }
       // An idle poll writes nothing.
       if (JSON.stringify(state) !== stored) this.#save(state);
@@ -236,10 +248,14 @@ export class InitiationDomain extends OpenDiaryDomain {
   initiationAck(capabilityId, input) {
     closed(input, ['id', 'outcome']);
     identifier(input.id);
-    if (typeof input.outcome !== 'string' || !(INITIATION_OUTCOMES.includes(input.outcome) || DROPPED.test(input.outcome))) fail('VALIDATION_ERROR', 'Unsupported initiation outcome');
+    if (typeof input.outcome !== 'string' || !(INITIATION_OUTCOMES.includes(input.outcome) || WAKE_OUTCOMES.includes(input.outcome) || DROPPED.test(input.outcome))) fail('VALIDATION_ERROR', 'Unsupported initiation outcome');
     if (capability(this.store, capabilityId).policy !== 'conversation.v1') fail('FORBIDDEN', 'Initiations are for conversation channels', 403);
     return this.store.transaction(() => {
       const state = this.#state(), now = this.now(), item = state.items.find(entry => entry.id === input.id);
+      const wake = item ? null : this.#wakeAck(capabilityId, input, now, state);
+      if (wake) return wake;
+      // `done` is how a wake-up ends, and nothing else ends that way.
+      if (input.outcome === 'done') fail('CONFLICT', 'Initiation is not a wake-up', 409);
       if (!item || item.capabilityId !== capabilityId || item.status === 'waiting') fail('CONFLICT', 'Initiation is not out', 409);
       // `carried` is how a result that rode on the person's message ends, and nothing else ends that way.
       if (input.outcome === 'carried' && !item.carried) fail('CONFLICT', 'Initiation was not carried', 409);
@@ -290,16 +306,252 @@ export class InitiationDomain extends OpenDiaryDomain {
       };
     });
   }
-  /** Operator only: the quiet hours as Beijing wall-clock times `{quietHours:{from:'HH:MM',to:'HH:MM'}}`; equal
-   * ends mean no quiet hours. No console form uses it yet: scenario replay does, to run at any hour. */
+  /** Operator only: the quiet hours as Beijing wall-clock times `{quietHours:{from:'HH:MM',to:'HH:MM'}}` (equal
+   * ends mean no quiet hours; no console form uses it yet: scenario replay does, to run at any hour), and her private
+   * wake-up `{wake:{enabled?,perDay?}}` (off until the operator turns it on; `perDay` 1..WAKE.perDayMax). Either
+   * or both. */
   initiationSettings(input) {
-    closed(input, ['quietHours']); closed(input.quietHours, ['from', 'to']);
-    const minutes = ['from', 'to'].map(key => { const match = typeof input.quietHours[key] === 'string' ? /^([01]\d|2[0-3]):([0-5]\d)$/.exec(input.quietHours[key]) : null; if (!match) fail('VALIDATION_ERROR', 'Quiet hours are HH:MM'); return Number(match[1]) * 60 + Number(match[2]); });
+    closed(input, ['quietHours', 'wake'], []);
+    if (input.quietHours === undefined && input.wake === undefined) fail('VALIDATION_ERROR', 'Nothing to change');
+    let minutes = null;
+    if (input.quietHours !== undefined) {
+      closed(input.quietHours, ['from', 'to']);
+      minutes = ['from', 'to'].map(key => { const match = typeof input.quietHours[key] === 'string' ? /^([01]\d|2[0-3]):([0-5]\d)$/.exec(input.quietHours[key]) : null; if (!match) fail('VALIDATION_ERROR', 'Quiet hours are HH:MM'); return Number(match[1]) * 60 + Number(match[2]); });
+    }
+    if (input.wake !== undefined) {
+      closed(input.wake, ['enabled', 'perDay'], []);
+      if (input.wake.enabled !== undefined && typeof input.wake.enabled !== 'boolean') fail('VALIDATION_ERROR', 'enabled must be boolean');
+      if (input.wake.perDay !== undefined && !(Number.isInteger(input.wake.perDay) && input.wake.perDay >= 1 && input.wake.perDay <= WAKE.perDayMax)) fail('VALIDATION_ERROR', 'perDay is out of range');
+    }
     return this.store.transaction(() => {
       const state = this.#state();
-      state.quiet = { fromMinute: minutes[0], toMinute: minutes[1] };
-      this.#save(state);
-      return { quietHours: { from: clock(minutes[0]), to: clock(minutes[1]), timezone: 'Asia/Shanghai', now: quietHours(this.now(), state.quiet) } };
+      if (minutes) { state.quiet = { fromMinute: minutes[0], toMinute: minutes[1] }; this.#save(state); }
+      const own = this.#initiative();
+      if (input.wake) { own.wake = { ...this.#wakeSettings(own), ...input.wake }; this.#saveInitiative(own); }
+      const quiet = this.#quiet(state);
+      return { quietHours: { from: clock(quiet.fromMinute), to: clock(quiet.toMinute), timezone: 'Asia/Shanghai', now: quietHours(this.now(), quiet) }, ...(input.wake ? { wake: this.#wakeSettings(own) } : {}) };
     });
+  }
+
+  // ---- Her private wake-up (wake.js). Everything below reaches nobody: no request to any person is made from it. ----
+  #initiative() {
+    const row = this.store.db.prepare("SELECT value FROM metadata WHERE key='initiative'").get();
+    return row ? JSON.parse(row.value) : {};
+  }
+  #saveInitiative(own) { this.store.db.prepare("INSERT INTO metadata(key,value) VALUES('initiative',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(own)); }
+  #wakeLog() {
+    const row = this.store.db.prepare("SELECT value FROM metadata WHERE key='initiative.log'").get();
+    return row ? JSON.parse(row.value) : [];
+  }
+  #saveWakeLog(log) { this.store.db.prepare("INSERT INTO metadata(key,value) VALUES('initiative.log',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(log.slice(-WAKE.log))); }
+  #wakeSettings(own) {
+    const perDay = own.wake?.perDay;
+    return { enabled: own.wake?.enabled === true, perDay: Number.isInteger(perDay) && perDay >= 1 && perDay <= WAKE.perDayMax ? perDay : WAKE.perDay };
+  }
+  /** Wake-ups that ran (or may have) on the Beijing day of `now`: one the spend tier refused or the bridge never started does not count. */
+  #wokeToday(log, now) {
+    const day = beijingDay(now);
+    return log.filter(entry => entry.type === 'wake' && beijingDay(entry.at) === day && entry.outcome !== 'deferred:budget' && !entry.outcome.startsWith('dropped:')).length;
+  }
+  /** A wake-up that was due and did not happen: counted by reason, merged into one entry a Beijing day. */
+  #skip(log, reason, now) {
+    const day = beijingDay(now);
+    let entry = log.findLast(item => item.type === 'skip' && item.day === day);
+    if (!entry) { entry = { type: 'skip', day, at: now, counts: {} }; log.push(entry); }
+    entry.counts[reason] = (entry.counts[reason] ?? 0) + 1; entry.at = now;
+  }
+  /** The next wake-up is brought forward to now, but never closer than WAKE.minGapMs to the one before it. */
+  #bringForward(own, now, reason) {
+    const at = Math.max(now, (own.lastWakeAt ?? -Infinity) + WAKE.minGapMs);
+    if (!(own.nextAt <= at)) own.nextAt = at;
+    own.nextReason = reason;
+  }
+  /** Her tier as it stands: what she last chose under the persona card now current, else 'none'. */
+  #tier(own, cardId) { return OUTREACH_TIERS.includes(own.outreach?.tier) && (own.outreach.cardId ?? DEFAULT_CARD_ID) === cardId ? own.outreach.tier : 'none'; }
+  /** The turns she started that went out since `since`, from the kept requests (the newest 50 closed ones). */
+  #reached(items, since) { return items.filter(item => item.kind === 'proactive' && ['sent', 'partial'].includes(item.outcome) && item.endedAt >= since); }
+  /** Is her wake-up due on this channel, and may it happen now? Returns the request to hand out, 'out' while one is
+   * out, or null. Only the channel the owner last spoke on carries wake-ups (so one bridge runs them). Decided here
+   * and nowhere else: the caller only says whether it has turns queued. A wake-up that is due and may not happen is
+   * counted with its reason and not made up for. */
+  #wakeNext(capabilityId, { busy, quiet, world, now, items }) {
+    const target = this.#recentStream(OWNER);
+    if (!target || target.capabilityId !== capabilityId) return null;
+    const own = this.#initiative(), stored = JSON.stringify(own), log = this.#wakeLog(), logged = JSON.stringify(log), random = this.random ?? Math.random;
+    const done = value => { if (JSON.stringify(own) !== stored) this.#saveInitiative(own); if (JSON.stringify(log) !== logged) this.#saveWakeLog(log); return value; };
+    if (own.out) {
+      if (now - own.out.issuedAt < INITIATION.reportMs) return done('out');
+      // Fetched and never reported: what became of it is unknown. The bridge's own report may still replace that.
+      this.#wakeEnd(own, log, 'unknown', now, items, { unreported: true });
+    }
+    const today = beijingDay(now), settings = this.#wakeSettings(own);
+    // An intent that came due brings the next wake-up forward. Only the number of people is read, nothing of any intent.
+    const intentPeople = Object.keys(this.openIntentCounts({ entityId: target.entityId, dueBy: today })).length;
+    if (own.due?.day !== today) own.due = { day: today, people: 0 };
+    if (intentPeople > own.due.people) this.#bringForward(own, now, 'intent_due');
+    own.due.people = intentPeople;
+    if (!settings.enabled) {
+      // Off: nothing is scheduled; only something that asked for a wake-up (the operator, an intent) is counted.
+      if (own.nextReason) this.#skip(log, 'off', now);
+      delete own.nextAt; delete own.nextReason;
+      return done(null);
+    }
+    if (!Number.isSafeInteger(own.nextAt)) own.nextAt = regularNext(now, random);
+    if (now < own.nextAt) return done(null);
+    const woke = this.#wokeToday(log, now), streamId = selfStream(capabilityId);
+    const bound = this.store.db.prepare('SELECT person_id AS personId,audience,entity_id AS entityId FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId, streamId);
+    const blocked = world.paused ? 'paused' : quietHours(now, quiet) ? 'quiet_hours' : own.deferredDay === today ? 'budget' : busy ? 'busy'
+      : woke >= WAKE.fuseWakesPerDay ? 'fuse:wakes_per_day' : woke >= settings.perDay ? 'daily_limit' : bound && (bound.personId !== SELF_PERSON || bound.audience !== 'private') ? 'target' : null;
+    if (blocked) {
+      this.#skip(log, blocked, now);
+      // Quiet hours and a busy bridge only move it (the reason it was due stays); anything else is not made up for.
+      if (blocked === 'quiet_hours') own.nextAt = afterQuiet(now, quiet, random);
+      else if (blocked === 'busy') own.nextAt = now + WAKE.busyRetryMs;
+      else { own.nextAt = ['paused', 'target'].includes(blocked) ? regularNext(now, random) : nextDay(now, random); delete own.nextReason; }
+      return done(null);
+    }
+    // Her own conversation on this channel: bound to the reserved person, who is nobody.
+    const entityId = bound?.entityId ?? target.entityId;
+    if (!bound) {
+      this.store.db.prepare('INSERT INTO streams(capability_id,stream_id,person_id,audience,entity_id) VALUES(?,?,?,?,?)').run(capabilityId, streamId, SELF_PERSON, 'private', entityId);
+      this.adminAudit('stream.bind', { capabilityId, streamId, personId: SELF_PERSON, audience: 'private', entityId });
+    }
+    const entity = this.entity(entityId), cardId = this.currentCardId(entityId), midnight = beijingMidnight(now);
+    // Counts about herself. How many people, never who.
+    const counts = {
+      wokeToday: woke, sinceLastMs: Number.isSafeInteger(own.lastWakeAt) ? now - own.lastWakeAt : null,
+      reachedToday: new Set(this.#reached(items, midnight).map(item => item.personId)).size, intentPeople,
+      chattedPeople: this.store.db.prepare(`SELECT COUNT(DISTINCT s.person_id) AS n FROM observations o JOIN streams s ON s.capability_id=o.capability_id AND s.stream_id=o.stream_id
+        JOIN capabilities c ON c.id=s.capability_id AND c.policy='conversation.v1' WHERE s.audience='private' AND s.entity_id=? AND s.person_id<>? AND o.forgotten=0 AND json_extract(o.body,'$.role')='user' AND json_extract(o.body,'$.at')>=?`).get(entityId, SELF_PERSON, midnight).n,
+    };
+    // Her mood is subjective memory: only one written under the persona card now current is read back.
+    const mood = (own.moods ?? []).findLast(item => (item.cardId ?? DEFAULT_CARD_ID) === cardId) ?? null, reason = own.nextReason ?? 'schedule';
+    own.out = { id: randomUUID(), capabilityId, streamId, entityId, memoryEpoch: this.streamEpoch(entity, capabilityId, streamId), issuedAt: now, reason, counts, did: {} };
+    own.lastWakeAt = now; own.nextAt = regularNext(now, random); delete own.nextReason;
+    return done({ id: own.out.id, kind: 'wake', streamId, memoryEpoch: own.out.memoryEpoch, expiresAt: now + INITIATION.ttlMs, briefing: renderBriefing({ now, reason, counts, mood: mood && { text: mood.text, at: mood.at }, tier: this.#tier(own, cardId) }) });
+  }
+  /** A wake-up ends: one log entry. After one that ran, the pick of a person is worked through for her tier and
+   * recorded; it is not acted on (step 6b). */
+  #wakeEnd(own, log, outcome, now, items, { unreported = false } = {}) {
+    const out = own.out; delete own.out;
+    const entry = { id: out.id, type: 'wake', at: out.issuedAt, endedAt: now, reason: out.reason, outcome, counts: out.counts, did: { ...out.did, rested: outcome === 'done' && !Object.keys(out.did).length }, tier: null, selection: null, second: null, fuses: [], ...(unreported ? { unreported: true } : {}) };
+    if (outcome === 'done') {
+      entry.tier = this.#tier(own, this.currentCardId(out.entityId));
+      if (entry.tier !== 'none') { const { fuses, ...selection } = this.#selection(out.entityId, entry.tier, now, items); entry.selection = selection; entry.fuses = fuses; }
+    }
+    // The gateway's spend tier refused the run: no wake-up for the rest of that Beijing day.
+    if (outcome === 'deferred:budget') own.deferredDay = beijingDay(now);
+    log.push(entry);
+  }
+  /** Who would be picked (design §3.4), worked through from Authority's own tables: everyone with an account and a
+   * private conversation on a conversation channel, minus those a forced rule keeps out, each with the product of
+   * their weights, and "nobody this time". People appear as opaque labels. This step has no per-person switch yet, so
+   * nobody is kept out for one. */
+  #selection(entityId, tier, now, items) {
+    const db = this.store.db, open = this.openIntentCounts({ entityId }), due = this.openIntentCounts({ entityId, dueBy: beijingDay(now) });
+    const people = db.prepare(`SELECT DISTINCT s.person_id AS personId FROM streams s JOIN capabilities c ON c.id=s.capability_id AND c.policy='conversation.v1'
+      WHERE s.audience='private' AND s.entity_id=? AND s.person_id<>? AND EXISTS (SELECT 1 FROM actors a WHERE a.capability_id=s.capability_id AND a.person_id=s.person_id) ORDER BY s.person_id`).all(entityId, SELF_PERSON);
+    const lines = db.prepare(`SELECT MIN(json_extract(o.body,'$.at')) AS firstAt,MAX(json_extract(o.body,'$.at')) AS lastAt,
+      MAX(CASE WHEN json_extract(o.body,'$.role')='user' THEN json_extract(o.body,'$.at') END) AS lastUserAt,
+      COALESCE(SUM(json_extract(o.body,'$.role')='user'),0) AS lines,COALESCE(SUM(json_extract(o.body,'$.role')='user' AND json_extract(o.body,'$.at')>=?),0) AS lines14
+      FROM observations o JOIN streams s ON s.capability_id=o.capability_id AND s.stream_id=o.stream_id WHERE s.person_id=? AND s.audience='private' AND s.entity_id=? AND o.forgotten=0`);
+    const boundary = db.prepare("SELECT 1 FROM memory_items WHERE entity_id=? AND person_id=? AND collection='appraisals' AND kind='boundary' AND status='active' AND json_extract(body,'$.evidence.at')>=? LIMIT 1");
+    const sent = this.#reached(items, 0), candidates = [], excluded = [], reachedBy = new Map();
+    for (const { personId } of people) {
+      const person = opaquePerson(personId), row = lines.get(now - SELECTION.chatterMs, personId, entityId), mine = sent.filter(item => item.personId === personId);
+      const owner = personId === OWNER ? { owner: true } : {};
+      if (boundary.get(entityId, personId, now - SELECTION.boundaryMs)) { excluded.push({ person, ...owner, reason: 'boundary' }); continue; }
+      if (row.lastAt !== null && now - row.lastAt < SELECTION.recentMs) { excluded.push({ person, ...owner, reason: 'recent' }); continue; }
+      const stats = {
+        intent: due[personId] ? 'due' : open[personId] ? 'open' : 'none', lines14: row.lines14, lastAt: row.lastUserAt, firstAt: row.firstAt, lines: row.lines,
+        reached7: mine.filter(item => item.endedAt >= now - SELECTION.reachedMs).length, unanswered: mine.filter(item => item.endedAt > (row.lastUserAt ?? 0)).length,
+      };
+      candidates.push({ person, ...owner, ...candidateWeights(stats, now) });
+      reachedBy.set(person, mine);
+    }
+    const selection = pick({ tier, candidates, excluded, random: this.random ?? Math.random }), fuses = [];
+    // The high fuses, as they would stand for the person picked. Nothing is sent in this step, so they only show here.
+    if (selection.result !== 'none') {
+      const mine = reachedBy.get(selection.result), day = beijingMidnight(now), limits = SELECTION.fuses;
+      if (sent.filter(item => item.endedAt >= day).length >= limits.per_day) fuses.push('fuse:per_day');
+      if (mine.filter(item => item.endedAt >= day).length >= limits.per_person_day) fuses.push('fuse:per_person_day');
+      if (mine.filter(item => item.endedAt >= now - SELECTION.reachedMs).length >= limits.per_person_week) fuses.push('fuse:per_person_week');
+      if (sent.filter(item => item.endedAt >= now - 60 * MINUTE).length >= limits.per_hour) fuses.push('fuse:per_hour');
+    }
+    return { ...selection, fuses };
+  }
+  /** The bridge's report about a wake-up, or null when `input.id` is not one. Reported once, like any request. */
+  #wakeAck(capabilityId, input, now, state) {
+    const own = this.#initiative(), log = this.#wakeLog(), wakeOutcome = WAKE_OUTCOMES.includes(input.outcome) || DROPPED.test(input.outcome);
+    if (own.out?.id === input.id) {
+      if (own.out.capabilityId !== capabilityId) fail('CONFLICT', 'Initiation is not out', 409);
+      if (!wakeOutcome) fail('VALIDATION_ERROR', 'Unsupported wake outcome');
+      this.#wakeEnd(own, log, input.outcome, now, state.items);
+      this.#saveInitiative(own); this.#saveWakeLog(log);
+      return { status: 'recorded' };
+    }
+    const entry = log.find(item => item.type === 'wake' && item.id === input.id);
+    if (!entry) return null;
+    if (entry.outcome === input.outcome) return { status: 'recorded', replayed: true };
+    if (!entry.unreported || !wakeOutcome) fail('CONFLICT', 'Initiation was already reported', 409);
+    // Closed for want of a report, and the report came after all (what she did in it is already in the entry).
+    entry.outcome = input.outcome; entry.endedAt = now; delete entry.unreported;
+    if (input.outcome === 'deferred:budget') { own.deferredDay = beijingDay(now); this.#saveInitiative(own); }
+    this.#saveWakeLog(log);
+    return { status: 'recorded' };
+  }
+  /** A conversation channel's credential, from inside the wake-up that is out on that channel (the model tool
+   * `companion_self`): what she writes down for herself. `{streamId,mood?,note?,outreach?}`; the conversation must be
+   * the one the wake-up was handed out for. A mood (<=120 characters) and a note (<=400) pass the checks of a machine
+   * digest or are refused with the reason; the caller is told which. Stored with the wake-up and the persona card they
+   * were written under. They are read in two places only: the operator's page and her next briefing (the mood).
+   * Nothing here is read by any conversation with a person. */
+  selfRecord(capabilityId, input) {
+    closed(input, ['streamId', 'mood', 'note', 'outreach'], ['streamId']); identifier(input.streamId);
+    for (const key of ['mood', 'note']) if (input[key] !== undefined && typeof input[key] !== 'string') fail('VALIDATION_ERROR', `${key} must be a string`);
+    if (input.outreach !== undefined && !OUTREACH_TIERS.includes(input.outreach)) fail('VALIDATION_ERROR', 'Unsupported outreach tier');
+    if (capability(this.store, capabilityId).policy !== 'conversation.v1') fail('FORBIDDEN', 'Not a conversation channel', 403);
+    return this.store.transaction(() => {
+      const own = this.#initiative(), out = own.out, now = this.now();
+      if (!out || out.capabilityId !== capabilityId || out.streamId !== input.streamId) fail('CONFLICT', 'No wake-up is out for this conversation', 409);
+      if (this.worldStatus().paused) fail('CONFLICT', 'World is paused', 409);
+      const cardId = this.currentCardId(out.entityId), result = {};
+      for (const [key, list, max, kept] of [['mood', 'moods', WAKE.moodChars, WAKE.moods], ['note', 'notes', WAKE.noteChars, WAKE.notes]]) {
+        if (input[key] === undefined) continue;
+        const refused = refusedText(input[key], max);
+        result[key] = out.did[key] = refused ? `rejected:${refused}` : 'accepted';
+        if (!refused) own[list] = [...(own[list] ?? []), { text: input[key].trim(), at: now, wakeId: out.id, cardId }].slice(-kept);
+      }
+      if (input.outreach !== undefined) { own.outreach = { tier: input.outreach, cardId, at: now }; result.outreach = out.did.outreach = input.outreach; }
+      this.#saveInitiative(own);
+      return result;
+    });
+  }
+  /** Operator only: bring the next wake-up forward to now. Every rule still applies when the bridge next asks (the
+   * switch, a pause, the quiet hours, the spend tier, a busy bridge, the day's count, 45 minutes since the last one);
+   * `blocked` is what would stop it as things stand. The request names nothing and nobody. */
+  initiativeWake(input = {}) {
+    closed(input, [], []);
+    return this.store.transaction(() => {
+      const own = this.#initiative(), now = this.now(), settings = this.#wakeSettings(own);
+      this.#bringForward(own, now, 'manual');
+      this.#saveInitiative(own);
+      const blocked = !settings.enabled ? 'off' : this.worldStatus().paused ? 'paused' : quietHours(now, this.#quiet(this.#state())) ? 'quiet_hours' : own.deferredDay === beijingDay(now) ? 'budget' : this.#wokeToday(this.#wakeLog(), now) >= settings.perDay ? 'daily_limit' : null;
+      return { scheduledAt: own.nextAt, blocked };
+    });
+  }
+  /** Operator only, read-only: her wake-up settings and schedule, her moods and notes (her own words, newest first),
+   * and the wake log, newest first: when and why she woke, the counts she was told, what she did, and the pick of a
+   * person worked through (opaque labels and weights). No message text, no intent text, no account. */
+  initiativeView() {
+    this.store.check();
+    const own = this.#initiative(), log = this.#wakeLog(), now = this.now(), settings = this.#wakeSettings(own);
+    const newest = list => [...(list ?? [])].reverse().map(({ text, at, wakeId, cardId }) => ({ text, at, wakeId, cardId: cardId ?? DEFAULT_CARD_ID }));
+    return {
+      wake: { ...settings, perDayMax: WAKE.perDayMax, intervalMinutes: WAKE.intervalMs / MINUTE, minGapMinutes: WAKE.minGapMs / MINUTE },
+      nextAt: settings.enabled && Number.isSafeInteger(own.nextAt) ? own.nextAt : null, lastWakeAt: own.lastWakeAt ?? null, out: own.out ? { id: own.out.id, issuedAt: own.out.issuedAt } : null,
+      wokeToday: this.#wokeToday(log, now), outreach: this.#tier(own, this.currentCardId()), moods: newest(own.moods), notes: newest(own.notes),
+      log: [...log].sort((a, b) => b.at - a.at),
+    };
   }
 }
