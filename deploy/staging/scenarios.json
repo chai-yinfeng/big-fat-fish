@@ -455,6 +455,7 @@
         { "say": { "from": "MOCK-U", "text": "MOCK-D2-{run} 乙 的一句：我在学大提琴" } },
         { "expectReply": { "to": "MOCK-U", "contains": "MOCK-REPLY-D2 好" } },
         { "askDiaryCode": { "from": "MOCK-T", "listed": false } },
+        { "expectDiaryTriggerUsed": {} },
         { "openDiaryList": { "person": "MOCK-T", "listed": true } },
         { "converse": { "from": "MOCK-T", "text": "MOCK-D2-{run} 甲 第{n}轮", "times": 3, "reply": "MOCK-REPLY-D2 好", "pad": 6000 } },
         { "converse": { "from": "MOCK-U", "text": "MOCK-D2-{run} 乙 第{n}轮", "times": 3, "reply": "MOCK-REPLY-D2 好", "pad": 6000 } },

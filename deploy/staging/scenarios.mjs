@@ -496,6 +496,13 @@ export const STEPS = {
   /** Staging only (operator POST /memory/diary/trigger, which exists only with `operator.allowDiaryTrigger`): the
    * diary of the running Beijing day is written now, as production writes it for a day that has ended. */
   async triggerDiary(run) { await run.operator('POST', '/memory/diary/trigger', {}); },
+  /** No `triggerDiary` is still open (operator GET /memory/consolidation, `diary.liveDay`): the worker has asked
+   * with the world running and found nothing left to write. A trigger stays open over a tick that wrote a diary or
+   * met a paused world (a `forget`), so one of an earlier scenario may still be; while it is, putting someone on the
+   * open diary's list has their diary of the day written at once, from the digests they already had. */
+  async expectDiaryTriggerUsed(run, _ctx, { timeoutMs = 60000 } = {}) {
+    await run.poll(async () => (await run.operator('GET', '/memory/consolidation')).diary.liveDay === null, timeoutMs, 'a diary trigger is still open');
+  },
   /** Exactly one diary (operator GET /memory, the current format) whose text contains `contains`: a private one,
    * of a Beijing day, carrying the persona card it was written under. No open diary is written. */
   async expectDiary(run, _ctx, { contains, timeoutMs = 90000 }) {

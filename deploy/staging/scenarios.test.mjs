@@ -418,11 +418,17 @@ test('diary steps: exactly one private diary of a day with its card; the request
   const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-diary-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const log = path.join(dir, 'requests.jsonl'), ctx = { logOffset: 0 }, posted = [];
   const diary = (id, kind = 'private', extra = {}) => ({ id, kind, v: 2, day: '2026-11-18', text: `MOCK-DIARY-甲 ${kind}`, cardId: 'card:default', ...extra });
-  let diaries = [diary('d1'), { id: 'old', kind: 'private', text: 'MOCK-DIARY-甲 旧版' }];
-  const run = new Runner({ data: shipped(), modelLog: log, sleep: async () => {}, operator: async (method, route, body) => { if (method === 'POST') { posted.push([route, body]); return {}; } assert.equal(route, '/memory?limit=100'); return { items: [], diaries }; } });
+  let diaries = [diary('d1'), { id: 'old', kind: 'private', text: 'MOCK-DIARY-甲 旧版' }], liveDay = '2026-11-18';
+  const run = new Runner({ data: shipped(), modelLog: log, sleep: async () => {}, operator: async (method, route, body) => { if (method === 'POST') { posted.push([route, body]); return {}; } if (route === '/memory/consolidation') return { diary: { lastDay: null, liveDay } }; assert.equal(route, '/memory?limit=100'); return { items: [], diaries }; } });
   run.poll = async (probe, _timeoutMs, message) => (await probe()) || (() => { throw new Error(message); })();
   await STEPS.triggerDiary(run);
   assert.deepEqual(posted, [['/memory/diary/trigger', {}]]);
+  // The trigger is open until the status says it is not; a status without the field does not pass for "used up".
+  await assert.rejects(STEPS.expectDiaryTriggerUsed(run, ctx, {}), /a diary trigger is still open/);
+  liveDay = undefined;
+  await assert.rejects(STEPS.expectDiaryTriggerUsed(run, ctx, {}), /a diary trigger is still open/);
+  liveDay = null;
+  await STEPS.expectDiaryTriggerUsed(run, ctx, {});
   await STEPS.expectDiary(run, ctx, { contains: 'MOCK-DIARY-甲' });
   await assert.rejects(STEPS.expectDiary(run, ctx, { contains: 'MOCK-DIARY-乙' }), /no diary containing "MOCK-DIARY-乙"/);
   await assert.rejects(STEPS.expectNoDiary(run, ctx, { contains: 'MOCK-DIARY-甲' }), /has a diary containing/);
