@@ -192,7 +192,10 @@ export async function operatorRequest({ location, token, path, payload, query, f
       : response.status === 409 ? 'revision_conflict'
       : typeof body?.error?.code === 'string' && /^[a-z_]{1,64}$/.test(body.error.code) ? body.error.code
       : Object.hasOwn(SERVER_ERRORS, body?.error?.code) ? SERVER_ERRORS[body.error.code] : 'request_failed';
-    throw Object.assign(new Error(code), { code, status: response.status });
+    // A validation error may name the field and the rule it broke (Authority never sends the content back).
+    const error = body?.error, detail = code === 'validation_error' && typeof error?.field === 'string' && /^[A-Za-z]{1,32}$/.test(error.field) && ['maxChars', 'maxItems', 'required', 'invalid'].includes(error.rule)
+      ? { field: error.field, rule: error.rule, ...(Number.isSafeInteger(error.limit) && error.limit > 0 ? { limit: error.limit } : {}) } : null;
+    throw Object.assign(new Error(code), { code, status: response.status, ...(detail ? { detail } : {}) });
   }
   return body.value;
 }

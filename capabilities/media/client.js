@@ -1,6 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { CONTENT_ACTIONS } from '../providers/index.js';
 
 const fail = code => Object.assign(new Error(code), { code });
 export function unixJson({ socketPath, route, tokenFile, token, body, timeoutMs = 60000, maxBytes = 65536, signal }) {
@@ -40,7 +41,7 @@ export class ContentClient {
     this.socketPath = socketPath; this.tokenFile = tokenFile;
   }
   call(input, { signal } = {}) {
-    if (!input || typeof input.streamId !== 'string' || !Number.isSafeInteger(input.memoryEpoch) || !['ingest', 'transcribe', 'describe', 'synthesize', 'asset', 'attach', 'pending', 'search', 'fetch', 'jobResult', 'stickerKeep', 'stickerPick', 'activity'].includes(input.action)) return Promise.reject(fail('CONTENT_REQUEST_INVALID'));
+    if (!input || typeof input.streamId !== 'string' || !Number.isSafeInteger(input.memoryEpoch) || !CONTENT_ACTIONS.some(row => row.action === input.action)) return Promise.reject(fail('CONTENT_REQUEST_INVALID'));
     return unixJson({ socketPath: this.socketPath, tokenFile: this.tokenFile, route: '/v1/content', body: input,
       timeoutMs: ['transcribe', 'synthesize'].includes(input.action) ? 300000 : 90000,
       maxBytes: input.action === 'asset' ? 13 * 1024 * 1024 : 65536, signal });

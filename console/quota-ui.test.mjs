@@ -69,19 +69,22 @@ test('quota page: the day’s spend on top with tier marks, then one row per cap
   const table = nodes(tree).find(n => n.type === 'table');
   const cells = Object.fromEntries(nodes(table).filter(n => n.type === 'tr' && n.children[0]?.type === 'td').map(n => { const values = n.children.map(textOf).map(value => value.replace(/\s+/g, ' ').trim()); return [values[0], values.slice(1, 7)]; }));
   assert.deepEqual(Object.keys(cells), ['聊天', '后台整合', '看图', '联网', '语音合成', '语音识别'], 'one row per capability, in the ledger’s order, and no row for anything else');
-  assert.deepEqual(cells['聊天'], ['quotaPanel.kind.paid', '14 inputTokens 40,000 · outputTokens 4,321', '¥1.20', 'quotaPanel.average 3 s', 'quotaPanel.denied 2 · quotaPanel.failed 1', 'quotaPanel.status.normal']);
+  assert.deepEqual(cells['聊天'], ['quotaPanel.kind.paid', '14 inputTokens 40,000 · outputTokens 4,321', '¥1.20', 'quotaPanel.average 3 s', 'quotaPanel.denied 2 · quotaPanel.failed 1', 'quotaPanel.status.normal quotaPanel.failedToday 1']);
   assert.deepEqual(cells['后台整合'], ['quotaPanel.kind.paid', '3 quotaPanel.batches 3 / 24', '¥0.0195', 'quotaPanel.average 3 s', '—', 'quotaPanel.status.normal']);
   assert.deepEqual(cells['看图'], ['quotaPanel.kind.paid', '12 / 12', '¥0.1200', 'quotaPanel.average 1.5 s', 'quotaPanel.denied 4', 'quotaPanel.status.limitReached']);
   assert.deepEqual(cells['联网'], ['quotaPanel.kind.paid', '1 / 7', '¥0.0050', 'quotaPanel.average 800 ms', '—', 'quotaPanel.status.normal']);
   assert.deepEqual(cells['语音合成'], ['quotaPanel.kind.local', '2 chars 25 · audioSeconds 4.7', '—', 'quotaPanel.average 4.7 s · quotaPanel.total 9.4 s · quotaPanel.realtime 2×', '—', 'quotaPanel.status.local']);
-  assert.deepEqual(cells['语音识别'], ['quotaPanel.kind.local', '3 audioSeconds 20', '—', 'quotaPanel.average 1 s · quotaPanel.total 3 s · quotaPanel.realtime 0.15×', 'quotaPanel.failed 1', 'quotaPanel.status.local']);
+  assert.deepEqual(cells['语音识别'], ['quotaPanel.kind.local', '3 audioSeconds 20', '—', 'quotaPanel.average 1 s · quotaPanel.total 3 s · quotaPanel.realtime 0.15×', 'quotaPanel.failed 1', 'quotaPanel.status.local quotaPanel.failedToday 1']);
   for (const absent of ['video', '视频', '主动', '生图', '唱歌']) assert.ok(!text.includes(absent), `no placeholder row for ${absent}`);
+  // The status column is the quota's; a row that failed today carries its own mark beside it, in the danger tone.
+  const failedMarks = nodes(table).filter(n => n.type === 'span' && textOf(n).includes('quotaPanel.failedToday'));
+  assert.deepEqual(failedMarks.map(n => [textOf(n).trim(), n.props.className]), [['quotaPanel.failedToday 1', 'bff-badge danger'], ['quotaPanel.failedToday 1', 'bff-badge danger']]);
   // Spend tiers: maintenance, vision and web stop at "restricted", chat at 100%; a used-up count still says so.
   states[QUOTA] = { usage, spend: { ...spend, tier: 'restricted' }, consolidation };
-  const status = () => Object.fromEntries(nodes(nodes(render()).find(n => n.type === 'table')).filter(n => n.type === 'tr' && n.children[0]?.type === 'td').map(n => [textOf(n.children[0]).trim(), textOf(n.children[6]).trim()]));
-  assert.deepEqual(status(), { '聊天': 'quotaPanel.status.normal', '后台整合': 'quotaPanel.status.stopped.restricted', '看图': 'quotaPanel.status.limitReached', '联网': 'quotaPanel.status.stopped.restricted', '语音合成': 'quotaPanel.status.local', '语音识别': 'quotaPanel.status.local' });
+  const status = () => Object.fromEntries(nodes(nodes(render()).find(n => n.type === 'table')).filter(n => n.type === 'tr' && n.children[0]?.type === 'td').map(n => [textOf(n.children[0]).trim(), textOf(n.children[6]).replace(/\s+/g, ' ').trim()]));
+  assert.deepEqual(status(), { '聊天': 'quotaPanel.status.normal quotaPanel.failedToday 1', '后台整合': 'quotaPanel.status.stopped.restricted', '看图': 'quotaPanel.status.limitReached', '联网': 'quotaPanel.status.stopped.restricted', '语音合成': 'quotaPanel.status.local', '语音识别': 'quotaPanel.status.local quotaPanel.failedToday 1' });
   states[QUOTA] = { usage, spend: { ...spend, tier: 'exhausted' }, consolidation: { ...consolidation, paused: 'daily' } };
-  assert.deepEqual([status()['聊天'], status()['后台整合']], ['quotaPanel.status.stopped.exhausted', 'quotaPanel.status.limitReached']);
+  assert.deepEqual([status()['聊天'], status()['后台整合']], ['quotaPanel.status.stopped.exhausted quotaPanel.failedToday 1', 'quotaPanel.status.limitReached']);
   // Without spend or consolidation the table still shows.
   states[QUOTA] = { usage, spend: null, consolidation: null };
   const bare = JSON.stringify(render());

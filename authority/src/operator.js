@@ -257,7 +257,9 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       respond(200, { ok: true, value });
     } catch (error) {
       const status = [400, 403, 409, 413, 503].includes(error.statusCode) ? error.statusCode : 500;
-      respond(status, { ok: false, error: { code: ['VALIDATION_ERROR', 'CONFLICT', 'INVALID_REQUEST', 'BODY_TOO_LARGE'].includes(error.code) ? error.code : 'OPERATION_FAILED', message: status === 409 ? 'State changed; refresh before saving' : status === 400 ? 'The operation does not match the field requirements' : 'The operator operation failed' } });
+      // A validation error may name the field and the rule it broke (never the field's content).
+      const detail = error.code === 'VALIDATION_ERROR' && error.detail ? { field: error.detail.field, rule: error.detail.rule, ...(error.detail.limit === undefined ? {} : { limit: error.detail.limit }) } : {};
+      respond(status, { ok: false, error: { code: ['VALIDATION_ERROR', 'CONFLICT', 'INVALID_REQUEST', 'BODY_TOO_LARGE'].includes(error.code) ? error.code : 'OPERATION_FAILED', message: status === 409 ? 'State changed; refresh before saving' : status === 400 ? 'The operation does not match the field requirements' : 'The operator operation failed', ...detail } });
     }
   });
   server.requestTimeout = 10000; server.headersTimeout = 5000; server.keepAliveTimeout = 1000;

@@ -19,9 +19,9 @@
 // `companion_content`, its fields, the content action behind it and its named rules (MODEL_ACTIONS). The model gateway
 // reads GATEWAY_PURPOSES, SPEND_CATEGORIES, SPEND_STOP and GATEWAY_DEFAULT_LIMITS (server.mjs, spend.mjs), and the
 // content service refuses to start unless its registry of actions is CONTENT_ACTIONS (capabilities/media/service.js
-// checkContentActions). The texts of the two older model tools, Authority's /v1/content allowlist and the console's
-// spend card still carry their own lists; the tables derived below say what those lists should be, and
-// consistency.test.js holds the two against each other.
+// checkContentActions). Authority's /v1/content reads CONTENT_ACTIONS and CONTENT_FIELDS (authority/src/server.js), and
+// the console's spend card the SPEND_CATEGORIES the gateway's /spend reports. The texts of the two older model tools
+// still carry their own lists; consistency.test.js holds them against the tables derived below.
 //
 // The three model tools. A new action goes where its meaning puts it (按语义选工具：同步只读查阅→companion_content；
 // 她的记忆→companion_scope；要花时间或有副作用→companion_activity):

@@ -10,8 +10,8 @@ const worldOf = (name, revision) => ({ world: { paused: false, revision: 1 }, pe
 const library = (currentId, revision = 3) => ({ entityId: 'entity:big-fat-fish', personaRevision: revision, currentId, limit: 24, cards: [
   { id: 'card:default', title: 'MOCK-默认卡', tags: [], summary: '', current: currentId === 'card:default', persona: persona('MOCK-甲'), createdAt: null, updatedAt: null },
   { id: 'card:b', title: 'MOCK-乙卡', tags: ['MOCK-外冷内热', 'MOCK-嘴直'], summary: 'MOCK-乙卡的一句话简介', current: currentId === 'card:b', persona: persona('MOCK-乙'), createdAt: 1, updatedAt: 2 }] });
-// Hook positions in view.js: the editor draft is state 3; the card states are 35-39.
-const DRAFT = 3, CARDS = 35, EDIT = 36, META = 37, NEW = 38, CONFIRM = 39;
+// Hook positions in view.js: the editor draft is state 3, the page error 6; the card states are 35-39.
+const DRAFT = 3, ERROR = 6, CARDS = 35, EDIT = 36, META = 37, NEW = 38, CONFIRM = 39;
 
 function harness(states, responses) {
   const refs = [], calls = [];
@@ -20,10 +20,11 @@ function harness(states, responses) {
     useRef: initial => refs[refCursor++] ||= { current: initial }, useEffect() {}, createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity) }) };
   const storage = { getItem: () => 'operator-test', setItem() {}, removeItem() {} };
   return loadConsole({ window: { location, sessionStorage: storage }, sessionStorage: storage, AbortController, AbortSignal, setTimeout, clearTimeout,
-    fetch: async (url, options) => { const call = { url: url.slice(url.indexOf('3082') + 4), method: options.method, payload: options.body && JSON.parse(options.body) }; calls.push(call); return { ok: true, status: 200, json: async () => ({ ok: true, value: responses(call) }) }; } })
+    // A response `{ refused: error }` answers 400 with that operator error.
+    fetch: async (url, options) => { const call = { url: url.slice(url.indexOf('3082') + 4), method: options.method, payload: options.body && JSON.parse(options.body) }; calls.push(call); const value = responses(call); return value?.refused ? { ok: false, status: 400, json: async () => ({ ok: false, error: value.refused }) } : { ok: true, status: 200, json: async () => ({ ok: true, value }) }; } })
     .then(loaded => {
       const { WorldConsole: component, flattenDictionary } = loaded.factory(() => React);
-      const render = () => { cursor = 0; refCursor = 0; return component({ t: key => key }); };
+      const render = (t = key => key) => { cursor = 0; refCursor = 0; return component({ t }); };
       const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...tree.children.flatMap(nodes)];
       const textOf = node => typeof node === 'boolean' || node == null ? '' : typeof node !== 'object' ? String(node) : node.children.map(textOf).join(' ');
       const rows = () => Object.fromEntries(nodes(render()).filter(node => node.props.className === 'bff-list-row').map(node => [textOf(nodes(node).find(item => item.type === 'strong')), node]));
@@ -151,4 +152,43 @@ test('card library: without the library the page still edits the persona in forc
   assert.ok(used.length > 20);
   for (const key of used) assert.ok(zh[key] && en[key], key);
   assert.deepEqual(Object.keys(zh).filter(key => key.startsWith('cardsPanel.')).sort(), Object.keys(en).filter(key => key.startsWith('cardsPanel.')).sort());
+});
+
+test('card library: a refused save names the field and the rule it broke, in both languages, and never echoes the content', async () => {
+  const [zh, en] = await Promise.all(['zh', 'en'].map(async name => JSON.parse(await readFile(new URL(`./locale/${name}.json`, import.meta.url), 'utf8'))));
+  let refused = { code: 'VALIDATION_ERROR', message: 'The operation does not match the field requirements', field: 'tags', rule: 'maxItems', limit: 6 };
+  const states = page();
+  const h = await harness(states, call => call.url === '/persona/cards/update' ? { refused } : {});
+  const flat = h.flattenDictionary(zh), t = key => flat[key] ?? key;
+  const save = async () => { h.nodes(h.render(t)).find(node => node.type === 'form' && node.props.className === 'bff-stack').props.onSubmit({ preventDefault() {} }); await settled(); };
+  const shown = () => h.nodes(h.render(t)).filter(node => node.props.role === 'alert').map(node => h.textOf(node).replace(/\s+/g, ' ').trim()).join(' | ');
+  states[DRAFT] = { ...states[DRAFT], name: 'MOCK-甲改' };
+  await save();
+  assert.ok(shown().includes('标签最多 6 个'), shown());
+  assert.ok(!shown().includes(zh.errors.validation_error));
+  refused = { ...refused, field: 'summary', rule: 'maxChars', limit: 60 };
+  await save();
+  assert.ok(shown().includes('简介最多 60 字'), shown());
+  // The same words stand beside the save button at the bottom of the long page.
+  const savebar = () => h.nodes(h.render(t)).find(node => node.props.className === 'bff-savebar');
+  const besideSave = () => h.nodes(savebar()).filter(node => String(node.props.className).includes('bff-savebar-error')).map(node => h.textOf(node).replace(/\\s+/g, ' ').trim());
+  assert.deepEqual(besideSave(), ['简介最多 60 字，请修改后重试。']);
+  // Nothing there once the error is gone.
+  states[ERROR] = '';
+  assert.deepEqual([besideSave(), shown()], [[], '']);
+  refused = { ...refused, field: 'name', rule: 'required', limit: undefined };
+  await save();
+  assert.ok(shown().includes('名字不能为空'), shown());
+  // Without a field (or with one the page does not trust) it is the general message as before.
+  for (const bare of [{ code: 'VALIDATION_ERROR' }, { code: 'VALIDATION_ERROR', field: '<b>x</b>', rule: 'maxChars', limit: 6 }, { code: 'VALIDATION_ERROR', field: 'tags', rule: 'whatever' }, { code: 'VALIDATION_ERROR', field: 'tags', rule: 'maxItems' }]) {
+    refused = bare;
+    await save();
+    assert.ok(shown().includes(zh.errors.validation_error), JSON.stringify(bare));
+  }
+  // Every field and rule Authority can name has its words in both languages.
+  for (const locale of [zh, en]) {
+    assert.ok(locale.errors.fieldRule.includes('{field}') && locale.errors.fieldRule.includes('{rule}'));
+    assert.deepEqual(Object.keys(locale.errors.rules).sort(), ['invalid', 'maxChars', 'maxItems', 'required']);
+    assert.deepEqual(Object.keys(locale.errors.fields).sort(), ['boundaries', 'examples', 'identity', 'name', 'persona', 'principles', 'relationshipStage', 'speechStyle', 'summary', 'tag', 'tags', 'title', 'traits', 'userCallName']);
+  }
 });

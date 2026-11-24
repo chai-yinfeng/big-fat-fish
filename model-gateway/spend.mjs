@@ -208,6 +208,8 @@ export function createSpendMeter({ stateFile, settingsFile, pricingFile, clock =
         day: state.day, timezone: 'Asia/Shanghai', spentYuan: yuan(state.spentMicros), reservedYuan: yuan(state.reservedMicros), capYuan: settings.dailyCapYuan,
         percent: Math.round(percent() * 10) / 10, tier: tier(), thresholds: { reducedPercent: settings.reducedPercent, restrictedPercent: settings.restrictedPercent, exhaustedPercent: 100 },
         byTier: Object.fromEntries(CATEGORIES.map(c => [c, yuan(state.byTier[c] ?? 0)])), calls: state.calls, unreportedUsage: state.unreported,
+        // The declared categories, each with the capabilities charged to it (the console's spend card: one line each).
+        categories: SPEND_CATEGORIES.map(row => ({ category: row.category, capabilities: row.capabilities.map(({ id, title }) => ({ id, title })) })),
         window: isPeak(pricing, clock()) ? 'peak' : 'offPeak', pricing: pricingSource,
         // Today's chat-completion token totals as the provider reported them (`requests` = responses that
         // reported usage; `reasoning` is part of `output`). Cache hit rate = cacheHit / (cacheHit + cacheMiss).

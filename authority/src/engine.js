@@ -703,19 +703,24 @@ export class Authority extends InitiationDomain {
     this.store.close();
   }
 }
-function cardTitle(value,limit=CARD_TITLE_CHARS){
-  text(value,limit);
-  if(/[\u0000-\u001f\u007f]/u.test(value))fail('VALIDATION_ERROR','Invalid card title');
+// A card field that breaks a rule names the field and the rule (never its content), so the console can say which.
+function cardText(value,limit,field,empty=false){
+  if(typeof value!=='string')fail('VALIDATION_ERROR','Invalid card field',400,{field,rule:'invalid'});
+  if(value.length>limit)fail('VALIDATION_ERROR','Invalid card field',400,{field,rule:'maxChars',limit});
+  if(!empty&&!value.trim())fail('VALIDATION_ERROR','Invalid card field',400,{field,rule:'required'});
+  if(/[\u0000-\u001f\u007f]/u.test(value))fail('VALIDATION_ERROR','Invalid card field',400,{field,rule:'invalid'});
   return value.trim();
+}
+function cardTitle(value){
+  return cardText(value,CARD_TITLE_CHARS,'title');
 }
 function cardTags(value){
-  if(!Array.isArray(value)||value.length>CARD_TAGS)fail('VALIDATION_ERROR','Invalid card tags');
-  return value.map(tag=>cardTitle(tag,CARD_TAG_CHARS));
+  if(!Array.isArray(value))fail('VALIDATION_ERROR','Invalid card tags',400,{field:'tags',rule:'invalid'});
+  if(value.length>CARD_TAGS)fail('VALIDATION_ERROR','Invalid card tags',400,{field:'tags',rule:'maxItems',limit:CARD_TAGS});
+  return value.map(tag=>cardText(tag,CARD_TAG_CHARS,'tag'));
 }
 function cardSummary(value){
-  text(value,CARD_SUMMARY_CHARS,true);
-  if(/[\u0000-\u001f\u007f]/u.test(value))fail('VALIDATION_ERROR','Invalid card summary');
-  return value.trim();
+  return cardText(value,CARD_SUMMARY_CHARS,'summary',true);
 }
 function validated(fn){
   try{
@@ -723,6 +728,6 @@ function validated(fn){
   }
   catch(error){
     if(error.code)throw error;
-    fail('VALIDATION_ERROR','Invalid bounded persona or payload');
+    fail('VALIDATION_ERROR','Invalid bounded persona or payload',400,error.detail);
   }
 }

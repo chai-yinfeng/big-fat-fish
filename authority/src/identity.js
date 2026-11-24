@@ -1,9 +1,11 @@
 export class AuthorityError extends Error {
-  constructor(code, message, statusCode = 400) {
+  /** `detail` ({ field, rule, limit? }): which field broke which rule, for the console; never the field's content. */
+  constructor(code, message, statusCode = 400, detail) {
     super(message); this.name = 'AuthorityError'; this.code = code; this.statusCode = statusCode;
+    if (detail) this.detail = detail;
   }
 }
-export function fail(code, message, statusCode = 400) { throw new AuthorityError(code, message, statusCode); }
+export function fail(code, message, statusCode = 400, detail) { throw new AuthorityError(code, message, statusCode, detail); }
 export function closed(value, allowed, required = allowed) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) fail('VALIDATION_ERROR', 'Expected a plain object');
   if (Reflect.ownKeys(value).some(key => typeof key !== 'string' || !allowed.includes(key)) || required.some(key => !Object.hasOwn(value, key))) fail('VALIDATION_ERROR', 'Unexpected or missing fields');
