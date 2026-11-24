@@ -1,12 +1,18 @@
 // Browser-only transport. Never attach this bearer to the conversation executor or model tools.
 export const TOKEN_KEY = 'companion-world:operator:v1';
-// Only this operator access code may enter sessionStorage; never model credentials.
+// The local port open-world.mjs forwards the room page to (not a secret; absent = no room button).
+export const ROOM_PORT_KEY = 'companion-world:room-port:v1';
+export function validRoomPort(value) {
+  return typeof value === 'string' && /^[1-9]\d{3,4}$/.test(value) && Number(value) >= 1024 && Number(value) <= 65535 ? Number(value) : null;
+}
+// Only this operator access code (and the room's local port beside it) may enter sessionStorage; never model credentials.
 export function consumeOperatorFragment({ location, history, storage }) {
   if (!location.hash?.startsWith('#companion-operator=')) return false;
-  const token = location.hash.slice('#companion-operator='.length);
+  const match = /^#companion-operator=([A-Za-z0-9_-]{32,256})(?:&room=(\d+))?$/.exec(location.hash);
   try {
-    if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) return false;
-    storage.setItem(TOKEN_KEY, token);
+    if (!match || (match[2] !== undefined && !validRoomPort(match[2]))) return false;
+    storage.setItem(TOKEN_KEY, match[1]);
+    if (match[2] !== undefined) storage.setItem(ROOM_PORT_KEY, match[2]); else storage.removeItem?.(ROOM_PORT_KEY);
     return true;
   } catch { return false; }
   finally { history.replaceState(history.state, '', `${location.pathname}${location.search}`); }

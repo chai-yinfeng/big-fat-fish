@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- 控制台“房间”入口（主人 11-23；**不改服务端、沙箱、部署单元，不新增凭据**）：`open-world.mjs` 的 SSH 隧道顺带把主机 4173 转到本机第一个空闲端口（4173–4182，都占用就跳过），端口随访问片段 `&room=` 交给控制台，总览出现“房间”按钮在新标签打开；没有端口不显示。家人仍走 tailnet 8443。已验证：test:console/room/deploy、本机浏览器点击；未验证：对生产主机的真实隧道。
 - 默认人格换成模板式陪伴卡（主人 11-23 决定；**只影响全新世界和卡库“新建空白卡”，已有世界库里的人格不变**，不迁移数据，`personaRevision` 语义与存储不变）：`DEFAULT_PERSONA` 改写，traits 为空。控制台人格页去掉“人格版本”标题与两个不进上下文的字段（用户称呼、关系阶段；schema/API 仍接受旧值，保存时原样带回），改显示卡的最后修改时间；世界概览去掉人格版本；导出 JSON 文件名改用日期。test:authority/console/conversation 通过，本机临时世界浏览器看过人格页与新建空白卡。
 - 修复发行包漏文件：`build-release.mjs` 补上 `capabilities/conversation/delivery.js`（QQ 桥自 #45 起 import，缺了 staging 预检报 `qq-bridge.json ERR_MODULE_NOT_FOUND`）以及包内测试用到的 `tools.js`、`tool-rules.js`；`stage-release.test.mjs` 新增一条测试，真实构建一次发行包并检查包内所有相对 import 都能找到文件（已知的 4 处与运行无关的缺口列在测试里）。不改业务逻辑。验证：`test:deploy`；未在 staging 跑。
 - 联网读网页失败可诊断（主人 11-20 批准；**不改调用行为、不迁移数据，账本格式不变**——`failed` 无 reason 字段，只加日志）：网关的看图/搜索/读网页及维护、activity 入口失败时 stderr 记 `gateway capability failed: web fetch status=<HTTP 或 -> code=<码> ms=<耗时>`，可带上游 `error.code`/`error.type`（`upstream=`）或网络原因（`cause=`），≤64 字符且只留 `[A-Za-z0-9_.-]`，不记 URL、查询、内容、key、请求体；执行器任一工具失败记 `conversation tool failed: <tool> <action> <code>`（动作只写声明过的名字）；`companion_content` 的 `url` 说明补两句（对方消息里的链接可直接 read；读/搜失败如实说工具暂时不可用，别说网站打不开），工具定义字节变了，`service.test.js` 的 PINNED 两个工具哈希随之更新（提示缓存失效一次），冻结名单不变。验证：`test:model`、`test:conversation`、`test:media`；未在 staging 跑，无真实调用。

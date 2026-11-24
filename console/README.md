@@ -36,11 +36,15 @@ UI tests evaluate the shared view through `test-harness.mjs` with an injected fa
 ## Authorization and sensitive data
 
 - Before mounting, consume `#companion-operator=<32–256 base64url chars>` once into this tab's sessionStorage and immediately remove the fragment, including malformed matching fragments/storage failures. Unrelated hashes are untouched.
-- Only operator access uses sessionStorage; localStorage holds only the theme choice. No API key, reference recording, transcript, memory or diary is persisted in browser storage.
+- Only operator access (and the room's local port beside it, see Room) uses sessionStorage; localStorage holds only the theme choice. No API key, reference recording, transcript, memory or diary is persisted in browser storage.
 - Bearer goes only to the allowlisted operator paths with `credentials:omit`, `redirect:error`, `cache:no-store`; standalone explicitly selects same-origin mode. Unknown response error messages never render reflected private input.
 - DeepSeek uses an uncontrolled password field; it is cleared before sending save/refresh, including request-failure cases. Saved key/suffix is never rendered. Empty preserves the server key. Testing is an explicit possibly-billed action.
 - Reference audio, transcript and rights consent are uncontrolled inputs read only on explicit submit. File bytes are locally checked for mono PCM16 WAV,3–20seconds,≤2MiB, then base64 is sent as content—not a pathname or filename. Inputs clear before the request and in finally; bytes/transcript never enter persistent React state/storage. The server remains the format/permission authority.
 - Test audio is a bounded WAV response turned into a Blob URL. Controls do not autoplay; replacement, leaving the runtime tab, clearing authorization or unmount revoke the URL. No user media is sent to QQ by these controls.
+
+## Room
+
+`deploy/authority/open-world.mjs` also forwards the room page (`127.0.0.1:4173` on the host) to the first free local port of 4173–4182 in the same SSH tunnel and appends `&room=<port>` to the access fragment (`#companion-operator=<code>&room=<port>`). The fragment is consumed the same way as the access code: the port goes to sessionStorage (`companion-world:room-port:v1`, not a secret), and a fragment without it removes a stale one. With a port, the overview shows a "Room" card whose button opens `http://127.0.0.1:<port>/` in a new tab (`noopener,noreferrer`), with a note that it needs the console opened with open-world and that the room service may not be running when it does not open. Without one (no free port, `--open-only`, a console opened by hand) there is no card. The console never talks to the room: no request, no token, no room data. This entry is for the owner only (it rides the owner's SSH tunnel); family see the room through the tailnet's `tailscale serve` on 8443 (room/README.md, "两种入口").
 
 ## Persona cards
 

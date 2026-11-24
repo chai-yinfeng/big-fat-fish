@@ -5,7 +5,7 @@
 
 这条链路是：房间状态契约 → 分层渲染。画是占位的手画 SVG；数据默认是假的，也可以读 Authority 的只读出口
 （见“真实数据”）。发行包里带着它和一个用户单元 `companion-room.service`（真实模式，只听回环，经 tailscale serve
-只在 tailnet 内访问），见最后一节“部署”。
+只在 tailnet 内访问），见最后一节“部署”；主人也可以从控制台的“房间”按钮经 SSH 隧道进去，见“两种入口”。
 
 ```sh
 node room/serve.mjs          # 只听 127.0.0.1:4173，本机预览；默认假数据
@@ -228,6 +228,22 @@ ssh -t home-agent 'sudo tailscale serve --bg --https=8443 http://127.0.0.1:4173'
 ssh home-agent 'tailscale serve status'        # 应多出一行 :8443 → http://127.0.0.1:4173，且标着 tailnet only
 # 5. 用 tailnet 里的手机或电脑打开 https://<home-agent 的 MagicDNS 名>:8443/
 ```
+
+### 两种入口
+
+| | 控制台里的“房间”按钮 | tailnet 的 8443 |
+|---|---|---|
+| 给谁 | 只给主人 | tailnet 里的家人（也包括主人） |
+| 怎么到房间 | Mac 上 `node deploy/authority/open-world.mjs` 开的 SSH 隧道：除了 3082，还把主机的 `127.0.0.1:4173` 转到本机第一个空闲端口（4173–4182，都被占就不转，控制台不显示按钮）；按钮在新标签打开 `http://127.0.0.1:<该端口>/` | 主人一次性配置的 `tailscale serve --https=8443`（上面第 4 步），持久生效 |
+| 需要什么 | 能 ssh home-agent；不需要 sudo，也不需要 tailscale serve | 设备在 tailnet 内、ACL 允许 |
+
+- 两种方式进的是同一个 `companion-room.service`，页面、公共状态（不含任何人的内容）和笔记本口令完全一样，
+  服务端、沙箱和部署单元都没为控制台入口改过。控制台入口不经过 operator 服务器（Authority 在没有网络的沙箱里，
+  到不了 4173），只是隧道多转一个端口；控制台只知道端口号，不碰房间的数据。
+- 口令限速：经隧道的连接在 serve.mjs 看来是本机回环、没有 `X-Forwarded-For`，主人算 `127.0.0.1` 这一个来源；
+  所有人合计的上限照旧。
+- `--open-only`（复用已有隧道）不知道那条隧道转没转房间，控制台不显示按钮。按钮打不开（连接被重置）时，多半是
+  房间服务没在运行，或隧道已经断了。
 
 - 不要用 `tailscale funnel`（那是公网）。能看到房间的人 = tailnet 里按 ACL 能访问 home-agent 这个端口的设备；
   页面本身没有登录。要收回：`sudo tailscale serve --https=8443 off`。
