@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import fs from 'node:fs';
 import path from 'node:path';
 import { AuthorityClient } from '../../authority/src/client.js';
 import { createLocalSpeechRunner } from '../speech/runner.js';
@@ -13,6 +12,7 @@ import { createJobs } from './jobs.js';
 import { createDemoRunner } from './demo-job.js';
 import { createNormalizeImage } from './normalize.js';
 import { createVideoProvider } from '../providers/video/provider.js';
+import { load as loadConfig } from './config.js';
 
 process.umask(0o077);
 let server, timer, jobs;
@@ -20,10 +20,8 @@ try {
   // What this service implements must be what the capabilities declare (an operator-only action aside), or it does not start.
   checkContentActions(CONTENT_ACTIONS);
   if (process.argv.length !== 4 || process.argv[2] !== '--config' || !path.isAbsolute(process.argv[3])) throw Error('CONFIG');
-  const file = process.argv[3], stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.size > 16384 || (stat.mode & 0o077) !== 0) throw Error('CONFIG');
-  const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
-  if (Object.keys(cfg).some(k => !['store', 'workRoot', 'speechConfigFile', 'authority', 'gateway', 'sharpModule', 'control', 'allowRawSmallPng'].includes(k)) || !path.isAbsolute(cfg.sharpModule) || cfg.allowRawSmallPng !== undefined && typeof cfg.allowRawSmallPng !== 'boolean') throw Error('CONFIG');
+  // config.js: the same checks the deploy preflight runs; an unknown key is ignored here with one line.
+  const file = process.argv[3], cfg = loadConfig(file);
   const authority = new AuthorityClient(cfg.authority), gateway = capabilityGateway(cfg.gateway);
   // Conversation speech and the operator's voice test share this runner, so both are counted.
   const store = new ArtifactStore(cfg.store), speech = meteredSpeech(createLocalSpeechRunner({ configFile: cfg.speechConfigFile }), gateway.recordUsage);

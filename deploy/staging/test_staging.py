@@ -258,9 +258,9 @@ class InitiationReplayTests(unittest.TestCase):
         self.assertEqual(sa.scenario_content_config({**config, 'allowRawSmallPng': True}, knows, False), config)
         self.assertEqual(sa.scenario_content_config(dict(config), knows, False), config)
         source = (HERE / 'staging-agent.py').read_text()
-        self.assertIn("edit('content.json', lambda c: scenario_content_config(c, content_source, True))", source)
+        self.assertIn("edit('content.json', lambda c: scenario_content_config(c, content_known, True))", source)
         # Taken out in the `finally` of the replay, before anything else (a rollback) can start an older release.
-        self.assertIn("        stop_fake_channel()\n        edit('content.json', lambda c: scenario_content_config(c, content_source, False))\n    lines = ", source)
+        self.assertIn("        stop_fake_channel()\n        edit('content.json', lambda c: scenario_content_config(c, content_known, False))\n    lines = ", source)
 
     def test_the_video_operator_file_names_only_the_mock_site_and_runs_the_stand_in_inside_bubblewrap(self):
         site = {'id': 'MOCK', 'patterns': ['^https://video\\.mock\\.invalid/v/(?<id>[A-Za-z0-9]+)$']}
@@ -307,6 +307,23 @@ class InitiationReplayTests(unittest.TestCase):
         self.assertIn("'--mock-control', str(mock_control)", source)
         self.assertIn('second_channel = prepare_mock_channel(release)', source)
 
+    def test_a_release_with_ops_config_keys_is_asked_and_an_older_one_is_searched_as_source(self):
+        with tempfile.TemporaryDirectory() as root:
+            release = Path(root)
+            (release / 'capabilities/media').mkdir(parents=True)
+            (release / 'capabilities/media/main.mjs').write_text('cfg.allowRawSmallPng ?? false')
+            self.assertIsNone(sa.config_keys(release))
+            self.assertEqual(sa.release_knows(None, 'content.json', release, 'capabilities/media/main.mjs'), 'cfg.allowRawSmallPng ?? false')
+            keys = {'content.json': frozenset(['sharpModule'])}
+            self.assertEqual(sa.release_knows(keys, 'content.json', release, 'capabilities/media/main.mjs'), frozenset(['sharpModule']))
+        config = {'onebotPort': sa.ONEBOT_PORT}
+        self.assertEqual(sa.scenario_bridge_config(dict(config), frozenset(['onebotPort', 'initiationPollMs', 'pacing'])), {**config, 'initiationPollMs': 3000, 'pacing': sa.SCENARIO_PACING})
+        self.assertEqual(sa.scenario_bridge_config(dict(config), frozenset(['onebotPort'])), config)
+        self.assertEqual(sa.scenario_content_config({'sharpModule': '/x'}, frozenset(['allowRawSmallPng']), True), {'sharpModule': '/x', 'allowRawSmallPng': True})
+        self.assertEqual(sa.scenario_content_config({'sharpModule': '/x'}, frozenset(['sharpModule']), True), {'sharpModule': '/x'})
+        # A key name is not found inside another one's text once the release lists its keys.
+        self.assertFalse(sa.knows(frozenset(['pacing.burstQuietMs']), 'pacing'))
+
     def test_the_bridge_polls_faster_only_when_the_release_knows_the_setting(self):
         config = {'onebotPort': sa.ONEBOT_PORT}
         self.assertEqual(sa.scenario_bridge_config(dict(config), "cfg.onebotPort"), config)
@@ -314,7 +331,7 @@ class InitiationReplayTests(unittest.TestCase):
         self.assertTrue(1000 <= sa.INITIATION_POLL_MS <= 600000)
         self.assertEqual(sa.scenario_bridge_config(dict(config), "const pacing = pacingFrom(cfg.pacing);"), {**config, 'pacing': sa.SCENARIO_PACING})
         source = (HERE / 'staging-agent.py').read_text()
-        self.assertIn("edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_source))", source)
+        self.assertIn("edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_known))", source)
         self.assertIn("reset_initiations(BASE / 'authority-data/authority.sqlite')", source)
         self.assertIn("(BASE / 'media-data/jobs.json').unlink(missing_ok=True)", source)
         self.assertIn("(BASE / 'media-data/describe-cache.json').unlink(missing_ok=True)", source)

@@ -8,13 +8,13 @@ import { MemoryConsolidation } from './consolidation.js';
 import { MemoryDiary } from './diary.js';
 import { completeDiary } from './model-client.js';
 import { purgeModuleURL } from './purge-module.js';
+import { load as loadConfig, defaults } from './config.js';
 
 process.umask(0o077);
 async function main() {
   if (process.argv.length !== 4 || process.argv[2] !== '--config') throw new Error('MEMORY_CONFIG');
-  const file = path.resolve(process.argv[3]), stat = fs.lstatSync(file);
-  if (!stat.isFile() || stat.uid !== process.getuid() || stat.mode & 0o077) throw new Error('MEMORY_CONFIG');
-  const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  // config.js: the same checks the deploy preflight runs; an unknown key is ignored here with one line, a legacy one silently.
+  const cfg = loadConfig(path.resolve(process.argv[3]));
   const authority = new AuthorityClient(cfg.authority);
   // Neither of the old task's diaries is written any more (maintenance.js): the automatic private diary gave way
   // to her private diary, the public draft to the open diary. `stateFile` and `maxCallsPerDay` of an existing
@@ -26,8 +26,7 @@ async function main() {
   // one of the entity's daily consolidation batches.
   const diary = new MemoryDiary({ authority, complete: completeDiary(cfg.gateway), ...(cfg.consolidationDeferMs === undefined ? {} : { deferMs: cfg.consolidationDeferMs }) });
   // Optional memory-worker.json `tickMs` / `consolidationDeferMs` (staging shortens both).
-  const tickMs = cfg.tickMs ?? 60000;
-  if (!Number.isInteger(tickMs) || tickMs < 1000 || tickMs > 600000) throw new Error('MEMORY_CONFIG');
+  const tickMs = cfg.tickMs ?? defaults.tickMs;
   const operatorOrigin = operatorURL(cfg.operatorPort);
   // A legacy cfg.purgeModule (a pinned release path) is ignored.
   const { purgeExecution } = await import(purgeModuleURL());

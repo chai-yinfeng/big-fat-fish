@@ -32,7 +32,7 @@ test('a startup failure logs only a stable code, never the config path', () => {
   for (const args of [[], ['--config', secretPath]]) {
     const result = spawnSync(process.execPath, [fileURLToPath(new URL('./main.mjs', import.meta.url)), ...args], { encoding: 'utf8' });
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /^Memory maintenance failed \((MEMORY_CONFIG|ENOENT)\); inspect private configuration\.\n$/);
+    assert.match(result.stderr, /^Memory maintenance failed \((MEMORY_CONFIG|MISSING_CONFIG|ENOENT)\); inspect private configuration\.\n$/);
     assert.doesNotMatch(result.stderr, /token-like-secret/);
   }
 });
