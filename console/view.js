@@ -205,6 +205,12 @@ export function WorldConsole({ t, standalone = false }) {
   }
   function describeError(caught) {
     const key = caught.code || 'network';
+    // Which field broke which rule, when the operator said so: "标签最多 6 个" rather than "内容不符合字段要求".
+    const detail = key === 'validation_error' ? caught.detail : null;
+    if (detail && Object.hasOwn(DICTIONARIES.en.errors.rules, detail.rule) && (!['maxChars', 'maxItems'].includes(detail.rule) || detail.limit)) {
+      const field = Object.hasOwn(DICTIONARIES.en.errors.fields, detail.field) ? t(`errors.fields.${detail.field}`) : detail.field;
+      return t('errors.fieldRule').replace('{field}', field).replace('{rule}', t(`errors.rules.${detail.rule}`).replace('{limit}', String(detail.limit)));
+    }
     return t(`errors.${Object.hasOwn(DICTIONARIES.en.errors, key) ? key : 'request_failed'}`);
   }
   async function run(action) {
@@ -405,8 +411,11 @@ export function WorldConsole({ t, standalone = false }) {
     return h('section', { className: 'bff-card' }, head,
       h('div', { className: 'bff-spread bff-small' }, h('span', { className: 'bff-muted' }, `${t('spend.today')} ${spend.day} · ${t(`spend.window.${spend.window}`)}`), h('span', { className: 'bff-mono' }, `${yuanText(spend.spentYuan)} / ¥${spend.capYuan}`)),
       h('div', { className: `bff-progress ${spend.tier === 'exhausted' ? 'over' : ''}`, 'aria-hidden': true }, h('i', { style: { width: `${Math.min(100, Math.max(0, spend.percent))}%` } })),
-      h('dl', { className: 'bff-kv' }, ...[['spend.reserved', yuanText(spend.reservedYuan)], ...['conversation', 'maintenance', 'vision', 'web'].map(key => [`spend.byTier.${key}`, yuanText(spend.byTier[key] ?? 0)])].map(([key, value]) => h('div', { key },
-        h('dt', null, t(key)), h('dd', { className: 'bff-mono' }, value)))),
+      // One line per spend category the gateway reports (the capability declarations' SPEND_CATEGORIES), titled by the
+      // capabilities charged to it.
+      h('dl', { className: 'bff-kv' }, ...[['spend.reserved', t('spend.reserved'), yuanText(spend.reservedYuan)], ...(Array.isArray(spend.categories) ? spend.categories : []).map(row => [row.category,
+        row.capabilities.map(item => { const label = t(`quotaPanel.rows.${item.id}`); return label === `quotaPanel.rows.${item.id}` ? item.title : label; }).join(' · '), yuanText(spend.byTier[row.category] ?? 0)])].map(([key, title, value]) => h('div', { key },
+        h('dt', null, title), h('dd', { className: 'bff-mono' }, value)))),
       tokens && h('dl', { className: 'bff-kv' }, ...[['hitRate', tokens.cacheHit + tokens.cacheMiss ? `${Math.round(tokens.cacheHit / (tokens.cacheHit + tokens.cacheMiss) * 1000) / 10}%` : '—'], ...['cacheHit', 'cacheMiss', 'output', 'reasoning', 'requests'].map(key => [key, tokens[key].toLocaleString('en-US')])].map(([key, value]) => h('div', { key },
         h('dt', null, t(`spend.tokens.${key}`)), h('dd', { className: 'bff-mono' }, value)))),
       tokens && text('spend.tokens.hint'),
@@ -492,7 +501,9 @@ export function WorldConsole({ t, standalone = false }) {
           h('tbody', null, ...usage.rows.flatMap(row => [h('tr', { key: row.id },
             h('td', { style: nowrap }, h('strong', null, named(`quotaPanel.rows.${row.id}`, row.title))), h('td', { style: nowrap }, t(`quotaPanel.kind.${row.kind}`)),
             h('td', null, h('span', { className: 'bff-mono' }, `${amount(row)} ${named(`quotaPanel.unit.${row.unit}`, '')}`.trim()), extras(row) ? h('p', { className: 'bff-small bff-muted' }, extras(row)) : null),
-            h('td', { className: 'bff-mono', style: nowrap }, row.kind === 'paid' ? yuanText(row.costYuan) : '—'), h('td', null, elapsed(row)), h('td', null, refused(row)), h('td', { style: nowrap }, status(row)),
+            h('td', { className: 'bff-mono', style: nowrap }, row.kind === 'paid' ? yuanText(row.costYuan) : '—'), h('td', null, elapsed(row)), h('td', null, refused(row)),
+            // The status is the quota's (count and spend tier); a capability that failed today says so beside it.
+            h('td', { style: nowrap }, h('div', { className: 'bff-row' }, status(row), row.failed > 0 ? badge(`${t('quotaPanel.failedToday')} ${row.failed}`, 'danger') : null)),
             h('td', { style: nowrap }, h('button', { type: 'button', className: 'bff-ghost bff-sm', disabled: busy, 'aria-expanded': quotaOpen === row.id, onClick: () => open(row.id) }, icon(quotaOpen === row.id ? 'up' : 'down'), t(quotaOpen === row.id ? 'quotaPanel.less' : 'quotaPanel.more')))),
           quotaOpen === row.id ? h('tr', { key: `${row.id}:detail` }, h('td', { colSpan: 8 }, detail(row))) : null].filter(Boolean)))))));
   }

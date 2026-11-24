@@ -3,6 +3,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { CONTENT_ACTIONS, CONTENT_FIELDS } from '../../capabilities/providers/index.js';
 
 const SCHEMAS = {
   '/v1/observations': ['eventId', 'streamId', 'actorId', 'role', 'text', 'at', 'origin'],
@@ -167,9 +168,11 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
       } else if (route === '/v1/content') {
         if (grant.role !== 'capability' || req.method !== 'POST') throw failure('FORBIDDEN');
         if (!contentControl) throw failure('UNAVAILABLE');
-        const body = await bodyOf(req, ['action', 'streamId', 'memoryEpoch', 'sourceEventId', 'requestId', 'kind', 'data', 'ref', 'quality', 'voiceProfile', 'question', 'text', 'query', 'url', 'sticker', 'name', 'capability', 'activity', 'input'], 13 * 1024 * 1024);
-        if (!['ingest', 'transcribe', 'describe', 'synthesize', 'asset', 'attach', 'pending', 'search', 'fetch', 'jobResult', 'stickerKeep', 'stickerPick', 'activity'].includes(body.action)) throw failure('INVALID_REQUEST');
-        if (['ingest', 'synthesize'].includes(body.action) && typeof body.sourceEventId !== 'string') throw failure('INVALID_REQUEST');
+        // The actions, their fields and which must carry a source message are the capability declarations'.
+        const body = await bodyOf(req, CONTENT_FIELDS, 13 * 1024 * 1024);
+        const declared = CONTENT_ACTIONS.find(row => row.action === body.action);
+        if (!declared) throw failure('INVALID_REQUEST');
+        if (declared.sourceRequired && typeof body.sourceEventId !== 'string') throw failure('INVALID_REQUEST');
         const scopeInput = { streamId: body.streamId, memoryEpoch: body.memoryEpoch, ...(body.sourceEventId === undefined ? {} : { sourceEventId: body.sourceEventId }) };
         const scope = authority.contentScope(grant.capabilityId, scopeInput);
         value = await contentControl(scope, body);

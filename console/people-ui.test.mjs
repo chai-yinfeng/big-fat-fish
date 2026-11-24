@@ -4,7 +4,8 @@ import { loadConsole } from './test-harness.mjs';
 import { operatorRequest, spendPayload, maskAccount, validSpend } from './operator-client.js';
 
 const location = { protocol: 'http:', hostname: '127.0.0.1', hash: '' };
-const spend = { day: '2026-11-09', timezone: 'Asia/Shanghai', spentYuan: 1.2345, reservedYuan: 0.01, capYuan: 5, percent: 24.9, tier: 'normal', thresholds: { reducedPercent: 60, restrictedPercent: 80, exhaustedPercent: 100 }, byTier: { conversation: 1.2, maintenance: 0.0345, vision: 0, web: 0 }, calls: 3, unreportedUsage: 0, window: 'peak', pricing: 'file' };
+const spend = { day: '2026-11-09', timezone: 'Asia/Shanghai', spentYuan: 1.2345, reservedYuan: 0.01, capYuan: 5, percent: 24.9, tier: 'normal', thresholds: { reducedPercent: 60, restrictedPercent: 80, exhaustedPercent: 100 }, byTier: { conversation: 1.2, maintenance: 0.0345, vision: 0, web: 0, proactive: 0.002, activity: 0.5, generation: 0 }, calls: 3, unreportedUsage: 0, window: 'peak', pricing: 'file',
+  categories: [{ category: 'conversation', capabilities: [{ id: 'chat', title: '聊天' }] }, { category: 'vision', capabilities: [{ id: 'vision', title: '看图' }, { id: 'sticker', title: '表情识别' }] }, { category: 'proactive', capabilities: [{ id: 'proactive', title: '主动开口' }] }, { category: 'activity', capabilities: [{ id: 'video-note', title: '视频摘要' }] }] };
 const world = { world: { paused: false, revision: 1 }, persona: { revision: 1, value: {} }, counts: { facts: 0, notes: 0, experiences: 0, pending: 0 }, channels: [], bindings: [], model: { provider: 'deepseek', model: 'deepseek-flash', configured: false, status: 'unconfigured' }, spend };
 const people = { people: [{ personId: 'person:owner', label: 'p-aaaaaa', owner: true, actors: [{ capabilityId: 'qq', externalActorId: 'qq:100:user:123456789' }], conversations: 1 }, { personId: 'person:qq:987654321', label: 'p-bbbbbb', owner: false, actors: [{ capabilityId: 'qq', externalActorId: 'qq:100:user:987654321' }], conversations: 1 }], limit: 40, admitted: 1, qq: { friends: 5 } };
 const conversations = [{ capabilityId: 'qq', streamId: 'qq:100:private:987654321', personId: 'person:qq:987654321', audience: 'private', messages: 4, lastAt: 1, memoryEpoch: 2, label: 'p-bbbbbb', owner: false }];
@@ -46,6 +47,11 @@ test('overview shows today’s spend and saves validated cap/tier settings', asy
   let tree = render();
   const text = JSON.stringify(tree);
   assert.ok(text.includes('spend.title') && text.includes('¥1.23 / ¥5') && text.includes('spend.tier.normal') && text.includes('spend.window.peak'));
+  // One line per category the gateway reports, titled by the capabilities charged to it; nothing for a category it
+  // does not list (the reserved `generation`).
+  const lines = nodes(tree).filter(n => n.type === 'dt').map(n => n.children.join('')).filter(title => !title.startsWith('spend.tokens.'));
+  assert.deepEqual(lines.slice(lines.indexOf('spend.reserved')), ['spend.reserved', '聊天', '看图 · 表情识别', '主动开口', '视频摘要']);
+  assert.ok(text.includes('¥0.5000') && text.includes('¥0.0020'));
   const inputs = Object.fromEntries(nodes(tree).filter(n => n.type === 'input' && ['dailyCapYuan', 'reducedPercent', 'restrictedPercent'].includes(n.props.name)).map(n => [n.props.name, n]));
   assert.deepEqual(Object.values(inputs).map(n => n.props.value), ['5', '60', '80']);
   inputs.dailyCapYuan.props.onChange({ target: { value: '2.5' } });
