@@ -248,6 +248,11 @@ class InitiationReplayTests(unittest.TestCase):
             db.commit()
             self.assertTrue(sa.reset_initiations(database))
             self.assertEqual(db.execute('SELECT key FROM metadata ORDER BY key').fetchall(), [('consolidation',), ('state',)])
+            # Her private wake-up starts over too: its switch, schedule, moods and notes, and the wake log.
+            db.executemany('INSERT INTO metadata VALUES(?,?)', [('initiative', '{"wake":{"enabled":true},"lastWakeAt":1}'), ('initiative.log', '[{"type":"wake","id":"MOCK"}]')])
+            db.commit()
+            self.assertTrue(sa.reset_initiations(database))
+            self.assertEqual(db.execute('SELECT key FROM metadata ORDER BY key').fetchall(), [('consolidation',), ('state',)])
             db.close()
 
     def test_raw_small_pngs_only_while_replaying_and_only_for_a_release_that_knows_the_key(self):

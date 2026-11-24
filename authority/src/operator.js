@@ -110,6 +110,8 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       if (req.method === 'GET' && req.url === '/persona/cards') { respond(200, { ok: true, value: authority.listPersonaCards() }); return; }
       if (req.method === 'GET' && req.url === '/conversations') { respond(200, { ok: true, value: authority.listConversations() }); return; }
       // Read-only: the newest runs she was asked to start herself and how each ended (labels and times, no text).
+      // Read-only: her private wake-up (settings, schedule, her moods and notes, the wake log with the pick worked through).
+      if (req.method === 'GET' && req.url === '/initiative') { respond(200, { ok: true, value: authority.initiativeView() }); return; }
       if (req.method === 'GET' && req.url === '/initiative/log') { respond(200, { ok: true, value: authority.initiationLog() }); return; }
       // Read-only: the content service's background jobs (state, times, result, why one was refused), people as opaque labels.
       if (req.method === 'GET' && req.url === '/jobs') {
@@ -218,7 +220,10 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         // Whether everyday chat thinks; runs she starts herself think regardless. Applies from the next run on.
         value = authority.setConversationSettings(object(body, ['chatThinking']));
       } else if (req.url === '/initiative/settings') {
-        value = authority.initiationSettings(object(body, ['quietHours']));
+        value = authority.initiationSettings(object(body, ['quietHours', 'wake']));
+      } else if (req.url === '/initiative/wake') {
+        // "Wake now": the body is empty; every rule of a wake-up still applies when the bridge next asks.
+        value = authority.initiativeWake(object(body, []));
       } else if (req.url === '/spend/settings') {
         object(body, ['dailyCapYuan', 'reducedPercent', 'restrictedPercent']);
         if (!modelControl) throw Object.assign(new Error('Model unavailable'), { statusCode: 503 });

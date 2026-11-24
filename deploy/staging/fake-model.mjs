@@ -4,7 +4,7 @@
 // as fetchImpl. No provider is ever called. Never part of a release or a production unit;
 // the production gateway has no configurable upstream.
 //   node fake-model.mjs --release <release dir> --config <model-gateway.json> --script <rules.json> --log <requests.jsonl>
-// Script file: [{ match, reply?, propose?: { type, payload }, retry?: { type, payload }, activity?: { capability, action, input? }, scope?: { action, query?|id?|from?,to? }, usage?: { prompt_tokens, completion_tokens } }]
+// Script file: [{ match, reply?, propose?: { type, payload }, retry?: { type, payload }, activity?: { capability, action, input? }, scope?: { action, query?|id?|from?,to? }, self?: { mood?, note?, outreach? }, usage?: { prompt_tokens, completion_tokens } }]
 // The first rule whose `match` occurs in the newest user message applies. `propose` makes the
 // first answer a companion_scope propose tool call (evidence ref taken from the memory-hub note
 // that leads the newest user message); the answer after the tool result is `reply`. `retry` (with `propose`)
@@ -14,7 +14,9 @@
 // A rule with both `propose` and `activity` makes the propose call first and the activity call after its result.
 // `scope` makes the first answer a companion_scope call with exactly these arguments (a search, read or recall);
 // the answer after its result is `reply`.
-// Each logged request also records `notes` (the memory-hub note of every user message, oldest first),
+// `self` makes the first answer a companion_self tool call with exactly these arguments (only when the request offers
+// that tool, i.e. in her private wake-up); the answer after its result is `reply`.
+// Each logged request also records `tools` (the names of the tools it offered), `notes` (the memory-hub note of every user message, oldest first),
 // `turns` (the number of user messages) and `hashes` (one per message, system first), so a scenario can
 // compare whole requests without the log holding every request in full.
 // A consolidation request of the memory worker (not streamed; its user message is JSON with a `messages`
@@ -117,6 +119,7 @@ export function planReply(body, rules = []) {
   }
   if (base.stream && rule.scope && !afterTool && body.tools?.some(tool => tool?.function?.name === 'companion_scope')) return { ...base, kind: 'tool', call: { name: 'companion_scope', arguments: rule.scope } };
   if (base.stream && rule.activity && !afterTool && body.tools?.some(tool => tool?.function?.name === 'companion_activity')) return { ...base, kind: 'tool', call: { name: 'companion_activity', arguments: rule.activity } };
+  if (base.stream && rule.self && !afterTool && body.tools?.some(tool => tool?.function?.name === 'companion_self')) return { ...base, kind: 'tool', call: { name: 'companion_self', arguments: rule.self } };
   if (base.stream && rule.propose && rule.activity && !rule.retry && ref && messages.slice(last + 1).filter(message => message?.role === 'tool').length === 1 && body.tools?.some(tool => tool?.function?.name === 'companion_activity')) return { ...base, kind: 'tool', call: { name: 'companion_activity', arguments: rule.activity } };
   if (base.stream && rule.propose && rule.retry && ref && messages.slice(last + 1).filter(message => message?.role === 'tool').length === 1) {
     return { ...base, kind: 'tool', call: { name: 'companion_scope', arguments: { action: 'propose', ref, type: rule.retry.type, payload: rule.retry.payload } } };
@@ -149,7 +152,7 @@ export function createFakeUpstream({ scriptFile, logFile }) {
     const body = JSON.parse(options.body);
     let rules = []; try { rules = JSON.parse(fs.readFileSync(scriptFile, 'utf8')); } catch {}
     const plan = planReply(body, Array.isArray(rules) ? rules : []);
-    const entry = { at: Date.now(), stream: plan.stream, userText: plan.userText, system: plan.system, context: plan.context, rest: plan.rest, notes: plan.notes, turns: plan.turns, hashes: plan.hashes, afterTool: plan.afterTool, ...(plan.afterTool ? { toolResult: plan.toolResult } : {}), ...(plan.consolidation ? { consolidation: true, maintenance: plan.maintenance } : {}), ...(plan.diary ? { diary: true, maintenance: plan.maintenance } : {}), ...(plan.openDiary ? { openDiary: true, maintenance: plan.maintenance } : {}), answer: plan.kind === 'tool' ? { tool: plan.call } : { text: plan.text }, usage: plan.usage };
+    const entry = { at: Date.now(), stream: plan.stream, tools: Array.isArray(body.tools) ? body.tools.map(tool => tool?.function?.name ?? null) : [], userText: plan.userText, system: plan.system, context: plan.context, rest: plan.rest, notes: plan.notes, turns: plan.turns, hashes: plan.hashes, afterTool: plan.afterTool, ...(plan.afterTool ? { toolResult: plan.toolResult } : {}), ...(plan.consolidation ? { consolidation: true, maintenance: plan.maintenance } : {}), ...(plan.diary ? { diary: true, maintenance: plan.maintenance } : {}), ...(plan.openDiary ? { openDiary: true, maintenance: plan.maintenance } : {}), answer: plan.kind === 'tool' ? { tool: plan.call } : { text: plan.text }, usage: plan.usage };
     fs.appendFileSync(logFile, JSON.stringify(entry) + '\n', { mode: 0o600 });
     return new Response(renderReply(plan), { status: 200, headers: { 'content-type': plan.stream ? 'text/event-stream' : 'application/json' } });
   };

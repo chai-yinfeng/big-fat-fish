@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, text } from './identity.js';
+import { SELF_PERSON, capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, text } from './identity.js';
 import { DEFAULT_ENTITY_ID } from './store.js';
 import { normalizePersona, renderPersona } from './persona.js';
 import { tokenize, uniqueTokens } from './util.js';
@@ -105,6 +105,13 @@ export class MemoryDomain {
     if(policy==='learning.v1')return{
       sql:"COALESCE(m.kind,'') NOT IN ('inner','digest') AND m.collection='notes' AND m.kind='learning'",
       args:[]
+    };
+    // Her own conversation (the private wake-up) is bound to the reserved person, who is nobody: it reads what is
+    // hers, learning notes, and public material that belongs to no person. Public material of a person is left out
+    // as well, so nothing of anybody (not even an opaque label) is in a wake-up.
+    if(scope.personId===SELF_PERSON)return{
+      sql:"COALESCE(m.kind,'') NOT IN ('inner','digest','intent') AND ((m.visibility='public' AND m.person_id IS NULL) OR m.person_id=? OR (m.collection='notes' AND m.kind='learning' AND m.person_id IS NULL))",
+      args:[SELF_PERSON]
     };
     if(digestsBefore!==undefined&&scope.audience==='private'&&policy==='conversation.v1')return{
       sql:"COALESCE(m.kind,'')<>'inner' AND (COALESCE(m.kind,'')<>'digest' OR (m.person_id=? AND m.visibility='private' AND json_extract(m.body,'$.toAt')<?)) AND (m.visibility='public' OR m.person_id=? OR (m.collection='notes' AND m.kind='learning')) AND "+OPEN_INTENT_SQL,
@@ -760,10 +767,11 @@ export class MemoryDomain {
     return this.store.db.prepare(`SELECT COUNT(*) AS n FROM memory_items m WHERE m.entity_id=? AND m.person_id=? AND m.collection='notes' AND m.kind='intent' AND m.status='active' AND ${OPEN_INTENT_SQL}`).get(entityId,personId,this.now()).n;
   }
   /** Internal, for the private wake-up (6b): how many unsettled intents each person has, keyed by person ID.
-   * Counts only: no text, date or ID of any intent. Not exposed on any route. */
-  openIntentCounts({entityId=DEFAULT_ENTITY_ID}={}){
+   * `dueBy` (a Beijing day) counts only those whose day has come (that day or earlier). Counts only: no text, date
+   * or ID of any intent. Not exposed on any route. */
+  openIntentCounts({entityId=DEFAULT_ENTITY_ID,dueBy}={}){
     const e=this.entity(entityId);
-    return Object.fromEntries(this.store.db.prepare(`SELECT m.person_id AS personId,COUNT(*) AS n FROM memory_items m WHERE m.entity_id=? AND m.person_id IS NOT NULL AND m.collection='notes' AND m.kind='intent' AND m.status='active' AND ${OPEN_INTENT_SQL} GROUP BY m.person_id`).all(e.id,this.now()).map(row=>[row.personId,row.n]));
+    return Object.fromEntries(this.store.db.prepare(`SELECT m.person_id AS personId,COUNT(*) AS n FROM memory_items m WHERE m.entity_id=? AND m.person_id IS NOT NULL AND m.collection='notes' AND m.kind='intent' AND m.status='active' AND ${OPEN_INTENT_SQL}${dueBy===undefined?'':" AND json_extract(m.body,'$.dueDate')<=?"} GROUP BY m.person_id`).all(e.id,this.now(),...(dueBy===undefined?[]:[dueBy])).map(row=>[row.personId,row.n]));
   }
   /** Settles an open intent (state 'done'). The hook for a run she started that used it and was delivered (6c wires
    * it); nothing calls it yet. An intent that is not open (settled, lapsed, gone) is left as it is: `{settled:false}`. */

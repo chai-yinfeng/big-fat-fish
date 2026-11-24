@@ -76,7 +76,19 @@ export class AuthorityClient {
     return this.#request('POST', '/v1/diary/code', value);
   }
   /** A conversation channel's credential: the next run she starts herself, as Authority chose it, or `initiation: null` with a reason. */
-  initiationNext() { return this.#request('POST', '/v1/initiations/next', {}); }
+  initiationNext(value = {}) {
+    // `busy`: this channel's bridge has turns queued or running (it only holds back her own wake-up).
+    closed(value, ['busy'], []);
+    if (value.busy !== undefined && typeof value.busy !== 'boolean') throw fail('INVALID_REQUEST');
+    return this.#request('POST', '/v1/initiations/next', value);
+  }
+  /** A conversation channel's credential, from inside her private wake-up on that channel (the executor's tool
+   * `companion_self`): a mood, a note, her outreach tier. Each text comes back `accepted` or `rejected:<reason>`. */
+  async selfRecord(value) {
+    closed(value, ['streamId', 'mood', 'note', 'outreach'], ['streamId']);
+    if (!text(value.streamId) || ['mood', 'note'].some(key => value[key] !== undefined && typeof value[key] !== 'string') || value.outreach !== undefined && !['none', 'maybe', 'yes'].includes(value.outreach)) throw fail('INVALID_REQUEST');
+    return this.#request('POST', '/v1/self', value);
+  }
   /** A conversation channel's credential, as an ordinary turn of this conversation begins: a finished background job of it that
    * the person was not told about yet, handed out to ride on this turn, or `initiation: null`. */
   async initiationCarry(value) {

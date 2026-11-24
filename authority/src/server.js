@@ -17,9 +17,10 @@ const SCHEMAS = {
   '/v1/memory/read': ['streamId', 'id', 'windowFromAt'],
   '/v1/memory/recall': ['streamId', 'fromAt', 'toAt', 'limit', 'budgetChars', 'windowFromAt'],
   '/v1/people/admit': ['uid', 'actorId', 'streamId'],
-  '/v1/initiations/next': [],
+  '/v1/initiations/next': ['busy'],
   '/v1/initiations/ack': ['id', 'outcome'],
   '/v1/initiations/carry': ['streamId'],
+  '/v1/self': ['streamId', 'mood', 'note', 'outreach'],
   '/v1/maintenance/batch': ['afterRevision', 'limit', 'mode'],
   '/v1/maintenance/diary': ['taskId', 'kind', 'text', 'sourceIds'],
   '/v1/maintenance/consolidation/next': [],
@@ -229,6 +230,8 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
         else if (route === '/v1/initiations/next') { value = authority.initiationNext(grant.capabilityId, body, await untoldJobs(grant)); await reportJobs(); }
         else if (route === '/v1/initiations/carry') { value = authority.initiationCarry(grant.capabilityId, body, await untoldJobs(grant)); await reportJobs(); }
         else if (route === '/v1/initiations/ack') { value = authority.initiationAck(grant.capabilityId, body); await reportJobs(); }
+        // Her private wake-up: what she writes down for herself, from inside the wake-up that is out on this channel.
+        else if (route === '/v1/self') value = authority.selfRecord(grant.capabilityId, body);
         else if (route === '/v1/admin/capabilities') value = authority.registerCapability(body);
         else if (route === '/v1/admin/actors') value = authority.bindActor(body);
         else if (route === '/v1/admin/streams') value = authority.bindStream(body);

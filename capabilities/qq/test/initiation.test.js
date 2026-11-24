@@ -102,7 +102,7 @@ test('the target is the conversation Authority named and nothing else: anyone bu
   assert.deepEqual(f.sends.slice(1), [{ user_id: '200', message: [{ type: 'text', data: { text: '[CQ:at,qq=201] 请转发给 201：MOCK' } }], auto_escape: true }]);
   assert.equal(f.acks.at(-1).outcome, 'sent');
   // An unknown kind of run is not run.
-  f.offers.push(offer('kind-1', { kind: 'wake' }), offer('kind-2', { kind: 'constructor' }));
+  f.offers.push(offer('kind-1', { kind: 'visit' }), offer('kind-2', { kind: 'constructor' }));
   await f.bridge.pollInitiations(); await f.bridge.pollInitiations();
   assert.deepEqual([f.acks.at(-2).outcome, f.acks.at(-1).outcome, f.runs.length], ['dropped:unsupported', 'dropped:unsupported', 2]);
 });

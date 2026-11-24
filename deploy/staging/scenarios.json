@@ -1602,6 +1602,39 @@
         { "deleteIntent": { "person": "MOCK-U", "contains": "MOCK-I1-{run} 问问面试怎么样" } },
         { "expectIntent": { "absent": "MOCK-I1-{run} 问问面试怎么样" } }
       ]
+    },
+    {
+      "id": "W1",
+      "title": "her private wake-up: asked for by the operator, run in her own conversation with nothing of anyone in the request; what she writes stays on the operator's page; the pick of a person is worked through in the log and nothing is sent",
+      "model": [
+        { "match": "私下时间", "self": { "mood": "MOCK-W1-{run} 有点想找人说话", "outreach": "yes" }, "reply": "<休息>" },
+        { "match": "下周去看牙", "propose": { "type": "intent.note", "payload": { "text": "MOCK-W1-{run} 问问看牙怎么样", "quote": "我下周去看牙", "due": "2099-01-01" } }, "reply": "MOCK-REPLY-W1 好呀" },
+        { "match": "MOCK-W1-{run} 还在吗", "reply": "MOCK-REPLY-W1 在呢" }
+      ],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "wake": { "enabled": false } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-W1-{run} 主人在 QQ 上说句话" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY" } },
+        { "say": { "from": "MOCK-T", "text": "MOCK-W1-{run} 我下周去看牙，到时候记得问我" } },
+        { "expectReply": { "to": "MOCK-T", "contains": "MOCK-REPLY-W1 好呀" } },
+        { "expectIntent": { "person": "MOCK-T", "contains": "MOCK-W1-{run} 问问看牙怎么样", "state": "open", "due": "2099-01-01" } },
+        { "wakeNow": { "expect": "off" } },
+        { "wake": { "enabled": true } },
+        { "wakeNow": {} },
+        { "expectWake": { "outcome": "done", "did": { "mood": "accepted", "outreach": "yes", "rested": false }, "tier": "yes", "mood": "MOCK-W1-{run} 有点想找人说话", "picked": true } },
+        { "expectWakeRequest": { "absent": ["MOCK-W1-{run} 我下周去看牙", "问问看牙怎么样", "主人在 QQ 上说句话", "MOCK-REPLY", "MOCK-T", "MOCK-OWNER"], "onlyHere": ["有点想找人说话"] } },
+        { "expectPrompt": { "userText": "私下时间", "contains": "这一条不是任何人发来的消息", "in": "context" } },
+        { "expectPrompt": { "userText": "私下时间", "contains": "关于你自己的几个数：今天这是第 1 次醒来" } },
+        { "say": { "from": "MOCK-T", "text": "MOCK-W1-{run} 还在吗" } },
+        { "expectReply": { "to": "MOCK-T", "contains": "MOCK-REPLY-W1 在呢" } },
+        { "expectWakeRequest": { "onlyHere": ["有点想找人说话"] } },
+        { "expectSilence": { "to": "*", "afterMs": 3000 } }
+      ],
+      "finally": [
+        { "wake": { "enabled": false } },
+        { "quietHours": { "window": "default" } }
+      ]
     }
   ]
 }

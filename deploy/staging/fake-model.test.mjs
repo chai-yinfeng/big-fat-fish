@@ -157,6 +157,17 @@ test('scripted model: `activity` is a companion_activity call with the scripted 
   assert.deepEqual([planReply({ stream: true, tools, messages: turn }, script).kind, planReply({ stream: false, tools: offered, messages: turn }, script).kind], ['text', 'text']);
 });
 
+test('scripted model: `self` is a companion_self call with the scripted arguments, only in a request that offers that tool (her private wake-up), then the reply', () => {
+  const self = { mood: 'MOCK 有点想找人说话', outreach: 'yes' }, script = [{ match: '私下时间', self, reply: '<休息>' }], own = [{ type: 'function', function: { name: 'companion_self' } }];
+  const turn = [{ role: 'system', content: system }, user('[私下时间 · 这不是任何人发来的话] 现在是 MOCK')];
+  const first = planReply({ stream: true, tools: own, messages: turn }, script);
+  assert.deepEqual([first.kind, first.call], ['tool', { name: 'companion_self', arguments: self }]);
+  const second = planReply({ stream: true, tools: own, messages: [...turn, { role: 'assistant', tool_calls: [] }, { role: 'tool', content: '{"mood":"记下了。"}' }] }, script);
+  assert.deepEqual([second.kind, second.text, second.toolResult], ['text', '<休息>', '{"mood":"记下了。"}']);
+  // A conversation with a person never offers the tool: the same words there just get the reply.
+  assert.equal(planReply({ stream: true, tools, messages: turn }, script).kind, 'text');
+});
+
 test('scripted model: a rule with `propose` and `activity` proposes first, calls the activity after that result, then replies', () => {
   const activity = { capability: 'video', action: 'watch', input: { url: 'https://video.mock.invalid/v/MOCK001' } };
   const script = [{ match: '记住再看看', propose: { type: 'fact.report', payload: { key: '代号', value: '蓝鲸', quote: '我是蓝鲸' } }, activity, reply: 'MOCK-记下了，我去看看' }];

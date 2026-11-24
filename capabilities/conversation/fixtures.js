@@ -35,19 +35,24 @@ export async function fakeAuthority(t, root) {
   const state = {
     // The channel Authority says the conversation is on (the capability of the caller's credential); null: it names none.
     capabilityId: 'qq',
+    // Her own conversation (the private wake-up runs there and nothing else does): Authority marks its context `own`.
+    ownStream: 'qq:self',
     paused: false, chatThinking: false, epoch: 0, entityId: 'entity:test', text: '[人格]\n大肥鱼', memory: '', memoryIds: [], profile: '', continuation: '', continuationIds: [], revision: 3, personaRevision: 2, worldNow: Date.parse('2026-11-01T00:00:00Z'),
     requests: [], search: () => ({ items: [], text: '' }), content: body => ({ ok: true, action: body.action }), receipts: {},
+    // What Authority answers when she writes something down in her private wake-up (POST /v1/self).
+    self: body => Object.fromEntries(Object.keys(body).filter(key => key !== 'streamId').map(key => [key, key === 'outreach' ? body[key] : 'accepted'])),
   };
   await listen(t, socketPath, async (req, res) => {
     const body = await readJson(req);
     const send = (status, value) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(status === 200 ? { ok: true, value } : { ok: false, error: { code: 'X', message: 'x' } })); };
     if (req.headers.authorization !== 'Bearer ' + credential.token) { send(401); return; }
     state.requests.push({ route: req.url, body });
-    if (req.url === '/v1/context') send(200, { revision: state.revision, entityId: state.entityId, ...(state.capabilityId ? { capabilityId: state.capabilityId } : {}), memoryEpoch: state.epoch, personaRevision: state.personaRevision, text: state.text + (state.memory && '\n\n' + state.memory), personaText: state.text, memoryText: state.memory, memoryIds: state.memoryIds, profileText: state.profile, ...(state.continuation === undefined ? {} : { continuationText: state.continuation, continuationIds: state.continuationIds }), chatThinking: state.chatThinking, scope: { audience: 'private' }, world: { paused: state.paused, revision: 1, worldNow: state.worldNow } });
+    if (req.url === '/v1/context') send(200, { revision: state.revision, entityId: state.entityId, ...(state.capabilityId ? { capabilityId: state.capabilityId } : {}), ...(body.streamId === state.ownStream ? { own: true } : {}), memoryEpoch: state.epoch, personaRevision: state.personaRevision, text: state.text + (state.memory && '\n\n' + state.memory), personaText: state.text, memoryText: state.memory, memoryIds: state.memoryIds, profileText: state.profile, ...(state.continuation === undefined ? {} : { continuationText: state.continuation, continuationIds: state.continuationIds }), chatThinking: state.chatThinking, scope: { audience: 'private' }, world: { paused: state.paused, revision: 1, worldNow: state.worldNow } });
     else if (req.url === '/v1/memory/search') send(200, state.search(body));
     else if (req.url === '/v1/proposals') send(200, { proposalId: body.proposalId, status: 'pending' });
     else if (req.url.startsWith('/v1/receipts/')) { const id = decodeURIComponent(req.url.slice(13)); state.receipts[id] ? send(200, state.receipts[id]) : send(404); }
     else if (req.url === '/v1/content') send(200, state.content(body));
+    else if (req.url === '/v1/self') send(200, state.self(body));
     else send(404);
   });
   return { state, config: { socketPath, tokenFile: credential.file } };

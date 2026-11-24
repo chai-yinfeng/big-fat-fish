@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { DECLARATIONS, CAPABILITIES, ACTIVITIES, ACTIVITY_TOOL, CONTENT_TOOL, MODEL_ACTIONS, ACTIVITY_TOOL_DEFINITION, CONTENT_SCOPE_FIELDS, CONTENT_ACTIONS, CONTENT_FIELDS, GATEWAY_PURPOSES, SPEND_CATEGORIES, SPEND_STOP, GATEWAY_DEFAULT_LIMITS, CONFIGS, FORGET_OWNERS } from './index.js';
 import { TOOL_RULES } from '../conversation/tool-rules.js';
-import { ACTIVITY_TOOL_SCHEMA, CONTENT_TOOL_SCHEMA, SCOPE_TOOL_SCHEMA, createCompanionTools } from '../conversation/tools.js';
+import { ACTIVITY_TOOL_SCHEMA, CONTENT_TOOL_SCHEMA, SCOPE_TOOL_SCHEMA, SELF_TOOL_SCHEMA, createCompanionTools, createSelfTools } from '../conversation/tools.js';
 import { CATEGORIES, STOP, RESERVED_STOP } from '../../model-gateway/spend.mjs';
 import { CONTENT_SERVICE_ACTIONS, checkContentActions } from '../media/service.js';
 import { CHANNELS } from '../channels/index.js';
@@ -116,6 +116,27 @@ test('frozen tools: companion_scope and companion_content offer the written-out 
   }
   // And none has gone missing: the list is exactly what is declared.
   for (const [tool, frozen] of Object.entries(FROZEN_TOOLS)) assert.deepEqual(DECLARATIONS.flatMap(item => item.actions.filter(action => action.model && action.model.tool === tool).map(action => `${item.id}.${action.name}`)), frozen.declared, how);
+});
+
+// The fourth model tool, written out: companion_self is the one tool of her private wake-up (design §3.3). It is a
+// tool of its own, offered in her own conversation only: it is not among the three tools of a conversation with a
+// person (whose definitions and pinned hashes it leaves alone), no capability declaration offers anything through it,
+// and the frozen list above does not apply to it. Changing what it takes is changing this list.
+const SELF_TOOL = Object.freeze({ name: 'companion_self', fields: { mood: 120, note: 400 }, outreach: ['none', 'maybe', 'yes'] });
+
+test('companion_self: the private wake-up\'s own tool, apart from the three tools of a conversation and from every declaration', () => {
+  const { name, parameters } = SELF_TOOL_SCHEMA;
+  assert.equal(name, SELF_TOOL.name);
+  assert.deepEqual([parameters.additionalProperties, parameters.required, Object.keys(parameters.properties)], [false, undefined, ['mood', 'note', 'outreach']]);
+  assert.deepEqual([parameters.properties.mood.maxLength, parameters.properties.note.maxLength, parameters.properties.outreach.enum], [SELF_TOOL.fields.mood, SELF_TOOL.fields.note, SELF_TOOL.outreach]);
+  // Nothing in it selects a person, a conversation or a scope.
+  assert.equal(JSON.stringify(SELF_TOOL_SCHEMA).match(/streamId|memoryEpoch|entityId|personId|requestId|account/), null);
+  assert.ok(!Object.hasOwn(FROZEN_TOOLS, name) && ![SCOPE_TOOL_SCHEMA.name, CONTENT_TOOL_SCHEMA.name, ACTIVITY_TOOL, CONTENT_TOOL].includes(name));
+  for (const item of DECLARATIONS) for (const action of item.actions) assert.notEqual(action.model && action.model.tool, name, `${item.id}.${action.name}`);
+  assert.ok(!MODEL_ACTIONS.some(action => action.tool === name));
+  const conversation = createCompanionTools({ authority: {}, scope: { streamId: 's1', memoryEpoch: 3 }, requestId: 'r1', evidence: [], guard: async () => {} }).map(tool => tool.name);
+  assert.deepEqual(conversation, [SCOPE_TOOL_SCHEMA.name, CONTENT_TOOL_SCHEMA.name, ACTIVITY_TOOL]);
+  assert.deepEqual(createSelfTools({ authority: {}, scope: { streamId: 's1', memoryEpoch: 3 }, guard: async () => {} }).map(tool => tool.name), [name]);
 });
 
 test('executor (tools.js): every declared model action runs with its declared fields and reaches its declared content action', async () => {
