@@ -13,6 +13,10 @@ const STICKER_NEW = { name: '', tags: '', description: '' };
 const STICKER_PAGE = 20;
 // Only a display preference; never secrets or world content.
 const THEME_KEY = 'companion-world:theme';
+// Only a display preference: which type the memory page shows (a type name, never content).
+const MEMORY_KIND_KEY = 'companion-world:memory-kind:v1';
+// Type buttons always offered on the memory page, in this order; any other type found in the list follows them.
+const MEMORY_KINDS = ['facts', 'experiences', 'digest', 'notes'];
 // Data-driven navigation: a new page adds one entry here and one renderer below.
 // `key` is the G+letter shortcut.
 const NAV = [
@@ -161,6 +165,8 @@ export function WorldConsole({ t, standalone = false }) {
   // only in this page's state until the memory page is left.
   const [openDiary, setOpenDiary] = useState(null);
   const [openDiaryCode, setOpenDiaryCode] = useState(null);
+  // Memory page type filter ('all' or a type), remembered for this browser tab (appended, same reason).
+  const [memoryKind, setMemoryKind] = useState(() => { try { const value = sessionStorage.getItem(MEMORY_KIND_KEY); return typeof value === 'string' && /^[a-z_]{1,32}$/.test(value) ? value : 'all'; } catch { return 'all'; } });
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -946,6 +952,14 @@ export function WorldConsole({ t, standalone = false }) {
     const owners = memory && Array.isArray(memory.people) ? memory.people.filter(person => /^p-[0-9a-f]{6}$/.test(person?.label)) : [];
     // Read-only: what background consolidation wrote. A digest is machine text, shown with what it covers.
     const isDigest = item => item.kind === 'digest' && item.source?.machine === 'digest';
+    // Type filter, applied to what is loaded: a digest is its own type; everything else goes by its collection.
+    const kindOf = item => isDigest(item) ? 'digest' : String(item.type);
+    const kinds = memory ? [...MEMORY_KINDS, ...new Set(memory.items.map(kindOf).filter(kind => !MEMORY_KINDS.includes(kind)))] : MEMORY_KINDS;
+    const shownKind = kinds.includes(memoryKind) ? memoryKind : 'all';
+    // A type this page has no name for is shown as it is.
+    const kindLabel = kind => ['all', ...MEMORY_KINDS, 'appraisals'].includes(kind) ? t(`memoryPanel.kind.${kind}`) : kind;
+    const pickKind = kind => { setMemoryKind(kind); try { sessionStorage.setItem(MEMORY_KIND_KEY, kind); } catch {} };
+    const shownItems = memory ? memory.items.filter(item => shownKind === 'all' || kindOf(item) === shownKind) : [];
     const covered = item => isDigest(item) && Number.isFinite(item.fromAt) && Number.isFinite(item.toAt) && Array.isArray(item.derivedFrom)
       ? h('p', { className: 'bff-small bff-muted' }, `${t('memoryPanel.covers')}: ${time(item.fromAt)} – ${time(item.toAt)} · ${t('memoryPanel.lines')}: ${item.derivedFrom.length}`) : null;
     // The observations behind one machine-written item: read on click, kept only in this page's state.
@@ -1018,8 +1032,11 @@ export function WorldConsole({ t, standalone = false }) {
         memory && h('p', { className: 'bff-small bff-muted' }, `${t('memoryPanel.shown')}: ${memory.items.length}`)),
       consolidationCard,
       openDiaryCard,
+      memory && h('div', { className: 'bff-actions', role: 'group', 'aria-label': t('memoryPanel.kindFilter') },
+        ...['all', ...kinds].map(kind => h('button', { key: kind, type: 'button', name: 'memoryKind', className: `${shownKind === kind ? 'bff-primary' : 'bff-ghost'} bff-sm`, 'aria-pressed': shownKind === kind, onClick: () => pickKind(kind) }, kindLabel(kind)))),
       memory && h(React.Fragment, null,
-        ...memory.items.map(item => h('article', { className: 'bff-card bff-memory', key: item.id },
+        shownKind !== 'all' && memory.items.length > 0 && !shownItems.length ? h('p', { className: 'bff-muted' }, t('memoryPanel.kindEmpty')) : null,
+        ...shownItems.map(item => h('article', { className: 'bff-card bff-memory', key: item.id },
           h('div', { className: 'bff-actions' }, badge(item.type, 'primary'), badge(item.status), item.pinned ? badge(t('memoryPinned'), 'primary', icon('pin')) : null,
             belongs(item), item.visibility === 'public' ? badge(t('memoryPanel.public'), 'ok') : null,
             isDigest(item) ? badge(t('memoryPanel.machineBadge'), 'warn') : item.source?.machine === 'extracted' ? badge(t('memoryPanel.extractedBadge')) : null,

@@ -4,6 +4,7 @@
 
 ## Unreleased
 
+- 记忆页按类型显示（主人 11-23；**纯前端，不改 /memory 返回，不迁移数据**）：条目上方一组按钮“全部 / 事实 / 经历 / 经历摘要 / 笔记”，列表里另有的类型（如关系评价）照实追加，只过滤已加载的条目，日记照常显示；所选类型记在 sessionStorage（`companion-world:memory-kind:v1`，读写失败退回“全部”）。默认人格 `identity` 末尾加自称一句（“小鱼”/“本鱼”；只影响新世界与新建空白卡）。“待审”没做：/memory 只列 active 条目，没有待审状态。验证：test:console/authority/conversation、本机临时世界浏览器点过过滤与刷新后保留。
 - 控制台“房间”入口（主人 11-23；**不改服务端、沙箱、部署单元，不新增凭据**）：`open-world.mjs` 的 SSH 隧道顺带把主机 4173 转到本机第一个空闲端口（4173–4182，都占用就跳过），端口随访问片段 `&room=` 交给控制台，总览出现“房间”按钮在新标签打开；没有端口不显示。家人仍走 tailnet 8443。已验证：test:console/room/deploy、本机浏览器点击；未验证：对生产主机的真实隧道。
 - 默认人格换成模板式陪伴卡（主人 11-23 决定；**只影响全新世界和卡库“新建空白卡”，已有世界库里的人格不变**，不迁移数据，`personaRevision` 语义与存储不变）：`DEFAULT_PERSONA` 改写，traits 为空。控制台人格页去掉“人格版本”标题与两个不进上下文的字段（用户称呼、关系阶段；schema/API 仍接受旧值，保存时原样带回），改显示卡的最后修改时间；世界概览去掉人格版本；导出 JSON 文件名改用日期。test:authority/console/conversation 通过，本机临时世界浏览器看过人格页与新建空白卡。
 - 修复发行包漏文件：`build-release.mjs` 补上 `capabilities/conversation/delivery.js`（QQ 桥自 #45 起 import，缺了 staging 预检报 `qq-bridge.json ERR_MODULE_NOT_FOUND`）以及包内测试用到的 `tools.js`、`tool-rules.js`；`stage-release.test.mjs` 新增一条测试，真实构建一次发行包并检查包内所有相对 import 都能找到文件（已知的 4 处与运行无关的缺口列在测试里）。不改业务逻辑。验证：`test:deploy`；未在 staging 跑。

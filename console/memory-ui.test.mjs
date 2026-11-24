@@ -171,3 +171,77 @@ test('consolidation status and source reads are GET-only; a source read names ex
   await assert.rejects(ask({ path: '/memory/consolidation', query: { id: 'd-1' } }), /operator_query_unsupported/);
   await assert.rejects(ask({ path: '/memory/consolidation/next' }), /unsupported_operator_path/);
 });
+
+test('memory type filter: all by default, one type at a time, diaries untouched, choice kept in this tab (and fine without storage)', async () => {
+  const world = { world: { paused: true, revision: 1 }, persona: { revision: 1, value: {} }, counts: { facts: 1, notes: 1, experiences: 2, pending: 0 }, channels: [], bindings: [], model: { provider: 'deepseek', model: 'deepseek-flash', configured: false, status: 'unconfigured' } };
+  const base = { status: 'active', visibility: 'private', personLabel: 'p-aaaaaa', personIsOwner: false, source: { channel: 'qq', role: 'user', proposal: null } };
+  const memory = { entityId: 'entity:test', memoryEpoch: 0, more: false, people: [], unowned: 0, diaries: [{ id: 'dy', kind: 'private', status: 'private', text: 'MOCK-日记' }], items: [
+    { ...base, id: 'f', revision: 6, type: 'facts', key: 'MOCK-事实', value: 'x' },
+    { ...base, id: 'd', revision: 5, type: 'experiences', kind: 'digest', summary: 'MOCK-摘要', source: { channel: 'qq', machine: 'digest' } },
+    { ...base, id: 'e', revision: 4, type: 'experiences', summary: 'MOCK-经历' },
+    { ...base, id: 'n', revision: 3, type: 'notes', kind: 'learning', text: 'MOCK-笔记' },
+    { ...base, id: 'a', revision: 2, type: 'appraisals', text: 'MOCK-评价' },
+    { ...base, id: 'z', revision: 1, type: 'mystery', text: 'MOCK-其它' }] };
+  const mount = async storage => {
+    const states = ['operator-test', '', world, {}, 'memory']; const refs = [];
+    let cursor = 0, refCursor = 0;
+    const React = { Fragment: 'fragment', useState: initial => { const i = cursor++; if (!(i in states)) states[i] = typeof initial === 'function' ? initial() : initial; return [states[i], value => { states[i] = value; }]; }, useRef: initial => refs[refCursor++] ||= { current: initial }, useEffect() {}, createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity) }) };
+    const loaded = await loadConsole({ window: { location: { protocol: 'http:', hostname: '127.0.0.1', hash: '' }, sessionStorage: storage }, sessionStorage: storage, AbortController, AbortSignal, setTimeout, clearTimeout, URLSearchParams,
+      fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: true, value: memory }) }) });
+    const component = loaded.factory(() => React).WorldConsole;
+    const render = () => { cursor = 0; refCursor = 0; return component({ t: key => key }); };
+    const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...tree.children.flatMap(nodes)];
+    const view = {
+      render,
+      kinds: () => nodes(render()).filter(n => n.type === 'button' && n.props.name === 'memoryKind'),
+      pressed: () => view.kinds().filter(n => n.props['aria-pressed']).map(n => n.children.join('')),
+      shown: () => nodes(render()).filter(n => n.type === 'article').map(n => /MOCK-[^"\\: ]+/.exec(JSON.stringify(n))[0]),
+    };
+    assert.equal(view.kinds().length, 0, 'no type buttons before the explicit read');
+    await nodes(render()).find(n => n.type === 'button' && n.children.includes('memoryReadExplicitly')).props.onClick();
+    return view;
+  };
+  const KEY = 'companion-world:memory-kind:v1', ALL = ['MOCK-事实', 'MOCK-摘要', 'MOCK-经历', 'MOCK-笔记', 'MOCK-评价', 'MOCK-其它', 'MOCK-日记'];
+  // Fresh tab: nothing stored -> all; the four types always offered, others as found in the list.
+  const writes = [];
+  const storage = { getItem: key => key === 'companion-world:operator:v1' ? 'operator-test' : null, setItem: (...args) => writes.push(args), removeItem() {} };
+  const stored = value => ({ ...storage, getItem: key => key === KEY ? value : storage.getItem(key) });
+  let view = await mount(storage);
+  const pick = label => view.kinds().find(n => n.children.join('') === label).props.onClick();
+  assert.deepEqual(view.kinds().map(n => n.children.join('')), ['memoryPanel.kind.all', 'memoryPanel.kind.facts', 'memoryPanel.kind.experiences', 'memoryPanel.kind.digest', 'memoryPanel.kind.notes', 'memoryPanel.kind.appraisals', 'mystery']);
+  assert.deepEqual([view.pressed(), view.shown()], [['memoryPanel.kind.all'], ALL]);
+  // One type at a time; the diary stays; a digest is apart from a plain experience.
+  pick('memoryPanel.kind.digest');
+  assert.deepEqual([view.pressed(), view.shown()], [['memoryPanel.kind.digest'], ['MOCK-摘要', 'MOCK-日记']]);
+  pick('memoryPanel.kind.experiences'); assert.deepEqual(view.shown(), ['MOCK-经历', 'MOCK-日记']);
+  pick('memoryPanel.kind.notes'); assert.deepEqual(view.shown(), ['MOCK-笔记', 'MOCK-日记']);
+  pick('mystery'); assert.deepEqual(view.shown(), ['MOCK-其它', 'MOCK-日记']);
+  assert.equal(JSON.stringify(view.render()).includes('memoryPanel.kindEmpty'), false);
+  pick('memoryPanel.kind.all'); assert.deepEqual(view.shown(), ALL);
+  pick('memoryPanel.kind.facts');
+  assert.deepEqual(writes, ['digest', 'experiences', 'notes', 'mystery', 'all', 'facts'].map(value => [KEY, value]));
+  // A new mount in the same tab starts on the stored type.
+  view = await mount(stored('notes'));
+  assert.deepEqual([view.pressed(), view.shown()], [['memoryPanel.kind.notes'], ['MOCK-笔记', 'MOCK-日记']]);
+  // A stored type with nothing loaded of it says so; one this page does not offer falls back to all.
+  memory.items = memory.items.filter(item => item.type !== 'facts');
+  view = await mount(stored('facts'));
+  assert.deepEqual([view.pressed(), view.shown()], [['memoryPanel.kind.facts'], ['MOCK-日记']]);
+  assert.ok(JSON.stringify(view.render()).includes('memoryPanel.kindEmpty'));
+  view = await mount(stored('gone'));
+  assert.deepEqual(view.pressed(), ['memoryPanel.kind.all']);
+  // Storage that throws: the filter still works, starting from all.
+  view = await mount({ getItem: key => { if (key === KEY) throw new Error('blocked'); return 'operator-test'; }, setItem: () => { throw new Error('blocked'); }, removeItem() {} });
+  assert.deepEqual(view.pressed(), ['memoryPanel.kind.all']);
+  pick('memoryPanel.kind.digest');
+  assert.deepEqual([view.pressed(), view.shown()], [['memoryPanel.kind.digest'], ['MOCK-摘要', 'MOCK-日记']]);
+});
+
+test('memory type filter strings exist in both locales', async () => {
+  const { readFile } = await import('node:fs/promises');
+  for (const name of ['zh', 'en']) {
+    const panel = JSON.parse(await readFile(new URL(`./locale/${name}.json`, import.meta.url), 'utf8')).memoryPanel;
+    assert.equal(typeof panel.kindFilter, 'string'); assert.equal(typeof panel.kindEmpty, 'string');
+    for (const kind of ['all', 'facts', 'experiences', 'digest', 'notes', 'appraisals']) assert.equal(typeof panel.kind[kind], 'string', `${name}: ${kind}`);
+  }
+});
