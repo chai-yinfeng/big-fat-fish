@@ -40,8 +40,8 @@ function copy(relative, destination = relative) {
   } else throw new Error('Unadmitted source entry');
 }
 for (const item of ['model-gateway', 'authority/src', 'authority/test', 'authority/package.json', 'authority/PROTOCOL.md', 'capabilities/qq', 'capabilities/memory', 'capabilities/media', 'capabilities/speech', 'capabilities/providers', 'capabilities/channels', 'deploy/qq', 'room']) copy(item);
-// Dependency-free conversation modules used by QQ and the purge; the executor itself is bundled below.
-for (const item of ['index.js', 'executor.js', 'client.js', 'sessions.js', 'package.json']) copy('capabilities/conversation/' + item);
+// Dependency-free conversation modules used by QQ, the purge and the shipped tests; the executor itself is bundled below.
+for (const item of ['index.js', 'executor.js', 'client.js', 'sessions.js', 'delivery.js', 'tools.js', 'tool-rules.js', 'package.json']) copy('capabilities/conversation/' + item);
 for (const item of ['bootstrap.mjs', 'prepare-model.mjs', 'prepare-qq.mjs', 'prepare-conversation.mjs', 'prepare-memory.mjs', 'prepare-speech.mjs', 'prepare-content.mjs', 'prepare-console.mjs', 'prepare-room.mjs', 'install-speech.mjs', 'install-video.mjs', 'benchmark-speech.mjs', 'media-runtime.package.json', 'purge-execution.mjs', 'preflight.mjs', 'isolation/launch.py', 'isolation/units']) copy('deploy/authority/' + item, 'ops/' + item);
 copy('console/dist', 'console-web');
 // One self-contained ESM file (pi-agent-core, pi-ai, openai SDK); no node_modules in a release.
