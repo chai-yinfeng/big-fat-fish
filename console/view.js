@@ -363,8 +363,8 @@ export function WorldConsole({ t, standalone = false }) {
             await request('/world/pause', { paused: !data.world.paused }); await load(); setNotice(t('saved'));
           }), { icon: data.world.paused ? 'play' : 'pause', className: data.world.paused ? 'bff-primary' : '' })),
         h('hr'),
-        h('dl', { className: 'bff-kv' }, ...['worldTime', 'realTime', 'revision', 'personaRevision'].map((key, index) => h('div', { key },
-          h('dt', null, t(key)), h('dd', { className: index < 2 ? '' : 'bff-mono' }, index === 0 ? time(data.world.worldNow) : index === 1 ? time(data.world.realNow) : index === 2 ? data.world.revision : data.persona.revision)))),
+        h('dl', { className: 'bff-kv' }, ...['worldTime', 'realTime', 'revision'].map((key, index) => h('div', { key },
+          h('dt', null, t(key)), h('dd', { className: index < 2 ? '' : 'bff-mono' }, index === 0 ? time(data.world.worldNow) : index === 1 ? time(data.world.realNow) : data.world.revision)))),
         alert('info', t('pauseHint'))),
       h('div', { className: 'bff-grid' }, ...[['facts', 'note'], ['notes', 'pin'], ['experiences', 'sparkles'], ['pending', 'inbox']].map(([key, name]) => h('dl', { key, className: 'bff-card bff-stat' },
         h('dt', null, icon(name), t(key)), h('dd', null, data.counts[key])))),
@@ -547,14 +547,13 @@ export function WorldConsole({ t, standalone = false }) {
     h('form', { id: 'bff-card-editor', className: 'bff-stack', onSubmit: event => { event.preventDefault(); void save(); } },
     h('div', { className: 'bff-persona' },
       h('div', { className: 'bff-stack' },
-        h('section', { className: 'bff-card' }, cardHead(h('div', null, h('h2', null, `${t('personaRevision')}: ${data.persona.revision}`), text('arrayHint'))),
+        h('section', { className: 'bff-card' }, cardHead(h('div', null, h('h2', null, editing ? editing.title : t('persona')), editing && h('p', { className: 'bff-small bff-muted' }, `${t('cardsPanel.updated')} ${editing.updatedAt ? time(editing.updatedAt) : '—'}`), text('arrayHint'))),
           editing && h('div', { className: 'bff-form-grid' },
             h('label', null, h('span', null, t('cardsPanel.cardTitle')), h('input', { name: 'cardTitle', value: meta.title, required: true, maxLength: 40, disabled: busy, onChange: event => setCardMeta({ ...meta, title: event.target.value }) })),
             h('label', null, h('span', null, t('cardsPanel.tags')), h('input', { name: 'cardTags', value: meta.tags, maxLength: 90, placeholder: t('cardsPanel.tagsHint'), disabled: busy, onChange: event => setCardMeta({ ...meta, tags: event.target.value }) }))),
           editing && h('label', null, h('span', null, t('cardsPanel.summary')), h('input', { name: 'cardSummary', value: meta.summary, maxLength: 60, placeholder: t('cardsPanel.summaryHint'), disabled: busy, onChange: event => setCardMeta({ ...meta, summary: event.target.value }) })),
           editing && alert('info', t(editing.current ? 'cardsPanel.editingCurrent' : 'cardsPanel.editingOther')),
-          h('div', { className: 'bff-form-grid' }, ...['name', 'userCallName', 'relationshipStage'].map(key => field(key))),
-          text('personaPanel.neutralHint'),
+          h('div', { className: 'bff-form-grid' }, field('name')),
           field('identity', true),
           h('div', { className: 'bff-form-grid' }, ...['traits', 'speechStyle', 'boundaries', 'principles'].map(key => field(key, true)))),
         personaExamples()),
@@ -585,7 +584,7 @@ export function WorldConsole({ t, standalone = false }) {
           h('div', { className: 'bff-row' }, h('strong', null, card.title), card.current ? badge(t('cardsPanel.current'), 'ok', icon('check')) : null, card.id === editing.id ? badge(t('cardsPanel.editing'), 'primary') : null),
           card.tags.length ? h('div', { className: 'bff-row', style: { flexWrap: 'wrap', gap: '4px', margin: '4px 0' } }, ...card.tags.map(tag => h('span', { key: tag }, badge(tag)))) : null,
           card.summary ? h('div', { className: 'bff-small' }, card.summary) : null,
-          h('div', { className: 'bff-small bff-muted' }, `${t('name')}: ${card.current ? data.persona.value.name : card.persona.name}`, card.updatedAt ? ` · ${t('cardsPanel.updated')} ${time(card.updatedAt)}` : '')),
+          h('div', { className: 'bff-small bff-muted' }, `${t('name')}: ${card.current ? data.persona.value.name : card.persona.name}`, ` · ${t('cardsPanel.updated')} ${card.updatedAt ? time(card.updatedAt) : '—'}`)),
         h('div', { className: 'bff-actions' },
           // The editor is below the list: bring it into view (a library of several cards is taller than the window).
           button('cardsPanel.edit', () => { editCard(card); try { document.getElementById('bff-card-editor').scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch {} }, { disabled: busy || dirty || card.id === editing.id, className: 'bff-ghost bff-sm' }),
@@ -656,7 +655,7 @@ export function WorldConsole({ t, standalone = false }) {
     function exportJSON() {
       const url = URL.createObjectURL(new Blob([personaExport(draft)], { type: 'application/json' }));
       const link = document.createElement('a');
-      link.href = url; link.download = `persona-${(draft.name || 'persona').replace(/[^\p{L}\p{N}_-]+/gu, '_')}-r${data.persona.revision}.json`;
+      link.href = url; link.download = `persona-${(draft.name || 'persona').replace(/[^\p{L}\p{N}_-]+/gu, '_')}-${new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10)}.json`;
       link.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
     }
     async function importJSON(event) {
