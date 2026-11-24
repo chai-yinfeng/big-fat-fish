@@ -330,9 +330,11 @@ test('the staging trigger is used up once the running day has nothing left to ha
   a.diaryTrigger({});
   writePrivate(); writeOpen('MOCK-明面上午');
   assert.equal(state().diary.liveDay, dayName(0));
+  assert.equal(a.consolidationStatus().diary.liveDay, dayName(0));
   // Nothing is left for the running day: this idle answer ends the trigger.
   assert.equal(next().task, null);
   assert.equal(state().diary.liveDay, undefined);
+  assert.equal(a.consolidationStatus().diary.liveDay, null);
   a.setOpenDiaryListed({ personId: person(A), listed: true });
   clock.now += HOUR; chat(A, 'MOCK-甲下午', 'MOCK-摘要甲下午');
   assert.equal(next().task, null);
