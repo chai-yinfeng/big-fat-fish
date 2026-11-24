@@ -1,7 +1,7 @@
 // Shared UI for the standalone browser entry. Styling lives in standalone.css.
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
-import { TOKEN_KEY, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validCards, cardTags, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, initiationResult, validJobs, jobNotice, validStickers, stickerDataUrl, stickerWords, readStickerFile } from './operator-client.js';
+import { TOKEN_KEY, ROOM_PORT_KEY, validRoomPort, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validCards, cardTags, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, initiationResult, validJobs, jobNotice, validStickers, stickerDataUrl, stickerWords, readStickerFile } from './operator-client.js';
 import { validRuntime, ttsBackend, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
@@ -368,12 +368,23 @@ export function WorldConsole({ t, standalone = false }) {
         alert('info', t('pauseHint'))),
       h('div', { className: 'bff-grid' }, ...[['facts', 'note'], ['notes', 'pin'], ['experiences', 'sparkles'], ['pending', 'inbox']].map(([key, name]) => h('dl', { key, className: 'bff-card bff-stat' },
         h('dt', null, icon(name), t(key)), h('dd', null, data.counts[key])))),
+      roomCard(),
       spendCard(),
       data.channels.length > 0 && h('section', { className: 'bff-card' }, cardHead(h('h2', null, t('channels')), button('shell.manage', () => go('channels'), { className: 'bff-ghost bff-sm', icon: 'chevron' })),
         h('div', null, ...data.channels.map(channel => h('div', { className: 'bff-list-row', key: channel.id }, h('span', { className: 'bff-tile' }, icon('channels')),
           h('div', { className: 'bff-grow' }, h('div', { className: 'bff-row' }, h('strong', null, channel.name || channel.id), badge(t(channelStatus(channel)), channelTone(channel))),
             h('p', { className: 'bff-small bff-muted' }, `${t(channel.enabled ? 'enabled' : 'disabled')} · ${t('boundStreams')}: ${channel.boundStreams}`)))))),
       text('snapshot'));
+  }
+  // Her room page, forwarded to this machine by open-world.mjs's SSH tunnel; only when it said on which port.
+  function roomCard() {
+    let port = null;
+    try { port = validRoomPort(sessionStorage.getItem(ROOM_PORT_KEY)); } catch {}
+    if (!port) return null;
+    return h('section', { className: 'bff-card' },
+      cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('monitor')), h('h2', null, t('room.title'))),
+        button('room.open', () => window.open(`http://127.0.0.1:${port}/`, '_blank', 'noopener,noreferrer'), { className: 'bff-ghost bff-sm', icon: 'chevron' })),
+      h('p', { className: 'bff-small bff-muted' }, t('room.hint')));
   }
   function spendCard() {
     const spend = validSpend(data.spend) ? data.spend : null;
