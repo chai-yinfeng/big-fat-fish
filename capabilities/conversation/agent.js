@@ -170,7 +170,7 @@ export function createConversationExecutor({ authority, content, store, model, s
     signal.throwIfAborted();
     const agent = new Agent({
       initialState: { systemPrompt: BASE_PROMPT, model, thinkingLevel: thinkingFor({ initiated, light: input.light === true, carried, chatThinking: prompt.chatThinking }), messages: history,
-        tools: createCompanionTools({ authority, content, scope, windowFromAt, requestId, evidence, guard, turn: { text: initiated ? '' : input.text, initiated }, neutralize: neutralizeNoteMarkers }) },
+        tools: createCompanionTools({ authority, content, scope, windowFromAt, requestId, evidence, guard, turn: { text: initiated ? '' : input.text, initiated }, neutralize: neutralizeNoteMarkers, log }) },
       // The gateway's fixed error code (e.g. BUDGET_EXHAUSTED) is a side channel; the model never sees it.
       streamFn: (m, context, options) => streamFn(m, context, { ...options, gatewayFailure: code => { gatewayFailure = code; }, ...(initiated ? { initiated: true } : {}) }), sessionId, toolExecution: 'sequential',
       identity: { attribution: null, userAgent: { custom: 'big-fat-fish-conversation' } },

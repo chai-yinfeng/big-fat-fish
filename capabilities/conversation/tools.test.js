@@ -241,3 +241,28 @@ test('attach: an answer of the content service that is not an object is refused,
   const [, content] = createCompanionTools({ authority: {}, content: { call: async () => ({ ref: 'ref-1' }) }, scope, requestId: 'r1', evidence: [], guard: async () => {} });
   assert.deepEqual(JSON.parse((await content.execute('call', { action: 'attach', ref: 'ref-1' })).content[0].text), { ref: 'ref-1', delivered: false, isNewEvidence: false, isVerbatimUserText: false });
 });
+
+test('a failed tool call logs one stderr line with the tool, a declared action and the code; never the arguments', async () => {
+  const lines = [], url = 'https://secret.example/page?q=private-query';
+  const failing = { call: async () => { throw Object.assign(new Error('upstream said something private'), { code: 'CONTENT_OPERATION_UNAVAILABLE' }); } };
+  const [memory, content, activity] = createCompanionTools({ authority: { memorySearch: async () => { throw Object.assign(new Error('x'), { code: 'MEMORY_UNAVAILABLE' }); } }, content: failing, scope, requestId: 'r1', evidence: [], guard: async () => {}, turn: { text: `看 ${url}`, initiated: false }, log: line => lines.push(line) });
+  await assert.rejects(content.execute('call', { action: 'read', url }), { code: 'CONTENT_OPERATION_UNAVAILABLE' });
+  await assert.rejects(content.execute('call', { action: 'search', query: 'private-query' }), { code: 'CONTENT_OPERATION_UNAVAILABLE' });
+  await assert.rejects(memory.execute('call', { action: 'search', query: 'private-query' }), { code: 'MEMORY_UNAVAILABLE' });
+  await assert.rejects(content.execute('call', { action: 'private-query', url }), { code: 'INVALID_REQUEST' });
+  await assert.rejects(activity.execute('call', { capability: 'video', action: 'watch', input: { url } }), { code: 'ACTIVITY_UNAVAILABLE' });
+  assert.deepEqual(lines, [
+    'conversation tool failed: companion_content read CONTENT_OPERATION_UNAVAILABLE',
+    'conversation tool failed: companion_content search CONTENT_OPERATION_UNAVAILABLE',
+    'conversation tool failed: companion_scope search MEMORY_UNAVAILABLE',
+    'conversation tool failed: companion_content - INVALID_REQUEST',
+    'conversation tool failed: companion_activity video.watch ACTIVITY_UNAVAILABLE',
+  ]);
+  assert.equal(lines.join('\n').match(/secret|private|http/), null);
+});
+
+test('companion_content tells the model to read a link in the message, and to say honestly when read or search fails', () => {
+  const { url } = CONTENT_TOOL_SCHEMA.parameters.properties;
+  assert.match(url.description, /An http\(s\) link in their message can be read directly with read\./);
+  assert.match(url.description, /If read or search fails, say truthfully that the tool is unavailable for now or you could not read it; do not say the site cannot be opened\./);
+});

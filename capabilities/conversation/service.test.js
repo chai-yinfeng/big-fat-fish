@@ -660,10 +660,12 @@ test('carried event: a background result rides on a real message of the person, 
 // base prompt, QQ part, fixture persona.
 // PINNED_NEUTRAL_SYSTEM_SHA256 is the same without any channel part.
 const PINNED_NEUTRAL_SYSTEM_SHA256 = '2d3246158ecafc165c0be974c6ca02ab1bf60a5f7842b96e5b0804731e1eb01c';
-const PINNED_SYSTEM_SHA256 = 'e460174841df0a7c6f65c46cab6b297b889423b12345b96c4b6554da7e7e2f34', PINNED_TOOLS_SHA256 = '7047ad04c0b28d0565d24b6946884934289eac5a0ebb303670d62e10cc1ae2ba';
+const PINNED_SYSTEM_SHA256 = 'e460174841df0a7c6f65c46cab6b297b889423b12345b96c4b6554da7e7e2f34', PINNED_TOOLS_SHA256 = '4169af05b2319956d810d4e0d58ef17195a204d851a881ead8d8baf6c8361bb6';
 // With companion_activity (the first tool added since): the two earlier definitions are still the pinned bytes above,
 // and the third follows them. PINNED_ALL_TOOLS_SHA256 is the three together, to be changed only on purpose.
-const PINNED_ALL_TOOLS_SHA256 = '29a5849868e32b19b634a2fce08b6275df3b877e6a392622c62b764010a503ab';
+// Both tool hashes changed once more, deliberately (owner-approved): companion_content's `url` description gained the
+// read-a-link and say-it-honestly-when-it-fails sentences.
+const PINNED_ALL_TOOLS_SHA256 = '6220b5436b8c188aa3dc5573d996ed7341c0d8a2158a998eee18a435e03dc8e5';
 test('the cached prefix is pinned: the base prompt and the two earlier tool definitions are byte-for-byte what they were before background jobs, the third tool follows them, in every kind of run', async t => {
   const f = await setup(t);
   f.gateway.state.script.push(reply('一'), reply('二'), reply('三'), reply('四'));

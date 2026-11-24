@@ -262,3 +262,35 @@ test('daily vision/web counts roll over at Beijing midnight; a usage file with a
   assert.equal((await search()).status, 429);
   assert.equal(calls, 1);
 });
+
+test('a failed capability call logs one line: status, code, time and short upstream enums; never a URL, query, content or key', async t => {
+  const lines = [], replies = [
+    () => new Response(JSON.stringify({ error: { code: 'invalid_url', message: 'PRIVATE https://secret.example/page' } }), { status: 400 }),
+    () => new Response('PRIVATE PAGE TEXT https://secret.example/page', { status: 503 }),
+    () => new Response(JSON.stringify({ error: { type: 'authentication_error' } }), { status: 401 }),
+    () => { throw new TypeError('fetch failed', { cause: Object.assign(new Error('Connect Timeout Error https://secret.example'), { code: 'UND_ERR_CONNECT_TIMEOUT' }) }); },
+    () => Response.json({ title: 1, content: 'PRIVATE PAGE TEXT' }),
+    () => new Response(JSON.stringify({ error: { code: 'rate limit/' + 'x'.repeat(100) } }), { status: 429 }),
+    () => new Response('PRIVATE', { status: 500 }),
+  ];
+  const f = await fixture(t, async () => replies.shift()(), { budgets: { web: 50, vision: 50 }, log: line => lines.push(line) });
+  await f.control('/model', { model: 'deepseek-flash', apiKey: 'synthetic-key-not-a-real-secret' }); f.pause(false);
+  for (let i = 0; i < 5; i++) assert.equal((await f.capability('/v1/web/fetch', { url: 'https://secret.example/page?q=private-query' })).status >= 500, true);
+  assert.equal((await f.capability('/v1/web/search', { query: 'private-query' })).status, 502);
+  assert.equal((await f.capability('/v1/vision/describe', { imageBase64: png, mime: 'image/png', question: 'private-question' })).status, 502);
+  // Refused before the provider: no failure, no line.
+  assert.equal((await f.capability('/v1/web/fetch', { url: 'http://127.0.0.1/private' })).status, 400);
+  assert.equal(lines.length, 7);
+  const shape = /^gateway capability failed: (web (fetch|search)|vision describe) status=(\d{3}|-) code=[A-Z_]+ ms=\d+( upstream=[A-Za-z0-9_.-]{1,64})?( cause=[A-Za-z0-9_.-]{1,64})?$/;
+  for (const line of lines) assert.match(line, shape);
+  assert.deepEqual(lines.map(line => line.replace(/ ms=\d+/, '')), [
+    'gateway capability failed: web fetch status=400 code=UPSTREAM_ERROR upstream=invalid_url',
+    'gateway capability failed: web fetch status=503 code=UPSTREAM_ERROR',
+    'gateway capability failed: web fetch status=401 code=UPSTREAM_AUTH upstream=authentication_error',
+    'gateway capability failed: web fetch status=- code=UPSTREAM_ERROR cause=UND_ERR_CONNECT_TIMEOUT',
+    'gateway capability failed: web fetch status=200 code=UPSTREAM_ERROR',
+    `gateway capability failed: web search status=429 code=UPSTREAM_LIMIT upstream=ratelimit${'x'.repeat(55)}`,
+    'gateway capability failed: vision describe status=500 code=UPSTREAM_ERROR',
+  ]);
+  assert.equal(lines.join('\n').match(/secret|private|PRIVATE|http|synthetic|iVBOR/), null);
+});

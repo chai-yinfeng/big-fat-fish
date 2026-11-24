@@ -84,7 +84,7 @@ export const CONTENT_TOOL_SCHEMA = {
     properties: {
       action: { type: 'string', enum: ['search', 'read', 'describe', 'transcribe', 'attach'] },
       query: { type: 'string', maxLength: 128, description: 'Search query; search only.' },
-      url: { type: 'string', maxLength: 8192, description: 'Public HTTP(S) page; read only.' },
+      url: { type: 'string', maxLength: 8192, description: 'Public HTTP(S) page; read only. An http(s) link in their message can be read directly with read. If read or search fails, say truthfully that the tool is unavailable for now or you could not read it; do not say the site cannot be opened.' },
       ref: { type: 'string', maxLength: 200, description: 'Scoped image/audio/sticker ref; describe/transcribe/attach only.' },
       question: { type: 'string', maxLength: 500, description: 'Optional image question; describe only.' },
     }, required: ['action'],
@@ -146,7 +146,7 @@ function checkFields(declared, input) {
  * @param neutralize the executor's replacement of memory-hub note delimiters, applied to the external text an
  *                  activity returns (a video's title or description can be written by anybody)
  */
-export function createCompanionTools({ authority, content, scope, windowFromAt, requestId, evidence, guard, turn = { text: '', initiated: false }, neutralize = text => text, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) }) {
+export function createCompanionTools({ authority, content, scope, windowFromAt, requestId, evidence, guard, turn = { text: '', initiated: false }, neutralize = text => text, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), log = line => process.stderr.write(line + '\n') }) {
   const refs = new Set(evidence.map(item => item.ref));
   const windowed = windowFromAt === undefined ? {} : { windowFromAt };
   async function scopeAction(args) {
@@ -229,9 +229,23 @@ export function createCompanionTools({ authority, content, scope, windowFromAt, 
     closed(input, declared.keys, declared.required, `input（${args.action}）`);
     return perform(declared, { action: declared.contentAction, capability: args.capability, activity: args.action, input }, input, signal);
   }
+  /** One stderr line per failed tool call: the tool, a declared action name and the error code; never the arguments. */
+  const logged = (name, actionOf, run) => async (params, signal) => {
+    try { return await run(params, signal); }
+    catch (error) {
+      const code = typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(error.code) ? error.code : 'ERROR';
+      try { log(`conversation tool failed: ${name} ${(isObject(params) && actionOf(params)) || '-'} ${code}`); } catch {}
+      throw error;
+    }
+  };
+  const SCOPE_ACTIONS = SCOPE_TOOL_SCHEMA.parameters.properties.action.enum;
+  const known = (tool, params) => MODEL_ACTIONS.find(item => item.tool === tool && item.action === params.action && (tool !== ACTIVITY_TOOL || item.capability === params.capability));
+  const scopeRun = logged(SCOPE_TOOL_SCHEMA.name, params => SCOPE_ACTIONS.includes(params.action) && params.action, async params => result(bounded(await scopeAction(params))));
+  const contentRun = logged(CONTENT_TOOL_SCHEMA.name, params => known(CONTENT_TOOL, params)?.action, async (params, signal) => result(await contentAction(params, signal)));
+  const activityRun = logged(ACTIVITY_TOOL_SCHEMA.name, params => { const item = known(ACTIVITY_TOOL, params); return item && `${item.capability}.${item.action}`; }, async (params, signal) => result(await activityAction(params, signal)));
   return [
-    { ...SCOPE_TOOL_SCHEMA, label: 'Companion memory', executionMode: 'sequential', execute: async (_id, params) => result(bounded(await scopeAction(params))) },
-    { ...CONTENT_TOOL_SCHEMA, label: 'Companion content', executionMode: 'sequential', execute: async (_id, params, signal) => result(await contentAction(params, signal)) },
-    { ...ACTIVITY_TOOL_SCHEMA, label: 'Companion activity', executionMode: 'sequential', execute: async (_id, params, signal) => result(await activityAction(params, signal)) },
+    { ...SCOPE_TOOL_SCHEMA, label: 'Companion memory', executionMode: 'sequential', execute: async (_id, params) => scopeRun(params) },
+    { ...CONTENT_TOOL_SCHEMA, label: 'Companion content', executionMode: 'sequential', execute: async (_id, params, signal) => contentRun(params, signal) },
+    { ...ACTIVITY_TOOL_SCHEMA, label: 'Companion activity', executionMode: 'sequential', execute: async (_id, params, signal) => activityRun(params, signal) },
   ];
 }

@@ -103,6 +103,17 @@ async function readPrivate(file) {
   } finally { await handle.close(); }
 }
 function validKey(key) { return typeof key === 'string' && /^[\x21-\x7e]{1,4096}$/.test(key); }
+/** A short enum for a failure log line (an upstream `error.code`, a network cause): at most 64 of [A-Za-z0-9_.-]. */
+function shortCode(value) {
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+  const text = String(value).replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 64);
+  return text || undefined;
+}
+/** A failed provider reply's own error enum (`error.code`, else `error.type`), read from at most 4 KiB; never its text. */
+async function upstreamCode(response) {
+  try { const value = await boundedJson(response, 4096); return shortCode(value?.error?.code) ?? shortCode(value?.error?.type); }
+  catch { await response.body?.cancel().catch(() => {}); return undefined; }
+}
 function providerCode(status) { return status === 401 || status === 403 ? 'UPSTREAM_AUTH' : status === 429 ? 'UPSTREAM_LIMIT' : 'UPSTREAM_ERROR'; }
 const privateAddresses = new net.BlockList();
 for (const [address, prefix] of [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 4], ['240.0.0.0', 4]]) privateAddresses.addSubnet(address, prefix, 'ipv4');
@@ -143,7 +154,7 @@ function tokenUsage(value) {
 }
 
 /** Private control and inference transports; never returns or logs provider credentials. */
-export function createModelGateway({ settingsFile, inferenceSocket, controlSocket, inferenceTokenHash, operatorTokenHash, worldStatus, usageFile = path.join(path.dirname(settingsFile), 'capability-usage.json'), budgets = GATEWAY_DEFAULT_LIMITS, fetchImpl = fetch, upstream = 'https://api.deepseek.com/chat/completions', clock = Date.now, providers = PROVIDERS, capabilities = CAPABILITIES, proxyFetch }) {
+export function createModelGateway({ settingsFile, inferenceSocket, controlSocket, inferenceTokenHash, operatorTokenHash, worldStatus, usageFile = path.join(path.dirname(settingsFile), 'capability-usage.json'), budgets = GATEWAY_DEFAULT_LIMITS, fetchImpl = fetch, upstream = 'https://api.deepseek.com/chat/completions', clock = Date.now, providers = PROVIDERS, capabilities = CAPABILITIES, proxyFetch, log = line => process.stderr.write(line + '\n') }) {
   const paths = [settingsFile, inferenceSocket, controlSocket, usageFile];
   if (paths.some(value => typeof value !== 'string' || !path.isAbsolute(value)) || new Set(paths).size !== 4 || ![inferenceTokenHash, operatorTokenHash].every(value => /^[a-f0-9]{64}$/.test(value)) || inferenceTokenHash === operatorTokenHash || typeof worldStatus !== 'function' || typeof fetchImpl !== 'function' || new URL(upstream).protocol !== 'https:' || !object(budgets) || Object.keys(budgets).some(key => !Object.hasOwn(GATEWAY_DEFAULT_LIMITS, key))) throw new Error('Invalid gateway configuration');
   const limits = { ...GATEWAY_DEFAULT_LIMITS, ...budgets };
@@ -189,7 +200,15 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       const reason = error.code === 'BUDGET_EXHAUSTED' ? exhausted : DENIED[error.code];
       // A ledger slot refusal (`ledger.take`) has counted itself.
       if (reason && !note.costMicros) { if (!error.counted) write({ outcome: 'denied', reason }); }
-      else if (!['INVALID_REQUEST', 'BODY_TOO_LARGE', 'NOT_FOUND'].includes(error.code)) write({ outcome: 'failed', ...spent() });
+      else if (!['INVALID_REQUEST', 'BODY_TOO_LARGE', 'NOT_FOUND'].includes(error.code)) {
+        write({ outcome: 'failed', ...spent() });
+        // One line per failed capability call, for diagnosis: the upstream HTTP status, our code and fixed enums only;
+        // never a URL, a query, page or image content, a key or a request body. Chat failures are not logged here.
+        if (!['chat', 'proactive'].includes(id)) {
+          const extra = [note.upstream && `upstream=${note.upstream}`, note.cause && `cause=${note.cause}`].filter(Boolean).join(' ');
+          try { log(`gateway capability failed: ${id}${note.operation ? ` ${note.operation}` : ''} status=${note.status ?? '-'} code=${shortCode(error.code) ?? 'UNKNOWN'} ms=${spent().busyMs}${extra ? ` ${extra}` : ''}`); } catch {}
+        }
+      }
       throw error;
     }
   }
@@ -260,6 +279,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
         headers: { authorization: `Bearer ${snapshot.apiKey}`, 'content-type': 'application/json' },
         body: JSON.stringify(request),
       });
+      if (note) note.status = response.status;
       if (!response.ok) {
         outcome = 'release';
         await response.body?.cancel();
@@ -368,7 +388,8 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       if ((await world()).paused) throw failure('WORLD_PAUSED');
       outcome = 'charge';
       const response = await fetchImpl(endpoint, { method: 'POST', redirect: 'error', signal: controller.signal, headers: { authorization: `Bearer ${snapshot.apiKey}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      if (!response.ok) { outcome = 'release'; await response.body?.cancel(); throw failure(providerCode(response.status)); }
+      note.status = response.status;
+      if (!response.ok) { outcome = 'release'; note.upstream = await upstreamCode(response); throw failure(providerCode(response.status)); }
       const value = await boundedJson(response, kind === 'vision' ? 65536 : 2 * 1024 * 1024), reported = tokenUsage(value.usage);
       await updateUsage(previous => ({ ...previous, inputTokens: previous.inputTokens + (reported?.prompt_tokens || 0), outputTokens: previous.outputTokens + (reported?.completion_tokens || 0), unreportedUsageResponses: previous.unreportedUsageResponses + (reported === null ? 1 : 0) }));
       if (controller.signal.aborted) throw failure('CANCELLED');
@@ -376,6 +397,8 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       return { value, usage: reported };
     } catch (error) {
       if (ERRORS[error.code]) throw error;
+      // A network failure's own cause (e.g. ECONNRESET, UND_ERR_CONNECT_TIMEOUT), for the failure log line.
+      note.cause = shortCode(error?.cause?.code) ?? shortCode(error?.code) ?? shortCode(error?.name);
       throw failure(controller.signal.aborted ? 'CANCELLED' : 'UPSTREAM_ERROR');
     } finally {
       clearTimeout(timer); res.off('close', disconnected); active.delete(controller);
@@ -397,6 +420,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     if (!settings.apiKey) throw failure('UNCONFIGURED');
     const evidence = { external: true, derived: true, isNewEvidence: false };
     if (vision) {
+      note.operation = 'describe';
       closed(body, ['imageBase64', 'mime', 'question', 'detail', 'purpose']); imageBytes(body);
       if (body.purpose !== undefined && !Object.hasOwn(PURPOSES, body.purpose)) throw failure('INVALID_REQUEST');
       if (body.question !== undefined && (typeof body.question !== 'string' || !body.question.trim() || [...body.question].length > 500)) throw failure('INVALID_REQUEST');
@@ -407,6 +431,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       if (typeof text !== 'string' || !text.trim()) throw failure('UPSTREAM_ERROR');
       send(res, 200, { ok: true, value: { description: text.trim().slice(0, 2400), truncated: text.trim().length > 2400, model: 'deepseek-flash', usage: reply.usage, ...evidence } });
     } else if (req.url === '/v1/web/search') {
+      note.operation = 'search';
       closed(body, ['query', 'count']);
       if (typeof body.query !== 'string' || !body.query.trim() || [...body.query].length > 128 || (body.count !== undefined && (!Number.isSafeInteger(body.count) || body.count < 1 || body.count > 5))) throw failure('INVALID_REQUEST');
       const count = body.count ?? 3;
@@ -427,6 +452,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       }
       send(res, 200, { ok: true, value: { results: boundedResults, truncated, usage: reply.usage, ...evidence } });
     } else {
+      note.operation = 'fetch';
       closed(body, ['url']); const url = publicUrl(body.url);
       const reply = await capabilityCall('web', 'https://api.deepseek.com/v1/tools/fetch', { url }, res, note);
       if (typeof reply.value.title !== 'string' || typeof reply.value.content !== 'string') throw failure('UPSTREAM_ERROR');
