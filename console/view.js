@@ -588,6 +588,8 @@ export function WorldConsole({ t, standalone = false }) {
       h('div', { className: 'bff-stack bff-sticky' }, personaPreviewCard(), personaFiles())),
     h('div', { className: 'bff-savebar' },
       dirty ? badge(t('personaPanel.unsaved'), 'warn', h('span', { className: 'bff-dot' })) : null,
+      // The same words as the alert at the top of the page, where the save button is (the page is long).
+      error ? badge(error, 'danger bff-savebar-error', icon('alert')) : null,
       h('p', { className: 'bff-grow' }, t('conflictHint')),
       button('discard', () => { setDraft(personaDraft(base)); setCardMeta(null); }, { className: 'bff-ghost' }),
       h('button', { type: 'submit', disabled: busy }, icon('save'), t('save')))),

@@ -157,6 +157,17 @@ test('Authority (server.js /v1/content): the action allowlist, the field allowli
   assert.deepEqual(sorted(CONTENT_ACTIONS.filter(row => row.sourceRequired).map(row => row.action)), ['ingest', 'stickerPick', 'synthesize']);
 });
 
+test('content client (media/client.js): what it lets through to /v1/content is the derived action list', async () => {
+  const client = source('capabilities/media/client.js');
+  assert.ok(client.includes("import { CONTENT_ACTIONS } from '../providers/index.js';") && client.includes('!CONTENT_ACTIONS.some(row => row.action === input.action)'));
+  assert.doesNotMatch(client, /\['ingest', /, 'no hand-written action list left');
+  // An action that is not declared is refused before anything is sent (the socket does not exist).
+  const { ContentClient } = await import('../media/client.js');
+  const content = new ContentClient({ socketPath: '/nonexistent/content.sock', tokenFile: '/nonexistent/token' });
+  for (const action of ['jobStart', 'paint', undefined]) await assert.rejects(content.call({ action, streamId: 's1', memoryEpoch: 0 }), { code: 'CONTENT_REQUEST_INVALID' }, String(action));
+  for (const { action } of CONTENT_ACTIONS) await assert.rejects(content.call({ action, streamId: 's1', memoryEpoch: 0 }), { code: 'CONTENT_CREDENTIAL_UNAVAILABLE' }, action);
+});
+
 test('PROTOCOL.md: the /v1/content actions are pointed at, not listed', () => {
   const protocol = source('authority/PROTOCOL.md');
   assert.doesNotMatch(protocol, /\nActions are `/);

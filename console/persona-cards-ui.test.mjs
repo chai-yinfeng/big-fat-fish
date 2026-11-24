@@ -10,8 +10,8 @@ const worldOf = (name, revision) => ({ world: { paused: false, revision: 1 }, pe
 const library = (currentId, revision = 3) => ({ entityId: 'entity:big-fat-fish', personaRevision: revision, currentId, limit: 24, cards: [
   { id: 'card:default', title: 'MOCK-默认卡', tags: [], summary: '', current: currentId === 'card:default', persona: persona('MOCK-甲'), createdAt: null, updatedAt: null },
   { id: 'card:b', title: 'MOCK-乙卡', tags: ['MOCK-外冷内热', 'MOCK-嘴直'], summary: 'MOCK-乙卡的一句话简介', current: currentId === 'card:b', persona: persona('MOCK-乙'), createdAt: 1, updatedAt: 2 }] });
-// Hook positions in view.js: the editor draft is state 3; the card states are 35-39.
-const DRAFT = 3, CARDS = 35, EDIT = 36, META = 37, NEW = 38, CONFIRM = 39;
+// Hook positions in view.js: the editor draft is state 3, the page error 6; the card states are 35-39.
+const DRAFT = 3, ERROR = 6, CARDS = 35, EDIT = 36, META = 37, NEW = 38, CONFIRM = 39;
 
 function harness(states, responses) {
   const refs = [], calls = [];
@@ -169,6 +169,13 @@ test('card library: a refused save names the field and the rule it broke, in bot
   refused = { ...refused, field: 'summary', rule: 'maxChars', limit: 60 };
   await save();
   assert.ok(shown().includes('简介最多 60 字'), shown());
+  // The same words stand beside the save button at the bottom of the long page.
+  const savebar = () => h.nodes(h.render(t)).find(node => node.props.className === 'bff-savebar');
+  const besideSave = () => h.nodes(savebar()).filter(node => String(node.props.className).includes('bff-savebar-error')).map(node => h.textOf(node).replace(/\\s+/g, ' ').trim());
+  assert.deepEqual(besideSave(), ['简介最多 60 字，请修改后重试。']);
+  // Nothing there once the error is gone.
+  states[ERROR] = '';
+  assert.deepEqual([besideSave(), shown()], [[], '']);
   refused = { ...refused, field: 'name', rule: 'required', limit: undefined };
   await save();
   assert.ok(shown().includes('名字不能为空'), shown());
