@@ -1,10 +1,7 @@
 // Consistency: every hand-written list of capabilities, actions, fields, purposes and spend categories in the
 // product, held against the capability declarations and the tables derived from them (./index.js). The executor
-// (tools.js), the model gateway and the content service read their tables already; each other test here names one
-// list that a later step replaces with its table.
-//
-// Where a list and the declarations disagree today, the difference is written down in KNOWN_DRIFT and asserted
-// exactly: fixing one (or adding a new one) fails the test until this table is updated on purpose.
+// (tools.js), the model gateway, the content service, Authority's /v1/content and the console's spend card read their
+// tables already; each other test here names one list that is still written by hand.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -15,15 +12,6 @@ import { ACTIVITY_TOOL_SCHEMA, CONTENT_TOOL_SCHEMA, SCOPE_TOOL_SCHEMA, createCom
 import { CATEGORIES, STOP, RESERVED_STOP } from '../../model-gateway/spend.mjs';
 import { CONTENT_SERVICE_ACTIONS, checkContentActions } from '../media/service.js';
 import { CHANNELS } from '../channels/index.js';
-
-const KNOWN_DRIFT = {
-  // authority/src/server.js accepts a /v1/content field no action takes and nothing sends.
-  authorityFieldsNobodyUses: ['quality'],
-  // The content service refuses stickerPick without a source message; Authority only insists on one for ingest and synthesize.
-  sourceRequiredButNotByAuthority: ['stickerPick'],
-  // The console's spend card lists four categories by hand; these have money and no line.
-  spendCategoriesNotOnConsole: ['proactive', 'activity'],
-};
 
 const source = file => fs.readFileSync(fileURLToPath(new URL(`../../${file}`, import.meta.url)), 'utf8');
 const sorted = list => [...list].sort();
@@ -155,21 +143,35 @@ test('executor (tools.js): every declared model action runs with its declared fi
   }
 });
 
-test('Authority (server.js /v1/content): the action allowlist, the field allowlist and "must carry a source" match the derived table', () => {
-  const route = source('authority/src/server.js').split("route === '/v1/content'")[1];
+test('Authority (server.js /v1/content): the action allowlist, the field allowlist and "must carry a source" are read from the derived table', () => {
+  const server = source('authority/src/server.js'), route = server.split("route === '/v1/content'")[1]?.split('} else if (')[0];
   assert.ok(route, 'the /v1/content branch');
-  const fields = quoted(found(route, /bodyOf\(req, \[([^\]]*)\]/, 'field allowlist'));
-  const actions = quoted(found(route, /if \(!\[([^\]]*)\]\.includes\(body\.action\)\)/, 'action allowlist'));
-  const sourced = quoted(found(route, /if \(\[([^\]]*)\]\.includes\(body\.action\) && typeof body\.sourceEventId !== 'string'\)/, 'source rule'));
-  assert.deepEqual(sorted(actions), sorted(CONTENT_ACTIONS.map(row => row.action)));
-  assert.deepEqual(sorted(fields), sorted([...CONTENT_FIELDS, ...KNOWN_DRIFT.authorityFieldsNobodyUses]));
-  assert.deepEqual(KNOWN_DRIFT.authorityFieldsNobodyUses.filter(field => CONTENT_FIELDS.includes(field)), []);
-  assert.deepEqual(sorted([...sourced, ...KNOWN_DRIFT.sourceRequiredButNotByAuthority]), sorted(CONTENT_ACTIONS.filter(row => row.sourceRequired).map(row => row.action)));
+  assert.ok(server.includes("import { CONTENT_ACTIONS, CONTENT_FIELDS } from '../../capabilities/providers/index.js';"));
+  assert.ok(route.includes('bodyOf(req, CONTENT_FIELDS,'), 'field allowlist from CONTENT_FIELDS');
+  assert.ok(route.includes('const declared = CONTENT_ACTIONS.find(row => row.action === body.action);') && route.includes("if (!declared) throw failure('INVALID_REQUEST');"), 'action allowlist from CONTENT_ACTIONS');
+  assert.ok(route.includes("if (declared.sourceRequired && typeof body.sourceEventId !== 'string') throw failure('INVALID_REQUEST');"), 'source rule from CONTENT_ACTIONS');
+  assert.doesNotMatch(route, /\[\s*'\w+'\s*,/, 'no hand-written list left in the route');
+  // What the hand-written lists had differed in: `quality` (no action takes it) is gone, and stickerPick needs a source
+  // message at Authority as at the content service.
+  assert.equal(CONTENT_FIELDS.includes('quality'), false);
+  assert.deepEqual(sorted(CONTENT_ACTIONS.filter(row => row.sourceRequired).map(row => row.action)), ['ingest', 'stickerPick', 'synthesize']);
 });
 
-test('PROTOCOL.md: the list of /v1/content actions is the derived one', () => {
-  const listed = [...found(source('authority/PROTOCOL.md'), /\nActions are ((?:`\w+`(?:, )?)+)\./, 'PROTOCOL.md "Actions are"').matchAll(/`(\w+)`/g)].map(match => match[1]);
-  assert.deepEqual(sorted(listed), sorted(CONTENT_ACTIONS.map(row => row.action)));
+test('content client (media/client.js): what it lets through to /v1/content is the derived action list', async () => {
+  const client = source('capabilities/media/client.js');
+  assert.ok(client.includes("import { CONTENT_ACTIONS } from '../providers/index.js';") && client.includes('!CONTENT_ACTIONS.some(row => row.action === input.action)'));
+  assert.doesNotMatch(client, /\['ingest', /, 'no hand-written action list left');
+  // An action that is not declared is refused before anything is sent (the socket does not exist).
+  const { ContentClient } = await import('../media/client.js');
+  const content = new ContentClient({ socketPath: '/nonexistent/content.sock', tokenFile: '/nonexistent/token' });
+  for (const action of ['jobStart', 'paint', undefined]) await assert.rejects(content.call({ action, streamId: 's1', memoryEpoch: 0 }), { code: 'CONTENT_REQUEST_INVALID' }, String(action));
+  for (const { action } of CONTENT_ACTIONS) await assert.rejects(content.call({ action, streamId: 's1', memoryEpoch: 0 }), { code: 'CONTENT_CREDENTIAL_UNAVAILABLE' }, action);
+});
+
+test('PROTOCOL.md: the /v1/content actions are pointed at, not listed', () => {
+  const protocol = source('authority/PROTOCOL.md');
+  assert.doesNotMatch(protocol, /\nActions are `/);
+  assert.ok(protocol.includes('(`capabilities/providers/index.js`: `CONTENT_ACTIONS`, `CONTENT_FIELDS`)'));
 });
 
 test('content service (media/service.js, main.mjs, video/provider.js): what is dispatched is what is declared', () => {
@@ -223,10 +225,15 @@ test('model gateway (spend.mjs): categories and stop tiers are the derived ones 
   for (const item of CAPABILITIES.filter(item => item.meter.spendCategory)) assert.equal(item.meter.stopTier, SPEND_STOP[item.meter.spendCategory], item.id);
 });
 
-test('console (view.js, locale): the spend card lists declared categories, and misses the ones written down', () => {
-  const shown = quoted(found(source('console/view.js'), /\.\.\.\[([^\]]*)\]\.map\(key => \[`spend\.byTier\.\$\{key\}`/, 'view.js spend card'));
-  assert.deepEqual(sorted([...shown, ...KNOWN_DRIFT.spendCategoriesNotOnConsole]), sorted(SPEND_CATEGORIES.map(row => row.category)));
-  for (const locale of ['zh', 'en']) assert.deepEqual(Object.keys(JSON.parse(source(`console/locale/${locale}.json`)).spend.byTier), shown, locale);
+test('console (view.js, locale): the spend card lists the categories the gateway reports, titled by their capabilities', () => {
+  // The gateway's /spend carries SPEND_CATEGORIES as `categories` (model-gateway/usage-ledger.test.mjs holds the value).
+  assert.ok(source('model-gateway/spend.mjs').includes('categories: SPEND_CATEGORIES.map('));
+  const view = source('console/view.js');
+  assert.ok(view.includes('(Array.isArray(spend.categories) ? spend.categories : []).map(row =>'), 'view.js spend card');
+  assert.doesNotMatch(view, /spend\.byTier\./, 'no hand-written category line left');
+  for (const locale of ['zh', 'en']) assert.equal(JSON.parse(source(`console/locale/${locale}.json`)).spend.byTier, undefined, locale);
+  // Every category with money has a line, including the two the hand-written list had missed.
+  assert.ok(['proactive', 'activity'].every(category => SPEND_CATEGORIES.some(row => row.category === category)));
 });
 
 test('configuration and forgetting: each declared loader exists, and the owners are the processes the purge knows', async () => {

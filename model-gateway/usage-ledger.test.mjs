@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { createUsageLedger, DENIAL_REASONS } from './usage-ledger.mjs';
 import { createModelGateway, INITIATED_HEADER } from './server.mjs';
-import { CAPABILITIES } from '../capabilities/providers/index.js';
+import { CAPABILITIES, SPEND_CATEGORIES } from '../capabilities/providers/index.js';
 import { capabilityGateway, meteredSpeech } from '../capabilities/media/client.js';
 
 const operator = 'operator-test-token-with-no-real-credential', infer = 'inference-test-token-with-no-real-credential';
@@ -205,6 +205,9 @@ test('gateway: every exit lands in its row, and the rows add up to what the spen
   const byCategory = {};
   for (const row of Object.values(rows)) if (row.spendCategory) byCategory[row.spendCategory] = (byCategory[row.spendCategory] ?? 0) + Math.round(row.costYuan * 1e6);
   for (const [category, micros] of Object.entries(byCategory)) assert.equal(micros, Math.round(spend.byTier[category] * 1e6), category);
+  // The declared categories, each with the capabilities charged to it: what the console's spend card lists.
+  assert.deepEqual(spend.categories, SPEND_CATEGORIES.map(row => ({ category: row.category, capabilities: row.capabilities.map(({ id, title }) => ({ id, title })) })));
+  assert.deepEqual(Object.keys(byCategory).filter(category => !spend.categories.some(row => row.category === category)), []);
   assert.ok(rows.chat.costYuan > 0 && rows.consolidation.costYuan > 0);
   // Tokens as the provider reported them, per row; together they are the spend meter's totals.
   assert.deepEqual([rows.chat.units, rows.consolidation.units], [{ inputTokens: 2000, outputTokens: 200 }, { inputTokens: 40, outputTokens: 20 }]);

@@ -238,6 +238,16 @@ test('operator routes: list, create, edit, make current and delete cards', async
   assert.deepEqual([edited.status, edited.body.value.personaRevision], [200, 1]);
   assert.deepEqual(edited.body.value.cards.filter(card => card.id === id).map(card => [card.tags, card.summary]), [[['MOCK-嘴直', 'MOCK-外冷内热'], 'MOCK-简介']]);
   assert.equal((await call('POST', '/persona/cards/update', { id, tags: ['x'.repeat(13)] })).status, 400);
+  // A refused field is named with the rule it broke, for the console; its content is never sent back.
+  const why = async data => { const answer = await call('POST', '/persona/cards/update', { id, ...data }); assert.equal(answer.status, 400); assert.ok(!JSON.stringify(answer.body).includes('MOCK-超')); const { field, rule, limit } = answer.body.error; return [answer.body.error.code, field, rule, limit]; };
+  assert.deepEqual(await why({ tags: ['MOCK-超1', 'MOCK-超2', 'MOCK-超3', 'MOCK-超4', 'MOCK-超5', 'MOCK-超6', 'MOCK-超7'] }), ['VALIDATION_ERROR', 'tags', 'maxItems', 6]);
+  assert.deepEqual(await why({ tags: ['MOCK-超' + 'x'.repeat(13)] }), ['VALIDATION_ERROR', 'tag', 'maxChars', 12]);
+  assert.deepEqual(await why({ summary: 'MOCK-超' + 'x'.repeat(60) }), ['VALIDATION_ERROR', 'summary', 'maxChars', 60]);
+  assert.deepEqual(await why({ title: ' ' }), ['VALIDATION_ERROR', 'title', 'required', undefined]);
+  assert.deepEqual(await why({ patch: { name: ' ' } }), ['VALIDATION_ERROR', 'name', 'required', undefined]);
+  assert.deepEqual(await why({ patch: { identity: 'MOCK-超' + 'x'.repeat(4000) } }), ['VALIDATION_ERROR', 'identity', 'maxChars', 4000]);
+  assert.deepEqual(await why({ patch: { traits: Array.from({ length: 41 }, () => 'MOCK-超') } }), ['VALIDATION_ERROR', 'traits', 'maxItems', 40]);
+  assert.deepEqual(await why({ patch: { examples: [{ user: 'MOCK-超' + 'x'.repeat(4000), assistant: 'x' }] } }), ['VALIDATION_ERROR', 'examples', 'maxChars', 4000]);
   assert.equal((await call('GET', '/world')).body.value.persona.value.name, 'MOCK-甲');
   assert.equal((await call('POST', '/persona/cards/delete', { id: DEFAULT_CARD_ID })).status, 409);
   assert.equal((await call('POST', '/persona/cards/activate', { id, expectedRevision: 9 })).status, 409);

@@ -268,6 +268,10 @@ test('transport: Authority asks the content service with its own control credent
   assert.deepEqual([read.status, content.scoped.at(-1).scope.streamId, content.scoped.at(-1).scope.personId, content.scoped.at(-1).input.ref], [200, stream(A), person(A), done.id]);
   const before = content.scoped.length;
   for (const action of ['jobStart', 'job', 'jobs', 'jobCancel']) assert.equal((await call('api.sock', tokens.qq, 'POST', '/v1/content', { action, streamId: stream(A), memoryEpoch: 0, capability: 'demo' })).status, 400, action);
+  // The allowlists are the declarations': a field no action takes, and an action declared to need a source message
+  // without one, are refused before the content service is asked.
+  assert.equal((await call('api.sock', tokens.qq, 'POST', '/v1/content', { action: 'jobResult', streamId: stream(A), memoryEpoch: 0, ref: done.id, quality: 'default' })).status, 400);
+  assert.equal((await call('api.sock', tokens.qq, 'POST', '/v1/content', { action: 'stickerPick', streamId: stream(A), memoryEpoch: 0, query: '开心' })).status, 400);
   assert.equal(content.scoped.length, before);
   // Operator: the demo job is registered in the owner's own conversation; the body can name nobody.
   for (const body of [{ streamId: stream(A) }, { personId: person(A) }, { uid: A }, { seconds: 0 }, { seconds: 121 }, { seconds: '5' }]) assert.equal((await call('op.sock', tokens.operator, 'POST', '/jobs/demo', body)).status, 400);

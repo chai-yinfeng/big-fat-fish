@@ -33,38 +33,45 @@ const STRING_FIELDS = ["name", "userCallName", "speechStyle", "relationshipStage
 const ARRAY_FIELDS = ["traits", "boundaries", "principles"];
 const FIELDS = [...STRING_FIELDS, ...ARRAY_FIELDS, "examples"];
 
+// An error names the field and the rule it broke (`detail`), never the field's content.
+const invalid = (message, field, rule, limit) => Object.assign(new Error(message), { detail: { field, rule, ...(limit === undefined ? {} : { limit }) } });
+
 function object(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
-    throw new Error(`${label} must be a plain object`);
+    throw invalid(`${label} must be a plain object`, label === "example" ? "examples" : "persona", "invalid");
   }
 }
 
 function text(value, label, limit = 4000) {
-  if (typeof value !== "string" || value.length > limit) throw new Error(`${label} must be a string of at most ${limit} characters`);
+  const field = label.startsWith("example.") ? "examples" : label;
+  if (typeof value !== "string") throw invalid(`${label} must be a string of at most ${limit} characters`, field, "invalid");
+  if (value.length > limit) throw invalid(`${label} must be a string of at most ${limit} characters`, field, "maxChars", limit);
   return value.trim();
 }
 
 export function validatePersonaPatch(patch) {
   object(patch, "persona");
-  for (const key of Object.keys(patch)) if (!FIELDS.includes(key)) throw new Error(`unknown persona field: ${key}`);
+  for (const key of Object.keys(patch)) if (!FIELDS.includes(key)) throw invalid(`unknown persona field: ${key}`, "persona", "invalid");
   for (const key of STRING_FIELDS) if (Object.hasOwn(patch, key)) {
     text(patch[key], key);
-    if (["name", "userCallName"].includes(key) && !patch[key].trim()) throw new Error(`${key} must not be empty`);
+    if (["name", "userCallName"].includes(key) && !patch[key].trim()) throw invalid(`${key} must not be empty`, key, "required");
   }
   for (const key of ARRAY_FIELDS) if (Object.hasOwn(patch, key)) {
-    if (!Array.isArray(patch[key]) || patch[key].length > 40) throw new Error(`${key} must be an array of at most 40 strings`);
+    if (!Array.isArray(patch[key])) throw invalid(`${key} must be an array of at most 40 strings`, key, "invalid");
+    if (patch[key].length > 40) throw invalid(`${key} must be an array of at most 40 strings`, key, "maxItems", 40);
     for (const value of patch[key]) text(value, key);
   }
   if (Object.hasOwn(patch, "examples")) {
-    if (!Array.isArray(patch.examples) || patch.examples.length > 20) throw new Error("examples must be an array of at most 20 dialogues");
+    if (!Array.isArray(patch.examples)) throw invalid("examples must be an array of at most 20 dialogues", "examples", "invalid");
+    if (patch.examples.length > 20) throw invalid("examples must be an array of at most 20 dialogues", "examples", "maxItems", 20);
     for (const entry of patch.examples) {
       object(entry, "example");
-      if (Object.keys(entry).some((key) => !["user", "assistant"].includes(key))) throw new Error("unknown example field");
+      if (Object.keys(entry).some((key) => !["user", "assistant"].includes(key))) throw invalid("unknown example field", "examples", "invalid");
       text(entry.user, "example.user");
       text(entry.assistant, "example.assistant");
     }
   }
-  if (JSON.stringify(patch).length > 24_000) throw new Error("persona exceeds the 24000-character document limit");
+  if (JSON.stringify(patch).length > 24_000) throw invalid("persona exceeds the 24000-character document limit", "persona", "maxChars", 24_000);
 }
 
 export function normalizePersona(value = {}) {
