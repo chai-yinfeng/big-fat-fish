@@ -23,7 +23,7 @@ const SCHEMAS = {
   '/v1/maintenance/batch': ['afterRevision', 'limit', 'mode'],
   '/v1/maintenance/diary': ['taskId', 'kind', 'text', 'sourceIds'],
   '/v1/maintenance/consolidation/next': [],
-  '/v1/maintenance/consolidation/commit': ['taskId', 'outcome', 'digest', 'facts'],
+  '/v1/maintenance/consolidation/commit': ['taskId', 'outcome', 'digest', 'facts', 'intents'],
   '/v1/maintenance/diary/next': [],
   '/v1/maintenance/diary/commit': ['taskId', 'outcome', 'private', 'open', 'usedIds'],
   '/v1/diary/code': ['streamId'],

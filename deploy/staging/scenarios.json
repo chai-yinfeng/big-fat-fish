@@ -1574,6 +1574,34 @@
         {"mockExecutor": {"running": true}},
         {"resume": {}}
       ]
+    },
+    {
+      "id": "I1",
+      "title": "her intent: proposed in the person's private chat, theirs alone (in their own context, in nobody else's request), one already past its time is refused, the owner deletes it",
+      "model": [
+        { "match": "下周一面试", "propose": { "type": "intent.note", "payload": { "text": "MOCK-I1-{run} 问问面试怎么样", "quote": "我下周一面试", "due": "2099-01-01" } }, "reply": "MOCK-REPLY-I1 好呀" },
+        { "match": "上个月搬家", "propose": { "type": "intent.note", "payload": { "text": "MOCK-I1-{run} 过期的打算", "quote": "我上个月搬家", "due": "2020-01-01" } }, "reply": "MOCK-REPLY-I1 嗯嗯" },
+        { "match": "面试 打算", "reply": "MOCK-REPLY-I1 回答" }
+      ],
+      "steps": [
+        { "say": { "from": "MOCK-U", "text": "MOCK-I1-{run} 我下周一面试，到时候记得问我" } },
+        { "expectReply": { "to": "MOCK-U", "contains": "MOCK-REPLY-I1 好呀" } },
+        { "expectToolResult": { "userText": "MOCK-I1-{run} 我下周一面试", "contains": "\"remembered\":true" } },
+        { "expectIntent": { "person": "MOCK-U", "contains": "MOCK-I1-{run} 问问面试怎么样", "state": "open", "due": "2099-01-01" } },
+        { "say": { "from": "MOCK-U", "text": "MOCK-I1-{run} 面试 打算（MOCK-U 再问）" } },
+        { "expectReply": { "to": "MOCK-U", "contains": "MOCK-REPLY-I1 回答" } },
+        { "expectPrompt": { "userText": "（MOCK-U 再问）", "contains": "MOCK-I1-{run} 问问面试怎么样", "in": "context" } },
+        { "expectPrompt": { "userText": "（MOCK-U 再问）", "contains": "2099-01-01", "in": "context" } },
+        { "say": { "from": "MOCK-B", "text": "MOCK-I1-{run} 面试 打算（MOCK-B 也问）" } },
+        { "expectReply": { "to": "MOCK-B", "contains": "MOCK-REPLY-I1 回答" } },
+        { "expectPrompt": { "userText": "（MOCK-B 也问）", "absent": "问问面试怎么样" } },
+        { "say": { "from": "MOCK-U", "text": "MOCK-I1-{run} 我上个月搬家了" } },
+        { "expectReply": { "to": "MOCK-U", "contains": "MOCK-REPLY-I1 嗯嗯" } },
+        { "expectToolResult": { "userText": "MOCK-I1-{run} 我上个月搬家", "contains": "intent_due_passed" } },
+        { "expectIntent": { "absent": "MOCK-I1-{run} 过期的打算" } },
+        { "deleteIntent": { "person": "MOCK-U", "contains": "MOCK-I1-{run} 问问面试怎么样" } },
+        { "expectIntent": { "absent": "MOCK-I1-{run} 问问面试怎么样" } }
+      ]
     }
   ]
 }

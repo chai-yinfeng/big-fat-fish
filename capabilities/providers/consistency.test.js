@@ -97,7 +97,9 @@ test('executor (tools.js): the frozen companion_content tool offers exactly the 
 // definition changes, so the prompt cache is lost once).
 const FROZEN_TOOLS = Object.freeze({
   // Her own memory, which Authority owns. No capability declaration offers anything through it today.
-  companion_scope: Object.freeze({ actions: ['evidence', 'propose', 'receipt', 'search', 'read', 'recall'], declared: [] }),
+  // `proposeTypes`: the kinds of memory `propose` offers. intent.note (her intents) was added with the owner's approval
+  // of 11-14 (design §3.2); the tool definition changed and the prompt cache is lost once.
+  companion_scope: Object.freeze({ actions: ['evidence', 'propose', 'receipt', 'search', 'read', 'recall'], proposeTypes: ['fact.report', 'experience.remember', 'appraisal.record', 'learning.note', 'self.note', 'intent.note'], declared: [] }),
   companion_content: Object.freeze({ actions: ['search', 'read', 'describe', 'transcribe', 'attach'], declared: ['vision.describe', 'web.search', 'web.read', 'speech-asr.transcribe', 'media.attach'] }),
 });
 
@@ -105,6 +107,7 @@ test('frozen tools: companion_scope and companion_content offer the written-out 
   const how = '按语义选工具：同步只读查阅→companion_content；她的记忆→companion_scope；要花时间或有副作用→companion_activity。往前两个工具加动作需要更新冻结名单（consistency.test.js 的 FROZEN_TOOLS；经主人批准，会让提示缓存失效一次）。';
   assert.deepEqual(SCOPE_TOOL_SCHEMA.parameters.properties.action.enum, FROZEN_TOOLS.companion_scope.actions, how);
   assert.deepEqual(CONTENT_TOOL_SCHEMA.parameters.properties.action.enum, FROZEN_TOOLS.companion_content.actions, how);
+  assert.deepEqual(SCOPE_TOOL_SCHEMA.parameters.properties.type.enum, FROZEN_TOOLS.companion_scope.proposeTypes, how);
   assert.deepEqual([SCOPE_TOOL_SCHEMA.name, CONTENT_TOOL_SCHEMA.name, CONTENT_TOOL], ['companion_scope', 'companion_content', 'companion_content']);
   for (const item of DECLARATIONS) for (const action of item.actions) {
     if (!action.model || !Object.hasOwn(FROZEN_TOOLS, action.model.tool)) continue;

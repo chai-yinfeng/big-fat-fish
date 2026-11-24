@@ -6,6 +6,7 @@ import { tokenize, uniqueTokens } from './util.js';
 import { memoryContent, opaquePerson, CONTINUATION_ITEMS, DIGEST_LABEL, beijingDated } from './context.js';
 import { SENSITIVE } from './policies.js';
 import { DEFAULT_CARD_ID, feelingFor } from './cards.js';
+import { OPEN_INTENT_SQL, intentState } from './intents.js';
 import { channel } from '../../capabilities/channels/index.js';
 
 const DAY=86400000;
@@ -37,7 +38,7 @@ const PROPOSAL_TYPES={facts:'fact.report',experiences:'experience.remember',appr
 const sourceOf=entry=>({
   channel:entry.capabilityId??null,
   role:entry.evidence?.role??null,
-  proposal:entry.proposalId?PROPOSAL_TYPES[entry.type]??(entry.kind==='learning'?'learning.note':'self.note'):null,
+  proposal:entry.proposalId?PROPOSAL_TYPES[entry.type]??(entry.kind==='learning'?'learning.note':entry.kind==='intent'?'intent.note':'self.note'):null,
   // Only on what background consolidation wrote, not the conversation: a machine digest, or a fact it extracted.
   ...(entry.kind==='digest'?{machine:'digest'}:entry.proposalId?.startsWith('cons:')?{machine:'extracted'}:{})
 });
@@ -94,7 +95,8 @@ export class MemoryDomain {
   /** What a conversation may read. Machine digests (kind 'digest') are, like 'inner' notes, in no search,
    * read, recall or profile. `digestsBefore` (context(), and the memory tools given `windowFromAt`) lets the person's
    * own private conversation retrieve that person's digests whose dialogue ended before that time, i.e. has left the
-   * replay window. */
+   * replay window. Her intents (kind 'intent') are private to their person like any person's item, and only while
+   * open: a settled or lapsed one is in no conversation. */
   visibility(scope,policy,{digestsBefore}={}){
     if(scope.audience==='shared')return{
       sql:"m.visibility='public' AND COALESCE(m.kind,'') NOT IN ('inner','digest')",
@@ -105,12 +107,12 @@ export class MemoryDomain {
       args:[]
     };
     if(digestsBefore!==undefined&&scope.audience==='private'&&policy==='conversation.v1')return{
-      sql:"COALESCE(m.kind,'')<>'inner' AND (COALESCE(m.kind,'')<>'digest' OR (m.person_id=? AND m.visibility='private' AND json_extract(m.body,'$.toAt')<?)) AND (m.visibility='public' OR m.person_id=? OR (m.collection='notes' AND m.kind='learning'))",
-      args:[scope.personId,digestsBefore,scope.personId]
+      sql:"COALESCE(m.kind,'')<>'inner' AND (COALESCE(m.kind,'')<>'digest' OR (m.person_id=? AND m.visibility='private' AND json_extract(m.body,'$.toAt')<?)) AND (m.visibility='public' OR m.person_id=? OR (m.collection='notes' AND m.kind='learning')) AND "+OPEN_INTENT_SQL,
+      args:[scope.personId,digestsBefore,scope.personId,this.now()]
     };
     return{
-      sql:"COALESCE(m.kind,'') NOT IN ('inner','digest') AND (m.visibility='public' OR m.person_id=? OR (m.collection='notes' AND m.kind='learning'))",
-      args:[scope.personId]
+      sql:"COALESCE(m.kind,'') NOT IN ('inner','digest') AND (m.visibility='public' OR m.person_id=? OR (m.collection='notes' AND m.kind='learning')) AND "+OPEN_INTENT_SQL,
+      args:[scope.personId,this.now()]
     };
   }
   /** `exclude`: memory IDs that are never candidates (already in front of the model).
@@ -252,6 +254,8 @@ export class MemoryDomain {
       const entry=this.store.memory(r);
       return{
         ...entry,archived:r.status==='active'&&!r.pinned&&now-r.created_world_at>e.retention_days*DAY*4,
+        // An intent as it is now: an open one past its time shows as expired.
+        ...(r.kind==='intent'?{state:intentState(entry,this.now())}:{}),
         // For display: the same opaque label the people listing uses, never an account number.
         personLabel:r.person_id?opaquePerson(r.person_id):null,personIsOwner:r.person_id==='person:owner',source:sourceOf(entry)
       };
@@ -302,7 +306,8 @@ export class MemoryDomain {
       this.entity(input.entityId);
       const row=this.store.db.prepare('SELECT * FROM memory_items WHERE entity_id=? AND id=?').get(input.entityId,input.id);
       // A digest paraphrases one person's private conversation: it is never made public.
-      if(!row||row.kind==='inner'||row.kind==='digest'||row.collection==='appraisals')fail('FORBIDDEN','Not a public material',403);
+      // Nor is an intent: her to-do about one person stays that person's.
+      if(!row||row.kind==='inner'||row.kind==='digest'||row.kind==='intent'||row.collection==='appraisals')fail('FORBIDDEN','Not a public material',403);
       if(SENSITIVE.test(memoryContent(JSON.parse(row.body))))fail('FORBIDDEN','Sensitive material requires a separate explicit process',403);
       const body={
         ...JSON.parse(row.body),visibility:'public'
@@ -749,6 +754,44 @@ export class MemoryDomain {
       kind: 'recall',
       isNewEvidence: false
     };
+  }
+  /** This person's unsettled intents (open and not lapsed). */
+  openIntentCount(entityId,personId){
+    return this.store.db.prepare(`SELECT COUNT(*) AS n FROM memory_items m WHERE m.entity_id=? AND m.person_id=? AND m.collection='notes' AND m.kind='intent' AND m.status='active' AND ${OPEN_INTENT_SQL}`).get(entityId,personId,this.now()).n;
+  }
+  /** Internal, for the private wake-up (6b): how many unsettled intents each person has, keyed by person ID.
+   * Counts only: no text, date or ID of any intent. Not exposed on any route. */
+  openIntentCounts({entityId=DEFAULT_ENTITY_ID}={}){
+    const e=this.entity(entityId);
+    return Object.fromEntries(this.store.db.prepare(`SELECT m.person_id AS personId,COUNT(*) AS n FROM memory_items m WHERE m.entity_id=? AND m.person_id IS NOT NULL AND m.collection='notes' AND m.kind='intent' AND m.status='active' AND ${OPEN_INTENT_SQL} GROUP BY m.person_id`).all(e.id,this.now()).map(row=>[row.personId,row.n]));
+  }
+  /** Settles an open intent (state 'done'). The hook for a run she started that used it and was delivered (6c wires
+   * it); nothing calls it yet. An intent that is not open (settled, lapsed, gone) is left as it is: `{settled:false}`. */
+  settleIntent({entityId=DEFAULT_ENTITY_ID,id}){
+    identifier(id);
+    return this.store.transaction(()=>{
+      const e=this.entity(entityId),row=this.store.db.prepare("SELECT * FROM memory_items WHERE entity_id=? AND id=? AND collection='notes' AND kind='intent' AND status='active'").get(e.id,id);
+      if(!row||intentState(JSON.parse(row.body),this.now())!=='open')return{id,settled:false};
+      const revision=this.store.nextRevision(),body={...JSON.parse(row.body),state:'done',settledAt:this.now()};
+      this.store.db.prepare('UPDATE memory_items SET body=?,revision=? WHERE id=?').run(JSON.stringify(body),revision,row.id);
+      this.store.audit({type:'memory.intent-settled',entityId:e.id,id:row.id,revision,at:this.now()});
+      return{id,settled:true};
+    });
+  }
+  /** Operator: removes one intent (the owner's delete on the memory page). Not a forget: its source message and
+   * anything else taken from it stay, and a conversation that already saw it keeps that run as it was. */
+  deleteIntent(input){
+    closed(input,['entityId','id']);
+    identifier(input.id);
+    return this.store.transaction(()=>{
+      const e=this.entity(input.entityId),row=this.store.db.prepare("SELECT id FROM memory_items WHERE entity_id=? AND id=? AND collection='notes' AND kind='intent'").get(e.id,input.id);
+      // Already gone (or not an intent): the page is out of date.
+      if(!row)fail('CONFLICT','Intent not found',409);
+      this.store.db.prepare('DELETE FROM memory_items WHERE id=?').run(row.id);
+      const revision=this.store.nextRevision();
+      this.store.audit({type:'memory.intent-deleted',entityId:e.id,id:row.id,revision,at:this.now()});
+      return{id:row.id,deleted:true,revision};
+    });
   }
   memoryStatus(){
     return{

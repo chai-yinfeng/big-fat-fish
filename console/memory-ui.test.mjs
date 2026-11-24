@@ -210,13 +210,13 @@ test('memory type filter: all by default, one type at a time, diaries untouched,
     return view;
   };
   const KEY = 'companion-world:memory-kind:v1', ALL = ['MOCK-事实', 'MOCK-摘要', 'MOCK-经历', 'MOCK-笔记', 'MOCK-评价', 'MOCK-其它', 'MOCK-日记'];
-  // Fresh tab: nothing stored -> all; the four types always offered, others as found in the list.
+  // Fresh tab: nothing stored -> all; the five types always offered, others as found in the list.
   const writes = [];
   const storage = { getItem: key => key === 'companion-world:operator:v1' ? 'operator-test' : null, setItem: (...args) => writes.push(args), removeItem() {} };
   const stored = value => ({ ...storage, getItem: key => key === KEY ? value : storage.getItem(key) });
   let view = await mount(storage);
   const pick = label => view.kinds().find(n => n.children.join('') === label).props.onClick();
-  assert.deepEqual(view.kinds().map(n => n.children.join('')), ['memoryPanel.kind.all', 'memoryPanel.kind.facts', 'memoryPanel.kind.experiences', 'memoryPanel.kind.digest', 'memoryPanel.kind.notes', 'memoryPanel.kind.appraisals', 'mystery']);
+  assert.deepEqual(view.kinds().map(n => n.children.join('')), ['memoryPanel.kind.all', 'memoryPanel.kind.facts', 'memoryPanel.kind.experiences', 'memoryPanel.kind.digest', 'memoryPanel.kind.notes', 'memoryPanel.kind.intent', 'memoryPanel.kind.appraisals', 'mystery']);
   assert.deepEqual([view.pressed(), view.shown()], [['memoryPanel.kind.all'], ALL]);
   // One type at a time; the diary stays; a digest is apart from a plain experience.
   pick('memoryPanel.kind.digest');
@@ -250,6 +250,47 @@ test('memory type filter strings exist in both locales', async () => {
   for (const name of ['zh', 'en']) {
     const panel = JSON.parse(await readFile(new URL(`./locale/${name}.json`, import.meta.url), 'utf8')).memoryPanel;
     assert.equal(typeof panel.kindFilter, 'string'); assert.equal(typeof panel.kindEmpty, 'string');
-    for (const kind of ['all', 'facts', 'experiences', 'digest', 'notes', 'appraisals']) assert.equal(typeof panel.kind[kind], 'string', `${name}: ${kind}`);
+    for (const kind of ['all', 'facts', 'experiences', 'digest', 'notes', 'intent', 'appraisals']) assert.equal(typeof panel.kind[kind], 'string', `${name}: ${kind}`);
+    for (const key of ['intentDue', 'intentNoDue', 'intentState', 'intentDelete']) assert.equal(typeof panel[key], 'string', `${name}: ${key}`);
+    for (const state of ['open', 'done', 'expired']) assert.equal(typeof panel.intentStates[state], 'string', `${name}: ${state}`);
+    assert.equal(typeof panel.proposal.intent, 'string');
   }
+});
+
+test('her intents: a type of their own, shown with whose they are (label, no account), due day and state; deleted by a POST, never made public', async () => {
+  const world = { world: { paused: false, revision: 1 }, persona: { revision: 1, value: {} }, counts: { facts: 0, notes: 3, experiences: 0, pending: 0 }, channels: [], bindings: [], model: { provider: 'deepseek', model: 'deepseek-flash', configured: false, status: 'unconfigured' } };
+  // Synthetic data; the raw person ID carries a visibly fake account number that must never be rendered.
+  const base = { type: 'notes', status: 'active', visibility: 'private', personId: 'person:qq:999900000011', personLabel: 'p-aaaaaa', personIsOwner: false, source: { channel: 'qq', role: 'user', proposal: 'intent.note' }, evidence: { actorId: 'qq:999900000001:user:999900000011' } };
+  let memory = { entityId: 'entity:test', memoryEpoch: 0, more: false, people: [], unowned: 0, diaries: [], items: [
+    { ...base, id: 'i1', revision: 4, kind: 'intent', text: 'MOCK-明天问问面试', dueDate: '2027-01-16', state: 'open' },
+    { ...base, id: 'i2', revision: 3, kind: 'intent', text: 'MOCK-推荐那本书', dueDate: null, state: 'expired', personLabel: 'p-0f0f0f', personIsOwner: true, personId: 'person:owner' },
+    { ...base, id: 'n1', revision: 2, kind: 'outer', text: 'MOCK-自述', source: { channel: 'qq', role: 'assistant', proposal: 'self.note' } }] };
+  const states = ['operator-test', '', world, {}, 'memory']; const refs = [], calls = [];
+  let cursor = 0, refCursor = 0;
+  const React = { Fragment: 'fragment', useState: initial => { const i = cursor++; if (!(i in states)) states[i] = typeof initial === 'function' ? initial() : initial; return [states[i], value => { states[i] = value; }]; }, useRef: initial => refs[refCursor++] ||= { current: initial }, useEffect() {}, createElement: (type, props, ...children) => ({ type, props: props || {}, children: children.flat(Infinity) }) };
+  const storage = { getItem: key => key === 'companion-world:operator:v1' ? 'operator-test' : null, setItem() {}, removeItem() {} };
+  const loaded = await loadConsole({ window: { location: { protocol: 'http:', hostname: '127.0.0.1', hash: '' }, sessionStorage: storage }, sessionStorage: storage, AbortController, AbortSignal, setTimeout, clearTimeout, URLSearchParams,
+    fetch: async (url, options) => {
+      const payload = options.body && JSON.parse(options.body);
+      calls.push([options.method, url.slice(url.indexOf('3082') + 4), payload]);
+      if (url.endsWith('/memory/intent/delete')) { memory = { ...memory, items: memory.items.filter(item => item.id !== payload.id) }; return { ok: true, status: 200, json: async () => ({ ok: true, value: { id: payload.id, deleted: true } }) }; }
+      return { ok: true, status: 200, json: async () => ({ ok: true, value: memory }) };
+    } });
+  const component = loaded.factory(() => React).WorldConsole;
+  const render = () => { cursor = 0; refCursor = 0; return component({ t: key => key }); };
+  const nodes = tree => !tree || typeof tree !== 'object' ? [] : [tree, ...tree.children.flatMap(nodes)];
+  const cards = () => nodes(render()).filter(n => n.type === 'article');
+  await nodes(render()).find(n => n.type === 'button' && n.children.includes('memoryReadExplicitly')).props.onClick();
+  nodes(render()).find(n => n.type === 'button' && n.props.name === 'memoryKind' && n.children.join('') === 'memoryPanel.kind.intent').props.onClick();
+  const shown = cards().map(card => JSON.stringify(card));
+  assert.equal(shown.length, 2, 'only the intents');
+  assert.ok(shown[0].includes('MOCK-明天问问面试') && shown[0].includes('p-aaaaaa') && shown[0].includes('memoryPanel.intentDue: 2027-01-16 · memoryPanel.intentState: memoryPanel.intentStates.open'));
+  assert.ok(shown[0].includes('memoryPanel.source: memoryPanel.role.user · memoryPanel.proposal.intent · qq'));
+  assert.ok(shown[1].includes('peoplePanel.owner') && shown[1].includes('memoryPanel.intentDue: memoryPanel.intentNoDue · memoryPanel.intentState: memoryPanel.intentStates.expired'));
+  assert.ok(!shown.join('').includes('9999'), 'no account number');
+  const buttons = card => nodes(card).filter(n => n.type === 'button').map(n => n.children.filter(child => typeof child === 'string').join(''));
+  assert.ok(buttons(cards()[0]).includes('memoryPanel.intentDelete') && !buttons(cards()[0]).includes('memoryPublicAuthorize'));
+  await nodes(cards()[0]).find(n => n.type === 'button' && n.children.includes('memoryPanel.intentDelete')).props.onClick();
+  assert.deepEqual(calls.find(call => call[1] === '/memory/intent/delete'), ['POST', '/memory/intent/delete', { entityId: 'entity:test', id: 'i1' }]);
+  assert.deepEqual(cards().map(card => JSON.stringify(card).includes('MOCK-推荐那本书')), [true]);
 });

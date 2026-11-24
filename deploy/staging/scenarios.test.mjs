@@ -24,7 +24,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2', 'I1']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -291,6 +291,23 @@ test('expectMemoryPages requires a complete, owner-only listing that continues p
   await assert.rejects(check(broken((page, route) => route.includes('beforeRevision') ? page : { ...page, items: page.items.map((item, i) => i ? item : { ...other, revision: item.revision }) })), /returned an item of p-bbbbbb/);
   await assert.rejects(check(broken((page, route) => route.includes('beforeRevision') ? { ...page, items: [mine[51], mine[0]] } : page)), /an item was listed on two pages/);
   await assert.rejects(check(broken((page, route) => route.includes('beforeRevision') ? { ...page, items: [mine[1]] } : page), { atLeast: 50 }), /the filtered pages hold 51 item\(s\), the unfiltered listing has 52 of MOCK-A/);
+});
+
+test('intent steps: an intent must be the named person\'s, private, with its state and day; the owner\'s delete posts its ID', async () => {
+  const data = shipped(), posted = [];
+  let items = [{ id: 'i1', kind: 'intent', type: 'notes', text: 'MOCK-I1 问问面试', personId: 'person:qq:' + data.people['MOCK-U'].qq, visibility: 'private', state: 'open', dueDate: '2099-01-01', status: 'active' }];
+  const operator = async (method, route, body) => { if (method === 'POST') { posted.push([route, body]); items = []; return {}; } return { entityId: 'entity:test', items }; };
+  const run = new Runner({ data, operator, sleep: async () => {} });
+  await STEPS.expectIntent(run, {}, { person: 'MOCK-U', contains: 'MOCK-I1', due: '2099-01-01' });
+  await assert.rejects(STEPS.expectIntent(run, {}, { person: 'MOCK-B', contains: 'MOCK-I1', due: '2099-01-01' }), /is not MOCK-B's/);
+  await assert.rejects(STEPS.expectIntent(run, {}, { person: 'MOCK-U', contains: 'MOCK-I1', state: 'expired', due: '2099-01-01' }), /private, open, due 2099-01-01; expected private, expired/);
+  await assert.rejects(STEPS.expectIntent(run, {}, { person: 'MOCK-U', contains: 'MOCK-I1' }), /due 2099-01-01; expected private, open, due null/);
+  await assert.rejects(STEPS.expectIntent(run, {}, { absent: 'MOCK-I1' }), /has an intent containing "MOCK-I1"/);
+  await assert.rejects(STEPS.deleteIntent(run, {}, { person: 'MOCK-B', contains: 'MOCK-I1' }), /MOCK-B has no intent/);
+  await STEPS.deleteIntent(run, {}, { person: 'MOCK-U', contains: 'MOCK-I1' });
+  assert.deepEqual(posted, [['/memory/intent/delete', { entityId: 'entity:test', id: 'i1' }]]);
+  await STEPS.expectIntent(run, {}, { absent: 'MOCK-I1' });
+  await assert.rejects(STEPS.expectIntent(run, {}, { person: 'MOCK-U', contains: 'MOCK-I1', timeoutMs: 0 }), /no intent containing/);
 });
 
 test('consolidation steps: a digest must be its owner\'s machine digest of the named line, stay out of every chat, and one batch holds one conversation', async t => {
@@ -936,9 +953,9 @@ test('sticker steps: a library sticker is found by its description with its leve
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 900000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2', 'I1'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '57/57 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '58/58 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));
