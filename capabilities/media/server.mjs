@@ -25,18 +25,32 @@ async function bodyOf(req, limit = 13 * 1024 * 1024) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw failure('CONTENT_REQUEST_INVALID');
   return value;
 }
-export function createContentServer({ socketPath, tokenFile, service, worldStatus, operatorCall, jobsCall, stickersCall }) {
+export function createContentServer({ socketPath, tokenFile, service, worldStatus, operatorCall, jobsCall, stickersCall, forgetCall }) {
   if (!path.isAbsolute(socketPath) || !path.isAbsolute(tokenFile)) throw failure('CONTENT_CONFIG');
   const digest = value => createHash('sha256').update(value).digest();
   const credential = digest(fs.readFileSync(tokenFile, 'utf8').trim()), active = new Set();
+  // Requests being handled, of every kind but `/forget` (from their first line to their last).
+  let busy = 0;
   const server = http.createServer(async (req, res) => {
     const send = (status, body) => { if (!res.destroyed && !res.headersSent) { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(body)); } };
-    let timer, controller;
+    let timer, controller, counted = false;
     const isOperator = req.url === '/operator';
     try {
       const match = /^Bearer ([A-Za-z0-9_-]{32,256})$/.exec(req.headers.authorization || '');
       if (!match || !timingSafeEqual(credential, digest(match[1]))) { send(401, { ok: false, error: { code: 'CONTENT_AUTH_REQUIRED' } }); return; }
-      if (req.method !== 'POST' || !['/content', '/operator', '/jobs', '/stickers'].includes(req.url) || req.headers['content-type']?.split(';')[0] !== 'application/json') throw failure('CONTENT_REQUEST_INVALID');
+      if (req.method !== 'POST' || !['/content', '/operator', '/jobs', '/stickers', '/forget'].includes(req.url) || req.headers['content-type']?.split(';')[0] !== 'application/json') throw failure('CONTENT_REQUEST_INVALID');
+      // Forgetting (forget.js `forgetLive`): Authority hands over one cleanup job; again this socket's one credential.
+      // Only while the world is paused and only when nothing else is in flight here: no request of any kind (`busy`)
+      // and no background job (`forgetCall` refuses while one runs). The forgetting itself is one synchronous step,
+      // so nothing of this process runs between that check and its last write. Refused: Authority asks again.
+      if (req.url === '/forget') {
+        if (typeof forgetCall !== 'function') throw failure('CONTENT_FORGET_UNAVAILABLE');
+        const plan = await bodyOf(req, 8 * 1024 * 1024);
+        if ((await worldStatus()).paused !== true) throw failure('CONTENT_FORGET_WORLD');
+        if (busy) throw failure('CONTENT_BUSY');
+        send(200, { ok: true, value: forgetCall(plan) }); return;
+      }
+      busy++; counted = true;
       // Background jobs as Authority manages them (jobs.js `control`): this socket's one credential is Authority's.
       if (req.url === '/jobs') {
         if (typeof jobsCall !== 'function') throw failure('CONTENT_JOBS_UNAVAILABLE');
@@ -89,7 +103,7 @@ export function createContentServer({ socketPath, tokenFile, service, worldStatu
       const code = /^(?:MEDIA|SPEECH|CONTENT)_[A-Z_]{1,50}$/.test(error?.code || '') ? error.code : 'CONTENT_UNAVAILABLE';
       const status = isOperator ? (error instanceof SyntaxError || code === 'CONTENT_REQUEST_INVALID' ? 400 : code === 'CONTENT_REQUEST_LIMIT' ? 413 : [400, 409, 413, 503].includes(error.statusCode) ? error.statusCode : 503) : code === 'CONTENT_REQUEST_INVALID' ? 400 : code === 'CONTENT_SPEND_RESTRICTED' ? 429 : 503;
       send(status, { ok: false, error: { code: isOperator && error instanceof SyntaxError ? 'CONTENT_REQUEST_INVALID' : code } });
-    } finally { clearInterval(timer); if (controller) active.delete(controller); req.resume(); }
+    } finally { clearInterval(timer); if (controller) active.delete(controller); if (counted) busy--; req.resume(); }
   });
   server.requestTimeout = 15000; server.headersTimeout = 5000; server.keepAliveTimeout = 1000; server.maxConnections = 16;
   return {

@@ -553,8 +553,8 @@ export const STEPS = {
   },
   /** Forget the observation of `person` containing `source`, the way the console does: preview, pause, forget,
    * resume. The preview must list the digest derived from it; afterwards only that person's conversation has a
-   * new memory epoch. Staging's memory unit cannot reach the operator port, so the runner acknowledges the
-   * cleanup job itself: no session file is purged here (the retired session is simply never loaded again). */
+   * new memory epoch. The cleanup job is closed by the running services themselves (each forgets its own files and
+   * confirms to Authority); the runner only waits for that, as the owner would before resuming. */
   async forget(run, _ctx, { person, source, diaries }) {
     let observation, digest;
     for (const item of await run.digests(person)) {
@@ -570,11 +570,68 @@ export const STEPS = {
     const before = await epochs();
     await run.setPaused(true);
     await run.operator('POST', '/memory/forget', { entityId: digest.entityId, ids: [observation.id], expectedMemoryEpoch: preview.memoryEpoch });
-    for (const job of await run.operator('GET', '/memory/cleanup/pending')) await run.operator('POST', '/memory/cleanup/complete', { id: job.id, memoryEpoch: job.memoryEpoch, report: { sdkPurged: true, localSourcesPurged: true, platform: 'outside-control' } });
+    await run.poll(async () => !(await run.operator('GET', '/memory/cleanup/status')).jobs.some(job => job.status === 'pending'), 90000, 'the services did not all confirm the cleanup');
     await STEPS.resume(run);
     const own = `qq:${run.data.bot.qq}:private:${run.qq(person)}`;
     for (const [streamId, epoch] of await epochs()) if (epoch !== before.get(streamId) + (streamId === own ? 1 : 0)) fail(`memory epoch of ${run.nameOf(streamId.split(':').at(-1))} went from ${before.get(streamId)} to ${epoch}`);
   },
+  /** Forget one message the way the console does, up to the forget itself: the memory of `person` containing
+   * `contains` leads to the observation it was made from (which must contain `source`); preview, pause, forget. The
+   * world stays paused and the cleanup job pending: `expectCleanup` follows it, `resume` ends it. */
+  async forgetMessage(run, ctx, { person, contains, source }) {
+    const label = await run.personLabel(person);
+    const item = (await run.memoryPages(`person=${label}&`)).flatMap(page => page.items).find(entry => entry.status === 'active' && JSON.stringify(entry).includes(contains));
+    if (!item) fail(`no memory of ${person} contains ${JSON.stringify(contains)}`);
+    const observation = (await run.operator('GET', '/memory/sources?id=' + encodeURIComponent(item.id))).sources.find(row => row.text.includes(source));
+    if (!observation) fail(`the memory of ${person} is not made from an observation containing ${JSON.stringify(source)}`);
+    const preview = await run.operator('POST', '/memory/forget-preview', { entityId: item.entityId, ids: [observation.id] });
+    if (!preview.memoryIds.includes(item.id)) fail('the forget preview does not list the memory made from the message');
+    await run.setPaused(true);
+    const at = Date.now();
+    const job = await run.operator('POST', '/memory/forget', { entityId: item.entityId, ids: [observation.id], expectedMemoryEpoch: preview.memoryEpoch });
+    ctx.cleanup = { id: job.id, at };
+  },
+  /** The confirmation table of the cleanup job `forgetMessage` left (operator GET /memory/cleanup/status).
+   * `waiting`: exactly these parties have not confirmed, it stays so for `holdMs`, and the world refuses to resume.
+   * `complete`: every party has confirmed and the job is closed by them. `reports`: { party: { count: least } },
+   * what each must at least have reported gone. A confirmation must come from a process that was already running
+   * when the message was forgotten (nothing was restarted to forget), except the parties listed in `restarted`,
+   * which must have started after it. */
+  async expectCleanup(run, ctx, { waiting, complete, reports = {}, restarted = [], holdMs = 3000, timeoutMs = 90000 }) {
+    if (!ctx.cleanup) fail('expectCleanup needs a forgetMessage before it');
+    if ((waiting === undefined) === (complete === undefined)) fail('expectCleanup takes either waiting or complete');
+    const job = async () => (await run.operator('GET', '/memory/cleanup/status')).jobs.find(row => row.id === ctx.cleanup.id) ?? fail('the cleanup job is not listed');
+    const unconfirmed = row => row.parties.filter(party => !party.confirmed).map(party => party.party).sort();
+    let seen;
+    if (waiting !== undefined) {
+      const wanted = JSON.stringify([...waiting].sort()), holds = () => seen.status === 'pending' && JSON.stringify(unconfirmed(seen)) === wanted;
+      try { await run.poll(async () => { seen = await job(); return holds(); }, timeoutMs, 'timeout'); }
+      catch (error) { if (error.message !== 'timeout') throw error; fail(`the cleanup waits for ${JSON.stringify(unconfirmed(seen))} (${seen.status}), expected ${wanted}`); }
+      await run.sleep(holdMs);
+      seen = await job();
+      if (!holds()) fail(`the cleanup did not stay waiting for ${wanted}: now ${JSON.stringify(unconfirmed(seen))} (${seen.status})`);
+      const world = (await run.operator('GET', '/world')).world;
+      let resumed = true;
+      try { await run.operator('POST', '/world/pause', { paused: false, expectedRevision: world.revision }); } catch { resumed = false; }
+      if (resumed || !(await run.operator('GET', '/world')).world.paused) fail('the world resumed while a party had not confirmed the cleanup');
+    } else {
+      try { await run.poll(async () => { seen = await job(); return seen.status === 'complete'; }, timeoutMs, 'timeout'); }
+      catch (error) { if (error.message !== 'timeout') throw error; fail(`the cleanup still waits for ${JSON.stringify(unconfirmed(seen))}`); }
+      if (seen.completedBy !== 'parties' || unconfirmed(seen).length) fail(`the cleanup was closed by ${seen.completedBy} with ${JSON.stringify(unconfirmed(seen))} unconfirmed`);
+      if (!(await run.operator('GET', '/world')).world.paused) fail('closing the cleanup resumed the world');
+    }
+    const confirmed = Object.fromEntries(seen.parties.filter(party => party.confirmed).map(party => [party.party, party.report ?? {}]));
+    for (const [party, counts] of Object.entries(reports)) {
+      if (!confirmed[party]) fail(`${party} has not confirmed the cleanup`);
+      for (const [name, least] of Object.entries(counts)) if (!(confirmed[party][name] >= least)) fail(`${party} reported ${name}=${confirmed[party][name]}, expected at least ${least}`);
+    }
+    for (const [party, report] of Object.entries(confirmed)) {
+      if (!Number.isSafeInteger(report.startedAt)) fail(`${party} did not say which process confirmed`);
+      if (restarted.includes(party) ? report.startedAt < ctx.cleanup.at : report.startedAt >= ctx.cleanup.at) fail(`${party} confirmed from a process started ${restarted.includes(party) ? 'before' : 'after'} the forget`);
+    }
+  },
+  /** The second channel's conversation executor is stopped or started again (fake-channel.mjs POST /executor). */
+  async mockExecutor(run, _ctx, { running }) { await mock(run, 'POST', '/executor', { running }); },
   /** Her sticker library as the console lists it (operator GET /stickers): exactly one sticker whose description
    * contains `contains` must be there, at `level` (owner, public, pending) and sent by `senders` different people
    * (a number: the list says no more); with `absent: true` there must be none. */

@@ -16,6 +16,8 @@
 //   POST /lose-receipts { count }    -> the next `count` sends get no receipt: recorded in `lost`, the turn ends as
 //                                       `unknown`, and nothing is sent again
 //   POST /reset                      -> forgets recorded sends and pending lost receipts
+//   POST /executor { running }       -> stops this channel's conversation executor, or starts it again (a service that
+//                                       is down while a cleanup waits for it)
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -31,7 +33,7 @@ export const actorOf = account => `${CHANNEL}:user:${account}`, streamOf = accou
 
 /** The bridge itself. `authority` is an AuthorityClient holding the `mock` capability credential, `executor` a
  * conversation client; `executeConversation` and `declineMark` come from the release under test. */
-export function createFakeChannel({ authority, executor, executeConversation, declineMark, controlSocket, pollMs = 3000 }) {
+export function createFakeChannel({ authority, executor, executeConversation, declineMark, controlSocket, pollMs = 3000, executorControl }) {
   if (!path.isAbsolute(controlSocket) || !Number.isInteger(pollMs) || pollMs < 200) throw new Error('FAKE_CHANNEL_CONFIG');
   const declined = new RegExp(`[<＜]\\s*${declineMark.slice(1, -1)}\\s*[>＞]`, 'u');
   const sent = [], lost = [], turns = [], friends = new Set(), admitted = new Set(), tails = new Map(), initiated = new Set();
@@ -89,6 +91,10 @@ export function createFakeChannel({ authority, executor, executeConversation, de
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
       if (req.url === '/reset') { sent.length = 0; lost.length = 0; turns.length = 0; losing = 0; send(200, { ok: true, value: {} }); return; }
+      if (req.url === '/executor') {
+        if (typeof body.running !== 'boolean' || typeof executorControl !== 'function') throw new Error('EXECUTOR');
+        await executorControl(body.running); send(200, { ok: true, value: { running: body.running } }); return;
+      }
       if (req.url === '/lose-receipts') {
         if (!Number.isInteger(body.count) || body.count < 0 || body.count > 20) throw new Error('LOSE');
         losing = body.count; send(200, { ok: true, value: { losing } }); return;
@@ -139,13 +145,22 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
   (async () => {
     const [{ AuthorityClient }, { createConversationClient }, { executeConversation, DECLINE_MARK }] = await Promise.all([load('authority/src/client.js'), load('capabilities/conversation/client.js'), load('capabilities/conversation/executor.js')]);
     const executorConfig = JSON.parse(fs.readFileSync(args['executor-config'], 'utf8'));
-    child = spawn(process.execPath, [executorEntry(release), '--config', args['executor-config']], { stdio: ['ignore', 'ignore', 'inherit'] });
-    child.once('exit', code => { process.stderr.write(`fake channel: its conversation executor exited (${code})\n`); process.exit(1); });
-    for (let i = 0; !fs.existsSync(executorConfig.socketPath); i++) { if (i > 300) throw new Error('EXECUTOR_START'); await new Promise(resolve => setTimeout(resolve, 50)); }
+    // The executor as a child; `POST /executor` stops it on purpose and starts it again, anything else that ends it ends this channel.
+    const startExecutor = async () => {
+      fs.rmSync(executorConfig.socketPath, { force: true });
+      const started = child = spawn(process.execPath, [executorEntry(release), '--config', args['executor-config']], { stdio: ['ignore', 'ignore', 'inherit'] });
+      started.once('exit', code => { if (child !== started) return; process.stderr.write(`fake channel: its conversation executor exited (${code})\n`); process.exit(1); });
+      for (let i = 0; !fs.existsSync(executorConfig.socketPath); i++) { if (i > 300) throw new Error('EXECUTOR_START'); await new Promise(resolve => setTimeout(resolve, 50)); }
+    };
+    const stopExecutor = async () => {
+      const running = child; child = null;
+      if (running && running.exitCode === null) { const ended = new Promise(resolve => running.once('exit', resolve)); running.kill('SIGTERM'); await ended; }
+    };
+    await startExecutor();
     const fake = createFakeChannel({
       authority: new AuthorityClient({ socketPath: args['authority-socket'], tokenFile: args['authority-token-file'] }),
       executor: createConversationClient({ socketPath: executorConfig.socketPath, tokenFile: args['caller-token-file'] }),
-      executeConversation, declineMark: DECLINE_MARK, controlSocket: args.control, ...(args['poll-ms'] ? { pollMs: Number(args['poll-ms']) } : {}),
+      executeConversation, declineMark: DECLINE_MARK, controlSocket: args.control, executorControl: running => running ? (child ? undefined : startExecutor()) : stopExecutor(), ...(args['poll-ms'] ? { pollMs: Number(args['poll-ms']) } : {}),
     });
     await fake.start();
     process.stdout.write('fake channel ready\n');

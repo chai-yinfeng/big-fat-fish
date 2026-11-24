@@ -4,6 +4,7 @@ import path from 'node:path';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { AuthorityClient } from '../../authority/src/client.js';
+import { createCleanupParty } from '../../authority/src/cleanup-party.js';
 import { ContentClient } from '../media/client.js';
 import { SessionStore } from './sessions.js';
 import { createGatewayStream } from './model.js';
@@ -12,6 +13,8 @@ import { createConversationServer } from './server.js';
 
 const fail = code => Object.assign(new Error(code), { code });
 const absolute = value => typeof value === 'string' && path.isAbsolute(value) && !value.includes('\0');
+/** How often the executor asks Authority for cleanup jobs it has not confirmed (it also asks before every run). */
+export const CLEANUP_POLL_MS = 15000;
 const pair = value => value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 2 && absolute(value.socketPath) && absolute(value.tokenFile);
 
 export function loadConfig(file) {
@@ -35,10 +38,18 @@ export async function main(args = process.argv.slice(2)) {
   const authority = new AuthorityClient(config.authority);
   const { model, streamFn } = createGatewayStream(config.gateway);
   const executor = createConversationExecutor({ authority, content: new ContentClient(config.authority), store: new SessionStore(config.sessionsDir), model, streamFn });
-  const server = createConversationServer({ socketPath: config.socketPath, callerTokenHash: config.callerTokenHash, executor });
+  // Forgetting while this service stays up: its part of a cleanup job is the session files of the retired epochs. It
+  // asks with the credential it already holds (its channel's), before every run and on a timer; `startedAt` in the
+  // confirmation says which process forgot.
+  const startedAt = Date.now();
+  const cleanup = createCleanupParty({ authority, party: 'executor', forget: async job => ({ ...await executor.forget(job), startedAt }) });
+  const server = createConversationServer({ socketPath: config.socketPath, callerTokenHash: config.callerTokenHash,
+    executor: { execute: async (request, options) => { await cleanup.runOnce(); return executor.execute(request, options); }, delivered: request => executor.delivered(request) } });
   await server.start();
+  void cleanup.runOnce();
+  const cleanupTimer = setInterval(() => { void cleanup.runOnce(); }, CLEANUP_POLL_MS);
   let stopping = false;
-  const stop = () => { if (stopping) return; stopping = true; void server.close(); };
+  const stop = () => { if (stopping) return; stopping = true; clearInterval(cleanupTimer); void server.close(); };
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, stop);
   process.stdout.write('Companion conversation executor ready; private Unix transport only.\n');
   return server;

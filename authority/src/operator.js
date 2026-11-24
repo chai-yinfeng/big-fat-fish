@@ -17,7 +17,7 @@ async function json(req, limit = 98304) {
 }
 
 /** Human control plane. Its socket/token are never mounted to the model worker. */
-export function createOperatorServer({ authority, socketPath, tokenHash, origins, modelControl, qqControl, contentOperator, contentControl, contentJobs, contentStickers, assetsDir, allowDiaryTrigger = false, onResume = () => {} }) {
+export function createOperatorServer({ authority, socketPath, tokenHash, origins, modelControl, qqControl, contentOperator, contentControl, contentJobs, contentStickers, assetsDir, allowDiaryTrigger = false, onResume = () => {}, onForget = () => {} }) {
   if (!path.isAbsolute(socketPath) || !/^[a-f0-9]{64}$/.test(tokenHash) || !Array.isArray(origins)) throw new Error('Invalid operator configuration');
   const expected = Buffer.from(tokenHash, 'hex');
   // Control sockets of channel bridges, by channel id (only the QQ bridge has one).
@@ -99,6 +99,8 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       // The open diary's list: everyone known, who is on it, who has a passcode (never the passcode itself).
       if (req.method === 'GET' && req.url === '/diary/open') { respond(200, { ok: true, value: authority.openDiaryList() }); return; }
       if (req.method === 'GET' && req.url === '/memory/cleanup/pending') { respond(200, { ok: true, value: authority.cleanupPending() }); return; }
+      // Read-only: each pending cleanup job (and the latest closed ones) with who has confirmed and who has not.
+      if (req.method === 'GET' && req.url === '/memory/cleanup/status') { respond(200, { ok: true, value: authority.cleanupStatus() }); return; }
       if (req.method === 'GET' && req.url === '/world') { respond(200, { ok: true, value: await overview(req.headers.authorization) }); return; }
       if (req.method === 'GET' && req.url === '/people') {
         const qq = qqControl ? await qqControl('/qq/people', undefined, req.headers.authorization).catch(() => null) : null;
@@ -181,7 +183,8 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         // Who gets an open diary, and a new passcode for one of them (shown to the owner once).
         '/diary/open/listed': 'setOpenDiaryListed', '/diary/open/code': 'resetOpenDiaryCode',
       };
-      if (Object.hasOwn(memoryActions, req.url)) value = authority[memoryActions[req.url]](body);
+      // A forget leaves a cleanup job: the content service is asked for its part at once (bridges and executors ask themselves).
+      if (Object.hasOwn(memoryActions, req.url)) { value = authority[memoryActions[req.url]](body); if (req.url === '/memory/forget') onForget(); }
       else if (req.url === '/world/pause') {
         object(body, ['paused', 'expectedRevision']);
         if (body.paused === false && authority.cleanupPending().length) throw Object.assign(new Error('Complete controlled cleanup before resuming'), { statusCode: 409, code: 'CONFLICT' });

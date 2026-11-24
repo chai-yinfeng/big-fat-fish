@@ -157,6 +157,21 @@ test('scripted model: `activity` is a companion_activity call with the scripted 
   assert.deepEqual([planReply({ stream: true, tools, messages: turn }, script).kind, planReply({ stream: false, tools: offered, messages: turn }, script).kind], ['text', 'text']);
 });
 
+test('scripted model: a rule with `propose` and `activity` proposes first, calls the activity after that result, then replies', () => {
+  const activity = { capability: 'video', action: 'watch', input: { url: 'https://video.mock.invalid/v/MOCK001' } };
+  const script = [{ match: '记住再看看', propose: { type: 'fact.report', payload: { key: '代号', value: '蓝鲸', quote: '我是蓝鲸' } }, activity, reply: 'MOCK-记下了，我去看看' }];
+  const offered = [...tools, { type: 'function', function: { name: 'companion_activity' } }], turn = [{ role: 'system', content: system }, user('记住再看看：我是蓝鲸')];
+  const result = content => [{ role: 'assistant', tool_calls: [] }, { role: 'tool', content }];
+  const first = planReply({ stream: true, tools: offered, messages: turn }, script);
+  assert.deepEqual([first.kind, first.call.name, first.call.arguments.action], ['tool', 'companion_scope', 'propose']);
+  const second = planReply({ stream: true, tools: offered, messages: [...turn, ...result('{"status":"accepted"}')] }, script);
+  assert.deepEqual([second.kind, second.call], ['tool', { name: 'companion_activity', arguments: activity }]);
+  const third = planReply({ stream: true, tools: offered, messages: [...turn, ...result('{"status":"accepted"}'), ...result('{"status":"processing"}')] }, script);
+  assert.deepEqual([third.kind, third.text], ['text', 'MOCK-记下了，我去看看']);
+  // Without the activity tool on offer the reply follows the propose result.
+  assert.equal(planReply({ stream: true, tools, messages: [...turn, ...result('{"status":"accepted"}')] }, script).kind, 'text');
+});
+
 test('scripted model: `scope` is a companion_scope call with the scripted arguments, then the reply', () => {
   const scope = { action: 'search', query: 'MOCK 仓鼠' };
   const script = [{ match: '查一查', scope, reply: 'MOCK-查到了' }];

@@ -198,6 +198,8 @@ export function createJobs({ file, runners, gate = createGate(), worldStatus, us
         const now = await world();
         if (closed) return;
         if (!now || now.paused) { await pause(worldCheckMs); continue; }
+        // Forgotten while the world was asked: its record is gone and it never starts.
+        if (!state.jobs.includes(job) || job.status !== 'queued') continue;
         await run(job, now);
       }
     } finally { working = false; }
@@ -295,6 +297,20 @@ export function createJobs({ file, runners, gate = createGate(), worldStatus, us
       throw fail('MEDIA_JOB_REQUEST');
     },
     sweep,
+    /** A job is being run or unwound right now (between its start and the save that ends it). */
+    get running() { return current !== null; },
+    /** Forgetting inside the running service (forget.js `forgetLive`, world paused): the same selection as
+     * `forgetJobs` below, applied to the records this process holds, so its next save cannot bring one back. The
+     * caller checks `running` first: a paused world has already sent the running job back to the queue. One
+     * synchronous step, like every other write of this file. Returns `{ removed }`. */
+    forget({ entityId, affectedStreams = [], sourceEvents = [], dryRun = false }) {
+      if (typeof entityId !== 'string' || !Array.isArray(affectedStreams) || !Array.isArray(sourceEvents)) throw fail('MEDIA_FORGET_PLAN');
+      if (current) throw fail('MEDIA_JOB_RUNNING');
+      const gone = forgotten({ entityId, affectedStreams, sourceEvents }), kept = state.jobs.filter(job => !gone(job)), removed = state.jobs.length - kept.length;
+      if (dryRun || !removed) return { removed };
+      state.jobs = kept; save();
+      return { removed };
+    },
     /** Stops the worker; a running job is left for the next start to find interrupted. */
     async close() {
       closed = true;
@@ -305,8 +321,14 @@ export function createJobs({ file, runners, gate = createGate(), worldStatus, us
   };
 }
 
+/** Which job records a forget takes (see `forgetJobs`). */
+const forgotten = ({ entityId, affectedStreams, sourceEvents }) => job => job?.scope?.entityId === entityId && (
+  affectedStreams.some(stream => stream?.streamId === job.scope.streamId && Number.isSafeInteger(stream.memoryEpoch) && job.scope.memoryEpoch < stream.memoryEpoch)
+  || job.source?.sourceEventId != null && sourceEvents.some(event => event?.streamId === job.scope.streamId && event.eventId === job.source.sourceEventId));
+
 /**
- * Forgetting (deploy/authority/purge-execution.mjs, with this service stopped and the world paused): the records of
+ * Forgetting offline (deploy/authority/purge-execution.mjs, with this service stopped and the world paused; the running
+ * service uses its own `forget` above): the records of
  * background jobs that belong to what was forgotten go, whatever state they were in. A waiting job is thereby
  * cancelled (it is never started), a finished one loses its result and is never told. Selected: jobs of `entityId`
  * registered in an affected conversation under an earlier memory epoch (`affectedStreams`: `{ streamId, memoryEpoch }`,
@@ -320,9 +342,7 @@ export function forgetJobs({ file, entityId, affectedStreams = [], sourceEvents 
   let stored;
   try { stored = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { throw fail('MEDIA_JOB_STATE'); }
   if (stored?.schema !== 1 || !Array.isArray(stored.jobs)) throw fail('MEDIA_JOB_STATE');
-  const gone = job => job?.scope?.entityId === entityId && (
-    affectedStreams.some(stream => stream?.streamId === job.scope.streamId && Number.isSafeInteger(stream.memoryEpoch) && job.scope.memoryEpoch < stream.memoryEpoch)
-    || job.source?.sourceEventId != null && sourceEvents.some(event => event?.streamId === job.scope.streamId && event.eventId === job.source.sourceEventId));
+  const gone = forgotten({ entityId, affectedStreams, sourceEvents });
   const kept = stored.jobs.filter(job => !gone(job)), removed = stored.jobs.length - kept.length;
   if (dryRun || !removed) return { removed };
   const temporary = file + '.tmp'; fs.writeFileSync(temporary, JSON.stringify({ schema: 1, jobs: kept }) + '\n', { mode: 0o600 }); fs.renameSync(temporary, file);

@@ -51,6 +51,10 @@ export function createContentOperatorClient(config) {
 export function createContentJobsClient(config) {
   return input => contentRequest(config, '/jobs', input, { timeoutMs: 3000 });
 }
+/** Forgetting: the content service's part of one cleanup job (its `/forget`), answered with its counts. */
+export function createContentForgetClient(config) {
+  return job => contentRequest(config, '/forget', job, { timeoutMs: 30000 });
+}
 /** Her sticker library as the owner manages it on the console (the content service's `/stickers`). */
 export function createContentStickersClient(config) {
   return input => contentRequest(config, '/stickers', input, { timeoutMs: 90000 });

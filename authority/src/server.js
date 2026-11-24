@@ -27,10 +27,14 @@ const SCHEMAS = {
   '/v1/maintenance/diary/next': [],
   '/v1/maintenance/diary/commit': ['taskId', 'outcome', 'private', 'open', 'usedIds'],
   '/v1/diary/code': ['streamId'],
+  '/v1/cleanup/next': ['party'],
+  '/v1/cleanup/ack': ['id', 'memoryEpoch', 'party', 'report'],
 };
 /** Passcode attempts on `/v1/room/diary` in any one minute, whoever makes them: a passcode is short, so guessing is
  * held back here as well as in the room page's server. */
 export const ROOM_DIARY_PER_MINUTE = 30;
+/** How often the content service is asked again to forget its part of a pending cleanup job. */
+export const CLEANUP_RETRY_MS = 5000;
 const ERRORS = {
   AUTH_REQUIRED: [401, 'A valid capability or operator credential is required'],
   FORBIDDEN: [403, 'This operation is not granted to this principal'],
@@ -95,7 +99,7 @@ async function recoverSocket(socketPath) {
 }
 
 /** Unix-only transport. The caller supplies the already-exclusive authority. */
-export function createAuthorityServer({ authority, socketPath, credentials, contentControl, contentJobs, maxBodyBytes = 32768, socketMode = 0o600, batchSize = 32, onFatal = () => {} }) {
+export function createAuthorityServer({ authority, socketPath, credentials, contentControl, contentJobs, contentForget, cleanupRetryMs = CLEANUP_RETRY_MS, maxBodyBytes = 32768, socketMode = 0o600, batchSize = 32, onFatal = () => {} }) {
   if (!path.isAbsolute(socketPath) || !Array.isArray(credentials) || credentials.length === 0) throw new Error('Explicit socket and credentials are required');
   if (!Number.isInteger(maxBodyBytes) || maxBodyBytes < 1024 || maxBodyBytes > 65536) throw new Error('Invalid protocol body limit');
   if (![0o600, 0o660].includes(socketMode)) throw new Error('Socket mode must be private or explicitly group-scoped');
@@ -118,6 +122,19 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
   // What Authority decided about those jobs goes back before the caller hears of it. A report that fails is made
   // again when the job is next listed; Authority's own record already forbids a second telling.
   const reportJobs = async () => { for (const notice of authority.drainJobNotices()) { try { await contentJobs?.({ action: 'notice', ...notice }); } catch {} } };
+  // Forgetting: the content service's part of each pending cleanup job. Authority hands the job over on its control
+  // socket and records the confirmation itself; the content service never calls here. Refused (it is busy, the
+  // world is not paused) or unreachable: asked again on the next round. One round at a time.
+  let forgetting = false, forgetTimer = null;
+  async function forgetContent() {
+    if (closed || forgetting || !contentForget) return;
+    forgetting = true;
+    try {
+      for (const job of authority.cleanupForContent()) {
+        try { const report = await contentForget(job); if (!closed) authority.cleanupConfirm('content', { id: job.id, memoryEpoch: job.memoryEpoch, report }); } catch {}
+      }
+    } catch {} finally { forgetting = false; }
+  }
   function schedule() {
     if (closed || scheduled || unhealthy) return;
     scheduled = true;
@@ -206,6 +223,9 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
         else if (route === '/v1/people/admit') value = authority.admitPerson(grant.capabilityId, body);
         // The person of this conversation asked for their diary passcode: the bridge sends the answer itself.
         else if (route === '/v1/diary/code') value = authority.diaryCode(grant.capabilityId, body);
+        // Forgetting: a channel's bridge or executor takes its part of a pending cleanup job and confirms it.
+        else if (route === '/v1/cleanup/next') value = authority.cleanupNext(grant.capabilityId, body);
+        else if (route === '/v1/cleanup/ack') value = authority.cleanupAck(grant.capabilityId, body);
         else if (route === '/v1/initiations/next') { value = authority.initiationNext(grant.capabilityId, body, await untoldJobs(grant)); await reportJobs(); }
         else if (route === '/v1/initiations/carry') { value = authority.initiationCarry(grant.capabilityId, body, await untoldJobs(grant)); await reportJobs(); }
         else if (route === '/v1/initiations/ack') { value = authority.initiationAck(grant.capabilityId, body); await reportJobs(); }
@@ -229,16 +249,20 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
   return {
     server,
     wakeReviewer: schedule,
+    /** A cleanup job was just created (or may be waiting): ask the content service now. */
+    wakeCleanup: forgetContent,
     async start() {
       fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
       await recoverSocket(socketPath);
       await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, () => { server.off('error', reject); resolve(); }); });
       fs.chmodSync(socketPath, socketMode);
       schedule();
+      if (contentForget) { forgetTimer = setInterval(() => { void forgetContent(); }, cleanupRetryMs); forgetTimer.unref(); void forgetContent(); }
     },
     async close() {
       if (closed) return;
       closed = true;
+      clearInterval(forgetTimer);
       server.closeIdleConnections();
       await new Promise(resolve => server.close(resolve));
     },

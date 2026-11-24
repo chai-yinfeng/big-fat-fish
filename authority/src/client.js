@@ -89,6 +89,20 @@ export class AuthorityClient {
     if (!text(value.id) || !text(value.outcome, 64)) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/initiations/ack', value);
   }
+  /** A conversation channel's credential, as that channel's bridge or executor (`party`): the oldest cleanup job
+   * this party has not confirmed, cut down to this channel (`{ job }`, or `job: null`). A job may name many
+   * messages, so this one answer may be larger than the others. */
+  async cleanupNext(value) {
+    closed(value, ['party'], ['party']);
+    if (!['bridge', 'executor'].includes(value.party)) throw fail('INVALID_REQUEST');
+    return this.#request('POST', '/v1/cleanup/next', value, 4 * 1024 * 1024);
+  }
+  /** The same party, once its own files of that job are gone (`report`: its counts, numbers only). */
+  async cleanupAck(value) {
+    closed(value, ['id', 'memoryEpoch', 'party', 'report'], ['id', 'memoryEpoch', 'party']);
+    if (!text(value.id) || !Number.isSafeInteger(value.memoryEpoch) || !['bridge', 'executor'].includes(value.party) || value.report !== undefined && !object(value.report)) throw fail('INVALID_REQUEST');
+    return this.#request('POST', '/v1/cleanup/ack', value);
+  }
   async maintenanceBatch(value = {}) {
     closed(value, ['afterRevision', 'limit', 'mode'], []);
     const batch = await this.#request('POST', '/v1/maintenance/batch', value);
@@ -117,7 +131,7 @@ export class AuthorityClient {
     if (!text(value.taskId) || !['ok', 'invalid', 'deferred'].includes(value.outcome)) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/maintenance/diary/commit', value);
   }
-  async #request(method, path, value) {
+  async #request(method, path, value, maxResponseBytes = this.#maxResponseBytes) {
     let body;
     try { body = value === undefined ? undefined : Buffer.from(JSON.stringify(value)); } catch { throw fail('INVALID_REQUEST'); }
     if (body?.length > 32768) throw fail('REQUEST_LIMIT');
@@ -145,7 +159,7 @@ export class AuthorityClient {
         const chunks = []; let bytes = 0;
         response.on('data', chunk => {
           bytes += chunk.length;
-          if (bytes > this.#maxResponseBytes) { finish(fail('RESPONSE_LIMIT')); response.destroy(); request.destroy(); return; }
+          if (bytes > maxResponseBytes) { finish(fail('RESPONSE_LIMIT')); response.destroy(); request.destroy(); return; }
           chunks.push(chunk);
         });
         response.on('error', () => finish(fail('TRANSPORT_ERROR')));

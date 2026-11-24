@@ -24,7 +24,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -312,8 +312,7 @@ test('consolidation steps: a digest must be its owner\'s machine digest of the n
     if (url.pathname === '/qq') return { paused: state.paused ?? false };
     if (url.pathname === '/memory/forget-preview') return state.preview;
     if (url.pathname === '/memory/forget') { for (const name of state.bump) state.epochs[name]++; show(...state.items.filter(item => item.id !== 'd1')); return {}; }
-    if (url.pathname === '/memory/cleanup/pending') return [{ id: 'job', memoryEpoch: 1 }];
-    if (url.pathname === '/memory/cleanup/complete') return {};
+    if (url.pathname === '/memory/cleanup/status') return { jobs: [{ id: 'job', status: 'complete', parties: [] }] };
     return listing(method, route);
   };
   const run = new Runner({ data: shipped(), operator, modelLog: log, sleep: async () => {} });
@@ -385,10 +384,10 @@ test('consolidation steps: a digest must be its owner\'s machine digest of the n
   state.status = { ...steady, extracted: { rejected: { unconfirmed_identity: 3, newer_fact_kept: 1 } } };
   await STEPS.expectRejected(run, ctx, { reasons: { newer_fact_kept: 1, unconfirmed_identity: 1 } });
   await assert.rejects(STEPS.expectRejected(run, ctx, { reasons: { newer_fact_kept: 1 } }), /refused as \{"unconfirmed_identity":1,"newer_fact_kept":1\}/);
-  // Forgetting: preview, pause, forget, acknowledge the cleanup, resume; only that person's epoch moves.
+  // Forgetting: preview, pause, forget, wait until the services have confirmed the cleanup, resume; only that person's epoch moves.
   state.calls = [];
   await STEPS.forget(run, ctx, { person: 'MOCK-A', source: 'MOCK-年糕' });
-  assert.deepEqual(state.calls.filter(call => call.startsWith('POST')), ['POST /memory/forget-preview', 'POST /world/pause', 'POST /memory/forget', 'POST /memory/cleanup/complete', 'POST /world/pause']);
+  assert.deepEqual(state.calls.filter(call => call.startsWith('POST')), ['POST /memory/forget-preview', 'POST /world/pause', 'POST /memory/forget', 'POST /world/pause']);
   assert.deepEqual([state.paused, state.epochs], [false, { 'MOCK-A': 1, 'MOCK-B': 3 }]);
   show(digest, fact);
   await assert.rejects(STEPS.forget(run, ctx, { person: 'MOCK-A', source: '没说过的话' }), /no digest of MOCK-A is derived from/);
@@ -553,6 +552,59 @@ test('open diary steps: one open diary of the right person; its request holds th
   run.roomState = async () => ({ status: 200, text: JSON.stringify({ version: 1, source: 'authority', at: 1, since: 1, clock: {}, weather: 'clear', lamp: 'off', activity: 'idle', pose: 'sitting', diary: 'mockcd66' }) });
   await assert.rejects(STEPS.expectRoomState(run, ctx, {}), /holds more than its contract/);
   assert.throws(() => roomCaller(4173), /refusing room port/);
+});
+
+test('cleanup steps: a message is forgotten up to the forget itself; the confirmation table must show who is missing while the world refuses to resume, then every party confirmed from a process that was not restarted', async () => {
+  const data = shipped(), label = 'p-mmmmmm';
+  const item = { id: 'f1', entityId: 'entity:test', status: 'active', type: 'facts', key: 'F2 口头禅', value: 'MOCK-海螺号', personId: 'person:mock:MOCK-M' };
+  const state = { calls: [], paused: false, resumable: false, jobs: [], preview: { memoryIds: ['f1'], sourceObservationIds: ['o1'], memoryEpoch: 4 } };
+  const operator = async (method, route, body) => {
+    const url = new URL(route, 'http://operator.invalid');
+    state.calls.push(`${method} ${url.pathname}`);
+    if (url.pathname === '/people') return { people: [{ personId: 'person:mock:MOCK-M', label }] };
+    if (url.pathname === '/memory') return { items: url.searchParams.get('person') === label ? [item] : [], more: false };
+    if (url.pathname === '/memory/sources') return { sources: [{ id: 'o1', role: 'user', text: 'MOCK-F2 请记住：我的口头禅是MOCK-海螺号' }] };
+    if (url.pathname === '/memory/forget-preview') return state.preview;
+    if (url.pathname === '/memory/forget') { assert.deepEqual(body, { entityId: 'entity:test', ids: ['o1'], expectedMemoryEpoch: 4 }); return { id: 'job-1' }; }
+    if (url.pathname === '/memory/cleanup/status') return { jobs: state.jobs };
+    if (url.pathname === '/world') return { world: { paused: state.paused, revision: 1 } };
+    if (url.pathname === '/world/pause') { if (body.paused === false && !state.resumable) throw new Error('POST /world/pause -> 409 CONFLICT'); state.paused = body.paused; return {}; }
+    throw new Error('unexpected ' + route);
+  };
+  const mockCalls = [];
+  const run = new Runner({ data, operator, mock: async (method, route, body) => { mockCalls.push([method, route, body]); return {}; }, sleep: async () => {} });
+  run.poll = async (probe, _timeoutMs, message) => (await probe()) || (() => { throw new Error(message); })();
+  const ctx = {};
+  await assert.rejects(STEPS.expectCleanup(run, ctx, { complete: true }), /needs a forgetMessage/);
+  await assert.rejects(STEPS.forgetMessage(run, ctx, { person: 'MOCK-M', contains: '没记过', source: 'MOCK-F2' }), /no memory of MOCK-M contains/);
+  await assert.rejects(STEPS.forgetMessage(run, ctx, { person: 'MOCK-M', contains: 'MOCK-海螺号', source: '别的话' }), /not made from an observation containing/);
+  const before = Date.now();
+  await STEPS.forgetMessage(run, ctx, { person: 'MOCK-M', contains: 'MOCK-海螺号', source: 'MOCK-F2 请记住' });
+  assert.deepEqual([ctx.cleanup.id, ctx.cleanup.at >= before, state.paused], ['job-1', true, true]);
+  assert.deepEqual(state.calls.filter(call => call.startsWith('POST')), ['POST /memory/forget-preview', 'POST /world/pause', 'POST /memory/forget']);
+  const party = (name, startedAt, counts = {}) => ({ party: name, confirmed: startedAt !== null, at: startedAt === null ? null : 1, report: startedAt === null ? null : { ...counts, startedAt } });
+  const old = ctx.cleanup.at - 1000, fresh = ctx.cleanup.at + 1000;
+  // One party is missing: named, the world stays paused, and what has confirmed is held to its counts.
+  state.jobs = [{ id: 'job-1', status: 'pending', completedBy: null, parties: [party('content', old, { artifactsRemoved: 2 }), party('executor:mock', null)] }];
+  await STEPS.expectCleanup(run, ctx, { waiting: ['executor:mock'], reports: { content: { artifactsRemoved: 2 } } });
+  assert.equal(state.paused, true);
+  await assert.rejects(STEPS.expectCleanup(run, ctx, { waiting: ['bridge:qq'] }), /waits for \["executor:mock"\] \(pending\), expected \["bridge:qq"\]/);
+  await assert.rejects(STEPS.expectCleanup(run, ctx, { waiting: ['executor:mock'], reports: { content: { artifactsRemoved: 3 } } }), /content reported artifactsRemoved=2, expected at least 3/);
+  await assert.rejects(STEPS.expectCleanup(run, ctx, { complete: true }), /still waits for \["executor:mock"\]/);
+  state.resumable = true;
+  await assert.rejects(STEPS.expectCleanup(run, ctx, { waiting: ['executor:mock'] }), /the world resumed while a party had not confirmed/);
+  state.resumable = false; state.paused = true;
+  // Everyone confirmed. A party that confirmed from a process started after the forget was restarted for it.
+  state.jobs = [{ id: 'job-1', status: 'complete', completedBy: 'parties', parties: [party('content', old, { artifactsRemoved: 2 }), party('executor:mock', fresh, { sessionsRemoved: 1 })] }];
+  await STEPS.expectCleanup(run, ctx, { complete: true, restarted: ['executor:mock'], reports: { 'executor:mock': { sessionsRemoved: 1 } } });
+  await assert.rejects(STEPS.expectCleanup(run, ctx, { complete: true }), /executor:mock confirmed from a process started after the forget/);
+  await assert.rejects(STEPS.expectCleanup(run, ctx, { complete: true, restarted: ['executor:mock', 'content'] }), /content confirmed from a process started before the forget/);
+  await assert.rejects(STEPS.expectCleanup(run, ctx, { complete: true, restarted: ['executor:mock'], reports: { 'bridge:qq': {} } }), /bridge:qq has not confirmed/);
+  state.jobs[0].completedBy = 'operator';
+  await assert.rejects(STEPS.expectCleanup(run, ctx, { complete: true, restarted: ['executor:mock'] }), /closed by operator/);
+  // The second channel's executor is stopped and started through that channel's control socket.
+  await STEPS.mockExecutor(run, ctx, { running: false });
+  assert.deepEqual(mockCalls, [['POST', '/executor', { running: false }]]);
 });
 
 // The real services of this checkout, as processes, on a throwaway data root: Authority, the model
@@ -885,9 +937,9 @@ test('sticker steps: a library sticker is found by its description with its leve
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 900000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '55/55 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '57/57 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));

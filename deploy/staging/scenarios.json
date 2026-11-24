@@ -1513,6 +1513,67 @@
         { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY" } },
         { "quietHours": { "window": "default" } }
       ]
+    },
+    {
+      "id": "F1",
+      "title": "forget-while-running: the owner sends one message with a picture and a video link and has her remember something from it; she files the picture, watches the video and files its note. Forgetting that message closes its cleanup job without any service being stopped: the content service (the picture, the note, the job record), the QQ bridge (the dispatch record) and the executor (the retired session) each confirm from the process that was already running, only then may the world resume, and afterwards neither her memory nor her replayed history holds it",
+      "model": [
+        {"match": "MOCK-F1-{run} 请记住", "propose": {"type": "fact.report", "payload": {"key": "F1 暗号", "value": "珊瑚灯-{run}", "quote": "我的暗号是珊瑚灯-{run}"}}, "activity": {"capability": "video", "action": "watch", "input": {"url": "https://video.mock.invalid/v/MOCKSLOWISHF1{run}"}}, "reply": "MOCK-ACK-F1-{run} 记下了，我去看看"},
+        {"match": "MOCK 视频 MOCKSLOWISHF1{run}", "reply": "MOCK-DONE-F1-{run} 看完了"},
+        {"match": "MOCK-F1-{run} 之后", "reply": "MOCK-AFTER-F1-{run} 在"}
+      ],
+      "steps": [
+        {"quietHours": {"window": "none"}},
+        {"usageLimit": {"capability": "video", "limit": 1000}},
+        {"say": {"from": "MOCK-OWNER", "text": "MOCK-F1-{run} 请记住再帮我看看：我的暗号是珊瑚灯-{run} https://video.mock.invalid/v/MOCKSLOWISHF1{run}", "image": {"seed": "F1-{run}"}}},
+        {"expectReply": {"to": "MOCK-OWNER", "contains": "MOCK-ACK-F1-{run} 记下了，我去看看"}},
+        {"expectMemory": {"person": "MOCK-OWNER", "contains": "珊瑚灯-{run}"}},
+        {"expectReply": {"to": "MOCK-OWNER", "contains": "MOCK-DONE-F1-{run} 看完了"}},
+        {"expectJob": {"capability": "video", "status": "done", "notice": "sent"}},
+        {"forgetMessage": {"person": "MOCK-OWNER", "contains": "珊瑚灯-{run}", "source": "MOCK-F1-{run} 请记住"}},
+        {"expectCleanup": {"complete": true, "reports": {"content": {"artifactsRemoved": 2, "jobRecordsRemoved": 1}, "bridge:qq": {"dispatchForgotten": 1}, "executor:qq": {"sessionsRemoved": 1}}}},
+        {"resume": {}},
+        {"expectMemory": {"person": "MOCK-OWNER", "absent": "珊瑚灯-{run}"}},
+        {"say": {"from": "MOCK-OWNER", "text": "MOCK-F1-{run} 之后还在吗"}},
+        {"expectReply": {"to": "MOCK-OWNER", "contains": "MOCK-AFTER-F1-{run} 在"}},
+        {"expectPrompt": {"userText": "MOCK-F1-{run} 之后", "absent": "珊瑚灯-{run}"}},
+        {"expectHistory": {"userText": "MOCK-F1-{run} 之后", "maxEarlier": 0}},
+        {"expectSilence": {"to": "*", "afterMs": 0}}
+      ],
+      "finally": [
+        {"resume": {}},
+        {"usageLimit": {"capability": "video", "limit": null}},
+        {"quietHours": {"window": "default"}}
+      ]
+    },
+    {
+      "id": "F2",
+      "title": "forget-waits-for-everyone: a message of the second channel is forgotten while that channel's executor is down. The content service confirms, the job stays pending for the executor alone, the operator sees who is missing and the world refuses to resume; once the executor is back it forgets the retired session and confirms by itself, the job closes and the world may resume",
+      "model": [
+        {"match": "MOCK-F2-{run} 请记住", "propose": {"type": "fact.report", "payload": {"key": "F2 口头禅", "value": "海螺号-{run}", "quote": "我的口头禅是海螺号-{run}"}}, "reply": "MOCK-REPLY-F2-{run} 记下了"},
+        {"match": "MOCK-F2-{run} 之后", "reply": "MOCK-AFTER-F2-{run} 在"}
+      ],
+      "steps": [
+        {"mockFriends": {"people": ["MOCK-OWNER", "MOCK-A", "MOCK-B", "MOCK-M"]}},
+        {"mockSay": {"from": "MOCK-M", "text": "MOCK-F2-{run} 请记住：我的口头禅是海螺号-{run}"}},
+        {"mockExpectReply": {"to": "MOCK-M", "contains": "MOCK-REPLY-F2-{run} 记下了"}},
+        {"expectMemory": {"person": "MOCK-M", "contains": "海螺号-{run}"}},
+        {"mockExecutor": {"running": false}},
+        {"forgetMessage": {"person": "MOCK-M", "contains": "海螺号-{run}", "source": "MOCK-F2-{run} 请记住"}},
+        {"expectCleanup": {"waiting": ["executor:mock"], "reports": {"content": {}}}},
+        {"mockExecutor": {"running": true}},
+        {"expectCleanup": {"complete": true, "restarted": ["executor:mock"], "reports": {"executor:mock": {"sessionsRemoved": 1}}}},
+        {"resume": {}},
+        {"expectMemory": {"person": "MOCK-M", "absent": "海螺号-{run}"}},
+        {"mockSay": {"from": "MOCK-M", "text": "MOCK-F2-{run} 之后还在吗"}},
+        {"mockExpectReply": {"to": "MOCK-M", "contains": "MOCK-AFTER-F2-{run} 在"}},
+        {"expectPrompt": {"userText": "MOCK-F2-{run} 之后", "absent": "海螺号-{run}"}},
+        {"expectSilence": {"to": "*", "afterMs": 0}}
+      ],
+      "finally": [
+        {"mockExecutor": {"running": true}},
+        {"resume": {}}
+      ]
     }
   ]
 }

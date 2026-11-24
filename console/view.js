@@ -1034,7 +1034,13 @@ export function WorldConsole({ t, standalone = false }) {
     return h(React.Fragment, null,
       h('section', { className: 'bff-card' }, cardHead(h('h2', null, t('memoryTitle')),
         button('memoryReadExplicitly', () => run(loadMemory), { className: 'bff-primary bff-sm', icon: 'eye' }),
-        button('memoryCleanupRefresh', () => run(async () => { const jobs = await request('/memory/cleanup/pending'); setNotice(t(jobs.length ? 'memoryCleanupPending' : 'memoryCleanupComplete')); }), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
+        // Who has not yet confirmed that their own files of the forgotten content are gone (Authority's confirmation table).
+        button('memoryCleanupRefresh', () => run(async () => {
+          const pending = (await request('/memory/cleanup/status')).jobs.filter(job => job.status === 'pending');
+          const label = party => party === 'content' ? t('memoryCleanupPartyContent') : `${t(party.startsWith('bridge:') ? 'memoryCleanupPartyBridge' : 'memoryCleanupPartyExecutor')} ${party.slice(party.indexOf(':') + 1)}`;
+          const waiting = [...new Set(pending.flatMap(job => job.parties.filter(party => !party.confirmed).map(party => label(party.party))))];
+          setNotice(pending.length ? `${t('memoryCleanupPending')} ${t('memoryCleanupWaiting')}${waiting.join(' / ') || '—'}` : t('memoryCleanupComplete'));
+        }), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
         alert('info', t('memoryPrivacy')), text('memoryLifecycle'),
         memory && h('p', { className: 'bff-small bff-muted' }, `${t('memoryEntity')}: `, h('code', null, memory.entityId)),
         memory && h('label', null, h('span', null, t('memoryPanel.filter')), h('select', { name: 'memoryFilter', value: memoryFilter, disabled: busy, onChange: event => { const value = event.target.value; setMemoryFilter(value); void run(() => loadMemory(value)); } },
@@ -1234,7 +1240,7 @@ export function WorldConsole({ t, standalone = false }) {
       if (item && !busy) { event.preventDefault(); go(item.id); }
     }
   };
-  const noticeWarn = ['modelTestFailed', 'memoryCleanupPending'].some(key => notice === t(key));
+  const noticeWarn = notice === t('modelTestFailed') || typeof notice === 'string' && notice.startsWith(t('memoryCleanupPending'));
   const toasts = h('div', { className: 'bff-toasts', 'aria-live': 'polite' }, notice ? h('div', { className: 'bff-toast', role: 'status', key: notice },
     h('span', { style: noticeWarn ? { color: 'var(--bff-warn)', display: 'flex' } : { display: 'flex' } }, icon(noticeWarn ? 'alert' : 'check')), h('p', null, notice),
     h('button', { type: 'button', className: 'bff-icon-btn', 'aria-label': t('shell.dismiss'), onClick: () => setNotice('') }, icon('x'))) : null);

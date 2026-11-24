@@ -5,7 +5,7 @@ import { Authority } from './engine.js';
 import { createAuthorityServer } from './server.js';
 import { createOperatorServer } from './operator.js';
 import { createModelControlClient } from './model-control.js';
-import { createContentControlClient, createContentOperatorClient, createContentJobsClient, createContentStickersClient } from './content-control.js';
+import { createContentControlClient, createContentOperatorClient, createContentJobsClient, createContentStickersClient, createContentForgetClient } from './content-control.js';
 import { fileURLToPath } from 'node:url';
 import { load as loadConfig } from './config.js';
 
@@ -34,13 +34,13 @@ try {
     config.credentials.push({ hash: room.hash, role: 'room' });
   }
   fs.mkdirSync(path.dirname(config.databasePath), { recursive: true, mode: 0o700 });
-  authority = new Authority({ file: config.databasePath, initialPaused: config.initialPaused, ...(config.persona ? { persona: config.persona } : {}) });
+  authority = new Authority({ file: config.databasePath, initialPaused: config.initialPaused, contentService: Boolean(config.content), ...(config.persona ? { persona: config.persona } : {}) });
   if (authority.store.migrated.applied.length) process.stdout.write(`Authority schema migrated: ${authority.store.migrated.applied.map(m => `${m.id}-${m.name}`).join(', ')}; backup ${authority.store.migrated.backup ? path.basename(authority.store.migrated.backup) : 'none (new database)'}.\n`);
   for (const capability of config.capabilities) authority.registerCapability(capability);
   for (const actor of config.actors) authority.bindActor(actor);
   for (const stream of config.streams) authority.bindStream(stream);
-  app = createAuthorityServer({ authority, socketPath: config.socketPath, credentials: config.credentials, ...(config.content ? { contentControl: createContentControlClient(config.content), contentJobs: createContentJobsClient(config.content) } : {}), onFatal: () => { process.stderr.write('Authority reviewer failed; pending work remains durable.\n'); void stop(1); } });
-  operator = createOperatorServer({ authority, ...config.operator, assetsDir: fileURLToPath(new URL('../../console-web/', import.meta.url)), ...(config.content ? { contentOperator: createContentOperatorClient(config.content), contentControl: createContentControlClient(config.content), contentJobs: createContentJobsClient(config.content), contentStickers: createContentStickersClient(config.content) } : {}), modelControl: config.operator.modelSocketPath ? createModelControlClient(config.operator.modelSocketPath) : undefined, qqControl: config.operator.qqSocketPath ? createModelControlClient(config.operator.qqSocketPath, ['/qq', '/qq/identity', '/qq/people']) : undefined, onResume: () => app.wakeReviewer() });
+  app = createAuthorityServer({ authority, socketPath: config.socketPath, credentials: config.credentials, ...(config.content ? { contentControl: createContentControlClient(config.content), contentJobs: createContentJobsClient(config.content), contentForget: createContentForgetClient(config.content) } : {}), onFatal: () => { process.stderr.write('Authority reviewer failed; pending work remains durable.\n'); void stop(1); } });
+  operator = createOperatorServer({ authority, ...config.operator, assetsDir: fileURLToPath(new URL('../../console-web/', import.meta.url)), ...(config.content ? { contentOperator: createContentOperatorClient(config.content), contentControl: createContentControlClient(config.content), contentJobs: createContentJobsClient(config.content), contentStickers: createContentStickersClient(config.content) } : {}), modelControl: config.operator.modelSocketPath ? createModelControlClient(config.operator.modelSocketPath) : undefined, qqControl: config.operator.qqSocketPath ? createModelControlClient(config.operator.qqSocketPath, ['/qq', '/qq/identity', '/qq/people']) : undefined, onResume: () => app.wakeReviewer(), onForget: () => { void app.wakeCleanup(); } });
   for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => { void stop(0); });
   await app.start();
   await operator.start();

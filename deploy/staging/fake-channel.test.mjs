@@ -19,7 +19,7 @@ async function fixture(t) {
     initiationAck: async value => { calls.push(['ack', value]); return { status: 'recorded' }; },
   };
   const executor = { execute: async request => { executions.push(request); if (state.reply instanceof Error) throw state.reply; return state.reply; } };
-  const fake = createFakeChannel({ authority, executor, executeConversation, declineMark: DECLINE_MARK, controlSocket, pollMs: 60000 });
+  const fake = createFakeChannel({ authority, executor, executeConversation, declineMark: DECLINE_MARK, controlSocket, pollMs: 60000, executorControl: async running => { calls.push(['executor', running]); } });
   await fake.start();
   t.after(async () => { await fake.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const control = (method, route, body) => new Promise((resolve, reject) => {
@@ -59,6 +59,13 @@ test('a friend is admitted in the channel\'s own terms and answered through the 
   assert.deepEqual([f.executions.length, f.fake.turns.at(-1).status], [2, 'paused']);
   for (const body of [{ account: 'Alice', text: 'x' }, { account: 'MOCK-A', text: '' }, { account: 'MOCK-A' }]) assert.equal((await f.control('POST', '/message', body)).status, 400);
   assert.equal((await f.control('POST', '/friends', { friends: ['999900000011'] })).status, 400);
+});
+
+test('the channel\'s executor can be stopped and started again through the control socket', async t => {
+  const f = await fixture(t);
+  assert.deepEqual([(await f.control('POST', '/executor', { running: false })).value, (await f.control('POST', '/executor', { running: true })).value], [{ running: false }, { running: true }]);
+  assert.deepEqual(f.calls, [['executor', false], ['executor', true]]);
+  assert.equal((await f.control('POST', '/executor', { running: 'no' })).status, 400);
 });
 
 test(`an ordinary reply that is ${DECLINE_MARK} (nothing left after the executor's output guard) sends nothing`, async t => {
