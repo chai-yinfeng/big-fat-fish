@@ -34,6 +34,8 @@ docs/DEV_WORKFLOW.md. The DSH-era legacy directories are deleted; use git histor
   http://127.0.0.1:7890 is the first fix (git repo-local http.https://github.com/.proxy,
   HTTPS_PROXY/-x, Docker daemon proxy), plus https://hf-mirror.com and the tuna PyPI
   mirror. Remind the user to use it when handing them networked commands there.
+  The proxy tooling is maintained in this repo (status/update/diagnose commands and rollback;
+  node domains rely on the subscription's own DNS rules): deploy/home-agent-proxy/README.md.
 - The agent never runs sudo or companion-deploy and never asks for or handles the
   sudo password.
 - Before any deploy hand-off, run staging on home-agent-dev (node deploy/staging/run.mjs,
