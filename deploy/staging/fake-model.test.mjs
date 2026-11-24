@@ -67,11 +67,11 @@ test('scripted model: a consolidation request is answered by a `consolidate` rul
     { match: 'MOCK-甲', consolidate: { summary: 'MOCK-DIGEST 甲', feeling: 'MOCK-感受', facts: [{ key: '生日', value: 'MOCK-三月', quote: '我的生日是MOCK-三月' }, { key: '生日', value: 'MOCK-三月', quote: '我生日是MOCK-三月', in: 'MOCK-甲' }, { key: '话', value: 'MOCK-REPLY 好', quote: 'MOCK-REPLY 好' }, { key: '无', value: 'x', quote: '没有这句' }] } }];
   const plan = planReply(body, scripted);
   // What the worker makes of it: the refs point at the rows the script named; a quote found nowhere gets a ref outside the batch.
-  assert.deepEqual(parseConsolidation(plan.text), { digest: { summary: 'MOCK-DIGEST 甲', feeling: 'MOCK-感受' }, facts: [
+  assert.deepEqual(parseConsolidation(plan.text), { digest: { summary: 'MOCK-DIGEST 甲', feeling: 'MOCK-感受' }, intents: [], facts: [
     { key: '生日', value: 'MOCK-三月', quote: '我的生日是MOCK-三月', ref: 'o1' }, { key: '生日', value: 'MOCK-三月', quote: '我生日是MOCK-三月', ref: 'o1' }, { key: '话', value: 'MOCK-REPLY 好', quote: 'MOCK-REPLY 好', ref: 'o2' }, { key: '无', value: 'x', quote: '没有这句', ref: 'o999' }] });
   // Logged apart from chats: no `userText` for the chat steps to match, the whole input under `maintenance`.
   assert.deepEqual([plan.consolidation, plan.userText, plan.stream, plan.maintenance], [true, '', false, body.messages[1].content]);
-  assert.deepEqual(parseConsolidation(planReply(body, []).text), { digest: { summary: DEFAULT_DIGEST.summary, feeling: '' }, facts: [] });
+  assert.deepEqual(parseConsolidation(planReply(body, []).text), { digest: { summary: DEFAULT_DIGEST.summary, feeling: '' }, intents: [], facts: [] });
   // A chat is never answered by a `consolidate` rule, and other non-streamed requests are not consolidations.
   assert.equal(planReply({ stream: true, messages: [{ role: 'user', content: 'MOCK-乙 在吗' }] }, scripted).text, DEFAULT_REPLY);
   assert.equal(planReply({ stream: true, messages: [{ role: 'user', content: 'MOCK-甲 在吗' }] }, scripted).text, 'MOCK-聊天回复');
