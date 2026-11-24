@@ -430,9 +430,11 @@ curl -sS -H "authorization: Bearer $TOKEN" http://127.0.0.1:3082/memory/cleanup/
   （以及 staging 写的 `operatorPort`）不要删，旧 worker 要读；回退时 companion-deploy 会连旧版本的 unit 一起装回去。
 - 回退后再升级：旧版本期间由旧 worker 确认完的任务已是 `complete`，新版本不再处理；仍待清理的任务由新版本的三个
   服务按上面的流程接着做（参与方每次从任务本身算出，旧版本创建的任务也一样）。
-- staging 的升级 → 回退 → 再升级覆盖这两个方向：升级后和再升级后各重放一遍 F1、F2（见上表）；回退后的旧版本在同一个
-  数据根上启动并通过冒烟（库里带着新版本写的 `cleanupAcks` 和已完成的任务）。staging 里旧 worker 的真实清理路径跑不了
-  （记忆单元被限制为只能用 Unix socket，够不到 operator 端口，且它停的是生产单元名），这一点没有被 staging 验证。
+- staging 的升级 → 回退 → 再升级覆盖这两个方向：升级后和再升级后各重放一遍 F1、F2（见上表）；另有三步把一个待清理任务
+  带过回退再前滚——`forget-pending-before-rollback`（新版本下停掉 QQ 桥后忘记一条只涉及 QQ 的记忆，内容服务和执行器确认，
+  任务只差 `bridge:qq`，世界保持暂停）、`forget-pending-under-from`（回退后旧 Authority 仍把它列为待清理，恢复世界被 409 拒绝）、
+  `forget-closes-after-roll-forward`（再升级后新版本的服务自己确认，任务由各方关闭，世界恢复）。staging 里旧 worker 的真实清理
+  路径跑不了（记忆单元被限制为只能用 Unix socket，够不到 operator 端口，且它停的是生产单元名），这一点没有被 staging 验证。
 
 离线兜底（某个服务起不来、任务一直待清理时，主人手动；**未在生产主机上演练过**）：世界保持暂停，停掉三个服务，
 以 companion 身份对每个待清理任务跑一次 `ops/purge-execution.mjs`，再向 operator API 确认，最后启动服务：
