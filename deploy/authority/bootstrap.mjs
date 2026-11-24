@@ -4,9 +4,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { prepareModel } from './prepare-model.mjs';
 import { prepareQQ } from './prepare-qq.mjs';
 import { prepareConversation } from './prepare-conversation.mjs';
+const here = path.dirname(fileURLToPath(import.meta.url));
+// Release: ops/ sits next to capabilities/ and authority/; checkout: deploy/authority/.
+const tree = fs.existsSync(path.join(here, '../capabilities')) ? path.resolve(here, '..') : path.resolve(here, '../..');
+// authority.json's schema version (authority/src/config.js).
+const { SCHEMA_VERSION } = await import(pathToFileURL(path.join(tree, 'authority/src/config.js')).href);
 process.umask(0o077);
 const base = path.join(os.homedir(), '.local/share/companion-world-v1');
 if (fs.existsSync(base)) throw new Error('Refusing to reset an existing world');
@@ -19,7 +25,7 @@ write('operator/admin.token', admin);
 write('operator/console.token', operator);
 write('service-config/health.token', source);
 write('operator/authority.json', {
-  schemaVersion: 1, initialPaused: true,
+  schemaVersion: SCHEMA_VERSION, initialPaused: true,
   databasePath: '/authority/state/authority.sqlite', socketPath: '/authority/ipc/authority.sock',
   operator: { socketPath: '/authority/operator/operator.sock', tokenHash: hash(operator), origins: ['http://127.0.0.1:3082', 'http://localhost:3082'] },
   credentials: [

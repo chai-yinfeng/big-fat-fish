@@ -483,22 +483,46 @@ def reset_initiations(database):
         db.close()
 
 
-def scenario_bridge_config(config, bridge_source):
+def config_keys(release):
+    """The keys each operator file's config module reads ({'qq-bridge.json': frozenset, ...}), printed by the release's
+    ops/config-keys.mjs; None for a release from before that script (its source is searched instead, see `knows`)."""
+    script = release / 'ops/config-keys.mjs'
+    if not script.is_file():
+        return None
+    return {label: frozenset(keys) for label, keys in json.loads(run([str(NODE), str(script)]))['files'].items()}
+
+
+def release_knows(keys, label, release, source):
+    """What `knows` searches for operator/<label>: the key names from `config_keys`, or, without them, the text of the
+    release's `source` file that reads it."""
+    return keys[label] if keys is not None else (release / source).read_text()
+
+
+def knows(known, key, needle=None):
+    """Whether a release reads `key`: `known` is either the key names of that file (a frozenset from config_keys) or,
+    for a release from before ops/config-keys.mjs, the source text that reads the file, searched for `needle` (default:
+    the key itself)."""
+    if isinstance(known, (set, frozenset)):
+        return key in known
+    return (needle or key) in known
+
+
+def scenario_bridge_config(config, bridge_known):
     """qq-bridge.json for scenario replay: a release whose bridge fetches initiated runs asks every few seconds
     (production: every minute), so those scenarios do not wait minutes; one that paces its replies (`pacing`) waits
     briefly for a burst and sends without pauses. Other releases are left alone. Idempotent."""
-    if 'initiationPollMs' in bridge_source:
+    if knows(bridge_known, 'initiationPollMs'):
         config['initiationPollMs'] = INITIATION_POLL_MS
-    if 'cfg.pacing' in bridge_source:
+    if knows(bridge_known, 'pacing', 'cfg.pacing'):
         config['pacing'] = dict(SCENARIO_PACING)
     return config
 
 
-def scenario_content_config(config, content_source, replaying):
+def scenario_content_config(config, content_known, replaying):
     """content.json while scenarios replay: staging has no image runtime, so a release that knows `allowRawSmallPng`
     lets the fake OneBot's small PNGs go to the scripted vision model as they are. Taken out again after the replay
     (`replaying` false): production never has it, and an older release refuses the key on a rollback. Idempotent."""
-    if replaying and 'allowRawSmallPng' in content_source:
+    if replaying and knows(content_known, 'allowRawSmallPng'):
         config['allowRawSmallPng'] = True
     else:
         config.pop('allowRawSmallPng', None)
@@ -596,8 +620,9 @@ def scenarios(deployer, only=None):
     release = ROOT / 'src/companion/current'
     qq_config = json.loads((BASE / 'operator/qq-bridge.json').read_text())
     # The QQ unit loses its Unix-socket-only restriction below: it must dial the staging port, never NapCat's.
-    bridge_source = (release / 'capabilities/qq/main.mjs').read_text()
-    if qq_config.get('onebotPort') != ONEBOT_PORT or 'onebotPort' not in bridge_source:
+    keys = config_keys(release)
+    bridge_known = release_knows(keys, 'qq-bridge.json', release, 'capabilities/qq/main.mjs')
+    if qq_config.get('onebotPort') != ONEBOT_PORT or not knows(bridge_known, 'onebotPort'):
         raise RuntimeError('this release cannot be pointed at the fake OneBot port %d' % ONEBOT_PORT)
     names = deployer.installed_units()
     stop_fake_onebot()
@@ -605,9 +630,9 @@ def scenarios(deployer, only=None):
     deployer.stop_all(names)
     second_channel = prepare_mock_channel(release)
     edit('authority.json', scenario_authority_config)
-    edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_source))
-    content_source = (release / 'capabilities/media/main.mjs').read_text()
-    edit('content.json', lambda c: scenario_content_config(c, content_source, True))
+    edit('qq-bridge.json', lambda c: scenario_bridge_config(c, bridge_known))
+    content_known = release_knows(keys, 'content.json', release, 'capabilities/media/main.mjs')
+    edit('content.json', lambda c: scenario_content_config(c, content_known, True))
     scenario_video_config(release, True)
     for name in (PREFIX + 'model.service', PREFIX + 'qq.service'):
         path = deployer.config.units / name
@@ -683,7 +708,7 @@ def scenarios(deployer, only=None):
                 process.kill()
         scenario_video_config(release, False)
         stop_fake_channel()
-        edit('content.json', lambda c: scenario_content_config(c, content_source, False))
+        edit('content.json', lambda c: scenario_content_config(c, content_known, False))
     lines = (result.stdout + result.stderr).strip().splitlines()
     for line in lines:
         print('  | ' + line[:600], flush=True)

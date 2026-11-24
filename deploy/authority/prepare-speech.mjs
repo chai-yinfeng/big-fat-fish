@@ -2,10 +2,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-// Must equal SCHEMA_VERSION in capabilities/speech/config.js (this file is copied to ops/ in a release).
-const SCHEMA_VERSION = 2;
+const here = path.dirname(fileURLToPath(import.meta.url));
+// Release: ops/ sits next to capabilities/; checkout: deploy/authority/.
+const tree = fs.existsSync(path.join(here, '../capabilities')) ? path.resolve(here, '..') : path.resolve(here, '../..');
+const { SCHEMA_VERSION } = await import(pathToFileURL(path.join(tree, 'capabilities/speech/config.js')).href);
 
 /** Infrastructure only: no runtime installation, model download, network or inference. */
 export function prepareSpeech(base = path.join(os.homedir(), '.local/share/companion-world-v1'), runtime = path.join(os.homedir(), '.local/opt/companion/speech-node')) {

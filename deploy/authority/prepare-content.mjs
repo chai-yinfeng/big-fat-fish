@@ -3,8 +3,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { prepareSpeech } from './prepare-speech.mjs';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+// Release: ops/ sits next to capabilities/; checkout: deploy/authority/.
+const tree = fs.existsSync(path.join(here, '../capabilities')) ? path.resolve(here, '..') : path.resolve(here, '../..');
+// content.json's keys and defaults (capabilities/media/config.js).
+const { defaults } = await import(pathToFileURL(path.join(tree, 'capabilities/media/config.js')).href);
 
 // Adds product-owned media infrastructure only. Installation/download/inference
 // remain explicit operator steps; this never touches QQ login volumes or memory.
@@ -20,7 +26,7 @@ export function prepareContent(base = path.join(os.homedir(), '.local/share/comp
   if (!fs.existsSync(tokenFile)) fs.writeFileSync(tokenFile, randomBytes(32).toString('base64url') + '\n', { mode: 0o600, flag: 'wx' });
   const configFile = path.join(base, 'operator/content.json');
   if (!fs.existsSync(configFile)) fs.writeFileSync(configFile, JSON.stringify({
-    store: { root: path.join(base, 'media-data'), ttlMs: 7 * 86400000, maxBytes: 8 * 1024 * 1024 },
+    store: { root: path.join(base, 'media-data'), ...defaults.store },
     workRoot: path.join(base, 'speech-data'), speechConfigFile: path.join(base, 'operator/speech.json'),
     authority: { socketPath: path.join(base, 'ipc/authority/authority.sock'), tokenFile: path.join(base, 'service-config/health.token') },
     gateway: { socketPath: path.join(base, 'ipc/model/inference.sock'), tokenFile: path.join(base, 'service-config/inference.token') },
@@ -33,7 +39,7 @@ export function prepareContent(base = path.join(os.homedir(), '.local/share/comp
   if (fs.existsSync(qqFile)) { const qq = JSON.parse(fs.readFileSync(qqFile, 'utf8')); qq.contentEnabled = true; fs.writeFileSync(qqFile, JSON.stringify(qq, null, 2) + '\n', { mode: 0o600 }); }
   layout.media = { root: 'media-data', workRoot: 'speech-data' };
   fs.writeFileSync(layoutFile, JSON.stringify(layout) + '\n', { mode: 0o600 });
-  return { prepared: true, modelsInstalled: false, cloudVoiceEnabled: false, replyMode: 'text-unless-requested', mediaCacheDays: 7 };
+  return { prepared: true, modelsInstalled: false, cloudVoiceEnabled: false, replyMode: 'text-unless-requested', mediaCacheDays: defaults.store.ttlMs / 86400000 };
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   try { console.log(JSON.stringify(prepareContent())); }

@@ -375,7 +375,22 @@ sourceRevision、productVersion、每个文件的 sha256 和可执行文件列�
 `IGNORED_LEGACY_FIELD` 警告。回退兼容：新版本读旧文件——旧文件的键新版本都认识，照常启动；旧版本读新文件——
 从这一版起，以后新加的键在回退到这一版（或更新）时只被忽略，不会让服务起不来；回退到这一版**之前**的版本，
 旧代码仍按原规则拒绝它不认识的键（网关、看视频拒绝任何未知键，QQ 拒绝 `pacing` 里的未知键），所以新加键后
-在回退到更早版本前要先删掉那个键。其余配置文件（content、authority、memory-worker 等）仍是原来的规则。
+在回退到更早版本前要先删掉那个键。
+
+第 6c 步起 `authority.json`、`memory-worker.json`、`content.json` 也按同一规则（模块 `authority/src/config.js`、
+`capabilities/memory/config.js`、`capabilities/media/config.js`）：预检拒绝未知键（`authority.json` 只查顶层键，
+`operator` 里的键仍原样交给控制台服务），运行时忽略并记一行，值越界、缺必填仍拒绝启动；`room-credential.json`
+仍是 Authority 启动时单独读的旁挂文件，规则不变。`memory-worker.json` 的 `purgeModule` 运行时静默忽略、预检只给
+`IGNORED_LEGACY_FIELD` 警告；`entityId`、`stateFile`、`maxCallsPerDay` 本版本不读，但 prepare-memory 仍写（c843d93
+之前的版本读后两个），运行时静默忽略，预检也不警告，不要删。回退兼容：回退到 6c **之前**的版本时，旧 Authority
+与旧内容服务拒绝任何未知顶层键、旧记忆 worker 不管多余的键，所以给这三个文件新加键后，回退到更早版本前要先删掉
+（Authority 的 `operator.*` 与以前一样不受限）。其余配置文件（conversation、speech 等）仍是原来的规则。
+
+`prepare-*`/`bootstrap.mjs` 从这些模块取版本号与默认值（`authority.json` 的 `schemaVersion`、`speech.json` 的
+`schemaVersion`、`content.json` 的 `store.ttlMs`/`maxBytes`），生成的文件与以前逐字节相同。发行包带
+`ops/config-keys.mjs`：`node ops/config-keys.mjs` 打印一行 JSON `{version, files: {<文件>: [键名…]}}`（有配置
+模块的 6 个文件，嵌套键写成 `pacing.x`；只有键名，无值）。staging agent 写可选键前先问它，没有这个脚本的旧版本
+退回搜源码。
 
 回退到按人整合之前的版本（965c638 及更早）时，库里已有的机器摘要、后台事实、整合游标都原样留着，旧版本能直接运行，
 但它不认识摘要：①摘要会被当成普通“会话经验”检索进**本人**的对话（仍然只有本人，没有“机器整理”的提示）；②忘记一句

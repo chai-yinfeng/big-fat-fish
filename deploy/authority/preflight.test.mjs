@@ -361,3 +361,56 @@ test('providers/video.json is optional and now checked: an unknown key, a value 
   write(missing);
   assert.deepEqual(await run(), [['video.json VIDEO_CONFIG'], false]);
 });
+
+// Config schema modules of step 6c (authority/src/config.js, capabilities/memory/config.js, capabilities/media/config.js).
+test('authority.json: an unknown key, a value out of range or a missing required key refuses the deploy', async t => {
+  const w = world(t);
+  const failures = async () => codes((await preflight({ base: w.base, release: w.release })).failures);
+  w.edit('authority.json', c => { c.future = 1; c['bad key'] = 2; });
+  assert.deepEqual(await failures(), ['authority.json CONFIG_UNKNOWN_KEY future', 'authority.json CONFIG_UNKNOWN_KEY bad_key']);
+  w.edit('authority.json', c => { delete c.future; delete c['bad key']; c.schemaVersion = 2; });
+  assert.deepEqual(await failures(), ['authority.json CONFIG_INVALID']);
+  w.edit('authority.json', c => { c.schemaVersion = 1; delete c.streams; });
+  assert.deepEqual(await failures(), ['authority.json CONFIG_INVALID']);
+  w.edit('authority.json', c => { c.streams = []; c.operator.tokenHash = 'x'; });
+  assert.deepEqual(await failures(), ['authority.json CONFIG_INVALID']);
+});
+
+test('memory-worker.json: an unknown key, a value out of range or a missing required key refuses the deploy; purgeModule only warns', async t => {
+  const w = world(t);
+  const run = () => preflight({ base: w.base, release: w.release });
+  w.edit('memory-worker.json', c => { c.future = true; });
+  assert.deepEqual(codes((await run()).failures), ['memory-worker.json CONFIG_UNKNOWN_KEY future']);
+  w.edit('memory-worker.json', c => { delete c.future; c.consolidationDeferMs = 86400001; });
+  assert.deepEqual(codes((await run()).failures), ['memory-worker.json CONFIG_INVALID']);
+  w.edit('memory-worker.json', c => { delete c.consolidationDeferMs; delete c.operatorTokenFile; });
+  assert.deepEqual(codes((await run()).failures), ['memory-worker.json CONFIG_INVALID']);
+  // prepare-memory's entityId, stateFile and maxCallsPerDay are in every world: no warning for them.
+  w.edit('memory-worker.json', c => { c.operatorTokenFile = path.join(w.base, 'operator/console.token'); c.purgeModule = path.join(w.base, 'purge.mjs'); });
+  const result = await run();
+  assert.deepEqual([codes(result.failures), codes(result.warnings)], [[], ['memory-worker.json IGNORED_LEGACY_FIELD purgeModule']]);
+});
+
+test('content.json: an unknown key, a value out of range or a missing required key refuses the deploy', async t => {
+  const w = world(t);
+  const failures = async () => codes((await preflight({ base: w.base, release: w.release })).failures);
+  w.edit('content.json', c => { c.future = 1; });
+  assert.deepEqual(await failures(), ['content.json CONFIG_UNKNOWN_KEY future']);
+  w.edit('content.json', c => { delete c.future; c.allowRawSmallPng = 1; });
+  assert.deepEqual(await failures(), ['content.json CONFIG_INVALID']);
+  w.edit('content.json', c => { delete c.allowRawSmallPng; delete c.sharpModule; });
+  assert.deepEqual(await failures(), ['content.json CONFIG_INVALID']);
+});
+
+test('ops/config-keys.mjs prints only key names and the version, including every key staging writes', () => {
+  const out = spawnSync(process.execPath, [path.join(here, 'config-keys.mjs')], { encoding: 'utf8' });
+  assert.equal(out.status, 0);
+  const printed = JSON.parse(out.stdout);
+  assert.deepEqual(Object.keys(printed), ['version', 'files']);
+  assert.equal(printed.version, JSON.parse(fs.readFileSync(path.join(here, '../../package.json'), 'utf8')).version);
+  assert.deepEqual(Object.keys(printed.files), ['authority.json', 'content.json', 'memory-worker.json', 'model-gateway.json', 'providers/video.json', 'qq-bridge.json']);
+  assert.ok(Object.values(printed.files).every(keys => keys.length && keys.every(key => /^[A-Za-z0-9.]+$/.test(key))));
+  // deploy/staging/staging-agent.py writes these (or asks first).
+  for (const [label, key] of [['memory-worker.json', 'operatorPort'], ['memory-worker.json', 'tickMs'], ['memory-worker.json', 'consolidationDeferMs'], ['qq-bridge.json', 'onebotPort'], ['qq-bridge.json', 'initiationPollMs'], ['qq-bridge.json', 'pacing'], ['content.json', 'allowRawSmallPng'], ['authority.json', 'operator']]) assert.ok(printed.files[label].includes(key), `${label} ${key}`);
+  assert.ok(printed.files['model-gateway.json'].includes('budgets.web'));
+});

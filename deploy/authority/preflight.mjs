@@ -22,7 +22,6 @@ const RELEASE_NAME = /^authority-\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?-[0-9a-f]{12}$/
 const fail = code => Object.assign(new Error(code), { code });
 const plain = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const absolute = value => typeof value === 'string' && path.isAbsolute(value) && !value.includes('\0');
-const port = value => value === undefined || (Number.isInteger(value) && value > 0 && value < 65536);
 
 function readPrivate(file, { size, owner }) {
   const stat = fs.lstatSync(file);
@@ -36,17 +35,9 @@ async function load(relative) { return import(pathToFileURL(path.join(tree, rela
 
 // Each check mirrors what that service does at startup (see the named entry point).
 const CHECKS = [
-  // authority/src/main.js. Its paths are sandbox paths (/authority/...), not host paths.
-  { label: 'authority.json', required: true, hostPaths: false, check: async file => {
-    const c = readPrivate(file, { size: 65536 });
-    const fields = ['schemaVersion', 'databasePath', 'socketPath', 'credentials', 'capabilities', 'actors', 'streams', 'persona', 'initialPaused', 'operator', 'content'];
-    if (!plain(c) || c.schemaVersion !== 1 || Object.keys(c).some(key => !fields.includes(key)) || !absolute(c.databasePath) || !absolute(c.socketPath) || !['credentials', 'capabilities', 'actors', 'streams'].every(key => Array.isArray(c[key]))) throw fail('CONFIG_INVALID');
-    if (!plain(c.operator) || !absolute(c.operator.socketPath) || !/^[a-f0-9]{64}$/.test(c.operator.tokenHash) || !Array.isArray(c.operator.origins)) throw fail('CONFIG_INVALID');
-    // A test-only channel is refused at startup unless the configuration explicitly allows it (staging only).
-    const { channel } = await load('capabilities/channels/index.js');
-    if (c.operator.allowTestChannels !== true && [...c.capabilities, ...c.credentials].some(row => channel(row?.id ?? row?.capabilityId)?.testOnly)) throw fail('TEST_CHANNEL_CONFIGURED');
-    return c;
-  } },
+  // authority/src/config.js load, as authority/src/main.js reads it (strict: unknown keys refused). Its paths are
+  // sandbox paths (/authority/...), not host paths.
+  { label: 'authority.json', required: true, hostPaths: false, check: async file => (await load('authority/src/config.js')).load(file, { strict: true }) },
   // model-gateway/config.mjs load, as model-gateway/main.mjs reads it; an unknown key is refused here (strict), only
   // ignored at startup, so a rollback never meets a key it does not know.
   { label: 'model-gateway.json', required: true, check: async file => (await load('model-gateway/config.mjs')).load(file, { strict: true }) },
@@ -58,21 +49,11 @@ const CHECKS = [
   // capabilities/qq/config.js load, as capabilities/qq/main.mjs reads it (strict: unknown keys refused). Keys only
   // DSH-era releases wrote are a warning.
   { label: 'qq-bridge.json', required: true, check: async (file, report) => (await load('capabilities/qq/config.js')).load(file, { strict: true, legacy: keys => keys.forEach(key => report.warn('qq-bridge.json', 'IGNORED_LEGACY_FIELD', key)) }) },
-  // capabilities/memory/main.mjs; a legacy purgeModule is ignored by the worker.
-  { label: 'memory-worker.json', required: true, ignored: ['purgeModule'], check: file => {
-    const c = readPrivate(file, { owner: true });
-    if (!plain(c) || !plain(c.authority) || !plain(c.gateway) || !absolute(c.base) || !absolute(c.operatorTokenFile) || !port(c.operatorPort)) throw fail('CONFIG_INVALID');
-    // Optional timings (staging shortens them); the worker refuses to start on a value out of range.
-    const within = (value, min, max) => value === undefined || (Number.isInteger(value) && value >= min && value <= max);
-    if (!within(c.tickMs, 1000, 600000) || !within(c.consolidationDeferMs, 1000, 86400000)) throw fail('CONFIG_INVALID');
-    return c;
-  } },
-  // capabilities/media/main.mjs
-  { label: 'content.json', required: true, check: file => {
-    const c = readPrivate(file, { size: 16384 });
-    if (!plain(c) || Object.keys(c).some(k => !['store', 'workRoot', 'speechConfigFile', 'authority', 'gateway', 'sharpModule', 'control', 'allowRawSmallPng'].includes(k)) || !absolute(c.sharpModule) || c.allowRawSmallPng !== undefined && typeof c.allowRawSmallPng !== 'boolean') throw fail('CONFIG_INVALID');
-    return c;
-  } },
+  // capabilities/memory/config.js load, as capabilities/memory/main.mjs reads it (strict: unknown keys refused). Keys
+  // the worker no longer reads (purgeModule, stateFile, ...) are a warning.
+  { label: 'memory-worker.json', required: true, check: async (file, report) => (await load('capabilities/memory/config.js')).load(file, { strict: true, legacy: keys => keys.forEach(key => report.warn('memory-worker.json', 'IGNORED_LEGACY_FIELD', key)) }) },
+  // capabilities/media/config.js load, as capabilities/media/main.mjs reads it (strict: unknown keys refused).
+  { label: 'content.json', required: true, check: async file => (await load('capabilities/media/config.js')).load(file, { strict: true }) },
   // capabilities/providers/video/config.js load, as the content service's video provider reads it (strict: unknown
   // keys refused). Absent: watching videos is off, which the runtime tolerates. The label has no '/' (companion-deploy's
   // line format); the file is operator/providers/video.json.

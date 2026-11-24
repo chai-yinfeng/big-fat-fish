@@ -7,7 +7,7 @@ import { createOperatorServer } from './operator.js';
 import { createModelControlClient } from './model-control.js';
 import { createContentControlClient, createContentOperatorClient, createContentJobsClient, createContentStickersClient } from './content-control.js';
 import { fileURLToPath } from 'node:url';
-import { channel } from '../../capabilities/channels/index.js';
+import { load as loadConfig } from './config.js';
 
 process.umask(0o077);
 let authority, app, operator, closing = false;
@@ -21,14 +21,8 @@ async function stop(code = 0) {
 try {
   if (process.argv.length !== 4 || process.argv[2] !== '--config' || !path.isAbsolute(process.argv[3])) throw new Error('CONFIG');
   const file = process.argv[3];
-  if (!fs.lstatSync(file).isFile() || fs.statSync(file).size > 65536 || (fs.statSync(file).mode & 0o077) !== 0) throw new Error('CONFIG');
-  const config = JSON.parse(fs.readFileSync(file, 'utf8'));
-  const fields = ['schemaVersion', 'databasePath', 'socketPath', 'credentials', 'capabilities', 'actors', 'streams', 'persona', 'initialPaused', 'operator', 'content'];
-  if (config.schemaVersion !== 1 || Object.keys(config).some(key => !fields.includes(key)) || !path.isAbsolute(config.databasePath) || !path.isAbsolute(config.socketPath) || !['credentials', 'capabilities', 'actors', 'streams'].every(key => Array.isArray(config[key]))) throw new Error('CONFIG');
-  // A test-only channel (capabilities/channels) is never served by accident: its capability or credential is
-  // refused unless the private configuration also says `operator.allowTestChannels: true`. No prepare script of a
-  // release writes that; the staging tools and the tests do. (An older release ignores the field.)
-  if (config.operator?.allowTestChannels !== true && [...config.capabilities, ...config.credentials].some(row => channel(row?.id ?? row?.capabilityId)?.testOnly)) throw new Error('CONFIG');
+  // authority/src/config.js: the same checks the deploy preflight runs; an unknown key is ignored here with one line.
+  const config = loadConfig(file);
   // The room page's read-only credential lives in its own private file beside this configuration (written by
   // ops/prepare-room.mjs; the launcher mounts it when it exists), never in `credentials`: a release from before the
   // room role refuses a configuration that lists one, and does not read this file, so a rollback needs no edit.
