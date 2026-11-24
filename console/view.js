@@ -16,7 +16,7 @@ const THEME_KEY = 'companion-world:theme';
 // Only a display preference: which type the memory page shows (a type name, never content).
 const MEMORY_KIND_KEY = 'companion-world:memory-kind:v1';
 // Type buttons always offered on the memory page, in this order; any other type found in the list follows them.
-const MEMORY_KINDS = ['facts', 'experiences', 'digest', 'notes'];
+const MEMORY_KINDS = ['facts', 'experiences', 'digest', 'notes', 'intent'];
 // Data-driven navigation: a new page adds one entry here and one renderer below.
 // `key` is the G+letter shortcut.
 const NAV = [
@@ -957,7 +957,7 @@ export function WorldConsole({ t, standalone = false }) {
     const belongs = item => item.personIsOwner ? badge(t('peoplePanel.owner'), 'primary', icon('star')) : item.personLabel ? h('code', null, item.personLabel) : badge(t('memoryPanel.unowned'));
     const origin = item => {
       const role = ['user', 'assistant', 'external'].includes(item.source?.role) ? t(`memoryPanel.role.${item.source.role}`) : null;
-      const proposal = /^(fact|experience|appraisal|learning|self)\./.test(item.source?.proposal || '') ? t(`memoryPanel.proposal.${item.source.proposal.split('.')[0]}`) : null;
+      const proposal = /^(fact|experience|appraisal|learning|self|intent)\./.test(item.source?.proposal || '') ? t(`memoryPanel.proposal.${item.source.proposal.split('.')[0]}`) : null;
       const machine = ['digest', 'extracted'].includes(item.source?.machine) ? t(`memoryPanel.machine.${item.source.machine}`) : null;
       const parts = [role, proposal, machine, typeof item.source?.channel === 'string' ? item.source.channel : null].filter(Boolean);
       return h('p', { className: 'bff-small bff-muted' }, `${t('memoryPanel.source')}: ${parts.length ? parts.join(' · ') : t('memoryPanel.sourceUnknown')}`);
@@ -965,8 +965,11 @@ export function WorldConsole({ t, standalone = false }) {
     const owners = memory && Array.isArray(memory.people) ? memory.people.filter(person => /^p-[0-9a-f]{6}$/.test(person?.label)) : [];
     // Read-only: what background consolidation wrote. A digest is machine text, shown with what it covers.
     const isDigest = item => item.kind === 'digest' && item.source?.machine === 'digest';
-    // Type filter, applied to what is loaded: a digest is its own type; everything else goes by its collection.
-    const kindOf = item => isDigest(item) ? 'digest' : String(item.type);
+    // Type filter, applied to what is loaded: a digest and her intents are types of their own; everything else goes by its collection.
+    const isIntent = item => item.kind === 'intent' && item.type === 'notes';
+    const kindOf = item => isDigest(item) ? 'digest' : isIntent(item) ? 'intent' : String(item.type);
+    // An intent: whose it is (the owner badge above), the Beijing day it is due and its state as Authority reports it.
+    const intentLine = item => isIntent(item) ? h('p', { className: 'bff-small' }, `${t('memoryPanel.intentDue')}: ${typeof item.dueDate === 'string' && item.dueDate ? item.dueDate : t('memoryPanel.intentNoDue')} · ${t('memoryPanel.intentState')}: ${['open', 'done', 'expired'].includes(item.state) ? t(`memoryPanel.intentStates.${item.state}`) : String(item.state ?? '')}`) : null;
     const kinds = memory ? [...MEMORY_KINDS, ...new Set(memory.items.map(kindOf).filter(kind => !MEMORY_KINDS.includes(kind)))] : MEMORY_KINDS;
     const shownKind = kinds.includes(memoryKind) ? memoryKind : 'all';
     // A type this page has no name for is shown as it is.
@@ -1063,14 +1066,15 @@ export function WorldConsole({ t, standalone = false }) {
           h('p', { style: { whiteSpace: 'pre-wrap' } }, item.summary || item.text || `${item.key || ''}: ${item.value || ''}`),
           isDigest(item) && typeof item.feeling === 'string' && item.feeling ? h('p', { className: 'bff-small', style: { whiteSpace: 'pre-wrap' } }, `${t('memoryPanel.feeling')}: ${item.feeling}`) : null,
           looseQuote(item) && typeof item.evidence.quote === 'string' ? h('p', { className: 'bff-small bff-muted', style: { whiteSpace: 'pre-wrap' } }, `${t('memoryPanel.notedQuote')}: ${item.evidence.quote}`) : null,
-          origin(item), covered(item), sourceLines(item),
+          intentLine(item), origin(item), covered(item), sourceLines(item),
           h('form', { onSubmit: event => { event.preventDefault(); const value = event.currentTarget.elements.eventAt.value; const eventAt = value ? Date.parse(value) : null; if (eventAt !== null && !Number.isFinite(eventAt)) return; void mutate('/memory/retention', { entityId: memory.entityId, id: item.id, eventAt }); } },
             h('label', null, h('span', null, t('memoryEventTime')), h('input', { name: 'eventAt', type: 'datetime-local', disabled: busy, defaultValue: item.eventAt == null ? '' : new Date(item.eventAt - new Date(item.eventAt).getTimezoneOffset() * 60000).toISOString().slice(0, 16) })),
             button('memorySaveEventTime', undefined, { type: 'submit', className: 'bff-secondary bff-sm', icon: 'clock' })),
           h('div', { className: 'bff-actions' },
             button(item.pinned ? 'memoryUnpin' : 'memoryPin', () => mutate('/memory/retention', { entityId: memory.entityId, id: item.id, pinned: !item.pinned }), { className: 'bff-ghost bff-sm', icon: 'pin' }),
             item.source?.machine || looseQuote(item) ? readSources(item) : null,
-            item.visibility !== 'public' && item.kind !== 'inner' && item.kind !== 'digest' && button('memoryPublicAuthorize', () => mutate('/memory/public', { entityId: memory.entityId, id: item.id }), { className: 'bff-ghost bff-sm', icon: 'shield' }),
+            isIntent(item) ? button('memoryPanel.intentDelete', () => mutate('/memory/intent/delete', { entityId: memory.entityId, id: item.id }), { className: 'bff-danger-ghost bff-sm', icon: 'trash' }) : null,
+            item.visibility !== 'public' && item.kind !== 'inner' && item.kind !== 'digest' && !isIntent(item) && button('memoryPublicAuthorize', () => mutate('/memory/public', { entityId: memory.entityId, id: item.id }), { className: 'bff-ghost bff-sm', icon: 'shield' }),
             preview(item.id)))),
         ...diaryDays.map(day => h('article', { className: 'bff-card bff-memory', key: 'diary:' + day },
           h('h3', null, `${t('diaryPanel.day')} ${day}`),

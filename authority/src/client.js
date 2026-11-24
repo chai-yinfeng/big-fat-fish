@@ -120,7 +120,7 @@ export class AuthorityClient {
   /** Maintenance credential: the next consolidation batch Authority chose, or `task: null` with a reason. */
   consolidationNext() { return this.#request('POST', '/v1/maintenance/consolidation/next', {}); }
   async consolidationCommit(value) {
-    closed(value, ['taskId', 'outcome', 'digest', 'facts'], ['taskId', 'outcome']);
+    closed(value, ['taskId', 'outcome', 'digest', 'facts', 'intents'], ['taskId', 'outcome']);
     if (!text(value.taskId) || !['ok', 'invalid', 'deferred'].includes(value.outcome)) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/maintenance/consolidation/commit', value);
   }

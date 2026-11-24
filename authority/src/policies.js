@@ -1,9 +1,10 @@
-import { closed, enumeration, jsonValue, text } from './identity.js';
+import { closed, enumeration, fail, jsonValue, text } from './identity.js';
 import { validatePersonaPatch } from './persona.js';
+import { INTENT, intentExpiresAt, validDueDate } from './intents.js';
 
 export const POLICIES = ['conversation.v1', 'learning.v1'];
 export const APPRAISAL_KINDS = ['gratitude', 'support', 'repair', 'boundary'];
-export const TYPES = ['fact.report', 'experience.remember', 'appraisal.record', 'learning.note', 'self.note', 'persona.change'];
+export const TYPES = ['fact.report', 'experience.remember', 'appraisal.record', 'learning.note', 'self.note', 'intent.note', 'persona.change'];
 export function validatePayload(type, payload) {
   enumeration(type, TYPES);
   switch (type) {
@@ -17,6 +18,10 @@ export function validatePayload(type, payload) {
       closed(payload, ['text', 'quote']); text(payload.text, 2000); break;
     case 'self.note':
       closed(payload, ['text', 'quote', 'kind']); text(payload.text, 2000); enumeration(payload.kind, ['outer', 'inner']); break;
+    case 'intent.note':
+      closed(payload, ['text', 'quote', 'due'], ['text', 'quote']); text(payload.text, INTENT.chars);
+      if (Object.hasOwn(payload, 'due') && !validDueDate(payload.due)) fail('VALIDATION_ERROR', 'due must be a Beijing date YYYY-MM-DD');
+      break;
     case 'persona.change':
       closed(payload, ['patch', 'reason'], []);
       if (Object.hasOwn(payload, 'patch')) { jsonValue(payload.patch); validatePersonaPatch(payload.patch); }
@@ -76,6 +81,14 @@ export function review({ policy, proposal, observation, identity, state }) {
       return { status: 'accepted', effects: [{ ...base, collection: 'experiences', summary: payload.summary }] };
     case 'self.note':
       return { status: 'accepted', effects: [{ ...base, collection: 'notes', text: payload.text, kind: payload.kind }] };
+    case 'intent.note': {
+      // Her own to-do about this person (intents.js): their words in their private chat are the source, and it is
+      // theirs alone. `state.now` and `state.openIntents` (this person's unsettled ones) come from the reviewer.
+      const dueDate = payload.due ?? null, expiresAt = intentExpiresAt(dueDate, state.now);
+      if (expiresAt <= state.now) return rejected('intent_due_passed');
+      if (state.openIntents >= INTENT.openPerPerson) return rejected('intent_limit_reached');
+      return { status: 'accepted', effects: [{ ...base, collection: 'notes', kind: 'intent', text: payload.text, dueDate, state: 'open', expiresAt }] };
+    }
     case 'appraisal.record': {
       if (state.alreadyAppraised || state.appraisals?.some(entry => entry.evidence.observationId === observation.id)) return rejected('observation_already_appraised');
       // Enum indicates proposed interpretation, not objectively proven sentiment.

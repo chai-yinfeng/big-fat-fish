@@ -509,7 +509,9 @@ export class Authority extends InitiationDomain {
         : identity.stream && identity.stream.entityId !== row.entity_id ? { status: 'rejected', reason: 'source_entity_mismatch', effects: [] }
         :review({
           policy:row.policy,proposal:JSON.parse(row.body),observation,identity,state:{
-            alreadyAppraised
+            alreadyAppraised,
+            // For an intent: the time it is reviewed at and how many unsettled ones this person already has.
+            ...(JSON.parse(row.body).type==='intent.note'?{now:this.now(),openIntents:identity.stream?this.openIntentCount(row.entity_id,identity.stream.personId):0}:{})
           }
         });
         if(background&&decision.effects.some(effect=>effect.collection==='facts'&&this.store.db.prepare("SELECT pinned,json_extract(body,'$.evidence.at') AS at FROM memory_items WHERE entity_id=? AND collection='facts' AND person_id=? AND json_extract(body,'$.key')=? AND status='active'").all(row.entity_id,effect.personId,effect.key).some(old=>old.pinned||old.at>=observation.at)))decision={

@@ -44,7 +44,7 @@ export function opaqueStream(capabilityId, streamId) {
 /** Memory blocks of the context, in the order they are first seen: trace key -> header label. */
 /** How a machine digest is labelled wherever the model sees one (context blocks and memory tools). */
 export const DIGEST_LABEL = '经历摘要（机器整理，不是原话）';
-const KINDS = { reported: '归属陈述（非独立核验）', digest: DIGEST_LABEL, experience: '会话经验', learning: '私有学习', self: '私有自省' };
+const KINDS = { reported: '归属陈述（非独立核验）', digest: DIGEST_LABEL, experience: '会话经验', learning: '私有学习', self: '私有自省', intent: '你给眼前这位留的打算（你自己记的，不是对方的话）' };
 function memoryLine(entry) {
   const content = entry.attribution === 'reported'
     ? `Reported by ${opaquePerson(entry.personId)} (unverified): ${entry.key}: ${entry.value}`
@@ -55,7 +55,8 @@ function memoryLine(entry) {
   // Its day is the Beijing day, as the memory tools give it.
   const at = entry.kind === 'digest' ? entry.toAt : entry.evidence?.at ?? entry.recordedAt;
   // Quoted structured data, never a free-standing instruction contribution.
-  return JSON.stringify({ content, ...(entry.kind === 'digest' ? beijingDated(at) : dated(at)) });
+  // An intent also gives the Beijing day it is due, when it has one.
+  return JSON.stringify({ content, ...(entry.kind === 'intent' && entry.dueDate ? { due: entry.dueDate } : {}), ...(entry.kind === 'digest' ? beijingDated(at) : dated(at)) });
 }
 const validAt = at => Number.isSafeInteger(at) && at >= 0 && at <= 8.64e15;
 const dated = at => validAt(at) ? { date: new Date(at).toISOString().slice(0, 10) } : {};
@@ -130,7 +131,7 @@ export function renderContextParts(persona, entries, budget) {
   const personaText = personaContextText(persona);
   const groups = new Map(), ids = new Map();
   for (const entry of entries) {
-    const kind = entry.attribution === 'reported' ? 'reported' : entry.kind === 'digest' ? 'digest' : entry.summary !== undefined ? 'experience' : entry.kind === 'learning' ? 'learning' : 'self';
+    const kind = entry.attribution === 'reported' ? 'reported' : entry.kind === 'digest' ? 'digest' : entry.summary !== undefined ? 'experience' : entry.kind === 'learning' ? 'learning' : entry.kind === 'intent' ? 'intent' : 'self';
     if (!groups.has(kind)) { groups.set(kind, []); ids.set(kind, []); }
     groups.get(kind).push(memoryLine(entry)); ids.get(kind).push(entry.id);
   }

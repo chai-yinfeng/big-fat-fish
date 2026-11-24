@@ -15,7 +15,7 @@ test('the request is the fixed instruction plus one JSON message: dialogue is qu
   assert.match(CONSOLIDATION_PROMPT, /尽量逐字照抄.*相对日期要按那条消息的时间和 date 换算成具体日期/);
   assert.doesNotMatch(CONSOLIDATION_PROMPT, /连续原文/);
   const input = JSON.parse(messages[1].content);
-  assert.deepEqual(Object.keys(input), ['persona', 'knownKeys', 'lastDigest', 'date', 'messages']);
+  assert.deepEqual(Object.keys(input), ['persona', 'knownKeys', 'knownIntents', 'lastDigest', 'date', 'messages']);
   assert.deepEqual(input.messages, [['o1', '对方', '11-10 21:03', task().observations[0].text], ['o2', '我', '11-10 21:04', 'MOCK-REPLY']]);
   assert.equal(input.date, '2026-11-10');
   // What a person typed cannot leave its JSON string or add a message.
@@ -32,8 +32,8 @@ test('the request is the fixed instruction plus one JSON message: dialogue is qu
 test('the answer is shaped, never trusted: fenced JSON is read, malformed facts are dropped, a cut-off answer is unusable', () => {
   const fact = { key: '猫', value: 'MOCK-煤球', quote: '我家的猫叫MOCK-煤球', ref: 'o1' };
   assert.deepEqual(parseConsolidation('```json\n' + JSON.stringify({ summary: ' MOCK-摘要 ', feeling: 'MOCK-感受', facts: [fact, { ...fact, extra: 'x' }, { key: '猫' }, { ...fact, ref: 'obs-1' }, fact, fact, fact], note: 'x' }) + '\n```'),
-    { digest: { summary: 'MOCK-摘要', feeling: 'MOCK-感受' }, facts: [fact, fact, fact, fact] });
-  assert.deepEqual(parseConsolidation('{"summary":"MOCK"}'), { digest: { summary: 'MOCK', feeling: '' }, facts: [] });
+    { digest: { summary: 'MOCK-摘要', feeling: 'MOCK-感受' }, facts: [fact, fact, fact, fact], intents: [] });
+  assert.deepEqual(parseConsolidation('{"summary":"MOCK"}'), { digest: { summary: 'MOCK', feeling: '' }, facts: [], intents: [] });
   const long = parseConsolidation(JSON.stringify({ summary: '长'.repeat(400), feeling: '感'.repeat(200) }));
   assert.deepEqual([long.digest.summary.length, long.digest.feeling.length], [300, 120]);
   for (const bad of ['', 'OK', '{"summary":"MOCK","facts":[{"key":"k"', '{"summary":""}', '{"feeling":"x"}', '{"summary":"MOCK","facts":"none"}', '[]']) assert.throws(() => parseConsolidation(bad), { code: 'INVALID_CONSOLIDATION_OUTPUT' }, bad);
@@ -46,7 +46,7 @@ test('one batch per run: commit the answer, report an unusable one, hand back a 
   const worker = new MemoryConsolidation({ authority, clock: () => clock.now, deferMs: 60000, complete: async request => { asked.push(request); return reply(); } });
   assert.equal(await worker.runOnce(), 'committed');
   assert.deepEqual([asked[0].maxTokens, asked[0].messages.length], [CONSOLIDATION_MAX_TOKENS, 2]);
-  assert.deepEqual(commits[0], { taskId: 'task-1', outcome: 'ok', digest: { summary: 'MOCK-摘要', feeling: '' }, facts: [] });
+  assert.deepEqual(commits[0], { taskId: 'task-1', outcome: 'ok', digest: { summary: 'MOCK-摘要', feeling: '' }, facts: [], intents: [] });
   reply = async () => ({ content: 'not json' });
   assert.equal(await worker.runOnce(), 'invalid_output');
   assert.deepEqual(commits[1], { taskId: 'task-1', outcome: 'invalid' });
@@ -72,4 +72,16 @@ test('one batch per run: commit the answer, report an unusable one, hand back a 
   authority.consolidationNext = async () => { throw new Error('AUTHORITY'); };
   assert.equal(await worker.runOnce(), 'unavailable');
   assert.equal(asked.length, 8);
+});
+
+test('intents: the same call gives at most two, said by their purpose; the open ones are in the input; malformed ones and unreal dates are dropped', () => {
+  assert.match(CONSOLIDATION_PROMPT, /intents：我想之后记得为这个人做的一件小事/);
+  assert.match(CONSOLIDATION_PROMPT, /恰好有 summary、feeling、facts、intents 四个键/);
+  const [, user] = consolidationMessages(task({ knownIntents: ['MOCK-已有的打算'] }));
+  assert.deepEqual(JSON.parse(user.content).knownIntents, ['MOCK-已有的打算']);
+  const intent = { text: 'MOCK-明天问问面试', quote: 'MOCK-明天面试', ref: 'o1', due: '2027-01-16' };
+  const { intents } = parseConsolidation(JSON.stringify({ summary: 'MOCK', facts: [], intents: [{ ...intent, due: '2027-02-30' }, { text: 'MOCK-没有出处' }, { ...intent, ref: 'obs-1' }, intent, intent, intent] }));
+  assert.deepEqual(intents, [{ text: 'MOCK-明天问问面试', quote: 'MOCK-明天面试', ref: 'o1' }, intent]);
+  assert.deepEqual(parseConsolidation('{"summary":"MOCK","intents":null}').intents, []);
+  assert.throws(() => parseConsolidation('{"summary":"MOCK","intents":"none"}'), { code: 'INVALID_CONSOLIDATION_OUTPUT' });
 });

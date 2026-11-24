@@ -185,6 +185,24 @@ export const STEPS = {
     if (contains !== undefined) await run.poll(async () => (await items()).some(text => text.includes(contains)), timeoutMs, `Authority has no memory of ${person} containing ${JSON.stringify(contains)}`);
     if (absent !== undefined && (await items()).some(text => text.includes(absent))) fail(`Authority memory of ${person} contains ${JSON.stringify(absent)}`);
   },
+  /** Her intents in the operator listing (kind 'intent'): `contains` waits for one of that person's whose text has it,
+   * with the `state` and `due` day given; `absent` requires that no intent of anybody has the text. */
+  async expectIntent(run, _ctx, { person, contains, state = 'open', due, absent, timeoutMs = 20000 }) {
+    const intents = async () => (await run.operator('GET', '/memory?limit=100')).items.filter(item => item.kind === 'intent');
+    if (contains !== undefined) {
+      const found = await run.poll(async () => (await intents()).find(item => item.text.includes(contains)) ?? null, timeoutMs, `Authority has no intent containing ${JSON.stringify(contains)}`);
+      if (found.personId !== run.personId(person)) fail(`the intent containing ${JSON.stringify(contains)} is not ${person}'s`);
+      if (found.visibility !== 'private' || found.state !== state || found.dueDate !== (due ?? null)) fail(`the intent containing ${JSON.stringify(contains)} is ${found.visibility}, ${found.state}, due ${found.dueDate}; expected private, ${state}, due ${due ?? null}`);
+    }
+    if (absent !== undefined && (await intents()).some(item => item.text.includes(absent))) fail(`Authority has an intent containing ${JSON.stringify(absent)}`);
+  },
+  /** The owner deletes one intent of `person` from the memory page (operator POST /memory/intent/delete). */
+  async deleteIntent(run, _ctx, { person, contains }) {
+    const listing = await run.operator('GET', '/memory?limit=100');
+    const found = listing.items.find(item => item.kind === 'intent' && item.personId === run.personId(person) && item.text.includes(contains));
+    if (!found) fail(`${person} has no intent containing ${JSON.stringify(contains)}`);
+    await run.operator('POST', '/memory/intent/delete', { entityId: listing.entityId, id: found.id });
+  },
   /** The whole request body the model was sent for the run whose typed user text contains `userText`:
    * system prompt, memory-hub note, the typed text, earlier dialogue and tool results.
    * `in: "context"` narrows it to the memory-hub note, i.e. what Authority retrieved for this run;

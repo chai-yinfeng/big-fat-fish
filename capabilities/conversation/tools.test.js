@@ -56,7 +56,7 @@ test('a rejected proposal says it was not remembered and how to correct it, for 
     assert.equal(result.status, 'rejected'); assert.equal(result.reason, reason); assert.equal(result.remembered, false);
     assert.equal(result.hint, '没有记住。' + hint, reason);
   }
-  assert.deepEqual(Object.keys(REJECTION_HINTS).sort(), ['authored_text_required', 'conversation_policy_kind_denied', 'conversation_role_required', 'observation_already_appraised', 'private_binding_required', 'real_user_required', 'sensitive_retention_denied', 'sensitive_source', 'unconfirmed_identity', 'world_paused']);
+  assert.deepEqual(Object.keys(REJECTION_HINTS).sort(), ['authored_text_required', 'conversation_policy_kind_denied', 'conversation_role_required', 'intent_due_passed', 'intent_limit_reached', 'observation_already_appraised', 'private_binding_required', 'real_user_required', 'sensitive_retention_denied', 'sensitive_source', 'unconfirmed_identity', 'world_paused']);
   assert.match(REJECTION_HINTS.real_user_required, /ref 要选 role 为 user 的那条/);
   // A reason without a hint is passed on as its code; a world paused at submit is rejected at once.
   assert.equal((await tools({ review: () => ({ status: 'rejected', reason: 'unknown_kind' }) }).call({ action: 'propose', ref: 'obs-1', type: 'fact.report', payload: fact })).hint, '没有记住。被拒收（unknown_kind）。');
@@ -83,7 +83,7 @@ test('an invalid call names the field and the expected shape', async () => {
   await assert.rejects(t.call({ action: 'propose', type: 'fact.report' }), /INVALID_REQUEST: propose 缺少字段 ref、payload；需要 action、ref、type、payload/);
   await assert.rejects(propose({ note: 'x' }), /INVALID_REQUEST: propose 有多余字段 note；只接受 action、id、ref、type、payload/);
   await assert.rejects(propose({ ref: 'obs-9' }), /UNOBSERVED_EVIDENCE: ref 必须是本轮附注“本轮可引用的聊天证据”里的 ref/);
-  await assert.rejects(propose({ type: 'fact' }), /INVALID_REQUEST: type 必须是 fact\.report、experience\.remember、appraisal\.record、learning\.note、self\.note 之一/);
+  await assert.rejects(propose({ type: 'fact' }), /INVALID_REQUEST: type 必须是 fact\.report、experience\.remember、appraisal\.record、learning\.note、self\.note、intent\.note 之一/);
   await assert.rejects(propose({ payload: { key: 'k', value: 'v' } }), /INVALID_REQUEST: payload（fact\.report） 缺少字段 quote；需要 key、value、quote/);
   await assert.rejects(propose({ payload: { ...fact, summary: 's' } }), /INVALID_REQUEST: payload（fact\.report） 有多余字段 summary；只接受 key、value、quote/);
   await assert.rejects(propose({ payload: 'text' }), /INVALID_REQUEST: payload（fact\.report） 必须是对象，字段：key、value、quote/);
@@ -265,4 +265,24 @@ test('companion_content tells the model to read a link in the message, and to sa
   const { url } = CONTENT_TOOL_SCHEMA.parameters.properties;
   assert.match(url.description, /An http\(s\) link in their message can be read directly with read\./);
   assert.match(url.description, /If read or search fails, say truthfully that the tool is unavailable for now or you could not read it; do not say the site cannot be opened\./);
+});
+
+test('intent.note: text and quote, with an optional Beijing date; a malformed date or a missing quote is refused before Authority', async () => {
+  const t = tools({ review: () => ({ status: 'rejected', reason: 'intent_limit_reached' }) }), ok = tools();
+  const intent = { text: 'MOCK 明天问问面试怎么样', quote: 'MOCK 明天面试' };
+  assert.equal((await ok.call({ action: 'propose', ref: 'obs-1', type: 'intent.note', payload: intent })).remembered, true);
+  assert.equal((await ok.call({ action: 'propose', ref: 'obs-1', type: 'intent.note', payload: { ...intent, due: '2026-11-25' } })).remembered, true);
+  assert.deepEqual(ok.submitted.map(body => body.payload), [intent, { ...intent, due: '2026-11-25' }]);
+  await assert.rejects(ok.call({ action: 'propose', ref: 'obs-1', type: 'intent.note', payload: { ...intent, due: '明天' } }), /INVALID_REQUEST: intent\.note 的 payload\.due 必须是北京日期 YYYY-MM-DD/);
+  await assert.rejects(ok.call({ action: 'propose', ref: 'obs-1', type: 'intent.note', payload: { text: intent.text } }), /INVALID_REQUEST: payload（intent\.note） 缺少字段 quote；需要 text、quote/);
+  await assert.rejects(ok.call({ action: 'propose', ref: 'obs-1', type: 'intent.note', payload: { ...intent, kind: 'outer' } }), /有多余字段 kind；只接受 text、quote、due/);
+  assert.equal(ok.submitted.length, 2);
+  // Over the per-person limit: not remembered, and told why and not to retry.
+  const refused = await t.call({ action: 'propose', ref: 'obs-1', type: 'intent.note', payload: intent });
+  assert.equal(refused.remembered, false);
+  assert.equal(refused.hint, '没有记住。' + REJECTION_HINTS.intent_limit_reached);
+  assert.match(refused.hint, /上限.*不要重试/);
+  // The tool definition offers it, with its date field.
+  assert.ok(SCOPE_TOOL_SCHEMA.parameters.properties.type.enum.includes('intent.note'));
+  assert.deepEqual(SCOPE_TOOL_SCHEMA.parameters.properties.payload.properties.due, { type: 'string' });
 });

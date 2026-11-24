@@ -179,6 +179,8 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         '/entities': 'createEntity', '/memory/forget-preview': 'forgetPreview', '/memory/forget': 'forgetApply',
         '/memory/cleanup/complete': 'cleanupComplete', '/memory/retention': 'setMemoryRetention',
         '/memory/public': 'markMemoryPublic', '/diary/private': 'writePrivateDiary',
+        // One of her intents, removed by the owner (not a forget; no pause needed).
+        '/memory/intent/delete': 'deleteIntent',
         '/diary/draft': 'savePublicDiaryDraft', '/diary/publish': 'publishDiary',
         // Who gets an open diary, and a new passcode for one of them (shown to the owner once).
         '/diary/open/listed': 'setOpenDiaryListed', '/diary/open/code': 'resetOpenDiaryCode',

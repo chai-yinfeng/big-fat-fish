@@ -13,6 +13,7 @@ import { MemoryDomain } from './memory.js';
 import { SENSITIVE } from './policies.js';
 import { opaquePerson, opaqueStream } from './context.js';
 import { renderPersona } from './persona.js';
+import { INTENT, OPEN_INTENT_SQL, validDueDate } from './intents.js';
 
 const HOUR = 3600000, DAY = 24 * HOUR, BEIJING = 8 * HOUR;
 export const CONSOLIDATION = Object.freeze({
@@ -152,11 +153,15 @@ export class ConsolidationDomain extends MemoryDomain {
         const facts = this.store.db.prepare("SELECT DISTINCT json_extract(body,'$.key') AS key FROM memory_items WHERE entity_id=? AND collection='facts' AND person_id=? AND status='active' ORDER BY revision DESC LIMIT 64").all(e.id, stream.personId);
         const knownKeys = []; let keyChars = 0;
         for (const { key: name } of facts) if (typeof name === 'string' && keyChars + name.length + 1 <= 400) { knownKeys.push(name); keyChars += name.length + 1; }
+        // Her intents for this person still open, so the same one is not proposed twice (text only, newest first).
+        const intents = this.store.db.prepare(`SELECT json_extract(m.body,'$.text') AS text FROM memory_items m WHERE m.entity_id=? AND m.person_id=? AND m.collection='notes' AND m.kind='intent' AND m.status='active' AND ${OPEN_INTENT_SQL} ORDER BY m.revision DESC`).all(e.id, stream.personId, now);
+        const knownIntents = []; let intentChars = 0;
+        for (const { text: written } of intents) if (typeof written === 'string' && intentChars + written.length + 1 <= 300) { knownIntents.push(written); intentChars += written.length + 1; }
         const last = this.store.db.prepare("SELECT body FROM memory_items WHERE entity_id=? AND person_id=? AND kind='digest' AND status='active' AND json_extract(body,'$.streamId')=? ORDER BY revision DESC LIMIT 1").get(e.id, stream.personId, stream.streamId);
         task = {
           taskId, trigger: found.trigger,
           personaText: renderPersona({ ...JSON.parse(e.persona), userCallName: '你', relationshipStage: 'new' }).slice(0, 1000),
-          knownKeys, lastDigest: last ? String(JSON.parse(last.body).summary ?? '').slice(0, CONSOLIDATION.summaryChars) : '',
+          knownKeys, knownIntents, lastDigest: last ? String(JSON.parse(last.body).summary ?? '').slice(0, CONSOLIDATION.summaryChars) : '',
           // Short refs and Beijing minutes only: no observation, stream or person ID leaves Authority here.
           observations: shown.map(row => ({ ref: row.ref, role: row.role, time: beijingMinute(row.at), text: row.text })),
         };
@@ -169,7 +174,7 @@ export class ConsolidationDomain extends MemoryDomain {
   /** Maintenance credential only. `outcome`: 'ok' with the model's answer, 'invalid' (unusable answer)
    * or 'deferred' (the gateway's spend tier refused the call: the reservation is returned). */
   consolidationCommit(entityId, input) {
-    closed(input, ['taskId', 'outcome', 'digest', 'facts'], ['taskId', 'outcome']);
+    closed(input, ['taskId', 'outcome', 'digest', 'facts', 'intents'], ['taskId', 'outcome']);
     identifier(input.taskId);
     enumeration(input.outcome, ['ok', 'invalid', 'deferred']);
     const encoding = sha256(canonical(input));
@@ -239,6 +244,16 @@ export class ConsolidationDomain extends MemoryDomain {
           .run(task.capabilityId, proposal.proposalId, observationId, canonical(proposal), JSON.stringify(proposal), policy, 'pending', JSON.stringify({ proposalId: proposal.proposalId, status: 'pending', policy }), e.id);
         proposals.push(proposal.proposalId);
       });
+      // Intents she wants to remember for this person: the same inbox and review() as one proposed in the chat
+      // (this person's own words as the source, at most 5 unsettled for them).
+      answer.intents.forEach((intent, index) => {
+        const observationId = task.refs[intent.ref];
+        if (!observationId) { dropped.push({ intent: index, reason: 'ref_unavailable' }); return; }
+        const proposal = { proposalId: `${BACKGROUND_PROPOSAL}${input.taskId.slice(0, 24)}:i${index}`, observationId, type: 'intent.note', payload: { text: intent.text, quote: intent.quote, ...(intent.due ? { due: intent.due } : {}) } };
+        this.store.db.prepare('INSERT INTO inbox(capability_id,proposal_id,observation_id,canonical,body,policy,status,receipt,entity_id) VALUES(?,?,?,?,?,?,?,?,?)')
+          .run(task.capabilityId, proposal.proposalId, observationId, canonical(proposal), JSON.stringify(proposal), policy, 'pending', JSON.stringify({ proposalId: proposal.proposalId, status: 'pending', policy }), e.id);
+        proposals.push(proposal.proposalId);
+      });
       advance(); state.lastAt = now; own.lastCommittedAt = now; delete own.deferredAt;
       this.store.db.prepare('INSERT INTO diary_receipts(task_id,kind,diary_id,canonical) VALUES(?,?,?,?)').run(input.taskId, 'consolidation', digestId ?? '', encoding);
       // IDs, labels and counts only: no dialogue, digest or fact text.
@@ -299,12 +314,16 @@ export class ConsolidationDomain extends MemoryDomain {
 /** The model's answer in bounded form, or null: an answer out of shape is an unusable one, not a protocol error. */
 function validAnswer(input) {
   const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-  const { digest, facts = [] } = input;
+  const { digest, facts = [], intents = [] } = input;
   if (!plain(digest) || Object.keys(digest).some(name => !['summary', 'feeling'].includes(name)) || !bounded(digest.summary, CONSOLIDATION.summaryChars)) return null;
   if (digest.feeling !== undefined && (typeof digest.feeling !== 'string' || digest.feeling.length > CONSOLIDATION.feelingChars || digest.feeling.includes('\0'))) return null;
   if (!Array.isArray(facts) || facts.length > CONSOLIDATION.facts) return null;
   for (const fact of facts) {
     if (!plain(fact) || Object.keys(fact).length !== 4 || !bounded(fact.key, 128) || !bounded(fact.value, 1000) || !bounded(fact.quote, 2000) || typeof fact.ref !== 'string' || !/^o\d{1,3}$/.test(fact.ref)) return null;
   }
-  return { summary: digest.summary.trim(), feeling: (digest.feeling ?? '').trim(), facts };
+  if (!Array.isArray(intents) || intents.length > INTENT.perBatch) return null;
+  for (const intent of intents) {
+    if (!plain(intent) || Object.keys(intent).some(name => !['text', 'quote', 'ref', 'due'].includes(name)) || !bounded(intent.text, INTENT.chars) || !bounded(intent.quote, 2000) || typeof intent.ref !== 'string' || !/^o\d{1,3}$/.test(intent.ref) || intent.due !== undefined && !validDueDate(intent.due)) return null;
+  }
+  return { summary: digest.summary.trim(), feeling: (digest.feeling ?? '').trim(), facts, intents };
 }

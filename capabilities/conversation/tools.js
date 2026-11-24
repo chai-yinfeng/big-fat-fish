@@ -25,7 +25,10 @@ const payloadKeys = {
   'appraisal.record': ['kind', 'quote'],
   'learning.note': ['text', 'quote'],
   'self.note': ['text', 'quote', 'kind'],
+  'intent.note': ['text', 'quote', 'due'],
 };
+/** The payload fields a type cannot do without: all of them, except an intent's date. */
+const requiredKeys = type => payloadKeys[type].filter(key => !(type === 'intent.note' && key === 'due'));
 /** After a submit the review usually resolves at once: the receipt is read this many times, this far apart. */
 const SETTLE_TRIES = 5, SETTLE_MS = 150;
 /** Authority's rejection reasons (authority/src/policies.js review) as what the model can do about them. */
@@ -40,6 +43,8 @@ export const REJECTION_HINTS = {
   unconfirmed_identity: '对方的身份还没有确认，这条不能记。不要重试。',
   private_binding_required: '只有私聊里的话能记。不要重试。',
   world_paused: '世界已暂停，现在不能记。不要重试。',
+  intent_limit_reached: '你给这个人留的、还没了结的打算已经到上限了，这件先不记。不要重试；等之前的打算做完或过期了再记新的。',
+  intent_due_passed: 'due 那天已经过去 3 天以上，这件打算一记下就过期了。要记的话把 due 改成今天或以后的北京日期，或者不填 due。',
 };
 /** A receipt as the model reads it: its own key, whether the memory exists, and what to do next. */
 function explained(receipt, id) {
@@ -67,10 +72,10 @@ export const SCOPE_TOOL_SCHEMA = {
         type: 'object', additionalProperties: false,
         properties: {
           quote: { type: 'string', description: 'The source: copy the words of the evidence message as closely as you can; each field ≤1200 characters.' },
-          key: { type: 'string' }, value: { type: 'string' }, summary: { type: 'string' }, text: { type: 'string' },
+          key: { type: 'string' }, value: { type: 'string' }, summary: { type: 'string' }, text: { type: 'string' }, due: { type: 'string' },
           kind: { type: 'string', enum: ['gratitude', 'support', 'repair', 'boundary', 'outer', 'inner'] },
         },
-        description: 'fact.report: key,value,quote; experience.remember: summary,quote; appraisal.record: kind,quote; learning.note: text,quote; self.note: text,quote,kind. fact.report value is the fact as you understand it, normalised (a relative date as the concrete date).',
+        description: 'fact.report: key,value,quote; experience.remember: summary,quote; appraisal.record: kind,quote; learning.note: text,quote; self.note: text,quote,kind; intent.note: text,quote,due? — something small you want to remember to do for this person later, due an optional Beijing date YYYY-MM-DD. fact.report value is the fact as you understand it, normalised (a relative date as the concrete date).',
       },
     }, required: ['action'],
   },
@@ -177,9 +182,10 @@ export function createCompanionTools({ authority, content, scope, windowFromAt, 
     // Quote/value checks against the immutable observation are Authority's job.
     if (!refs.has(args.ref)) throw Object.assign(new Error('UNOBSERVED_EVIDENCE: ref 必须是本轮附注“本轮可引用的聊天证据”里的 ref（也可用 action=evidence 查看）'), { code: 'UNOBSERVED_EVIDENCE' });
     if (!Object.hasOwn(payloadKeys, args.type)) throw invalid(`type 必须是 ${Object.keys(payloadKeys).join('、')} 之一`);
-    closed(args.payload, payloadKeys[args.type], payloadKeys[args.type], `payload（${args.type}）`);
-    const bad = payloadKeys[args.type].find(key => !string(args.payload[key], 1200));
+    closed(args.payload, payloadKeys[args.type], requiredKeys(args.type), `payload（${args.type}）`);
+    const bad = payloadKeys[args.type].find(key => Object.hasOwn(args.payload, key) && !string(args.payload[key], 1200));
     if (bad) throw invalid(`payload.${bad} 必须是 1–1200 个字符的非空字符串`);
+    if (args.type === 'intent.note' && Object.hasOwn(args.payload, 'due') && !/^\d{4}-\d{2}-\d{2}$/.test(args.payload.due)) throw invalid('intent.note 的 payload.due 必须是北京日期 YYYY-MM-DD（如 2026-11-25），没有具体日期就不填');
     if (args.type === 'appraisal.record' && !['gratitude', 'support', 'repair', 'boundary'].includes(args.payload.kind)) throw invalid('appraisal.record 的 payload.kind 必须是 gratitude、support、repair、boundary 之一');
     if (args.type === 'self.note' && !['outer', 'inner'].includes(args.payload.kind)) throw invalid('self.note 的 payload.kind 必须是 outer 或 inner');
     // The key only makes a repeated submit idempotent and names the receipt. Without one it derives from the

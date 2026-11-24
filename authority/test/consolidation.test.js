@@ -255,6 +255,37 @@ test('a fact needs an observation of the person in this batch; a loose quote or 
   assert.equal(digests(A).length, 1);
 });
 
+test('intents: at most two a batch, reviewed like one proposed in the chat, that person\'s alone; the next batch knows the open ones', t => {
+  const { a, say, rollOut, next, commit } = fixture(t);
+  say(A, 'MOCK-我明天下午面试'); say(A, 'MOCK-REPLY 加油', { she: true }); say(B, 'MOCK-B 下周考试');
+  rollOut(A);
+  let { task } = next();
+  assert.deepEqual(task.knownIntents, []);
+  const result = commit(answer(task.taskId, { intents: [
+    { text: 'MOCK-明天问问面试怎么样', quote: 'MOCK-我明天下午面试', ref: 'o1', due: '2027-01-16' },
+    { text: 'MOCK-她自己的话不算', quote: 'MOCK-REPLY 加油', ref: 'o2' },
+  ] }));
+  assert.equal(result.status, 'committed');
+  assert.equal(result.proposals.length, 2);
+  assert.deepEqual(a.processPending().map(receipt => [receipt.proposalId.startsWith('cons:'), receipt.status, receipt.reason]), [[true, 'accepted', undefined], [true, 'rejected', 'unconfirmed_identity']]);
+  const [intent] = a.listMemory({ limit: 100 }).items.filter(item => item.kind === 'intent');
+  assert.deepEqual([intent.personId, intent.text, intent.dueDate, intent.state, intent.visibility], [person(A), 'MOCK-明天问问面试怎么样', '2027-01-16', 'open', 'private']);
+  assert.ok(a.context('qq', { streamId: stream(A), query: 'MOCK 面试', budgetChars: 16000 }).memoryText.includes('MOCK-明天问问面试怎么样'));
+  assert.ok(!JSON.stringify(a.context('qq', { streamId: stream(B), query: 'MOCK 面试', budgetChars: 16000 })).includes('明天问问面试'));
+  // B's batch: three is an unusable answer, like five facts, and so is a date that is not a real day.
+  rollOut(B);
+  ({ task } = next());
+  assert.deepEqual([task.knownIntents, task.observations[0].text], [[], 'MOCK-B 下周考试']);
+  assert.equal(commit(answer(task.taskId, { intents: [1, 2, 3].map(n => ({ text: `MOCK-打算${n}`, quote: 'MOCK-B 下周考试', ref: 'o1' })) })).status, 'invalid');
+  ({ task } = next());
+  assert.equal(commit(answer(task.taskId, { intents: [{ text: 'MOCK-打算', quote: 'MOCK-B 下周考试', ref: 'o1', due: '2027-02-30' }] })).status, 'invalid');
+  assert.deepEqual(a.openIntentCounts(), { [person(A)]: 1 });
+  // The next batch of A's chat is told what is still open for A (B's was not).
+  say(A, 'MOCK-面试是在下午三点'); rollOut(A);
+  ({ task } = next());
+  assert.deepEqual(task.knownIntents, ['MOCK-明天问问面试怎么样']);
+});
+
 test('an extracted fact never replaces a pinned fact or one recorded from words at least as recent', t => {
   const { a, clock, say, rollOut, next, commit } = fixture(t);
   const facts = () => Object.fromEntries(a.listMemory({ limit: 100 }).items.filter(item => item.type === 'facts' && item.status === 'active').map(item => [item.key, item.value]));
@@ -497,7 +528,7 @@ test('transport: consolidation is the maintenance credential only, a commit is r
   await assert.rejects(clients.conversation.consolidationNext(), { status: 403 });
   await assert.rejects(clients.conversation.consolidationCommit({ taskId: 'x', outcome: 'invalid' }), { status: 403 });
   const { task } = await clients.maintenance.consolidationNext();
-  assert.deepEqual(Object.keys(task).sort(), ['knownKeys', 'lastDigest', 'observations', 'personaText', 'taskId', 'trigger']);
+  assert.deepEqual(Object.keys(task).sort(), ['knownIntents', 'knownKeys', 'lastDigest', 'observations', 'personaText', 'taskId', 'trigger']);
   const result = await clients.maintenance.consolidationCommit(answer(task.taskId, { facts: [{ key: '花', value: 'MOCK-山茶', quote: '我最喜欢的花是MOCK-山茶', ref: 'o1' }] }));
   assert.equal(result.status, 'committed');
   await new Promise(resolve => setTimeout(resolve, 50));
