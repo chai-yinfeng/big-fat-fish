@@ -210,6 +210,7 @@ def initialize(release):
     # Staging-only values (old releases ignore the port fields; their units are Unix-only anyway).
     # The memory worker ticks every 5 s here (production: 60 s) and retries 10 s after the spend tier refused it
     # (production: 30 min), so the consolidation scenarios do not wait minutes.
+    # operatorPort: only a from-release from before driver step 7c reads it (its worker dialled the operator port).
     edit('memory-worker.json', lambda c: c.update(operatorPort=OPERATOR_PORT, tickMs=5000, consolidationDeferMs=10000))
     edit('qq-bridge.json', lambda c: c.update(onebotPort=ONEBOT_PORT))
     origins = ['http://127.0.0.1:%d' % OPERATOR_PORT, 'http://localhost:%d' % OPERATOR_PORT]

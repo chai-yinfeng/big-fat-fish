@@ -263,7 +263,7 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
 `ops/preflight.mjs`，用新包自己的校验逻辑检查现有数据根中的全部配置（speech 用
 loadSpeechConfig，对话用 loadConfig，其余与各服务启动检查一致），并拒绝指向某个具体
 release 目录的路径（`current/` 下的路径须在新包中存在）。失败时只输出稳定错误码、文件名和
-字段名，删除刚安装的包，生产不变。旧配置里已被忽略的 `purgeModule` 只给警告。
+字段名，删除刚安装的包，生产不变。旧配置里已被忽略的 `purgeModule` 只给警告（`base`、`operatorTokenFile`、`operatorPort` 从第 7c 步起也不读，但不警告，见“忘记之后的清理”）。
 
 ## 发布与回退
 
@@ -413,6 +413,17 @@ curl -sS -H "authorization: Bearer $TOKEN" http://127.0.0.1:3082/memory/cleanup/
 ```
 
 回退兼容：
+- 第 7c 步起记忆 worker 不再读 `memory-worker.json` 的 `base`、`operatorTokenFile`、`operatorPort`（不持有 operator 令牌、
+  不调 `systemctl`、不连 TCP），这三个键和 `entityId` 等一样归入“本版本不读、但留在文件里”（`capabilities/memory/config.js`
+  的 ROLLBACK）：`prepare-memory` 照旧写 `base` 和 `operatorTokenFile`，生成的文件逐字节不变；运行时静默忽略，预检不警告。
+  选 ROLLBACK 而不是 LEGACY 的理由：7b 之前的 worker 缺 `base`/`operatorTokenFile` 就拒绝启动，回退的健康检查会失败；
+  staging 写的 `operatorPort` 让旧 worker 连不到生产端口。所以这三个键**不要删**。
+- 第 7c 步改了 unit：`companion-memory.service` 多了 `RestrictAddressFamilies=AF_UNIX`、`SystemCallArchitectures=native`、
+  `LockPersonality=true`、`RestrictRealtime=true`、`RestrictSUIDSGID=true` 五行和一段注释，其余不变。unit 随 release 安装、
+  回退时随旧 release 的快照装回，所以旧 worker 回退后仍能连 operator 端口、调 `systemctl`。部署时主人核对：
+  `sudo -u companion cat ~companion/.config/systemd/user/companion-memory.service` 与
+  `git show <sha>:deploy/authority/isolation/units/companion-memory.service` 一致；`journalctl _UID=$(id -u companion)` 里记忆
+  worker 启动行是 `Incremental memory maintenance ready`，没有 `Memory maintenance failed`。
 - 回退到 7b **之前**的版本：库里还待清理的任务旧版本照样看得到（`cleanup_jobs` 表没变；确认表在 metadata 键
   `cleanupAcks` 里，旧 Authority 不读它），旧记忆 worker 走旧路径——停三个服务、离线清理、向 operator API 确认——把它
   清完，已经确认过的一方被再清一遍也无害（每一步幂等）。所以 `memory-worker.json` 里的 `base`、`operatorTokenFile`

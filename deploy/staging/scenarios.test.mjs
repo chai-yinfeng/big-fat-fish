@@ -643,8 +643,7 @@ async function stack(t) {
   // this machine). With no speech model no audio is downloaded or converted; ffmpeg only finds the cuts and takes stills.
   fs.mkdirSync(path.join(base, 'operator/providers'), { mode: 0o700 });
   write('operator/providers/video.json', { schemaVersion: 1, ytdlp: [process.execPath, path.join(project, 'deploy/staging/fake-ytdlp.mjs')], ffmpeg: [process.execPath, path.join(project, 'deploy/staging/fake-ffmpeg.mjs')], sandbox: { kind: 'none' }, sites: [MOCK_SITE] });
-  // The worker's cleanup client gets a port nobody listens on (as in staging, where it cannot reach the operator).
-  edit('memory-worker.json', c => Object.assign(c, { operatorPort: onebotPort === 65535 ? 65534 : onebotPort + 1, tickMs: 1000, consolidationDeferMs: 2000 }));
+  edit('memory-worker.json', c => Object.assign(c, { tickMs: 1000, consolidationDeferMs: 2000 }));
   // The second channel (test-only MOCK): its own capability and credential, and its own conversation executor
   // holding that credential only. Authority serves a test-only channel only with operator.allowTestChannels.
   const mockToken = token(), mockCaller = token();

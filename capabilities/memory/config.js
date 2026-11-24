@@ -2,31 +2,30 @@
 // preflight both call `load`. Unknown keys: the preflight refuses them (`strict`); at startup they are ignored with one
 // stderr line, so a release rolled back to still starts on a file a newer release wrote. Keys this worker no longer
 // reads (LEGACY, ROLLBACK) are left out silently; the preflight lists the LEGACY ones as warnings.
+// The worker holds two credentials, both named here: Authority's maintenance grant and the gateway's inference
+// token. It reads no operator token, dials no TCP port and controls no service.
 import fs from 'node:fs';
-import path from 'node:path';
 
 /** Every key this release reads. `since`: every release so far carries package version 0.10.0. */
 export const KEYS = Object.freeze({
   authority: { required: true, range: 'object (AuthorityClient options)', since: '0.10.0' },
   gateway: { required: true, range: 'object { socketPath, tokenFile } (inference client)', since: '0.10.0' },
-  base: { required: true, range: 'absolute path (the data root)', since: '0.10.0' },
-  operatorTokenFile: { required: true, range: 'absolute path', since: '0.10.0' },
-  operatorPort: { required: false, range: 'integer 1..65535; default 3082', since: '0.10.0' },
   tickMs: { required: false, range: 'integer 1000..600000; default 60000', since: '0.10.0' },
   consolidationDeferMs: { required: false, range: 'integer 1000..86400000; default 1800000', since: '0.10.0' },
 });
 /** Read by no release since 945e4dc (a pinned purge path); the preflight warns. */
 export const LEGACY = Object.freeze(['purgeModule']);
-/** Not read by this worker, but still written by prepare-memory: releases from before c843d93 read stateFile and
- * maxCallsPerDay (entityId was never read). Left out silently, and no preflight warning: every world has them. */
-export const ROLLBACK = Object.freeze(['entityId', 'stateFile', 'maxCallsPerDay']);
+/** Not read by this worker, but still written by prepare-memory and to be left in the file, because a release rolled
+ * back to reads them: releases from before c843d93 read stateFile and maxCallsPerDay (entityId was never read);
+ * releases from before the worker gave up the cleanup after a forget (driver step 7c) refuse to start without `base`
+ * and `operatorTokenFile` and dial `operatorPort` (staging writes it, which keeps such a worker off the production
+ * port). Left out silently, and no preflight warning: every world has them. */
+export const ROLLBACK = Object.freeze(['entityId', 'stateFile', 'maxCallsPerDay', 'base', 'operatorTokenFile', 'operatorPort']);
 /** Defaults of the optional keys. */
-export const defaults = Object.freeze({ operatorPort: 3082, tickMs: 60000, consolidationDeferMs: 1800000 });
+export const defaults = Object.freeze({ tickMs: 60000, consolidationDeferMs: 1800000 });
 
 const fail = (code, fields) => Object.assign(new Error(code), { code, ...(fields ? { fields } : {}) });
 const plain = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-const absolute = value => typeof value === 'string' && path.isAbsolute(value) && !value.includes('\0');
-const port = value => value === undefined || (Number.isInteger(value) && value > 0 && value < 65536);
 const within = (value, min, max) => value === undefined || (Number.isInteger(value) && value >= min && value <= max);
 const fieldName = name => String(name).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 64) || '_';
 
@@ -40,7 +39,7 @@ export function validate(raw) {
     else if (!Object.hasOwn(KEYS, key)) unknown.push(fieldName(key));
     else config[key] = value;
   }
-  if (!plain(config.authority) || !plain(config.gateway) || !absolute(config.base) || !absolute(config.operatorTokenFile) || !port(config.operatorPort)) throw fail('CONFIG_INVALID');
+  if (!plain(config.authority) || !plain(config.gateway)) throw fail('CONFIG_INVALID');
   // Optional timings (staging shortens them).
   if (!within(config.tickMs, 1000, 600000) || !within(config.consolidationDeferMs, 1000, 86400000)) throw fail('CONFIG_INVALID');
   return { config, unknown, legacy };
