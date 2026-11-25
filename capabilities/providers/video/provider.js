@@ -15,13 +15,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { NOTE, tooLittleSpeech, sectionsOf, pagesOf, summaryRequests, mergeRequest, parseSummary, renderNote, mergeFrames, framesText, FRAME_QUESTION } from './note.js';
-import { fail, LIMITS, loadVideoConfig, matchSite, videoKey, metadataArgs, downloadArgs, videoDownloadArgs, convertArgs, sceneArgs, grabArgs, childCommand, runChild, refusalCode, metadataOf, audioFormat, videoFormat } from './source.js';
+import { NOTE, TIMED, tooLittleSpeech, sectionsOf, pagesOf, summaryRequests, mergeRequest, parseSummary, renderNote, mergeFrames, framesText, FRAME_QUESTION } from './note.js';
+import { fail, LIMITS, loadVideoConfig, matchSite, videoKey, metadataArgs, subtitleArgs, cookieArgs, cookieState, copyCookies, subtitleFile, parseSrt, SUBTITLES, downloadArgs, videoDownloadArgs, convertArgs, sceneArgs, grabArgs, childCommand, runChild, refusalCode, metadataOf, audioFormat, videoFormat } from './source.js';
 import { sceneCuts, candidateTimes, averageHash, nearlySame } from './frames.js';
 
 export const VIDEO = Object.freeze({
   /** Stage limits (the waits before a slice do not count; the job's overall deadline does). */
-  metadataMs: 60000, downloadMs: 10 * 60000, convertMs: 3 * 60000, summaryMs: 2 * 60000,
+  metadataMs: 60000, subtitlesMs: 60000, downloadMs: 10 * 60000, convertMs: 3 * 60000, summaryMs: 2 * 60000,
   /** Transcription may take this many times the audio's length, plus a fixed allowance for starting the recognizer. */
   transcribeFactor: 1.5, transcribeBaseMs: 2 * 60000,
   deadlineMs: 3 * 3600000,
@@ -52,9 +52,10 @@ const small = (file, max) => { try { const stat = fs.lstatSync(file); return sta
  * `{ description }`: one still looked at through the gateway's vision route marked `purpose: 'frame'` (rejects with
  * CONTENT_BUDGET_EXHAUSTED or CONTENT_SPEND_RESTRICTED when the day's stills or the spend tier refuse it; absent: no
  * stills). `jobs()`: the background jobs (resolved late: they are created with this provider's runners). `workRoot`
- * must be inside one of the speech runner's input roots.
+ * must be inside one of the speech runner's input roots. `cookieFile` (optional): the operator's cookies
+ * (operator/secrets/video-cookies.txt); while it is usable each job works with its own copy (./source.js copyCookies).
  */
-export function createVideoProvider({ configFile, cacheRoot, workRoot, store, speech, summarize, describeFrame, jobs, spawn, clock = Date.now, log = line => process.stderr.write(line + '\n') }) {
+export function createVideoProvider({ configFile, cookieFile, cacheRoot, workRoot, store, speech, summarize, describeFrame, jobs, spawn, clock = Date.now, log = line => process.stderr.write(line + '\n') }) {
   for (const directory of [cacheRoot, workRoot]) {
     if (!path.isAbsolute(directory)) throw fail('VIDEO_CONFIG');
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -68,6 +69,18 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
   const cacheFile = key => path.join(cacheRoot, createHash('sha256').update(key).digest('hex') + '.json');
   const blockedFile = site => path.join(cacheRoot, `blocked-${createHash('sha256').update(site).digest('hex').slice(0, 16)}.json`);
   const writeJson = (file, value) => { const temporary = `${file}.${randomUUID()}.tmp`; fs.writeFileSync(temporary, JSON.stringify(value) + '\n', { mode: 0o600 }); fs.renameSync(temporary, file); };
+  // How the cookies last fared (times only, never anything of the cookies): the last subtitle run with them that showed
+  // no sign of being signed out, and the last run with them whose output matched the site's `loginRequired`.
+  const cookieStateFile = path.join(cacheRoot, 'cookie-state.json');
+  const cookieRecord = () => { try { const value = JSON.parse(fs.readFileSync(cookieStateFile, 'utf8')); return { lastSuccessAt: Number.isSafeInteger(value?.lastSuccessAt) ? value.lastSuccessAt : null, suspectedAt: Number.isSafeInteger(value?.suspectedAt) ? value.suspectedAt : null }; } catch { return { lastSuccessAt: null, suspectedAt: null }; } };
+  let cookieComplained = false;
+  /** This job's copy of the cookies, when the operator's file is usable (said once in the log when it is not). */
+  function jobCookies(workDir) {
+    if (!cookieFile) return false;
+    const state = copyCookies(cookieFile, workDir);
+    if ((state === 'unsafe' || state === 'invalid') && !cookieComplained) { cookieComplained = true; log(`VIDEO_COOKIES_${state.toUpperCase()} operator/secrets/video-cookies.txt is not used (it must be a regular file of this service's user, mode 0600).`); }
+    return state === 'configured';
+  }
   function cached(key) {
     try {
       const entry = JSON.parse(fs.readFileSync(cacheFile(key), 'utf8'));
@@ -87,15 +100,46 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
     } catch { return { reference, entry: null, url: null }; }
   }
 
-  /** One yt-dlp run. `stdoutBytes: 0` for a download: what it prints there is progress, however long that gets. */
-  async function yt(configNow, site, workDir, args, { signal, stdoutBytes }) {
-    const result = await runChild(childCommand(configNow, { workDir, network: true }, [...configNow.ytdlp, ...args]), { signal, stdoutBytes, spawn });
-    if (result.code === 0) return result.stdout;
-    const code = refusalCode(site, result.stderr);
+  /** One yt-dlp run, with this job's copy of the cookies when it has one. -> `{ code, stdout, stderr }`. A run with the
+   * cookies whose output looks signed out (the site's `loginRequired`) marks them as perhaps expired; a subtitle run
+   * with them that does not is their last success. */
+  async function ytRun(configNow, site, workDir, args, { signal, stdoutBytes, cookies = false, subtitles = false }) {
+    const result = await runChild(childCommand(configNow, { workDir, network: true }, [...configNow.ytdlp, ...cookieArgs(cookies), ...args]), { signal, stdoutBytes, spawn });
+    if (cookies) {
+      const signedOut = site.loginRequired.some(pattern => pattern.test(result.stderr));
+      if (signedOut || subtitles && result.code === 0) writeJson(cookieStateFile, { schema: 1, ...cookieRecord(), ...(signedOut ? { suspectedAt: clock() } : { lastSuccessAt: clock() }) });
+    }
+    return result;
+  }
+  /** A site's refusal, as the job's fixed code; "blocked" is remembered first. */
+  function siteRefusal(site, stderr) {
+    const code = refusalCode(site, stderr);
     // Blocked by the site: remembered, so nothing more is asked of it until the operator has looked (the file is
     // removed by hand; no retry, no change of address or identity). Nothing of yt-dlp's own output is logged.
     if (code === 'blocked') { writeJson(blockedFile(site.id), { schema: 1, site: site.id, at: clock() }); log(`VIDEO_BLOCKED ${site.id}: watching is stopped for this site until the operator clears it.`); }
-    throw fail(code);
+    return code;
+  }
+  /** One yt-dlp run that must succeed. `stdoutBytes: 0` for a download: what it prints there is progress, however long that gets. */
+  async function yt(configNow, site, workDir, args, options) {
+    const result = await ytRun(configNow, site, workDir, args, options);
+    if (result.code === 0) return result.stdout;
+    throw fail(siteRefusal(site, result.stderr));
+  }
+  /**
+   * The platform's own subtitles (only with the cookies: the site gives them to a signed-in client). -> `{ segments,
+   * kind }`, or null when there are none to use: the audio is then listened to as before. Only "blocked" ends the job.
+   */
+  async function subtitles(configNow, site, workDir, url, stage, outer) {
+    let result;
+    try { result = await stage('subtitles', VIDEO.subtitlesMs, step => step.slice(inner => ytRun(configNow, site, workDir, subtitleArgs(url), { signal: inner, stdoutBytes: 0, cookies: true, subtitles: true }))); }
+    catch (error) { if (outer.aborted || error?.code !== 'timeout') throw error; log('VIDEO_SUBTITLES_SKIPPED timeout'); return null; }
+    const names = fs.readdirSync(workDir), chosen = subtitleFile(names);
+    try {
+      if (result.code !== 0 && siteRefusal(site, result.stderr) === 'blocked') throw fail('blocked');
+      if (!chosen) return null;
+      const segments = parseSrt(small(path.join(workDir, chosen.name), SUBTITLES.fileBytes)?.toString('utf8') ?? '');
+      return segments.length ? { segments, kind: chosen.kind } : null;
+    } finally { for (const name of names) if (name.startsWith('subs.')) fs.rmSync(path.join(workDir, name), { force: true }); }
   }
 
   /** Listens to the downloaded audio: pieces of at most `pieceSeconds`, one recognizer run a piece (a slice each, so a
@@ -164,7 +208,8 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
     if (ready) { fileNote(scope, asked.sourceEventId, ready, input.url); return { text: ready.note }; }
     const workDir = fs.mkdtempSync(path.join(workRoot, WORK_PREFIX));
     try {
-      const raw = await stage('metadata', VIDEO.metadataMs, step => step.slice(inner => yt(configNow, site, workDir, metadataArgs(input.url), { signal: inner, stdoutBytes: LIMITS.jsonBytes })));
+      const cookies = jobCookies(workDir);
+      const raw = await stage('metadata', VIDEO.metadataMs, step => step.slice(inner => yt(configNow, site, workDir, metadataArgs(input.url), { signal: inner, stdoutBytes: LIMITS.jsonBytes, cookies })));
       let info; try { info = JSON.parse(raw); } catch { throw fail('failed'); }
       const meta = metadataOf(info), key = matched.key ?? (meta.id ? videoKey(site.id, meta.id) : null);
       if (!key) throw fail('failed');
@@ -173,12 +218,15 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
       if (known) { fileNote(scope, asked.sourceEventId, known, input.url); return { text: known.note }; }
       if (meta.durationMs > configNow.limits.maxDurationSeconds * 1000) throw fail('too_long');
       let heard = null, state = 'unavailable';
+      // The platform's subtitles first, when there are cookies to ask with; without them (or any) the audio is listened to.
+      const written = cookies ? await subtitles(configNow, site, workDir, input.url, stage, signal) : null;
+      if (written) { heard = { segments: written.segments }; state = `subtitle_${written.kind}`; }
       // Without a usable recognizer nothing is downloaded: the note then has the title and the description only.
-      const status = speech.status(), longest = status?.longAudio?.vadPresent === true && status.models?.['asr:default']?.componentsPresent === true && status.models['asr:default'].enabled !== false ? status.longAudio.maxAudioSeconds : 0;
+      const status = written ? null : speech.status(), longest = status?.longAudio?.vadPresent === true && status.models?.['asr:default']?.componentsPresent === true && status.models['asr:default'].enabled !== false ? status.longAudio.maxAudioSeconds : 0;
       const format = audioFormat(info, site);
-      if (longest >= 10 && format) {
+      if (!written && longest >= 10 && format) {
         fs.writeFileSync(path.join(workDir, 'info.json'), raw, { mode: 0o600 });
-        await stage('download', VIDEO.downloadMs, step => step.slice(inner => yt(configNow, site, workDir, downloadArgs({ format, maxFilesizeMiB: configNow.limits.maxFilesizeMiB }), { signal: inner, stdoutBytes: 0 })));
+        await stage('download', VIDEO.downloadMs, step => step.slice(inner => yt(configNow, site, workDir, downloadArgs({ format, maxFilesizeMiB: configNow.limits.maxFilesizeMiB }), { signal: inner, stdoutBytes: 0, cookies })));
         fs.rmSync(path.join(workDir, 'info.json'), { force: true });
         try {
           // Two seconds under the recognizer's own limit: a piece is cut at a packet, not at the exact second.
@@ -193,9 +241,9 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
       }
       signal.throwIfAborted();
       // Too little voice: whatever the recognizer wrote is dropped, not kept "just in case".
-      const segments = state === 'asr' ? heard.segments : [];
-      const sections = sectionsOf({ durationMs: meta.durationMs, chapters: meta.chapters, segments }), pages = pagesOf(segments);
-      const summary = state === 'asr' ? await summarized(meta, sections, stage, signal) : null;
+      const timed = TIMED.includes(state), segments = timed ? heard.segments : [];
+      const sections = sectionsOf({ durationMs: meta.durationMs, chapters: meta.chapters, segments }), pages = pagesOf(segments, written ? '平台字幕' : '机器转写');
+      const summary = timed ? await summarized(meta, sections, stage, signal) : null;
       const { id: _id, chapters: _chapters, ...described } = meta;
       let note = renderNote({ meta: described, source: state, engine: heard?.engine, sections, summary, pages: pages.length });
       // No usable voice: the picture is all there is to go on, so a few stills are looked at without being asked.
@@ -203,7 +251,7 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
       let frames = null;
       if (state === 'empty_unconfirmed' && describeFrame) {
         try {
-          const looked = await stills({ configNow, site, workDir, raw, info, meta, stage });
+          const looked = await stills({ configNow, site, workDir, raw, info, meta, stage, cookies });
           if (looked.frames.length) { frames = looked.frames; note = mergeFrames(note, frames); }
           else log(`VIDEO_FRAMES_SKIPPED ${looked.refusal ?? 'failed'}`);
         } catch (error) {
@@ -222,11 +270,11 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
    * in time order (empty when none could be looked at; `refusal` then says why: `daily_limit`, `spend_tier`).
    * At most `framesPerVideo` are looked at; they are cached with the video, so that is all one video ever costs.
    */
-  async function stills({ configNow, site, workDir, raw, info, meta, stage }) {
+  async function stills({ configNow, site, workDir, raw, info, meta, stage, cookies = false }) {
     const format = videoFormat(info, site), wanted = configNow.limits.framesPerVideo;
     if (!format) throw fail('unavailable');
     fs.writeFileSync(path.join(workDir, 'info.json'), raw, { mode: 0o600 });
-    await stage('video', VIDEO.downloadMs, step => step.slice(inner => yt(configNow, site, workDir, videoDownloadArgs({ format, maxFilesizeMiB: configNow.limits.maxFilesizeMiB }), { signal: inner, stdoutBytes: 0 })));
+    await stage('video', VIDEO.downloadMs, step => step.slice(inner => yt(configNow, site, workDir, videoDownloadArgs({ format, maxFilesizeMiB: configNow.limits.maxFilesizeMiB }), { signal: inner, stdoutBytes: 0, cookies })));
     fs.rmSync(path.join(workDir, 'info.json'), { force: true });
     const video = fs.readdirSync(workDir).find(name => /^video\.[A-Za-z0-9]{1,8}$/.test(name) && fs.lstatSync(path.join(workDir, name)).isFile());
     if (!video) throw fail('too_large');
@@ -276,12 +324,13 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
     if (fs.existsSync(blockedFile(matched.site.id))) throw fail('blocked');
     const workDir = fs.mkdtempSync(path.join(workRoot, WORK_PREFIX));
     try {
-      const raw = await stage('metadata', VIDEO.metadataMs, step => step.slice(inner => yt(configNow, matched.site, workDir, metadataArgs(input.url), { signal: inner, stdoutBytes: LIMITS.jsonBytes })));
+      const cookies = jobCookies(workDir);
+      const raw = await stage('metadata', VIDEO.metadataMs, step => step.slice(inner => yt(configNow, matched.site, workDir, metadataArgs(input.url), { signal: inner, stdoutBytes: LIMITS.jsonBytes, cookies })));
       let info; try { info = JSON.parse(raw); } catch { throw fail('failed'); }
       const meta = metadataOf(info);
       // The link must still be the same video the note is about.
       if ((matched.key ?? (meta.id ? videoKey(matched.site.id, meta.id) : null)) !== input.key) throw fail('failed');
-      const looked = await stills({ configNow, site: matched.site, workDir, raw, info, meta, stage });
+      const looked = await stills({ configNow, site: matched.site, workDir, raw, info, meta, stage, cookies });
       if (!looked.frames.length) throw fail(looked.refusal ?? 'failed');
       signal.throwIfAborted();
       const current = cached(input.key) ?? entry, next = { ...current, frames: looked.frames, note: mergeFrames(current.note, looked.frames) };
@@ -376,6 +425,15 @@ export function createVideoProvider({ configFile, cacheRoot, workRoot, store, sp
       if (job.status === 'rejected') return refused(job.failureCode);
       // A guess: the length is only known once the job has asked. A few minutes for the video, more behind others.
       return derived({ status: 'processing', minutes: 5 + 5 * Math.max(0, jobs().waiting - 1), ...(job.duplicate ? { already: true } : {}) });
+    },
+    /**
+     * For the operator's console: whether the capability is configured, and the cookies' state (never their content):
+     * `cookie.state` 'none' | 'configured' | 'unsafe' | 'invalid', `lastSuccessAt` (ms or null) and `suspectedExpired`
+     * (the latest sign from a run with them was "signed out").
+     */
+    status() {
+      const { lastSuccessAt, suspectedAt } = cookieRecord();
+      return { configured: Boolean(config()), cookie: { state: cookieFile ? cookieState(cookieFile) : 'none', lastSuccessAt, suspectedExpired: suspectedAt !== null && suspectedAt >= (lastSuccessAt ?? 0) } };
     },
     /** Housekeeping: cache entries past their seven days go; with `start`, so does every leftover work directory. */
     sweep({ start = false } = {}) {

@@ -11,6 +11,13 @@
 // directory (MOCKHUGE writes nothing, as yt-dlp does for a file over --max-filesize).
 // `--load-info-json info.json -f mock-video … -o video.%(ext)s`: writes video.mp4, a stand-in that only fake-ffmpeg.mjs
 // reads (it names the video and its length); MOCKHUGE writes nothing, MOCKNOVIDEO has no video stream at all.
+// `--cookies cookies.txt` (before the template): the job's copy of the operator's cookies must be in the working
+// directory, a regular file of mode 0600 that begins as a Netscape cookie file; like yt-dlp, it is written back (a line
+// is added), so the operator's original must never be the one given. A copy containing MOCK-EXPIRED acts signed out.
+// `--skip-download --write-subs … -o subs.%(ext)s -- <link>`: the platform's subtitles. Signed in (cookies, not
+// expired) and `SUBS` in the id: writes subs.ai-zh.srt (AI-made), and with `SUBSUP` also subs.zh-Hans.srt (uploaded).
+// Signed out: a MOCK-LOGIN-REQUIRED warning and nothing written, as yt-dlp does. `SUBSBLOCKED`: the site's blocked
+// refusal; `SUBSLOGIN`: a login refusal for the subtitles only. Without `SUBS` nothing is written.
 // It is stateless: it keeps no log. That a cached video is not fetched again shows in the job list and the ledger.
 // `--mock-site` alone prints the MOCK site's entry for operator/providers/video.json (what staging writes there).
 import fs from 'node:fs';
@@ -24,6 +31,9 @@ export const MOCK_SITE = Object.freeze({
   skipHosts: ['skip.mock.invalid'], blocked: ['MOCK-BLOCKED'], loginRequired: ['MOCK-LOGIN-REQUIRED'], unavailable: ['MOCK-UNAVAILABLE'],
 });
 
+/** A made-up cookie jar for staging and tests (staging-agent.py writes the same text): no real account's. */
+export const MOCK_COOKIES = '# Netscape HTTP Cookie File\n# MOCK-STAGING-COOKIE: made up, staging only\n.video.mock.invalid\tTRUE\t/\tTRUE\t0\tMOCK_SESSION\tMOCK-STAGING';
+
 function wav(seconds = 1, rate = 16000) {
   const data = Buffer.alloc(seconds * rate * 2), head = Buffer.alloc(44);
   head.write('RIFF'); head.writeUInt32LE(36 + data.length, 4); head.write('WAVEfmt ', 8); head.writeUInt32LE(16, 16); head.writeUInt16LE(1, 20); head.writeUInt16LE(1, 22);
@@ -35,7 +45,26 @@ if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import
   if (args.length === 1 && args[0] === '--mock-site') { process.stdout.write(JSON.stringify(MOCK_SITE) + '\n'); process.exit(0); }
   // The provider's fixed options must all be there: a command line that lost one is a bug worth failing on.
   for (const option of ['--ignore-config', '--no-cache-dir', '--no-playlist']) if (!args.includes(option)) refuse('MOCK-USAGE missing ' + option);
-  if (args.includes('-J')) {
+  let signedIn = false;
+  if (args.includes('--cookies')) {
+    const name = args[args.indexOf('--cookies') + 1];
+    let stat; try { stat = fs.lstatSync(name); } catch { refuse('MOCK-USAGE no cookie file'); }
+    if (name !== 'cookies.txt' || args.indexOf('--cookies') !== 0 || !stat.isFile() || (stat.mode & 0o777) !== 0o600) refuse('MOCK-USAGE cookie file not a private copy in the working directory');
+    const jar = fs.readFileSync(name, 'utf8');
+    if (!jar.startsWith('# Netscape HTTP Cookie File')) refuse('MOCK-USAGE not a Netscape cookie file');
+    fs.appendFileSync(name, '# MOCK-REWRITTEN by the stand-in yt-dlp\n');
+    signedIn = !jar.includes('MOCK-EXPIRED');
+  }
+  if (args.includes('--skip-download')) {
+    const link = args.at(-1), id = /^https:\/\/video\.mock\.invalid\/[vs]\/([A-Za-z0-9]+)/.exec(link)?.[1];
+    if (args.at(-2) !== '--' || !id || !args.includes('--write-subs') || args[args.indexOf('--sub-langs') + 1] !== 'zh.*,ai-zh' || args[args.indexOf('-o') + 1] !== 'subs.%(ext)s') refuse('MOCK-USAGE unexpected subtitle options');
+    if (id.includes('SUBSBLOCKED')) refuse(REFUSALS.MOCKBLOCKED);
+    if (id.includes('SUBSLOGIN')) refuse(REFUSALS.MOCKLOGIN);
+    if (!signedIn) { process.stderr.write('WARNING: MOCK-LOGIN-REQUIRED subtitles are only given to a signed-in client\n'); process.exit(0); }
+    const cue = (n, from, to, text) => `${n}\n00:00:${from},000 --> 00:00:${to},500\n${text}\n`;
+    if (id.includes('SUBS')) fs.writeFileSync('subs.ai-zh.srt', [cue(1, '01', '04', `MOCK-AI字幕：大家好，这是 ${id}`), cue(2, '40', '44', 'MOCK-AI字幕：<i>第二句</i>')].join('\n'), { mode: 0o600 });
+    if (id.includes('SUBSUP')) fs.writeFileSync('subs.zh-Hans.srt', '﻿' + [cue(1, '02', '05', `MOCK-上传字幕：开场 ${id}`), cue(2, '50', '55', 'MOCK-上传字幕：结尾')].join('\n').replace(/\n/g, '\r\n'), { mode: 0o600 });
+  } else if (args.includes('-J')) {
     const link = args.at(-1), id = /^https:\/\/video\.mock\.invalid\/[vs]\/([A-Za-z0-9]+)/.exec(link)?.[1];
     if (args.at(-2) !== '--' || !id) refuse('MOCK-USAGE unsupported link');
     if (id.includes('SLOWISH')) await new Promise(resolve => setTimeout(resolve, 4000));

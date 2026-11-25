@@ -222,6 +222,16 @@ export const STEPS = {
     const actual = run.modelLog(ctx).filter(entry => entry.stream === false && !entry.consolidation && !entry.search && !entry.provider && typeof entry.userText === 'string' && entry.userText.includes(contains)).length;
     if (actual !== count) fail(`the model was asked to look at ${actual} picture(s) with ${JSON.stringify(contains)}, expected ${count}`);
   },
+  /** The video capability's cookies as the console shows them (operator GET /runtime): their `state`, whether there is
+   * a last success (`lastSuccess`: true/false) and `suspectedExpired`; never anything of the cookies themselves. */
+  async expectVideoCookie(run, _ctx, { state, lastSuccess, suspectedExpired }) {
+    const runtime = await run.operator('GET', '/runtime'), cookie = runtime?.video?.cookie;
+    if (!cookie) fail('the runtime status says nothing about the video capability');
+    if (/Netscape|MOCK-STAGING-COOKIE/.test(JSON.stringify(runtime))) fail('the runtime status carries the cookies themselves');
+    const seen = { state: cookie.state, lastSuccess: cookie.lastSuccessAt !== null, suspectedExpired: cookie.suspectedExpired };
+    const wanted = { state, lastSuccess: lastSuccess ?? seen.lastSuccess, suspectedExpired: suspectedExpired ?? seen.suspectedExpired };
+    if (JSON.stringify(seen) !== JSON.stringify(wanted)) fail(`the video cookies are ${JSON.stringify(seen)}, expected ${JSON.stringify(wanted)}`);
+  },
   async expectNoModelCall(run, ctx, { userText }) {
     if (run.modelLog(ctx).some(entry => entry.userText.includes(userText))) fail(`the model received ${JSON.stringify(userText)}`);
   },

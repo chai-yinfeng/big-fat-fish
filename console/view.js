@@ -75,6 +75,7 @@ const ICONS = {
   note: ['M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z', 'M14 2v4a2 2 0 0 0 2 2h4', 'M10 9H8', 'M16 13H8', 'M16 17H8'],
   mic: [rect(9, 2, 6, 13, 3), 'M19 10v2a7 7 0 0 1-14 0v-2', 'M12 19v3'],
   image: [rect(3, 3, 18, 18, 2), circle(9, 9, 2), 'm21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21'],
+  video: ['m16 13 5.2 3.5a.5.5 0 0 0 .8-.4V7.9a.5.5 0 0 0-.8-.4L16 10.5', rect(2, 6, 14, 12, 2)],
 };
 function icon(name, className = 'bff-ic') {
   return h('svg', { className, viewBox: '0 0 24 24', 'aria-hidden': true, focusable: 'false' }, ...(ICONS[name] || []).map(d => h('path', { d })));
@@ -1252,7 +1253,22 @@ export function WorldConsole({ t, standalone = false }) {
           !paused && alert('warn', t('speechPanel.pauseRequired')),
           h('button', { type: 'submit', disabled: busy || !paused }, icon('upload'), t('speechPanel.upload')))),
         confirmRemove !== false && removeConfirmation(confirmRemove)),
+      videoCard(),
       h('section', { className: 'bff-card' }, cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('image')), h('h2', null, t('speechPanel.imageTitle')))), text(runtimeInfo ? 'speechPanel.imageUnavailable' : 'speechPanel.pending')));
+  }
+  // Watching videos: whether the capability is configured, and the operator's cookies by their state and times only
+  // (the content service never sends anything of the cookies themselves).
+  function videoCard() {
+    const video = runtimeInfo?.video, head = cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('video')), h('h2', null, t('videoPanel.title'))));
+    if (!video) return h('section', { className: 'bff-card' }, head, text(runtimeInfo ? 'videoPanel.unavailable' : 'speechPanel.pending'));
+    const cookie = video.cookie, tone = { configured: 'ok', none: '', unsafe: 'danger', invalid: 'danger' }[cookie.state];
+    return h('section', { className: 'bff-card' }, head, text('videoPanel.hint'),
+      h('dl', { className: 'bff-kv' }, ...[
+        ['capability', badge(t(video.configured ? 'videoPanel.configured' : 'videoPanel.notConfigured'), video.configured ? 'ok' : 'warn')],
+        ['cookie', h('span', { className: 'bff-row' }, badge(t(`videoPanel.cookieState.${cookie.state}`), tone), cookie.state === 'configured' && cookie.suspectedExpired ? badge(t('videoPanel.suspectedExpired'), 'warn') : null)],
+        ['lastSuccess', cookie.lastSuccessAt ? time(cookie.lastSuccessAt) : '—'],
+      ].map(([key, value]) => h('div', { key }, h('dt', null, t(`videoPanel.${key}`)), h('dd', null, value)))),
+      text('videoPanel.cookieHint'));
   }
   function runtime() {
     return h(React.Fragment, null,

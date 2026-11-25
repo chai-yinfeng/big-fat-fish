@@ -3,7 +3,12 @@ const VOICE_ID = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const validProfile = p => VOICE_ID.test(p?.id) && typeof p.label === 'string' && typeof p.engine === 'string' && typeof p.referenceLanguage === 'string'
   && ['private', 'public'].includes(p.usageScope) && ['useReferenceText', 'auditioned', 'hasReference'].every(k => typeof p[k] === 'boolean');
 export const SPEECH_UNAVAILABLE = ['not_configured', 'config_schema_outdated', 'config_invalid'];
+/** The video capability's state (absent from an older content service): configured or not, the cookies' state and times. */
+export const COOKIE_STATES = ['none', 'configured', 'unsafe', 'invalid'];
+const validVideo = video => video === undefined || video === null || typeof video?.configured === 'boolean' && COOKIE_STATES.includes(video.cookie?.state)
+  && (video.cookie.lastSuccessAt === null || Number.isSafeInteger(video.cookie.lastSuccessAt)) && typeof video.cookie.suspectedExpired === 'boolean';
 export function validRuntime(value) {
+  if (!validVideo(value?.video)) return false;
   const s = value?.speech, v = value?.voices;
   // A degraded status carries only its reason; the rest of the runtime view still renders.
   if (SPEECH_UNAVAILABLE.includes(s?.status)) return Object.keys(s).length === 1 && v === null
