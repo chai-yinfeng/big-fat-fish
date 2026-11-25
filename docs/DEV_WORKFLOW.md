@@ -435,8 +435,9 @@ curl -sS -H "authorization: Bearer $TOKEN" http://127.0.0.1:3082/memory/cleanup/
   服务按上面的流程接着做（参与方每次从任务本身算出，旧版本创建的任务也一样）。
 - staging 的升级 → 回退 → 再升级覆盖这两个方向：升级后和再升级后各重放一遍 F1、F2（见上表）；另有三步把一个待清理任务
   带过回退再前滚——`forget-pending-before-rollback`（新版本下停掉 QQ 桥后忘记一条只涉及 QQ 的记忆，内容服务和执行器确认，
-  任务只差 `bridge:qq`，世界保持暂停）、`forget-pending-under-from`（回退后旧 Authority 仍把它列为待清理，恢复世界被 409 拒绝）、
-  `forget-closes-after-roll-forward`（再升级后新版本的服务自己确认，任务由各方关闭，世界恢复）。staging 里旧 worker 的真实清理
+  任务只差 `bridge:qq`，世界保持暂停）、`forget-pending-under-from`（from 早于 7b——没有 `GET /memory/cleanup/status`——时：回退后旧 Authority 仍把它列为
+  待清理，恢复世界被 409 拒绝；from 是 7b 及之后时：回退时启动的 from 版本 QQ 桥自己确认，任务由各方关闭、不再有待清理，
+  世界仍暂停）、`forget-closes-after-roll-forward`（再升级后新版本的服务确认剩下的部分，任务由各方关闭，世界恢复）。staging 里旧 worker 的真实清理
   路径跑不了（记忆单元被限制为只能用 Unix socket，够不到 operator 端口，且它停的是生产单元名），这一点没有被 staging 验证。
 
 离线兜底（某个服务起不来、任务一直待清理时，主人手动；**未在生产主机上演练过**）：世界保持暂停，停掉三个服务，
