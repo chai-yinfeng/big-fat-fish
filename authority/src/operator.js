@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { DEFAULT_PERSONA } from './persona.js';
+import { SELF_PERSON } from './identity.js';
 import { CHANNELS, channel } from '../../capabilities/channels/index.js';
 
 function object(value, fields) {
@@ -24,7 +25,8 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
   const channelControls = { ...(qqControl ? { qq: qqControl } : {}) };
   async function overview(authorization) {
     const state = authority.snapshot();
-    const bindings = state.streams.map(row => ({ sourceId: row.capabilityId, conversationId: row.streamId, entityId: row.entityId, personId: row.personId, audience: row.audience }));
+    // Her own conversation (bound to the reserved `person:self`, wake.js) is nobody's binding: not listed, not counted.
+    const bindings = state.streams.filter(row => row.personId !== SELF_PERSON).map(row => ({ sourceId: row.capabilityId, conversationId: row.streamId, entityId: row.entityId, personId: row.personId, audience: row.audience }));
     // One row per channel: every declared production channel, and whatever else is registered as a conversation
     // capability. A channel whose bridge has a control socket here reports its own state; the others only say
     // whether they are registered.

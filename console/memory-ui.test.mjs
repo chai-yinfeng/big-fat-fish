@@ -112,7 +112,7 @@ test('machine digests are marked as machine text with what they cover; consolida
     '/memory': { entityId: 'entity:test', memoryEpoch: 0, more: false, people: [{ label: 'p-aaaaaa', owner: false, items: 4 }], unowned: 0, diaries: [], items: [digest, fact, plain, loose] },
     '/memory/sources?id=f-2': { entityId: 'entity:test', id: 'f-2', machine: false, sources: [{ id: 'o7', role: 'user', at: 1_800_000_000_000, text: 'MOCK-原话：我下个月 5 号搬家', forgotten: false }] },
     '/memory/sources?id=d-1': { entityId: 'entity:test', id: 'd-1', machine: true, sources: [{ id: 'o1', role: 'user', at: 1_800_000_000_000, text: 'MOCK-原话：我养了一只仓鼠', forgotten: false }, { id: 'o2', role: 'assistant', at: 1_800_000_060_000, text: '', forgotten: true }] },
-    '/memory/consolidation': { entityId: 'entity:test', day: '2026-11-11', calls: 3, limits: { perDay: 24, perStreamPerDay: 2 }, lastCommittedAt: 1_800_000_090_000, paused: 'spend', staleDigestIds: ['d-9'], extracted: { accepted: 4, pending: 0, rejected: { unconfirmed_identity: 2, newer_fact_kept: 1 } },
+    '/memory/consolidation': { entityId: 'entity:test', day: '2026-11-11', calls: 3, limits: { perDay: 24, perStreamPerDay: 2 }, lastCommittedAt: 1_800_000_090_000, paused: 'spend', staleDigestIds: ['d-9'], extracted: { accepted: 4, pending: 0, rejected: { unconfirmed_identity: 2, newer_fact_kept: 1 } }, extractedIntents: { accepted: 2, pending: 0, rejected: { too_many_open: 1 } },
       streams: [{ stream: 's-111111', person: 'p-aaaaaa', owner: false, behind: { observations: 12, chars: 340 }, waiting: 5, calls: 2, digests: 7, skipped: 1, lastAt: 1_800_000_090_000 }, { stream: 's-222222', person: 'p-0f0f0f', owner: true, behind: { observations: 0, chars: 0 }, waiting: 0, calls: 0, digests: 0, skipped: 0, lastAt: null }] },
     '/memory/forget-preview': { entityId: 'entity:test', memoryEpoch: 0, revision: 4, ids: ['o1'], expandedIds: ['d-1'], digestIds: ['d-1'], sourceObservationIds: ['o1'] },
   };
@@ -149,7 +149,7 @@ test('machine digests are marked as machine text with what they cover; consolida
   // Status card: counters, the spend pause, leftovers, one row per conversation by opaque label.
   await buttons('consolidation.read')[0].props.onClick();
   const page = JSON.stringify(render());
-  for (const shown of ['consolidation.paused.spend', 'consolidation.stale: 1', 'consolidation.today (2026-11-11): 3 / 24 · consolidation.perConversation: 2', 'consolidation.extracted: 4 · consolidation.refused: 3']) assert.ok(page.includes(shown), shown);
+  for (const shown of ['consolidation.paused.spend', 'consolidation.stale: 1', 'consolidation.today (2026-11-11): 3 / 24 · consolidation.perConversation: 2', 'consolidation.extracted: 4 · consolidation.refused: 3', 'consolidation.extractedIntents: 2 · consolidation.refused: 1']) assert.ok(page.includes(shown), shown);
   const rows = nodes(render()).filter(n => n.type === 'tr').map(n => nodes(n).filter(cell => cell.type === 'td').map(cell => JSON.stringify(cell.children)));
   assert.deepEqual(rows.filter(row => row.length).map(row => row.slice(1, 6).map(cell => JSON.parse(cell)[0])), [['12', '5', '2', '7', '1'], ['0', '0', '0', '0', '0']]);
   assert.ok(rows.filter(row => row.length)[0][0].includes('p-aaaaaa') && rows.filter(row => row.length)[1][0].includes('peoplePanel.owner'));
@@ -251,13 +251,14 @@ test('memory type filter strings exist in both locales', async () => {
     const panel = JSON.parse(await readFile(new URL(`./locale/${name}.json`, import.meta.url), 'utf8')).memoryPanel;
     assert.equal(typeof panel.kindFilter, 'string'); assert.equal(typeof panel.kindEmpty, 'string');
     for (const kind of ['all', 'facts', 'experiences', 'digest', 'notes', 'intent', 'appraisals']) assert.equal(typeof panel.kind[kind], 'string', `${name}: ${kind}`);
-    for (const key of ['intentDue', 'intentNoDue', 'intentState', 'intentDelete']) assert.equal(typeof panel[key], 'string', `${name}: ${key}`);
+    for (const key of ['intentDue', 'intentNoDue', 'intentState', 'intentDelete', 'intentDeleteTitle', 'intentDeleteWarning', 'intentDeleteConfirm']) assert.equal(typeof panel[key], 'string', `${name}: ${key}`);
     for (const state of ['open', 'done', 'expired']) assert.equal(typeof panel.intentStates[state], 'string', `${name}: ${state}`);
     assert.equal(typeof panel.proposal.intent, 'string');
+    assert.equal(typeof JSON.parse(await readFile(new URL(`./locale/${name}.json`, import.meta.url), 'utf8')).consolidation.extractedIntents, 'string', `${name}: extractedIntents`);
   }
 });
 
-test('her intents: a type of their own, shown with whose they are (label, no account), due day and state; deleted by a POST, never made public', async () => {
+test('her intents: a type of their own, shown with whose they are (label, no account), due day and state; deleted by a POST after a confirmation, never made public', async () => {
   const world = { world: { paused: false, revision: 1 }, persona: { revision: 1, value: {} }, counts: { facts: 0, notes: 3, experiences: 0, pending: 0 }, channels: [], bindings: [], model: { provider: 'deepseek', model: 'deepseek-flash', configured: false, status: 'unconfigured' } };
   // Synthetic data; the raw person ID carries a visibly fake account number that must never be rendered.
   const base = { type: 'notes', status: 'active', visibility: 'private', personId: 'person:qq:999900000011', personLabel: 'p-aaaaaa', personIsOwner: false, source: { channel: 'qq', role: 'user', proposal: 'intent.note' }, evidence: { actorId: 'qq:999900000001:user:999900000011' } };
@@ -290,7 +291,17 @@ test('her intents: a type of their own, shown with whose they are (label, no acc
   assert.ok(!shown.join('').includes('9999'), 'no account number');
   const buttons = card => nodes(card).filter(n => n.type === 'button').map(n => n.children.filter(child => typeof child === 'string').join(''));
   assert.ok(buttons(cards()[0]).includes('memoryPanel.intentDelete') && !buttons(cards()[0]).includes('memoryPublicAuthorize'));
-  await nodes(cards()[0]).find(n => n.type === 'button' && n.children.includes('memoryPanel.intentDelete')).props.onClick();
+  const dialog = () => nodes(render()).find(n => n.props.role === 'alertdialog');
+  const press = (tree, key) => nodes(tree).find(n => n.type === 'button' && n.children.includes(key)).props.onClick();
+  // Delete asks first, like a card: the dialog names the intent; cancel sends nothing.
+  await press(cards()[0], 'memoryPanel.intentDelete');
+  for (const shown of ['memoryPanel.intentDeleteTitle', 'MOCK-明天问问面试', 'memoryPanel.intentDeleteWarning']) assert.ok(JSON.stringify(dialog()).includes(shown), shown);
+  press(dialog(), 'cardsPanel.cancel');
+  assert.equal(dialog(), undefined);
+  assert.ok(!calls.some(call => call[1] === '/memory/intent/delete'));
+  await press(cards()[0], 'memoryPanel.intentDelete');
+  await press(dialog(), 'memoryPanel.intentDeleteConfirm');
+  assert.equal(dialog(), undefined);
   assert.deepEqual(calls.find(call => call[1] === '/memory/intent/delete'), ['POST', '/memory/intent/delete', { entityId: 'entity:test', id: 'i1' }]);
   assert.deepEqual(cards().map(card => JSON.stringify(card).includes('MOCK-推荐那本书')), [true]);
 });
