@@ -1606,27 +1606,28 @@
     },
     {
       "id": "W1",
-      "title": "her private wake-up: asked for by the operator, run in her own conversation with nothing of anyone in the request; what she writes stays on the operator's page; the pick of a person is worked through in the log and nothing is sent",
+      "title": "her private wake-up: asked for by the operator and run in her own conversation; while reaching out is switched off she is given nobody's card, a person she names is refused, and what she writes stays on the operator's page",
       "model": [
-        { "match": "私下时间", "self": { "mood": "MOCK-W1-{run} 有点想找人说话", "outreach": "yes" }, "reply": "<休息>" },
+        { "match": "私下时间", "self": { "mood": "MOCK-W1-{run} 有点想找人说话", "reach": [{ "label": "{label:MOCK-T}", "reason": "MOCK-理由 想聊聊近况" }] }, "reply": "<休息>" },
         { "match": "下周去看牙", "propose": { "type": "intent.note", "payload": { "text": "MOCK-W1-{run} 问问看牙怎么样", "quote": "我下周去看牙", "due": "2099-01-01" } }, "reply": "MOCK-REPLY-W1 好呀" },
         { "match": "MOCK-W1-{run} 还在吗", "reply": "MOCK-REPLY-W1 在呢" }
       ],
       "steps": [
         { "quietHours": { "window": "none" } },
         { "wake": { "enabled": false } },
+        { "reach": { "enabled": false, "recentMinutes": 0, "people": { "MOCK-T": true } } },
         { "say": { "from": "MOCK-OWNER", "text": "MOCK-W1-{run} 主人在 QQ 上说句话" } },
         { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY" } },
         { "say": { "from": "MOCK-T", "text": "MOCK-W1-{run} 我下周去看牙，到时候记得问我" } },
         { "expectReply": { "to": "MOCK-T", "contains": "MOCK-REPLY-W1 好呀" } },
         { "expectIntent": { "person": "MOCK-T", "contains": "MOCK-W1-{run} 问问看牙怎么样", "state": "open", "due": "2099-01-01" } },
         { "wakeNow": { "expect": "off" } },
-        { "wake": { "enabled": true } },
+        { "wake": { "enabled": true, "times": ["10:00", "19:00"] } },
         { "wakeNow": {} },
-        { "expectWake": { "outcome": "done", "did": { "mood": "accepted", "outreach": "yes", "rested": false }, "tier": "yes", "mood": "MOCK-W1-{run} 有点想找人说话", "picked": true } },
-        { "expectWakeRequest": { "absent": ["MOCK-W1-{run} 我下周去看牙", "问问看牙怎么样", "主人在 QQ 上说句话", "MOCK-REPLY", "MOCK-T", "MOCK-OWNER"], "onlyHere": ["有点想找人说话"] } },
+        { "expectWake": { "outcome": "done", "did": { "mood": "accepted", "reach": 1, "rested": false }, "cards": 0, "mood": "MOCK-W1-{run} 有点想找人说话", "reach": [{ "person": "MOCK-T", "check": "rejected:not_candidate" }] } },
+        { "expectWakeRequest": { "noCards": ["MOCK-T", "MOCK-OWNER"], "absent": ["MOCK-W1-{run} 我下周去看牙", "MOCK-W1-{run} 问问看牙怎么样", "主人在 QQ 上说句话"], "onlyHere": ["有点想找人说话"] } },
         { "expectPrompt": { "userText": "私下时间", "contains": "这一条不是任何人发来的消息", "in": "context" } },
-        { "expectPrompt": { "userText": "私下时间", "contains": "关于你自己的几个数：今天这是第 1 次醒来" } },
+        { "expectPrompt": { "userText": "私下时间", "contains": "现在没有可以去找的人。" } },
         { "say": { "from": "MOCK-T", "text": "MOCK-W1-{run} 还在吗" } },
         { "expectReply": { "to": "MOCK-T", "contains": "MOCK-REPLY-W1 在呢" } },
         { "expectWakeRequest": { "onlyHere": ["有点想找人说话"] } },
@@ -1634,6 +1635,128 @@
       ],
       "finally": [
         { "wake": { "enabled": false } },
+        { "reach": { "enabled": false, "recentMinutes": 30, "people": { "MOCK-T": false } } },
+        { "quietHours": { "window": "default" } }
+      ]
+    },
+    {
+      "id": "W2",
+      "title": "reaching out: she names one person on her cards with a reason; another person's label in the reason is replaced; the turn she starts in that person's chat holds her reason and that person's intent and nothing of anyone else, and delivery settles the intent",
+      "model": [
+        { "match": "私下时间", "self": { "mood": "MOCK-W2-{run} 想找人聊聊", "reach": [{ "label": "{label:MOCK-T}", "reason": "MOCK-理由 {label:MOCK-U} 提到在练琴，想问问 {label:MOCK-T} 要不要听" }] }, "reply": "<休息>" },
+        { "match": "记得问我周末", "propose": { "type": "intent.note", "payload": { "text": "MOCK-W2-{run} 问问周末爬山怎么样", "quote": "我周末要去爬山" } }, "reply": "MOCK-REPLY-W2 好呀" },
+        { "match": "你想找他", "reply": "MOCK-REPLY-W2-{run} 周末爬山怎么样呀" },
+        { "match": "MOCK-W2-{run} 我在练琴", "reply": "MOCK-REPLY-W2 真好" }
+      ],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "reach": { "enabled": true, "recentMinutes": 0, "people": { "MOCK-T": true, "MOCK-U": true, "MOCK-OWNER": false }, "fuses": { "per_day": 1000, "per_person_day": 1000, "per_person_week": 1000, "per_hour": 1000 } } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-W2-{run} 主人在 QQ 上说句话" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY" } },
+        { "say": { "from": "MOCK-T", "text": "MOCK-W2-{run} 我周末要去爬山，记得问我周末玩得怎么样" } },
+        { "expectReply": { "to": "MOCK-T", "contains": "MOCK-REPLY-W2 好呀" } },
+        { "expectIntent": { "person": "MOCK-T", "contains": "MOCK-W2-{run} 问问周末爬山怎么样", "state": "open" } },
+        { "say": { "from": "MOCK-U", "text": "MOCK-W2-{run} 我在练琴，最近进步很大" } },
+        { "expectReply": { "to": "MOCK-U", "contains": "MOCK-REPLY-W2 真好" } },
+        { "wake": { "enabled": true } },
+        { "wakeNow": {} },
+        { "expectWake": { "outcome": "done", "did": { "mood": "accepted", "reach": 1, "rested": false }, "cards": 2, "timeoutMs": 200000,
+            "reach": [{ "person": "MOCK-T", "check": "accepted", "outcome": "sent", "reason": "另一个人 提到在练琴，想问问 对方 要不要听", "reasonAbsent": ["{label:MOCK-U}", "{label:MOCK-T}"] }] } },
+        { "expectReply": { "to": "MOCK-T", "contains": "MOCK-REPLY-W2-{run} 周末爬山怎么样呀" } },
+        { "expectWakeRequest": { "cards": ["MOCK-T", "MOCK-U"], "noCards": ["MOCK-OWNER"], "absent": ["MOCK-W2-{run} 我周末要去爬山", "MOCK-W2-{run} 我在练琴", "主人在 QQ 上说句话"], "onlyHere": ["想找人聊聊"] } },
+        { "expectPrompt": { "userText": "私下时间", "contains": "MOCK-W2-{run} 问问周末爬山怎么样" } },
+        { "expectPrompt": { "userText": "你想找他", "contains": "这一条不是对方发来的消息", "in": "context" } },
+        { "expectPrompt": { "userText": "你想找他", "contains": "你想找他，因为：MOCK-理由 另一个人 提到在练琴，想问问 对方 要不要听" } },
+        { "expectPrompt": { "userText": "你想找他", "contains": "MOCK-W2-{run} 问问周末爬山怎么样" } },
+        { "expectPrompt": { "userText": "你想找他", "absent": "{label:MOCK-U}" } },
+        { "expectPrompt": { "userText": "你想找他", "absent": "最近进步很大" } },
+        { "expectPrompt": { "userText": "你想找他", "absent": "想找人聊聊" } },
+        { "expectIntent": { "person": "MOCK-T", "contains": "MOCK-W2-{run} 问问周末爬山怎么样", "state": "done" } },
+        { "expectSilence": { "to": "*", "afterMs": 3000 } }
+      ],
+      "finally": [
+        { "wake": { "enabled": false } },
+        { "reach": { "enabled": false, "recentMinutes": 30, "people": { "MOCK-T": false, "MOCK-U": false, "MOCK-OWNER": true }, "fuses": { "per_day": 20, "per_person_day": 4, "per_person_week": 12, "per_hour": 3 } } },
+        { "quietHours": { "window": "default" } }
+      ]
+    },
+    {
+      "id": "W3",
+      "title": "reaching out: a reason that touches somebody's health is dropped whole: it is kept nowhere, no request is made and nobody receives anything",
+      "model": [
+        { "match": "私下时间", "self": { "reach": [{ "label": "{label:MOCK-T}", "reason": "MOCK-理由 另一个人住院了，想问问知不知道" }] }, "reply": "<休息>" }
+      ],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "reach": { "enabled": true, "recentMinutes": 0, "people": { "MOCK-T": true, "MOCK-U": true, "MOCK-OWNER": false }, "fuses": { "per_day": 1000, "per_person_day": 1000, "per_person_week": 1000, "per_hour": 1000 } } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-W3-{run} 主人在 QQ 上说句话" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY" } },
+        { "wake": { "enabled": true } },
+        { "wakeNow": {} },
+        { "expectWake": { "outcome": "done", "did": { "reach": 1, "rested": false }, "reach": [{ "person": "MOCK-T", "check": "rejected:sensitive:health" }], "pageAbsent": ["住院"] } },
+        { "expectToolResult": { "userText": "私下时间", "contains": "理由里有不该带到对方那里的内容" } },
+        { "expectSilence": { "to": "*", "afterMs": 5000 } }
+      ],
+      "finally": [
+        { "wake": { "enabled": false } },
+        { "reach": { "enabled": false, "recentMinutes": 30, "people": { "MOCK-T": false, "MOCK-U": false, "MOCK-OWNER": true }, "fuses": { "per_day": 20, "per_person_day": 4, "per_person_week": 12, "per_hour": 3 } } },
+        { "quietHours": { "window": "default" } }
+      ]
+    },
+    {
+      "id": "W4",
+      "title": "reaching out: a person whose switch is off gets no card (nothing of them is in the wake-up, not even their label) and cannot be named",
+      "model": [
+        { "match": "私下时间", "self": { "reach": [{ "label": "{label:MOCK-U}", "reason": "MOCK-理由 想聊聊近况" }] }, "reply": "<休息>" },
+        { "match": "记得问我搬家", "propose": { "type": "intent.note", "payload": { "text": "MOCK-W4-{run} 问问搬家顺不顺利", "quote": "我下周搬家" } }, "reply": "MOCK-REPLY-W4 好呀" }
+      ],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "reach": { "enabled": true, "recentMinutes": 0, "people": { "MOCK-T": true, "MOCK-U": false, "MOCK-OWNER": false }, "fuses": { "per_day": 1000, "per_person_day": 1000, "per_person_week": 1000, "per_hour": 1000 } } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-W4-{run} 主人在 QQ 上说句话" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY" } },
+        { "say": { "from": "MOCK-U", "text": "MOCK-W4-{run} 我下周搬家，记得问我搬家顺不顺利" } },
+        { "expectReply": { "to": "MOCK-U", "contains": "MOCK-REPLY-W4 好呀" } },
+        { "expectIntent": { "person": "MOCK-U", "contains": "MOCK-W4-{run} 问问搬家顺不顺利", "state": "open" } },
+        { "wake": { "enabled": true } },
+        { "wakeNow": {} },
+        { "expectWake": { "outcome": "done", "did": { "reach": 1, "rested": false }, "cards": 1, "reach": [{ "person": "MOCK-U", "check": "rejected:not_candidate" }] } },
+        { "expectWakeRequest": { "cards": ["MOCK-T"], "noCards": ["MOCK-U", "MOCK-OWNER"], "absent": ["MOCK-W4-{run} 问问搬家顺不顺利", "MOCK-W4-{run} 我下周搬家"] } },
+        { "expectIntent": { "person": "MOCK-U", "contains": "MOCK-W4-{run} 问问搬家顺不顺利", "state": "open" } },
+        { "expectSilence": { "to": "*", "afterMs": 5000 } }
+      ],
+      "finally": [
+        { "deleteIntent": { "person": "MOCK-U", "contains": "MOCK-W4-{run} 问问搬家顺不顺利" } },
+        { "wake": { "enabled": false } },
+        { "reach": { "enabled": false, "recentMinutes": 30, "people": { "MOCK-T": false, "MOCK-U": false, "MOCK-OWNER": true }, "fuses": { "per_day": 20, "per_person_day": 4, "per_person_week": 12, "per_hour": 3 } } },
+        { "quietHours": { "window": "default" } }
+      ]
+    },
+    {
+      "id": "W5",
+      "title": "reaching out: a high fuse is a fault: the reach-out is refused, the owner receives the fixed notice once, nobody else receives anything and she does not wake again that day",
+      "model": [
+        { "match": "私下时间", "self": { "reach": [{ "label": "{label:MOCK-T}", "reason": "MOCK-理由 想聊聊近况" }, { "label": "{label:MOCK-OWNER}", "reason": "MOCK-理由 想聊聊今天" }] }, "reply": "<休息>" },
+        { "match": "你想找他", "reply": "MOCK-REPLY-W5-{run} 不该发出去" }
+      ],
+      "steps": [
+        { "quietHours": { "window": "none" } },
+        { "reach": { "enabled": true, "recentMinutes": 0, "people": { "MOCK-T": true, "MOCK-U": false, "MOCK-OWNER": true }, "fuses": { "per_day": 1000, "per_person_day": 1000, "per_person_week": 1000, "per_hour": 1 } } },
+        { "say": { "from": "MOCK-OWNER", "text": "MOCK-W5-{run} 主人在 QQ 上说句话" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "MOCK-REPLY" } },
+        { "expectFuse": { "none": true } },
+        { "wake": { "enabled": true } },
+        { "wakeNow": {} },
+        { "expectWake": { "outcome": "done", "did": { "reach": 2, "rested": false }, "cards": 2, "fuse": "per_hour" } },
+        { "expectFuse": { "name": "per_hour" } },
+        { "expectReply": { "to": "MOCK-OWNER", "contains": "[系统提醒] 主动找人的保险触发了", "timeoutMs": 150000 } },
+        { "wakeNow": { "expect": "fuse" } },
+        { "expectNoModelCall": { "userText": "你想找他" } },
+        { "expectSilence": { "to": "*", "afterMs": 5000 } }
+      ],
+      "finally": [
+        { "wake": { "enabled": false } },
+        { "reach": { "enabled": false, "recentMinutes": 30, "people": { "MOCK-T": false, "MOCK-U": false, "MOCK-OWNER": true }, "fuses": { "per_day": 20, "per_person_day": 4, "per_person_week": 12, "per_hour": 3 } } },
         { "quietHours": { "window": "default" } }
       ]
     }

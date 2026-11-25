@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { QQBridge } from '../bridge.js';
 import { PACING } from '../pacing.js';
+import { SPLIT_MAX_PARTS } from '../split.js';
 import { DECLINE_MARK } from '../../conversation/executor.js';
 
 // No burst wait (each message is its own turn unless they arrive together) and a fixed random source.
@@ -259,4 +260,57 @@ test('faces off (QQ\'s declaration by default): an initiated run sends her [微�
   await f.bridge.pollInitiations();
   assert.deepEqual(f.sends.map(s => s.message), [[{ type: 'text', data: { text: 'MOCK 在忙吗[微笑]' } }]]);
   assert.equal(f.record('mock-face-off').status, 'sent');
+});
+
+// Reaching out from her wake-up (Authority's event block comes with the request) and the fixed notice to the owner.
+const FRIEND_STREAM = 'qq:100:private:201', EVENT = '你想找他，因为：MOCK 想问问近况\n你没有给对方留下具体的事。';
+
+test('a request from her wake-up goes to the owner or a friend with Authority\'s event block as its text, without thinking of its own; never to a stranger or a group', async t => {
+  const f = await fixture(t);
+  f.offers.push(offer('reach-1', { streamId: FRIEND_STREAM, event: EVENT, light: true }));
+  await f.bridge.pollInitiations();
+  assert.deepEqual(f.runs.map(run => [run.scope, run.input]), [[{ streamId: FRIEND_STREAM, memoryEpoch: 0 }, { text: EVENT, initiated: true, light: true }]]);
+  assert.deepEqual(f.sends, [{ user_id: '201', message: [{ type: 'text', data: { text: 'MOCK 在忙吗？' } }], auto_escape: true }]);
+  assert.deepEqual(f.observations.map(o => [o.streamId, o.role, o.text]), [[FRIEND_STREAM, 'assistant', 'MOCK 在忙吗？']]);
+  assert.deepEqual(f.acks, [{ id: 'reach-1', outcome: 'sent' }]);
+  // She may still say nothing.
+  f.reply = DECLINE_MARK; f.offers.push(offer('reach-2', { event: EVENT, light: true }));
+  await f.bridge.pollInitiations();
+  assert.deepEqual([f.acks.at(-1), f.sends.length, f.runs[1].scope.streamId], [{ id: 'reach-2', outcome: 'declined' }, 1, OWNER_STREAM]);
+  // Not a friend, a group, another bot, an event that is no text: never run. Without an event block a friend is still refused.
+  const bad = [{ streamId: 'qq:100:private:202', event: EVENT }, { streamId: 'qq:100:group:300', event: EVENT }, { streamId: 'qq:101:private:201', event: EVENT }, { streamId: FRIEND_STREAM, event: '' }, { streamId: FRIEND_STREAM, event: 3 }, { streamId: FRIEND_STREAM, event: 'x'.repeat(4001) }, { streamId: FRIEND_STREAM }];
+  for (const [index, extra] of bad.entries()) { f.offers.push(offer('bad-' + index, extra)); await f.bridge.pollInitiations(); }
+  assert.deepEqual([f.runs.length, f.sends.length, f.acks.slice(2).map(ack => ack.outcome)], [2, 1, bad.map(() => 'dropped:target')]);
+});
+
+test('a fuse notice is a fixed line to the owner: no model, not observed as her words, sent once; anybody else or an unknown notice is refused', async t => {
+  const f = await fixture(t);
+  f.offers.push({ id: 'notice-1', kind: 'notice', streamId: OWNER_STREAM, memoryEpoch: 0, expiresAt: Date.now() + 300000, notice: 'fuse', text: 'MOCK 不该被发出去的字' });
+  await f.bridge.pollInitiations();
+  assert.equal(f.sends.length, 1);
+  assert.deepEqual([f.sends[0].user_id, f.sends[0].auto_escape], ['200', true]);
+  assert.match(f.sends[0].message[0].data.text, /^\[系统提醒\] 主动找人的保险触发了/);
+  assert.deepEqual([f.runs.length, f.observations.length, f.acks], [0, 0, [{ id: 'notice-1', outcome: 'sent' }]]);
+  f.offers.push({ id: 'notice-1', kind: 'notice', streamId: OWNER_STREAM, memoryEpoch: 0, expiresAt: Date.now() + 300000, notice: 'fuse' });
+  await f.bridge.pollInitiations();
+  assert.equal(f.sends.length, 1);
+  for (const [id, extra] of Object.entries({ 'notice-2': { streamId: FRIEND_STREAM }, 'notice-3': { notice: 'other' }, 'notice-4': { notice: undefined } })) {
+    f.offers.push({ id, kind: 'notice', streamId: OWNER_STREAM, memoryEpoch: 0, expiresAt: Date.now() + 300000, notice: 'fuse', ...extra });
+    await f.bridge.pollInitiations();
+  }
+  assert.deepEqual([f.sends.length, f.acks.slice(1).map(ack => ack.outcome)], [1, ['dropped:target', 'dropped:unsupported', 'dropped:unsupported']]);
+  // A send without a receipt is unknown and is not tried again.
+  f.sendError = () => true;
+  f.offers.push({ id: 'notice-5', kind: 'notice', streamId: OWNER_STREAM, memoryEpoch: 0, expiresAt: Date.now() + 300000, notice: 'fuse' });
+  await f.bridge.pollInitiations(); await f.bridge.pollInitiations();
+  assert.deepEqual([f.sends.length, f.acks.at(-1)], [2, { id: 'notice-5', outcome: 'unknown' }]);
+});
+
+test('a turn she starts never sends more than four messages: the split stops there, and the fuse behind it stands at the same number', async t => {
+  const f = await fixture(t);
+  assert.ok(SPLIT_MAX_PARTS <= 4);
+  f.reply = Array.from({ length: 9 }, (_, index) => `MOCK 第 ${index + 1} 句话写得稍微长一点好让它单独成为一条消息。`).join('\n');
+  f.offers.push(offer('reach-long', { streamId: FRIEND_STREAM, event: EVENT, light: true }));
+  await f.bridge.pollInitiations();
+  assert.deepEqual([f.sends.length <= 4, f.acks.at(-1).outcome], [true, 'sent']);
 });

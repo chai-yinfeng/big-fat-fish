@@ -7,8 +7,12 @@
 // pause, in the quiet hours or once the person has spoken, and a request that went out is never handed out
 // again, whatever became of it.
 // Two kinds, each with its own rule for whom it may reach:
-// - `proactive`: she decides to speak. The only source in this release is the operator's "try it on me", and the
-//   only conversation such a request may name is the owner's own private conversation (the one they last spoke in).
+// - `proactive`: she decides to speak. Two sources. The operator's "try it on me" (`source: 'poke'`) may only name the
+//   owner's own private conversation (the one they last spoke in). A wake-up in which she named a person and Authority
+//   accepted it (`source: 'reach'`, wake.js) names the private conversation that person last spoke in: the owner or
+//   an admitted person whose switch the operator turned on, never a group. Authority builds its event block (her
+//   reason, that person's intents and soft facts, nothing of anyone else) and hands it out with the request.
+// - `notice`: a fixed line to the owner that a high fuse was hit. No model is asked; the bridge holds the text.
 // - `completion`: a background job of the content service finished (capabilities/media/jobs.js). It goes to the
 //   conversation the job was registered in and to nobody else: the job record names it, Authority checks it against
 //   its own bindings every time, and neither the bridge nor the model can name another. A finished job is told
@@ -24,9 +28,12 @@ import { OpenDiaryDomain } from './open-diary.js';
 import { opaquePerson } from './context.js';
 import { roomProjection } from './room.js';
 import { DEFAULT_CARD_ID } from './cards.js';
-import { OUTREACH_TIERS, SELECTION, SELF_PERSON, WAKE, WAKE_OUTCOMES, afterQuiet, beijingDay, beijingMidnight, candidateWeights, nextDay, pick, refusedText, regularNext, renderBriefing, selfStream } from './wake.js';
+import { SENSITIVE } from './policies.js';
+import { REACH, SELF_PERSON, WAKE, WAKE_OUTCOMES, beijingDay, beijingMidnight, clip, nextWake, refusedReason, refusedText, renderBriefing, renderCard, renderReachEvent, repeatsWords, selfStream, withoutLabels } from './wake.js';
 
 const MINUTE = 60000, BEIJING = 8 * 3600000;
+/** The most the operator may set a high fuse to. */
+const FUSE_MAX = 1000;
 export const INITIATION = Object.freeze({
   /** A request nobody fetched within this time is void (the bridge asks about once a minute while its platform is up). */
   ttlMs: 5 * MINUTE,
@@ -83,6 +90,8 @@ export class InitiationDomain extends OpenDiaryDomain {
     for (const item of state.items) {
       if (item.status === 'issued' && now - item.issuedAt >= INITIATION.reportMs) { this.#close(item, 'unknown', now); item.unreported = true; if (item.jobRef) this.#notices.push({ id: item.jobRef, state: 'closed', outcome: 'unknown' }); }
       else if (item.status === 'waiting') { const refusal = this.#refusal(item, world, now, this.#quiet(state)); if (refusal) this.#close(item, refusal, now); }
+      else continue;
+      if (item.status === 'closed' && item.source === 'reach') this.#reachEnded(state, item, now, world);
     }
   }
   /** The private conversation a person is to be reached in: the one, on any conversation channel where an account
@@ -100,13 +109,19 @@ export class InitiationDomain extends OpenDiaryDomain {
     // Paused now, or paused and resumed since it was registered: nothing is made up for afterwards.
     if (world.paused || world.revision !== item.worldRevision) return 'dropped:paused';
     if (now >= item.expiresAt) return 'dropped:expired';
-    // Only a proactive request ever waits here; a completion is created handed out, under its own rule below.
-    if (item.kind !== 'proactive') return 'dropped:target';
-    // A proactive request goes to the owner only, in the private conversation the owner last spoke in.
-    const target = this.#recentStream(OWNER);
-    if (item.personId !== OWNER || !target || target.capabilityId !== item.capabilityId || target.streamId !== item.streamId || target.entityId !== item.entityId) return 'dropped:target';
+    // Only a proactive request or a notice ever waits here; a completion is created handed out, under its own rule below.
+    const reach = item.kind === 'proactive' && item.source === 'reach';
+    if (item.kind !== 'proactive' && item.kind !== 'notice') return 'dropped:target';
+    // The operator's poke and a notice go to the owner only; a request from a wake-up goes to the person she named.
+    // Either way: the private conversation that person last spoke in, as Authority's own bindings stand now.
+    if (!reach && item.personId !== OWNER) return 'dropped:target';
+    const target = this.#recentStream(item.personId);
+    if (!target || target.capabilityId !== item.capabilityId || target.streamId !== item.streamId || target.entityId !== item.entityId) return 'dropped:target';
     if (this.streamEpoch(this.entity(item.entityId), item.capabilityId, item.streamId) !== item.memoryEpoch) return 'dropped:epoch';
     if (quietHours(now, quiet)) return 'dropped:quiet_hours';
+    if (item.kind === 'notice') return null;
+    // The forced rules of reaching out, as they stand now (a switch turned off meanwhile, a fuse hit, the spend tier).
+    if (reach) { const refused = this.#reachRefusal(this.#initiative(), item.entityId, item.personId, now); if (refused) return `dropped:${refused}`; }
     // The person has spoken since: their message gets an ordinary reply instead.
     if (this.store.db.prepare("SELECT 1 FROM observations WHERE capability_id=? AND stream_id=? AND rowid>? AND json_extract(body,'$.role')='user' LIMIT 1").get(item.capabilityId, item.streamId, item.afterRow)) return 'dropped:person_spoke';
     return null;
@@ -178,7 +193,7 @@ export class InitiationDomain extends OpenDiaryDomain {
       this.#settle(state, world, now);
       const target = this.#recentStream(OWNER);
       if (!target) fail('CONFLICT', 'Bind the owner before initiating', 409);
-      const open = state.items.find(item => item.status !== 'closed');
+      const open = state.items.find(item => item.status !== 'closed' && item.source === 'poke');
       if (open) { this.#save(state); return { ...this.#view(open), already: true }; }
       const item = {
         id: randomUUID(), kind: 'proactive', source: 'poke', capabilityId: target.capabilityId, streamId: target.streamId, personId: OWNER, entityId: target.entityId,
@@ -216,10 +231,21 @@ export class InitiationDomain extends OpenDiaryDomain {
         if (item) {
           item.status = 'issued'; item.issuedAt = now;
           initiation = { id: item.id, kind: item.kind, streamId: item.streamId, memoryEpoch: item.memoryEpoch, expiresAt: item.expiresAt };
+          if (item.kind === 'notice') initiation.notice = item.notice;
+          // A request from a wake-up carries its event block, built now from this one person's material: her reason
+          // as it was kept, her unsettled intents about them, the soft facts about them. Those of the intents whose
+          // day has come (or that have none) are remembered: they are settled once the turn is delivered. `light`:
+          // the turn does not think on its own account (it follows the switch of everyday chat).
+          if (item.source === 'reach') {
+            const intents = this.openIntents(item.entityId, item.personId), today = beijingDay(now);
+            item.intentIds = intents.filter(intent => intent.dueDate === null || intent.dueDate <= today).map(intent => intent.id);
+            initiation.event = renderReachEvent({ reason: item.reason, intents, stats: this.#personStats(this.#initiative(), item.entityId, item.personId, now), now });
+            initiation.light = true;
+          }
         } else if (ready.length) initiation = this.#issue(state, ready[0], capabilityId, now, false);
         // Nothing for anybody: her own wake-up may be due (a request to a person always goes first).
         else {
-          const wake = this.#wakeNext(capabilityId, { busy: input.busy === true, quiet, world, now, items: state.items });
+          const wake = this.#wakeNext(capabilityId, { busy: input.busy === true, quiet, world, now, state });
           if (wake === 'out') reason = 'busy'; else if (wake) initiation = wake;
         }
       }
@@ -267,6 +293,7 @@ export class InitiationDomain extends OpenDiaryDomain {
       if (item.jobRef) this.#notices.push({ id: item.jobRef, state: SETTLED.includes(input.outcome) ? 'closed' : 'carry', outcome: input.outcome });
       // The gateway's spend tier refused the run (it stops this kind of work first): recorded, nothing is retried.
       if (input.outcome === 'deferred:budget') state.deferredAt = now;
+      if (item.source === 'reach') this.#reachEnded(state, item, now, this.worldStatus());
       this.#save(state);
       return { status: 'recorded' };
     });
@@ -306,34 +333,75 @@ export class InitiationDomain extends OpenDiaryDomain {
       };
     });
   }
-  /** Operator only: the quiet hours as Beijing wall-clock times `{quietHours:{from:'HH:MM',to:'HH:MM'}}` (equal
-   * ends mean no quiet hours; no console form uses it yet: scenario replay does, to run at any hour), and her private
-   * wake-up `{wake:{enabled?,perDay?}}` (off until the operator turns it on; `perDay` 1..WAKE.perDayMax). Either
-   * or both. */
+  /** Operator only; any of:
+   * - `quietHours:{from:'HH:MM',to:'HH:MM'}`: Beijing wall-clock times (equal ends mean no quiet hours; no console
+   *   form uses it yet: scenario replay does, to run at any hour).
+   * - `wake:{enabled?,times?}`: her private wake-up (off until the operator turns it on) and its one or two times of
+   *   day `['HH:MM',...]`.
+   * - `reach:{enabled?,people?,recentMinutes?,fuses?}`: whether a wake-up may lead to a turn she starts (off until
+   *   turned on); `people` `{<opaque label>: boolean}`, one person's switch (off for everyone but the owner until
+   *   turned on); how recent a chat keeps a person out (0..1440 minutes); the four high fuses of wake.js (1..1000). */
   initiationSettings(input) {
-    closed(input, ['quietHours', 'wake'], []);
-    if (input.quietHours === undefined && input.wake === undefined) fail('VALIDATION_ERROR', 'Nothing to change');
-    let minutes = null;
+    closed(input, ['quietHours', 'wake', 'reach'], []);
+    if (input.quietHours === undefined && input.wake === undefined && input.reach === undefined) fail('VALIDATION_ERROR', 'Nothing to change');
+    const minuteOf = value => { const match = typeof value === 'string' ? /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value) : null; if (!match) fail('VALIDATION_ERROR', 'Times are HH:MM'); return Number(match[1]) * 60 + Number(match[2]); };
+    let minutes = null, times = null;
     if (input.quietHours !== undefined) {
       closed(input.quietHours, ['from', 'to']);
-      minutes = ['from', 'to'].map(key => { const match = typeof input.quietHours[key] === 'string' ? /^([01]\d|2[0-3]):([0-5]\d)$/.exec(input.quietHours[key]) : null; if (!match) fail('VALIDATION_ERROR', 'Quiet hours are HH:MM'); return Number(match[1]) * 60 + Number(match[2]); });
+      minutes = ['from', 'to'].map(key => minuteOf(input.quietHours[key]));
     }
     if (input.wake !== undefined) {
-      closed(input.wake, ['enabled', 'perDay'], []);
+      closed(input.wake, ['enabled', 'times'], []);
       if (input.wake.enabled !== undefined && typeof input.wake.enabled !== 'boolean') fail('VALIDATION_ERROR', 'enabled must be boolean');
-      if (input.wake.perDay !== undefined && !(Number.isInteger(input.wake.perDay) && input.wake.perDay >= 1 && input.wake.perDay <= WAKE.perDayMax)) fail('VALIDATION_ERROR', 'perDay is out of range');
+      if (input.wake.times !== undefined) {
+        if (!Array.isArray(input.wake.times) || input.wake.times.length < 1 || input.wake.times.length > WAKE.maxTimes) fail('VALIDATION_ERROR', 'times holds one or two times of day');
+        times = input.wake.times.map(minuteOf).sort((a, b) => a - b);
+        if (new Set(times).size !== times.length) fail('VALIDATION_ERROR', 'times must differ');
+      }
+    }
+    const reach = input.reach;
+    if (reach !== undefined) {
+      closed(reach, ['enabled', 'people', 'recentMinutes', 'fuses'], []);
+      if (reach.enabled !== undefined && typeof reach.enabled !== 'boolean') fail('VALIDATION_ERROR', 'enabled must be boolean');
+      if (reach.recentMinutes !== undefined && !(Number.isInteger(reach.recentMinutes) && reach.recentMinutes >= 0 && reach.recentMinutes <= 1440)) fail('VALIDATION_ERROR', 'recentMinutes is out of range');
+      if (reach.fuses !== undefined) { closed(reach.fuses, Object.keys(REACH.fuses), []); if (Object.values(reach.fuses).some(value => !(Number.isInteger(value) && value >= 1 && value <= FUSE_MAX))) fail('VALIDATION_ERROR', 'A fuse is out of range'); }
+      if (reach.people !== undefined) { closed(reach.people, Object.keys(reach.people ?? {})); if (Object.values(reach.people).some(value => typeof value !== 'boolean')) fail('VALIDATION_ERROR', 'A person switch must be boolean'); }
     }
     return this.store.transaction(() => {
-      const state = this.#state();
+      const state = this.#state(), now = this.now();
       if (minutes) { state.quiet = { fromMinute: minutes[0], toMinute: minutes[1] }; this.#save(state); }
       const own = this.#initiative();
-      if (input.wake) { own.wake = { ...this.#wakeSettings(own), ...input.wake }; this.#saveInitiative(own); }
-      const quiet = this.#quiet(state);
-      return { quietHours: { from: clock(quiet.fromMinute), to: clock(quiet.toMinute), timezone: 'Asia/Shanghai', now: quietHours(this.now(), quiet) }, ...(input.wake ? { wake: this.#wakeSettings(own) } : {}) };
+      if (input.wake) {
+        own.wake = { enabled: input.wake.enabled ?? this.#wakeSettings(own).enabled, minutes: times ?? this.#wakeSettings(own).minutes };
+        // New times: scheduled afresh from now on (a time of today that has passed is not made up for).
+        if (times) { delete own.nextAt; own.slotAt = now; }
+      }
+      if (reach) {
+        const stored = own.reach ||= {};
+        if (reach.enabled !== undefined) stored.enabled = reach.enabled;
+        if (reach.recentMinutes !== undefined) stored.recentMinutes = reach.recentMinutes;
+        if (reach.fuses) stored.fuses = { ...stored.fuses, ...reach.fuses };
+        if (reach.people) {
+          // A label names a person only among those who can be reached at all; the request never carries a person ID.
+          const entityId = this.#recentStream(OWNER)?.entityId, known = new Map((entityId ? this.#people(entityId) : []).map(personId => [opaquePerson(personId), personId]));
+          for (const [label, enabled] of Object.entries(reach.people)) {
+            if (!known.has(label)) fail('VALIDATION_ERROR', 'Unknown person');
+            ((stored.people ||= {})[known.get(label)] ||= {}).enabled = enabled;
+          }
+        }
+      }
+      if (input.wake || reach) this.#saveInitiative(own);
+      const quiet = this.#quiet(state), wake = this.#wakeSettings(own);
+      return {
+        quietHours: { from: clock(quiet.fromMinute), to: clock(quiet.toMinute), timezone: 'Asia/Shanghai', now: quietHours(now, quiet) },
+        ...(input.wake ? { wake: { enabled: wake.enabled, times: wake.minutes.map(clock) } } : {}), ...(reach ? { reach: this.#reachView(own, now) } : {}),
+      };
     });
   }
 
-  // ---- Her private wake-up (wake.js). Everything below reaches nobody: no request to any person is made from it. ----
+
+
+  // ---- Her private wake-up and reaching out from it (wake.js). ----
   #initiative() {
     const row = this.store.db.prepare("SELECT value FROM metadata WHERE key='initiative'").get();
     return row ? JSON.parse(row.value) : {};
@@ -344,72 +412,182 @@ export class InitiationDomain extends OpenDiaryDomain {
     return row ? JSON.parse(row.value) : [];
   }
   #saveWakeLog(log) { this.store.db.prepare("INSERT INTO metadata(key,value) VALUES('initiative.log',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(log.slice(-WAKE.log))); }
+  /** The switch and the times of day (minutes of the Beijing day). What an earlier release stored (`perDay`) is ignored. */
   #wakeSettings(own) {
-    const perDay = own.wake?.perDay;
-    return { enabled: own.wake?.enabled === true, perDay: Number.isInteger(perDay) && perDay >= 1 && perDay <= WAKE.perDayMax ? perDay : WAKE.perDay };
+    const minutes = own.wake?.minutes;
+    return { enabled: own.wake?.enabled === true, minutes: Array.isArray(minutes) && minutes.length >= 1 && minutes.length <= WAKE.maxTimes && minutes.every(validMinute) ? minutes : [...WAKE.minutes] };
+  }
+  /** Reaching out: the switch (off until the operator turns it on), how recent a chat keeps a person out, the fuses. */
+  #reachSettings(own) {
+    const stored = own.reach ?? {}, valid = value => Number.isInteger(value) && value >= 1 && value <= FUSE_MAX;
+    return {
+      enabled: stored.enabled === true, recentMs: Number.isInteger(stored.recentMinutes) && stored.recentMinutes >= 0 && stored.recentMinutes <= 1440 ? stored.recentMinutes * MINUTE : REACH.recentMs,
+      fuses: Object.fromEntries(Object.entries(REACH.fuses).map(([name, limit]) => [name, valid(stored.fuses?.[name]) ? stored.fuses[name] : limit])),
+    };
+  }
+  /** One person's switch: off until the operator turns it on, except the owner's own, which is on until turned off. */
+  #switchOn(own, personId) { const set = own.reach?.people?.[personId]?.enabled; return typeof set === 'boolean' ? set : personId === OWNER; }
+  /** Everyone with an account and a private conversation on a conversation channel (her own conversation is nobody's). */
+  #people(entityId) {
+    return this.store.db.prepare(`SELECT DISTINCT s.person_id AS personId FROM streams s JOIN capabilities c ON c.id=s.capability_id AND c.policy='conversation.v1'
+      WHERE s.audience='private' AND s.entity_id=? AND s.person_id<>? AND EXISTS (SELECT 1 FROM actors a WHERE a.capability_id=s.capability_id AND a.person_id=s.person_id) ORDER BY s.person_id`).all(entityId, SELF_PERSON).map(row => row.personId);
+  }
+  #boundary(entityId, personId, now) {
+    return !!this.store.db.prepare("SELECT 1 FROM memory_items WHERE entity_id=? AND person_id=? AND collection='appraisals' AND kind='boundary' AND status='active' AND json_extract(body,'$.evidence.at')>=? LIMIT 1").get(entityId, personId, now - REACH.boundaryMs);
+  }
+  /** The soft facts about one person: times and counts from their private conversations, and her own reach-outs to
+   * them from the lasting record (`own.reach.people`), which does not depend on how many requests are still kept.
+   * "Unanswered" is over once the person has written after her last reach-out. */
+  #personStats(own, entityId, personId, now) {
+    const row = this.store.db.prepare(`SELECT MIN(json_extract(o.body,'$.at')) AS firstAt,MAX(json_extract(o.body,'$.at')) AS lastAt,
+      MAX(CASE WHEN json_extract(o.body,'$.role')='user' THEN json_extract(o.body,'$.at') END) AS lastUserAt,
+      COALESCE(SUM(json_extract(o.body,'$.role')='user' AND json_extract(o.body,'$.at')>=?),0) AS lines14
+      FROM observations o JOIN streams s ON s.capability_id=o.capability_id AND s.stream_id=o.stream_id WHERE s.person_id=? AND s.audience='private' AND s.entity_id=? AND o.forgotten=0`).get(now - REACH.chatterMs, personId, entityId);
+    const record = own.reach?.people?.[personId] ?? {}, reachedAt = Number.isSafeInteger(record.lastAt) ? record.lastAt : null;
+    return {
+      firstAt: row.firstAt, lastAt: row.lastAt, lastUserAt: row.lastUserAt, lines14: row.lines14, reachedAt,
+      unanswered: reachedAt === null || (row.lastUserAt ?? 0) > reachedAt ? 0 : record.unanswered ?? 0,
+      reached7: (record.ats ?? []).filter(at => at >= now - REACH.reachedMs).length,
+    };
+  }
+  /** Why she may not reach out to this person as things stand (a forced rule: not a fault), or null. */
+  #reachRefusal(own, entityId, personId, now) {
+    const today = beijingDay(now);
+    return !this.#reachSettings(own).enabled ? 'reach_off' : !this.#switchOn(own, personId) ? 'switch' : own.fuse?.day === today ? 'fuse' : own.deferredDay === today ? 'budget'
+      : this.#boundary(entityId, personId, now) ? 'boundary' : !this.#recentStream(personId) ? 'target' : null;
+  }
+  /** The cards of one wake-up: one for every person she may reach out to now, and how many people were left out, by
+   * reason. Nobody is a candidate while reaching out is switched off. */
+  #cards(own, entityId, now) {
+    const settings = this.#reachSettings(own), cards = [], excluded = {};
+    let chars = 0;
+    for (const personId of this.#people(entityId)) {
+      const stats = this.#personStats(own, entityId, personId, now);
+      const reason = this.#reachRefusal(own, entityId, personId, now) ?? (stats.lastAt !== null && now - stats.lastAt < settings.recentMs ? 'recent' : null);
+      const digests = [];
+      let left = REACH.digestChars, text = '';
+      if (!reason) {
+        // Machine digests of this person's dialogue: the newest one or two, 200 characters between them; one the
+        // sensitive lexicon matches is left out, as it is from her diary's material.
+        for (const memory of this.recentDigests(entityId, personId, REACH.digests)) {
+          const summary = String(memory.summary ?? '');
+          if (!summary || left < 20 || SENSITIVE.test(summary)) continue;
+          const shown = clip(summary, left);
+          left -= [...shown].length; digests.push({ day: beijingDay(memory.toAt), summary: shown });
+        }
+        text = renderCard({ label: opaquePerson(personId), stats, intents: this.openIntents(entityId, personId), digests }, now);
+      }
+      const leftOut = reason ?? (cards.length >= REACH.cards || chars + text.length > REACH.cardsChars ? 'budget' : null);
+      if (leftOut) { excluded[leftOut] = (excluded[leftOut] ?? 0) + 1; continue; }
+      chars += text.length; cards.push({ personId, label: opaquePerson(personId), text });
+    }
+    return { cards, excluded };
+  }
+  /** Which high fuse one more reach-out to this person would hit, or null. Counted from the lasting record of what
+   * went out (or may have) plus the requests still open. */
+  #fuse(own, items, personId, now) {
+    const limits = this.#reachSettings(own).fuses, day = beijingMidnight(now);
+    const sent = [...Object.entries(own.reach?.people ?? {}).flatMap(([id, record]) => (record.ats ?? []).map(at => ({ personId: id, at }))),
+      ...items.filter(item => item.source === 'reach' && item.status !== 'closed').map(item => ({ personId: item.personId, at: item.createdAt }))];
+    const mine = sent.filter(item => item.personId === personId);
+    return sent.filter(item => item.at >= day).length >= limits.per_day ? 'per_day' : mine.filter(item => item.at >= day).length >= limits.per_person_day ? 'per_person_day'
+      : mine.filter(item => item.at >= now - REACH.reachedMs).length >= limits.per_person_week ? 'per_person_week' : sent.filter(item => item.at >= now - 60 * MINUTE).length >= limits.per_hour ? 'per_hour' : null;
+  }
+  /** A high fuse was hit: a fault, not a limit. It is counted in the day's log, and the first one of a Beijing day
+   * stops everything she starts for the rest of that day and tells the owner once: a fixed notice, registered here
+   * and sent by the bridge without any model. */
+  #tripFuse(own, log, items, name, now, world) {
+    const day = beijingDay(now);
+    this.#skip(log, `fuse:${name}`, now);
+    if (own.fuse?.day === day) return;
+    own.fuse = { day, name, at: now };
+    const target = this.#recentStream(OWNER);
+    if (target) items.push({
+      id: randomUUID(), kind: 'notice', source: 'fuse', notice: 'fuse', capabilityId: target.capabilityId, streamId: target.streamId, personId: OWNER, entityId: target.entityId,
+      memoryEpoch: this.streamEpoch(this.entity(target.entityId), target.capabilityId, target.streamId), worldRevision: world.revision, createdAt: now, expiresAt: now + REACH.ttlMs, status: 'waiting',
+    });
+  }
+  /** A request from a wake-up was closed: what that means for the lasting record. One that went out (or may have:
+   * `unknown`) counts as a reach-out to that person; one that was delivered settles the intents it showed her that
+   * were due; the wake-up's log entry gets the outcome. Loads and saves her own state itself. */
+  #reachEnded(state, item, now, world) {
+    const own = this.#initiative(), log = this.#wakeLog(), outcome = item.outcome;
+    if (['sent', 'partial', 'unknown'].includes(outcome) && !item.counted) {
+      const record = ((own.reach ||= {}).people ||= {})[item.personId] ||= {}, stats = this.#personStats(own, item.entityId, item.personId, now);
+      record.unanswered = stats.unanswered + 1; record.lastAt = now;
+      record.ats = [...(record.ats ?? []).filter(at => at >= now - REACH.reachedMs), now];
+      item.counted = true;
+    }
+    if (['sent', 'partial'].includes(outcome)) for (const id of item.intentIds ?? []) this.settleIntentNow(item.entityId, id);
+    if (outcome === 'deferred:budget') own.deferredDay = beijingDay(now);
+    // The bridge refused to send more messages in one turn than the fuse allows.
+    if (outcome === 'dropped:fuse_messages') this.#tripFuse(own, log, state.items, 'messages_per_turn', now, world);
+    const shown = log.find(entry => entry.type === 'wake' && entry.id === item.wakeId)?.reach?.find(entry => entry.initiationId === item.id);
+    if (shown) shown.outcome = outcome;
+    this.#saveInitiative(own); this.#saveWakeLog(log);
+  }
+  /** What the people she may reach out to wrote lately (their own lines, not forgotten): a reason may not repeat them. */
+  #words(entityId, personIds, now) {
+    if (!personIds.length) return [];
+    return this.store.db.prepare(`SELECT json_extract(o.body,'$.text') AS text FROM observations o JOIN streams s ON s.capability_id=o.capability_id AND s.stream_id=o.stream_id
+      WHERE s.audience='private' AND s.entity_id=? AND s.person_id IN (${personIds.map(() => '?').join(',')}) AND o.forgotten=0 AND json_extract(o.body,'$.role')='user' AND json_extract(o.body,'$.at')>=? ORDER BY o.rowid DESC LIMIT 400`)
+      .all(entityId, ...personIds, now - REACH.chatterMs).map(row => row.text).filter(text => typeof text === 'string');
   }
   /** Wake-ups that ran (or may have) on the Beijing day of `now`: one the spend tier refused or the bridge never started does not count. */
   #wokeToday(log, now) {
     const day = beijingDay(now);
     return log.filter(entry => entry.type === 'wake' && beijingDay(entry.at) === day && entry.outcome !== 'deferred:budget' && !entry.outcome.startsWith('dropped:')).length;
   }
-  /** A wake-up that was due and did not happen: counted by reason, merged into one entry a Beijing day. */
+  /** A wake-up that was due and did not happen (or a fuse that was hit): counted by reason, merged into one entry a Beijing day. */
   #skip(log, reason, now) {
     const day = beijingDay(now);
     let entry = log.findLast(item => item.type === 'skip' && item.day === day);
     if (!entry) { entry = { type: 'skip', day, at: now, counts: {} }; log.push(entry); }
     entry.counts[reason] = (entry.counts[reason] ?? 0) + 1; entry.at = now;
   }
-  /** The next wake-up is brought forward to now, but never closer than WAKE.minGapMs to the one before it. */
-  #bringForward(own, now, reason) {
-    const at = Math.max(now, (own.lastWakeAt ?? -Infinity) + WAKE.minGapMs);
-    if (!(own.nextAt <= at)) own.nextAt = at;
-    own.nextReason = reason;
+  /** What would stop a wake-up as things stand (the bridge being busy aside), or null. */
+  #wakeBlocked(own, world, quiet, now) {
+    const today = beijingDay(now);
+    return world.paused ? 'paused' : quietHours(now, quiet) ? 'quiet_hours' : own.deferredDay === today ? 'budget' : own.fuse?.day === today ? 'fuse' : null;
   }
-  /** Her tier as it stands: what she last chose under the persona card now current, else 'none'. */
-  #tier(own, cardId) { return OUTREACH_TIERS.includes(own.outreach?.tier) && (own.outreach.cardId ?? DEFAULT_CARD_ID) === cardId ? own.outreach.tier : 'none'; }
-  /** The turns she started that went out since `since`, from the kept requests (the newest 50 closed ones). */
-  #reached(items, since) { return items.filter(item => item.kind === 'proactive' && ['sent', 'partial'].includes(item.outcome) && item.endedAt >= since); }
   /** Is her wake-up due on this channel, and may it happen now? Returns the request to hand out, 'out' while one is
    * out, or null. Only the channel the owner last spoke on carries wake-ups (so one bridge runs them). Decided here
    * and nowhere else: the caller only says whether it has turns queued. A wake-up that is due and may not happen is
-   * counted with its reason and not made up for. */
-  #wakeNext(capabilityId, { busy, quiet, world, now, items }) {
+   * counted with its reason and not made up for (a busy bridge only puts it off by a few minutes). */
+  #wakeNext(capabilityId, { busy, quiet, world, now, state }) {
     const target = this.#recentStream(OWNER);
     if (!target || target.capabilityId !== capabilityId) return null;
     const own = this.#initiative(), stored = JSON.stringify(own), log = this.#wakeLog(), logged = JSON.stringify(log), random = this.random ?? Math.random;
     const done = value => { if (JSON.stringify(own) !== stored) this.#saveInitiative(own); if (JSON.stringify(log) !== logged) this.#saveWakeLog(log); return value; };
     if (own.out) {
       if (now - own.out.issuedAt < INITIATION.reportMs) return done('out');
-      // Fetched and never reported: what became of it is unknown. The bridge's own report may still replace that.
-      this.#wakeEnd(own, log, 'unknown', now, items, { unreported: true });
+      // Fetched and never reported: what became of it is unknown, and nobody is reached out to from it. The bridge's
+      // own report may still replace the outcome.
+      this.#wakeEnd(own, log, 'unknown', now, state, world, { unreported: true });
     }
-    const today = beijingDay(now), settings = this.#wakeSettings(own);
-    // An intent that came due brings the next wake-up forward. Only the number of people is read, nothing of any intent.
-    const intentPeople = Object.keys(this.openIntentCounts({ entityId: target.entityId, dueBy: today })).length;
-    if (own.due?.day !== today) own.due = { day: today, people: 0 };
-    if (intentPeople > own.due.people) this.#bringForward(own, now, 'intent_due');
-    own.due.people = intentPeople;
+    const settings = this.#wakeSettings(own), manual = own.manualAt !== undefined;
     if (!settings.enabled) {
-      // Off: nothing is scheduled; only something that asked for a wake-up (the operator, an intent) is counted.
-      if (own.nextReason) this.#skip(log, 'off', now);
-      delete own.nextAt; delete own.nextReason;
+      // Off: nothing is scheduled; only a wake-up the operator asked for is counted.
+      if (manual) this.#skip(log, 'off', now);
+      delete own.manualAt; delete own.nextAt; delete own.slotAt; delete own.holdUntil;
       return done(null);
     }
-    if (!Number.isSafeInteger(own.nextAt)) own.nextAt = regularNext(now, random);
-    if (now < own.nextAt) return done(null);
-    const woke = this.#wokeToday(log, now), streamId = selfStream(capabilityId);
+    // (A `nextAt` without its `slotAt` is the schedule of a release before this one: it is replaced.)
+    const schedule = () => { const next = nextWake(now, settings.minutes, own.slotAt, random); own.nextAt = next.at; own.slotAt = next.slot; };
+    if (!Number.isSafeInteger(own.nextAt) || !Number.isSafeInteger(own.slotAt)) schedule();
+    // Nobody asked while it was due (the bridge was down, or busy all along): an hour past its time it is missed.
+    if (now > own.slotAt + 2 * WAKE.jitterMs) { this.#skip(log, 'missed', now); schedule(); }
+    const scheduled = now >= own.nextAt;
+    if (!manual && !scheduled || now < (own.holdUntil ?? 0)) return done(null);
+    delete own.holdUntil;
+    const streamId = selfStream(capabilityId), reason = manual ? 'manual' : 'schedule';
     const bound = this.store.db.prepare('SELECT person_id AS personId,audience,entity_id AS entityId FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId, streamId);
-    const blocked = world.paused ? 'paused' : quietHours(now, quiet) ? 'quiet_hours' : own.deferredDay === today ? 'budget' : busy ? 'busy'
-      : woke >= WAKE.fuseWakesPerDay ? 'fuse:wakes_per_day' : woke >= settings.perDay ? 'daily_limit' : bound && (bound.personId !== SELF_PERSON || bound.audience !== 'private') ? 'target' : null;
-    if (blocked) {
-      this.#skip(log, blocked, now);
-      // Quiet hours and a busy bridge only move it (the reason it was due stays); anything else is not made up for.
-      if (blocked === 'quiet_hours') own.nextAt = afterQuiet(now, quiet, random);
-      else if (blocked === 'busy') own.nextAt = now + WAKE.busyRetryMs;
-      else { own.nextAt = ['paused', 'target'].includes(blocked) ? regularNext(now, random) : nextDay(now, random); delete own.nextReason; }
-      return done(null);
-    }
+    const blocked = this.#wakeBlocked(own, world, quiet, now) ?? (busy ? 'busy' : bound && (bound.personId !== SELF_PERSON || bound.audience !== 'private') ? 'target' : null);
+    if (blocked === 'busy') { this.#skip(log, blocked, now); own.holdUntil = now + WAKE.busyRetryMs; return done(null); }
+    // From here on what was due is used up, whether or not she wakes.
+    delete own.manualAt; if (scheduled) delete own.nextAt;
+    if (blocked) { this.#skip(log, blocked, now); return done(null); }
+    if (this.#wokeToday(log, now) >= WAKE.fuseWakesPerDay) { this.#tripFuse(own, log, state.items, 'wakes_per_day', now, world); return done(null); }
     // Her own conversation on this channel: bound to the reserved person, who is nobody.
     const entityId = bound?.entityId ?? target.entityId;
     if (!bound) {
@@ -417,68 +595,43 @@ export class InitiationDomain extends OpenDiaryDomain {
       this.adminAudit('stream.bind', { capabilityId, streamId, personId: SELF_PERSON, audience: 'private', entityId });
     }
     const entity = this.entity(entityId), cardId = this.currentCardId(entityId), midnight = beijingMidnight(now);
-    // Counts about herself. How many people, never who.
-    const counts = {
-      wokeToday: woke, sinceLastMs: Number.isSafeInteger(own.lastWakeAt) ? now - own.lastWakeAt : null,
-      reachedToday: new Set(this.#reached(items, midnight).map(item => item.personId)).size, intentPeople,
-      chattedPeople: this.store.db.prepare(`SELECT COUNT(DISTINCT s.person_id) AS n FROM observations o JOIN streams s ON s.capability_id=o.capability_id AND s.stream_id=o.stream_id
-        JOIN capabilities c ON c.id=s.capability_id AND c.policy='conversation.v1' WHERE s.audience='private' AND s.entity_id=? AND s.person_id<>? AND o.forgotten=0 AND json_extract(o.body,'$.role')='user' AND json_extract(o.body,'$.at')>=?`).get(entityId, SELF_PERSON, midnight).n,
-    };
-    // Her mood is subjective memory: only one written under the persona card now current is read back.
-    const mood = (own.moods ?? []).findLast(item => (item.cardId ?? DEFAULT_CARD_ID) === cardId) ?? null, reason = own.nextReason ?? 'schedule';
-    own.out = { id: randomUUID(), capabilityId, streamId, entityId, memoryEpoch: this.streamEpoch(entity, capabilityId, streamId), issuedAt: now, reason, counts, did: {} };
-    own.lastWakeAt = now; own.nextAt = regularNext(now, random); delete own.nextReason;
-    return done({ id: own.out.id, kind: 'wake', streamId, memoryEpoch: own.out.memoryEpoch, expiresAt: now + INITIATION.ttlMs, briefing: renderBriefing({ now, reason, counts, mood: mood && { text: mood.text, at: mood.at }, tier: this.#tier(own, cardId) }) });
+    // Her diary and her mood are subjective memory: only what was written under the persona card now current is read back.
+    const diary = this.latestPrivateDiary(entityId, cardId), mood = (own.moods ?? []).findLast(item => (item.cardId ?? DEFAULT_CARD_ID) === cardId) ?? null;
+    const { cards, excluded } = this.#cards(own, entityId, now);
+    const reachedToday = Object.values(own.reach?.people ?? {}).filter(record => (record.ats ?? []).some(at => at >= midnight)).length;
+    // `candidates` (label -> person) stays here: it is what `reach` is held against, and it is never shown or logged.
+    own.out = { id: randomUUID(), capabilityId, streamId, entityId, memoryEpoch: this.streamEpoch(entity, capabilityId, streamId), issuedAt: now, reason,
+      counts: { cards: cards.length, excluded, diary: !!diary, mood: !!mood }, candidates: Object.fromEntries(cards.map(card => [card.label, card.personId])), did: {} };
+    own.lastWakeAt = now;
+    return done({ id: own.out.id, kind: 'wake', streamId, memoryEpoch: own.out.memoryEpoch, expiresAt: now + INITIATION.ttlMs,
+      briefing: renderBriefing({ now, reason, diary, mood: mood && { text: mood.text, at: mood.at }, cards: cards.map(card => card.text), reachedToday }) });
   }
-  /** A wake-up ends: one log entry. After one that ran, the pick of a person is worked through for her tier and
-   * recorded; it is not acted on (step 6b). */
-  #wakeEnd(own, log, outcome, now, items, { unreported = false } = {}) {
+  /** A wake-up ends: one log entry. After one that ran, each person she named and Authority accepted is held against
+   * the forced rules and the fuses once more, and a request to that person is registered (`state.items`; the caller
+   * saves it). The log keeps the label, the result of the checks and, for an accepted one, her reason as it was kept. */
+  #wakeEnd(own, log, outcome, now, state, world, { unreported = false } = {}) {
     const out = own.out; delete own.out;
-    const entry = { id: out.id, type: 'wake', at: out.issuedAt, endedAt: now, reason: out.reason, outcome, counts: out.counts, did: { ...out.did, rested: outcome === 'done' && !Object.keys(out.did).length }, tier: null, selection: null, second: null, fuses: [], ...(unreported ? { unreported: true } : {}) };
-    if (outcome === 'done') {
-      entry.tier = this.#tier(own, this.currentCardId(out.entityId));
-      if (entry.tier !== 'none') { const { fuses, ...selection } = this.#selection(out.entityId, entry.tier, now, items); entry.selection = selection; entry.fuses = fuses; }
+    const reach = (out.reach ?? []).map(({ personId, ...shown }) => shown);
+    const entry = { id: out.id, type: 'wake', at: out.issuedAt, endedAt: now, reason: out.reason, outcome, counts: out.counts, did: { ...out.did, rested: outcome === 'done' && !Object.keys(out.did).length }, reach, fuses: [], ...(unreported ? { unreported: true } : {}) };
+    for (const [index, item] of (out.reach ?? []).entries()) {
+      if (item.check !== 'accepted') continue;
+      const shown = reach[index];
+      if (outcome !== 'done') { shown.check = 'rejected:wake_not_done'; continue; }
+      const refused = this.#reachRefusal(own, out.entityId, item.personId, now);
+      if (refused) { shown.check = `rejected:${refused}`; continue; }
+      const fuse = this.#fuse(own, state.items, item.personId, now);
+      if (fuse) { entry.fuses.push(`fuse:${fuse}`); shown.check = `rejected:fuse:${fuse}`; this.#tripFuse(own, log, state.items, fuse, now, world); continue; }
+      const target = this.#recentStream(item.personId);
+      const request = {
+        id: randomUUID(), kind: 'proactive', source: 'reach', wakeId: out.id, capabilityId: target.capabilityId, streamId: target.streamId, personId: item.personId, entityId: target.entityId,
+        memoryEpoch: this.streamEpoch(this.entity(target.entityId), target.capabilityId, target.streamId), worldRevision: world.revision,
+        afterRow: this.store.db.prepare('SELECT MAX(rowid) AS n FROM observations').get().n ?? 0, createdAt: now, expiresAt: now + REACH.ttlMs, status: 'waiting', reason: item.reason,
+      };
+      state.items.push(request); shown.initiationId = request.id; shown.outcome = null;
     }
     // The gateway's spend tier refused the run: no wake-up for the rest of that Beijing day.
     if (outcome === 'deferred:budget') own.deferredDay = beijingDay(now);
     log.push(entry);
-  }
-  /** Who would be picked (design §3.4), worked through from Authority's own tables: everyone with an account and a
-   * private conversation on a conversation channel, minus those a forced rule keeps out, each with the product of
-   * their weights, and "nobody this time". People appear as opaque labels. This step has no per-person switch yet, so
-   * nobody is kept out for one. */
-  #selection(entityId, tier, now, items) {
-    const db = this.store.db, open = this.openIntentCounts({ entityId }), due = this.openIntentCounts({ entityId, dueBy: beijingDay(now) });
-    const people = db.prepare(`SELECT DISTINCT s.person_id AS personId FROM streams s JOIN capabilities c ON c.id=s.capability_id AND c.policy='conversation.v1'
-      WHERE s.audience='private' AND s.entity_id=? AND s.person_id<>? AND EXISTS (SELECT 1 FROM actors a WHERE a.capability_id=s.capability_id AND a.person_id=s.person_id) ORDER BY s.person_id`).all(entityId, SELF_PERSON);
-    const lines = db.prepare(`SELECT MIN(json_extract(o.body,'$.at')) AS firstAt,MAX(json_extract(o.body,'$.at')) AS lastAt,
-      MAX(CASE WHEN json_extract(o.body,'$.role')='user' THEN json_extract(o.body,'$.at') END) AS lastUserAt,
-      COALESCE(SUM(json_extract(o.body,'$.role')='user'),0) AS lines,COALESCE(SUM(json_extract(o.body,'$.role')='user' AND json_extract(o.body,'$.at')>=?),0) AS lines14
-      FROM observations o JOIN streams s ON s.capability_id=o.capability_id AND s.stream_id=o.stream_id WHERE s.person_id=? AND s.audience='private' AND s.entity_id=? AND o.forgotten=0`);
-    const boundary = db.prepare("SELECT 1 FROM memory_items WHERE entity_id=? AND person_id=? AND collection='appraisals' AND kind='boundary' AND status='active' AND json_extract(body,'$.evidence.at')>=? LIMIT 1");
-    const sent = this.#reached(items, 0), candidates = [], excluded = [], reachedBy = new Map();
-    for (const { personId } of people) {
-      const person = opaquePerson(personId), row = lines.get(now - SELECTION.chatterMs, personId, entityId), mine = sent.filter(item => item.personId === personId);
-      const owner = personId === OWNER ? { owner: true } : {};
-      if (boundary.get(entityId, personId, now - SELECTION.boundaryMs)) { excluded.push({ person, ...owner, reason: 'boundary' }); continue; }
-      if (row.lastAt !== null && now - row.lastAt < SELECTION.recentMs) { excluded.push({ person, ...owner, reason: 'recent' }); continue; }
-      const stats = {
-        intent: due[personId] ? 'due' : open[personId] ? 'open' : 'none', lines14: row.lines14, lastAt: row.lastUserAt, firstAt: row.firstAt, lines: row.lines,
-        reached7: mine.filter(item => item.endedAt >= now - SELECTION.reachedMs).length, unanswered: mine.filter(item => item.endedAt > (row.lastUserAt ?? 0)).length,
-      };
-      candidates.push({ person, ...owner, ...candidateWeights(stats, now) });
-      reachedBy.set(person, mine);
-    }
-    const selection = pick({ tier, candidates, excluded, random: this.random ?? Math.random }), fuses = [];
-    // The high fuses, as they would stand for the person picked. Nothing is sent in this step, so they only show here.
-    if (selection.result !== 'none') {
-      const mine = reachedBy.get(selection.result), day = beijingMidnight(now), limits = SELECTION.fuses;
-      if (sent.filter(item => item.endedAt >= day).length >= limits.per_day) fuses.push('fuse:per_day');
-      if (mine.filter(item => item.endedAt >= day).length >= limits.per_person_day) fuses.push('fuse:per_person_day');
-      if (mine.filter(item => item.endedAt >= now - SELECTION.reachedMs).length >= limits.per_person_week) fuses.push('fuse:per_person_week');
-      if (sent.filter(item => item.endedAt >= now - 60 * MINUTE).length >= limits.per_hour) fuses.push('fuse:per_hour');
-    }
-    return { ...selection, fuses };
   }
   /** The bridge's report about a wake-up, or null when `input.id` is not one. Reported once, like any request. */
   #wakeAck(capabilityId, input, now, state) {
@@ -486,30 +639,39 @@ export class InitiationDomain extends OpenDiaryDomain {
     if (own.out?.id === input.id) {
       if (own.out.capabilityId !== capabilityId) fail('CONFLICT', 'Initiation is not out', 409);
       if (!wakeOutcome) fail('VALIDATION_ERROR', 'Unsupported wake outcome');
-      this.#wakeEnd(own, log, input.outcome, now, state.items);
-      this.#saveInitiative(own); this.#saveWakeLog(log);
+      this.#wakeEnd(own, log, input.outcome, now, state, this.worldStatus());
+      this.#saveInitiative(own); this.#saveWakeLog(log); this.#save(state);
       return { status: 'recorded' };
     }
     const entry = log.find(item => item.type === 'wake' && item.id === input.id);
     if (!entry) return null;
     if (entry.outcome === input.outcome) return { status: 'recorded', replayed: true };
     if (!entry.unreported || !wakeOutcome) fail('CONFLICT', 'Initiation was already reported', 409);
-    // Closed for want of a report, and the report came after all (what she did in it is already in the entry).
+    // Closed for want of a report, and the report came after all (what she did in it is already in the entry; nobody
+    // is reached out to from a wake-up that was closed this way).
     entry.outcome = input.outcome; entry.endedAt = now; delete entry.unreported;
     if (input.outcome === 'deferred:budget') { own.deferredDay = beijingDay(now); this.#saveInitiative(own); }
     this.#saveWakeLog(log);
     return { status: 'recorded' };
   }
   /** A conversation channel's credential, from inside the wake-up that is out on that channel (the model tool
-   * `companion_self`): what she writes down for herself. `{streamId,mood?,note?,outreach?}`; the conversation must be
-   * the one the wake-up was handed out for. A mood (<=120 characters) and a note (<=400) pass the checks of a machine
-   * digest or are refused with the reason; the caller is told which. Stored with the wake-up and the persona card they
-   * were written under. They are read in two places only: the operator's page and her next briefing (the mood).
-   * Nothing here is read by any conversation with a person. */
+   * `companion_self`): what she writes down for herself, and whom she wants to reach out to.
+   * `{streamId,mood?,note?,reach?}`; the conversation must be the one the wake-up was handed out for. A mood (<=120
+   * characters) and a note (<=400) pass the checks of a machine digest or are refused with the reason; they are read
+   * by the operator's page and her next briefing (the mood) only.
+   * `reach`: at most two `{label,reason}`. Each is checked here and now, and she is told `accepted` or
+   * `rejected:<reason>`: the label must be one of this wake-up's cards (`not_candidate`; twice the same, `duplicate`);
+   * in the reason the person's own label becomes "对方" and any other label "另一个人"; then the reason must pass
+   * `refusedReason` (the sensitive lexicon and the categories of wake.js) and may not repeat a run of words any
+   * candidate wrote lately (`sensitive:quote`). A refused entry is dropped whole: its reason is not kept anywhere.
+   * A later `reach` in the same wake-up replaces the earlier one. Nothing is registered until the wake-up ends. */
   selfRecord(capabilityId, input) {
-    closed(input, ['streamId', 'mood', 'note', 'outreach'], ['streamId']); identifier(input.streamId);
+    closed(input, ['streamId', 'mood', 'note', 'reach'], ['streamId']); identifier(input.streamId);
     for (const key of ['mood', 'note']) if (input[key] !== undefined && typeof input[key] !== 'string') fail('VALIDATION_ERROR', `${key} must be a string`);
-    if (input.outreach !== undefined && !OUTREACH_TIERS.includes(input.outreach)) fail('VALIDATION_ERROR', 'Unsupported outreach tier');
+    if (input.reach !== undefined) {
+      if (!Array.isArray(input.reach) || input.reach.length > REACH.perWake) fail('VALIDATION_ERROR', 'reach names at most two people');
+      for (const item of input.reach) { closed(item, ['label', 'reason']); if (typeof item.label !== 'string' || item.label.length > 64 || typeof item.reason !== 'string' || item.reason.length > 2000) fail('VALIDATION_ERROR', 'reach entries are {label,reason}'); }
+    }
     if (capability(this.store, capabilityId).policy !== 'conversation.v1') fail('FORBIDDEN', 'Not a conversation channel', 403);
     return this.store.transaction(() => {
       const own = this.#initiative(), out = own.out, now = this.now();
@@ -522,35 +684,59 @@ export class InitiationDomain extends OpenDiaryDomain {
         result[key] = out.did[key] = refused ? `rejected:${refused}` : 'accepted';
         if (!refused) own[list] = [...(own[list] ?? []), { text: input[key].trim(), at: now, wakeId: out.id, cardId }].slice(-kept);
       }
-      if (input.outreach !== undefined) { own.outreach = { tier: input.outreach, cardId, at: now }; result.outreach = out.did.outreach = input.outreach; }
+      if (input.reach !== undefined) {
+        const candidates = out.candidates ?? {}, words = this.#words(out.entityId, Object.values(candidates), now), seen = new Set();
+        out.reach = input.reach.map(({ label, reason }) => {
+          // A label that is not a candidate is logged as given only when it has the shape of one.
+          const person = /^p-[0-9a-f]{6}$/.test(label) ? label : null, personId = Object.hasOwn(candidates, label) ? candidates[label] : null;
+          if (!personId) return { person, check: 'rejected:not_candidate' };
+          if (seen.has(label)) return { person, check: 'rejected:duplicate' };
+          seen.add(label);
+          const kept = withoutLabels(reason, label), refused = refusedReason(kept) ?? (repeatsWords(kept, words) ? 'sensitive:quote' : null);
+          return refused ? { person, ...(personId === OWNER ? { owner: true } : {}), check: `rejected:${refused}` } : { person, ...(personId === OWNER ? { owner: true } : {}), personId, check: 'accepted', reason: kept };
+        });
+        result.reach = out.reach.map(item => item.check); out.did.reach = out.reach.length;
+      }
       this.#saveInitiative(own);
       return result;
     });
   }
-  /** Operator only: bring the next wake-up forward to now. Every rule still applies when the bridge next asks (the
-   * switch, a pause, the quiet hours, the spend tier, a busy bridge, the day's count, 45 minutes since the last one);
-   * `blocked` is what would stop it as things stand. The request names nothing and nobody. */
+  /** Operator only: wake her now. Every rule still applies when the bridge next asks (the switch, a pause, the quiet
+   * hours, the spend tier, a fuse hit today, a busy bridge); `blocked` is what would stop it as things stand. The
+   * request names nothing and nobody. */
   initiativeWake(input = {}) {
     closed(input, [], []);
     return this.store.transaction(() => {
-      const own = this.#initiative(), now = this.now(), settings = this.#wakeSettings(own);
-      this.#bringForward(own, now, 'manual');
+      const own = this.#initiative(), now = this.now();
+      own.manualAt = now;
       this.#saveInitiative(own);
-      const blocked = !settings.enabled ? 'off' : this.worldStatus().paused ? 'paused' : quietHours(now, this.#quiet(this.#state())) ? 'quiet_hours' : own.deferredDay === beijingDay(now) ? 'budget' : this.#wokeToday(this.#wakeLog(), now) >= settings.perDay ? 'daily_limit' : null;
-      return { scheduledAt: own.nextAt, blocked };
+      return { scheduledAt: now, blocked: !this.#wakeSettings(own).enabled ? 'off' : this.#wakeBlocked(own, this.worldStatus(), this.#quiet(this.#state()), now) };
     });
   }
-  /** Operator only, read-only: her wake-up settings and schedule, her moods and notes (her own words, newest first),
-   * and the wake log, newest first: when and why she woke, the counts she was told, what she did, and the pick of a
-   * person worked through (opaque labels and weights). No message text, no intent text, no account. */
+  /** What the operator sees of the two switches and of each person (opaque labels, times and counts; no text). */
+  #reachView(own, now) {
+    const settings = this.#reachSettings(own), entityId = this.#recentStream(OWNER)?.entityId, open = entityId ? this.openIntentCounts({ entityId }) : {};
+    return {
+      enabled: settings.enabled, recentMinutes: settings.recentMs / MINUTE, fuses: settings.fuses,
+      people: (entityId ? this.#people(entityId) : []).map(personId => {
+        const stats = this.#personStats(own, entityId, personId, now);
+        return { person: opaquePerson(personId), owner: personId === OWNER, enabled: this.#switchOn(own, personId), lastAt: stats.lastAt, reachedAt: stats.reachedAt, unanswered: stats.unanswered, reached7: stats.reached7, openIntents: open[personId] ?? 0 };
+      }).sort((a, b) => b.owner - a.owner || (a.person < b.person ? -1 : 1)),
+    };
+  }
+  /** Operator only, read-only: the switches, the times of day and the schedule, each person's switch and soft facts,
+   * her moods and notes (her own words, newest first), and the wake log, newest first: when and why she woke, how
+   * many cards she was given, what she did, whom she named, what the checks said and what became of each request.
+   * Opaque labels only; no message text, no intent text, no account. */
   initiativeView() {
     this.store.check();
     const own = this.#initiative(), log = this.#wakeLog(), now = this.now(), settings = this.#wakeSettings(own);
     const newest = list => [...(list ?? [])].reverse().map(({ text, at, wakeId, cardId }) => ({ text, at, wakeId, cardId: cardId ?? DEFAULT_CARD_ID }));
     return {
-      wake: { ...settings, perDayMax: WAKE.perDayMax, intervalMinutes: WAKE.intervalMs / MINUTE, minGapMinutes: WAKE.minGapMs / MINUTE },
-      nextAt: settings.enabled && Number.isSafeInteger(own.nextAt) ? own.nextAt : null, lastWakeAt: own.lastWakeAt ?? null, out: own.out ? { id: own.out.id, issuedAt: own.out.issuedAt } : null,
-      wokeToday: this.#wokeToday(log, now), outreach: this.#tier(own, this.currentCardId()), moods: newest(own.moods), notes: newest(own.notes),
+      wake: { enabled: settings.enabled, times: settings.minutes.map(clock), maxTimes: WAKE.maxTimes, jitterMinutes: WAKE.jitterMs / MINUTE },
+      reach: this.#reachView(own, now), fuse: own.fuse?.day === beijingDay(now) ? { name: own.fuse.name, at: own.fuse.at } : null,
+      nextAt: settings.enabled && Number.isSafeInteger(own.nextAt) && Number.isSafeInteger(own.slotAt) ? own.nextAt : null, lastWakeAt: own.lastWakeAt ?? null, out: own.out ? { id: own.out.id, issuedAt: own.out.issuedAt } : null,
+      wokeToday: this.#wokeToday(log, now), moods: newest(own.moods), notes: newest(own.notes),
       log: [...log].sort((a, b) => b.at - a.at),
     };
   }

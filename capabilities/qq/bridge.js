@@ -23,6 +23,10 @@ export const INITIATION_POLL_MS = 60000;
 const INITIATION_PREFIX = 'qq:init:';
 /** What she is told in place of a message, by kind of initiated run (the executor frames it as a background event). */
 const INITIATION_EVENTS = { proactive: '现在没有人给你发消息。你可以主动找对方说一两句：想到什么、想问什么都行，照你平时的样子，简短一点。' };
+/** Fixed notices to the owner, by the code Authority asks with (`kind: 'notice'`). No model writes or sees them. */
+const NOTICES = { fuse: '[系统提醒] 主动找人的保险触发了：今天已停止主动醒来和主动找人，明天自动恢复。详情见控制台“渠道”页的“她的私下时间”。' };
+/** High fuse (authority/src/wake.js REACH.messagesPerTurn): messages one turn she decided to start may send. */
+const MAX_INITIATED_MESSAGES = 4;
 const JOB_REF = /^job:[a-f0-9-]{36}$/;
 /** Her own conversation on this channel, as Authority names it (authority/src/wake.js `selfStream`): where a private
  * wake-up runs. It is nobody's: nothing is sent from it and nothing in it is observed. */
@@ -357,9 +361,10 @@ export class QQBridge {
   }
   /** A run she starts herself, as Authority handed it out. The person it goes to comes only from the conversation
    * Authority named: neither this bridge nor the model picks or changes the target. Whom that may be depends on the
-   * kind. `proactive`: this bot's private conversation with the owner, nobody else. `completion` (a background job
-   * ended): this bot's private conversation with the person who registered the job, who must be the owner or still
-   * a friend. The same request a second time does nothing. */
+   * kind. `proactive` without an event block (the operator's "try it on me") and `notice`: this bot's private
+   * conversation with the owner, nobody else. `proactive` with Authority's event block (she named this person in her
+   * wake-up and Authority accepted it) and `completion` (a background job ended): this bot's private conversation with
+   * that person, who must be the owner or still a friend. Never a group. The same request a second time does nothing. */
   async initiate(cfg, initiation) {
     const { id, kind, streamId, memoryEpoch, expiresAt, jobRef } = initiation ?? {};
     if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) return;
@@ -370,10 +375,12 @@ export class QQBridge {
     try {
       if (kind === 'wake') return await this.wake({ requestId, item, end, streamId, memoryEpoch, expiresAt, briefing: initiation.briefing });
       const target = typeof streamId === 'string' ? /^qq:([1-9]\d{0,19}):private:([1-9]\d{0,19})$/.exec(streamId) : null;
-      const completion = kind === 'completion';
-      if (!completion && !Object.hasOwn(INITIATION_EVENTS, kind)) return end('dropped:unsupported');
+      const completion = kind === 'completion', notice = kind === 'notice', reach = kind === 'proactive' && initiation.event !== undefined;
+      if (notice ? !Object.hasOwn(NOTICES, initiation.notice) : !completion && !Object.hasOwn(INITIATION_EVENTS, kind)) return end('dropped:unsupported');
+      if (reach && (typeof initiation.event !== 'string' || !initiation.event || initiation.event.length > 4000)) return end('dropped:target');
       if (!target || target[1] !== this.selfId || target[1] !== cfg.expectedSelfId || !Number.isSafeInteger(memoryEpoch) || memoryEpoch < 0) return end('dropped:target');
-      if (completion ? typeof jobRef !== 'string' || !JOB_REF.test(jobRef) || !this.media || target[2] !== cfg.allowedCallerUID && !await this.isFriend(target[2]) : target[2] !== cfg.allowedCallerUID) return end('dropped:target');
+      if (completion && (typeof jobRef !== 'string' || !JOB_REF.test(jobRef) || !this.media)) return end('dropped:target');
+      if (target[2] !== cfg.allowedCallerUID && !((completion || reach) && await this.isFriend(target[2]))) return end('dropped:target');
       if (!(this.clock() < expiresAt)) return end('dropped:expired');
       const world = (await this.authority.health()).world, scope = await this.authority.context({ streamId, query: '', budgetChars: 1 });
       if (world.paused) return end('dropped:paused');
@@ -382,14 +389,30 @@ export class QQBridge {
       // Checked right before queueing, so a message that arrives later waits behind this run instead.
       if (this.streams.get(streamId)?.queued || this.bursts.has(streamId)) return end('dropped:person_spoke');
       Object.assign(item, { memoryEpoch, entityId: scope.entityId, worldRevision: world.revision }); this.save();
-      await this.enqueue(streamId, () => this.initiated({ cfg, kind, requestId, item, streamId, userId: target[2], ...(completion ? { jobRef } : {}) }));
+      if (notice) return await this.enqueue(streamId, () => this.notify({ item, end, streamId, userId: target[2], text: NOTICES[initiation.notice] }));
+      await this.enqueue(streamId, () => this.initiated({ cfg, kind, requestId, item, streamId, userId: target[2], ...(completion ? { jobRef } : {}), ...(reach ? { event: initiation.event, light: initiation.light === true } : {}) }));
     } catch { if (['queued', 'processing'].includes(item.status)) end('failed'); }
+  }
+  /** A fixed notice to the owner (NOTICES), as Authority asked for it: no model is asked, the text is this file's.
+   * It is not her speech, so it is not observed and no conversation replays it. Sent once: without a platform receipt
+   * it is `unknown` and never sent again. */
+  async notify({ item, end, streamId, userId, text }) {
+    let sending = false;
+    try {
+      item.status = 'sending'; this.save(); sending = true;
+      if (this.media) await this.media.send({ scope: { streamId, memoryEpoch: item.memoryEpoch }, userId, part: { type: 'text', text } });
+      else {
+        const sent = await this.onebot.call('send_private_msg', { user_id: userId, message: [{ type: 'text', data: { text } }], auto_escape: true });
+        if (!/^-?\d{1,20}$/.test(String(sent.message_id))) throw new Error('INVALID_SEND_RECEIPT');
+      }
+      end('sent');
+    } catch { end(sending ? 'unknown' : 'failed'); }
   }
   /** Her private wake-up, as Authority handed it out: one run in her own conversation with Authority's briefing as its
    * text. It is only run: whatever she replies, nothing is sent, nothing is observed and no delivery is reported.
    * What she writes down goes from the executor straight to Authority. Reported once as `done`, or why it did not run. */
   async wake({ requestId, item, end, streamId, memoryEpoch, expiresAt, briefing }) {
-    if (streamId !== WAKE_STREAM || !Number.isSafeInteger(memoryEpoch) || memoryEpoch < 0 || typeof briefing !== 'string' || !briefing || briefing.length > 2000) return end('dropped:target');
+    if (streamId !== WAKE_STREAM || !Number.isSafeInteger(memoryEpoch) || memoryEpoch < 0 || typeof briefing !== 'string' || !briefing || briefing.length > 20000) return end('dropped:target');
     if (!(this.clock() < expiresAt)) return end('dropped:expired');
     const world = (await this.authority.health()).world, scope = await this.authority.context({ streamId, query: '', budgetChars: 1 });
     if (world.paused) return end('dropped:paused');
@@ -422,6 +445,9 @@ export class QQBridge {
       report = [...pieces.map(piece => deliveryPart({ type: 'text', text: piece })), ...markerParts(reply).map(mark => mark.part)];
       pieces.forEach((piece, index) => meant.set(report[index], piece));
       if (!report.length) report = [{ kind: 'text', status: 'unsent' }];
+      // High fuse: a turn she decided to start herself never sends more than this many messages. More is a fault:
+      // none of them goes out, and Authority is told (it stops what she starts for the day and tells the owner).
+      if (kind === 'proactive' && pieces.length > MAX_INITIATED_MESSAGES) { for (const part of report) part.status = 'unsent'; return end('dropped:fuse_messages'); }
       for (const [index, piece] of pieces.entries()) {
         if (index) await this.sleep(segmentGap(piece, this.pacing, this.random));
         if (!await this.current(cfg, stream, item)) return end(item.receipts?.length ? 'partial' : 'dropped:stale');

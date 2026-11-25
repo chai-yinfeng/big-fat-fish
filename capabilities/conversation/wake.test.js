@@ -14,7 +14,7 @@ import { SELF_TOOL_SCHEMA, SCOPE_TOOL_SCHEMA, CONTENT_TOOL_SCHEMA, ACTIVITY_TOOL
 import { tempRoot, fakeAuthority, fakeGateway, reply, toolCall } from './fixtures.js';
 
 const OWN = { streamId: 'qq:self', memoryEpoch: 0 }, PERSON = { streamId: 'qq:100:private:200', memoryEpoch: 0 };
-const BRIEFING = '现在是 2027年1月15日 周五 16:00（北京时间）。这次醒来是因为：到点了。\n你还没有写过心情。\n你现在的档位：不想主动找人（none）。\n关于你自己的几个数：今天这是第 1 次醒来；之前还没有醒过；今天你主动找过 0 个人；有 1 个人身上有你留的、到今天该办的打算；今天有 2 个人和你聊过。';
+const BRIEFING = '现在是 2027年1月15日 周五 16:00（北京时间）。这次醒来是因为：到点了。\n你还没有写过日记。\n你还没有写过心情。\n今天你已经主动找过 0 个人。\n现在可以去找的人有 1 个，每人一张小卡，方括号里是这个人的代号；卡上的数字只是事实，不是要你做什么：\n[p-0a1b2c] 上次聊天是 3 天前；最近 14 天对方说了 12 句；你还没有主动找过对方；最近 7 天你主动找过对方 0 次；认识 40 天了。\n  你没有给这个人留下打算。';
 const wakeRequest = (id = 'qq:init:wake-1', text = BRIEFING) => ({ scope: OWN, requestId: id, input: { text, wake: true }, timeoutMs: 10000 });
 async function setup(t) {
   const root = tempRoot(t), authority = await fakeAuthority(t, root), gateway = await fakeGateway(t, root), sessionsDir = path.join(root, 'sessions');
@@ -28,17 +28,17 @@ const blocks = message => message.content.map(part => part.text);
 test('wake-up: her own system text and session, the briefing where a message would be, companion_self as the only tool, thinking on, counted as proactive work', async t => {
   const f = await setup(t);
   f.authority.state.text = '[人格]\n大肥鱼，说话简短';
-  f.gateway.state.script.push(toolCall(SELF_TOOL_SCHEMA.name, { mood: 'MOCK 有点想出去走走', outreach: 'maybe' }, 'MOCK thinking'), reply('记好了，再眯一会儿。'));
+  f.gateway.state.script.push(toolCall(SELF_TOOL_SCHEMA.name, { mood: 'MOCK 有点想出去走走', reach: [{ label: 'p-0a1b2c', reason: 'MOCK 想问问近况' }] }, 'MOCK thinking'), reply('记好了，再眯一会儿。'));
   assert.equal(await f.executor.execute(wakeRequest()), '记好了，再眯一会儿。');
   const [body, second] = f.gateway.state.bodies;
   // The one tool, with nothing in it that could name anyone.
   assert.deepEqual(body.tools.map(tool => tool.function.name), ['companion_self']);
-  assert.deepEqual(Object.keys(body.tools[0].function.parameters.properties), ['mood', 'note', 'outreach']);
-  assert.equal(JSON.stringify(body.tools).match(/streamId|memoryEpoch|entityId|personId|requestId|person|account|target|to"/), null);
+  assert.deepEqual(Object.keys(body.tools[0].function.parameters.properties), ['mood', 'note', 'reach']);
+  assert.equal(JSON.stringify(body.tools).match(/streamId|memoryEpoch|entityId|personId|requestId|target|to"/), null);
   // Her own stable system text: the persona, no channel part, no sentence about the people she chats with.
   const system = body.messages[0].content;
   assert.match(system, /这里是你自己的时间/); assert.match(system, /大肥鱼，说话简短/); assert.match(system, /只回复 <休息>/);
-  assert.doesNotMatch(system, /每段私聊都是独立的|语音|QQ|常驻档案|对方/);
+  assert.doesNotMatch(system, /每段私聊都是独立的|语音|QQ|常驻档案/);
   // The note says nobody wrote; there is no evidence line; then the briefing, marked.
   const [note, typed] = blocks(lastUser(body));
   assert.ok(note.startsWith(NOTE_OPEN) && note.endsWith(NOTE_CLOSE + '\n'));
@@ -46,8 +46,8 @@ test('wake-up: her own system text and session, the briefing where a message wou
   assert.doesNotMatch(note, /本轮可引用的聊天证据|对方/);
   assert.equal(typed, WAKE_OPEN + BRIEFING);
   assert.ok(!typed.startsWith(EVENT_OPEN));
-  // Nothing of any person anywhere in the request.
-  assert.doesNotMatch(JSON.stringify(body), /owner|person:|private:|p-[0-9a-f]{6}|9999\d{8}/i);
+  // Nothing that identifies a person outside Authority anywhere in the request (the cards carry opaque labels only).
+  assert.doesNotMatch(JSON.stringify(body), /owner|person:|private:|9999\d{8}/i);
   // Thinking on; every provider request of the run carries the gateway's mark for proactive work.
   assert.deepEqual([body.thinking, body.reasoning_effort], [{ type: 'enabled' }, 'high']);
   assert.deepEqual(f.gateway.state.marks, ['initiated', 'initiated']);
@@ -56,8 +56,8 @@ test('wake-up: her own system text and session, the briefing where a message wou
   assert.deepEqual(asked, { streamId: OWN.streamId, query: '', budgetChars: 4000, exclude: [], profile: false });
   assert.ok(Number.isSafeInteger(windowFromAt));
   // What she wrote down went to Authority under the bound conversation, and she was told how it went.
-  assert.deepEqual(f.authority.state.requests.filter(r => r.route === '/v1/self').map(r => r.body), [{ streamId: OWN.streamId, mood: 'MOCK 有点想出去走走', outreach: 'maybe' }]);
-  assert.deepEqual(JSON.parse(second.messages.findLast(m => m.role === 'tool').content), { mood: '记下了。', outreach: '档位现在是 maybe。' });
+  assert.deepEqual(f.authority.state.requests.filter(r => r.route === '/v1/self').map(r => r.body), [{ streamId: OWN.streamId, mood: 'MOCK 有点想出去走走', reach: [{ label: 'p-0a1b2c', reason: 'MOCK 想问问近况' }] }]);
+  assert.deepEqual(JSON.parse(second.messages.findLast(m => m.role === 'tool').content), { mood: '记下了。', reach: ['p-0a1b2c：记下了。这次醒来结束以后，你会在对方自己的聊天里得到一次开口的机会，理由会带过去；到时候说不说仍然由你决定。'] });
   // Its own session file; no other conversation's file exists or is touched.
   assert.deepEqual(fs.readdirSync(f.sessionsDir), [conversationSessionId(OWN.streamId, 0) + '.jsonl']);
   const run = JSON.parse(fs.readFileSync(path.join(f.sessionsDir, conversationSessionId(OWN.streamId, 0) + '.jsonl'), 'utf8'));
@@ -93,7 +93,7 @@ test('wake-up and a conversation with a person never share a tool, a system text
   const [first, wake, later] = f.gateway.state.bodies;
   for (const body of [first, later]) {
     assert.deepEqual(body.tools.map(tool => tool.function.name), ['companion_scope', 'companion_content', 'companion_activity']);
-    assert.doesNotMatch(JSON.stringify(body), /companion_self|私下时间|这里是你自己的时间|今天这是第 1 次醒来/);
+    assert.doesNotMatch(JSON.stringify(body), /companion_self|私下时间|这里是你自己的时间|现在可以去找的人/);
   }
   assert.deepEqual(wake.tools.map(tool => tool.function.name), ['companion_self']);
   // The person's words are in their own conversation only; the wake-up request has none of them.
@@ -128,17 +128,31 @@ test('wake-up: only the channel can mark one, and with nothing but the briefing 
 
 test('companion_self: a call must carry something within its bounds; a refusal comes back with what to do about it; the world is re-checked first', async () => {
   const sent = [], lines = [];
-  let guarded = 0, answer = body => ({ ...(body.mood === undefined ? {} : { mood: 'accepted' }), ...(body.note === undefined ? {} : { note: 'rejected:sensitive' }), ...(body.outreach === undefined ? {} : { outreach: body.outreach }) });
+  let guarded = 0, answer = body => ({ ...(body.mood === undefined ? {} : { mood: 'accepted' }), ...(body.note === undefined ? {} : { note: 'rejected:sensitive' }), ...(body.reach === undefined ? {} : { reach: body.reach.map((_, index) => ['accepted', 'rejected:sensitive:health'][index]) }) });
   const [tool] = createSelfTools({ authority: { selfRecord: async body => { sent.push(body); return answer(body); } }, scope: OWN, guard: async () => { guarded++; }, log: line => lines.push(line) });
   const call = async args => JSON.parse((await tool.execute('call', args)).content[0].text);
-  for (const args of [{}, { mood: '' }, { mood: '   ' }, { mood: '长'.repeat(121) }, { note: '长'.repeat(401) }, { outreach: 'now' }, { mood: 'x', person: 'p-0a1b2c' }, { mood: 'x', streamId: PERSON.streamId }, null, 'x'])
-    await assert.rejects(tool.execute('call', args), { code: 'INVALID_REQUEST' });
+  const one = { label: 'p-0a1b2c', reason: 'MOCK 想问问近况' };
+  const bad = [{}, { mood: '' }, { mood: '   ' }, { mood: '长'.repeat(121) }, { note: '长'.repeat(401) }, { outreach: 'yes' }, { mood: 'x', person: 'p-0a1b2c' }, { mood: 'x', streamId: PERSON.streamId }, null, 'x',
+    { reach: one }, { reach: [one, one, one] }, { reach: ['p-0a1b2c'] }, { reach: [{ label: 'p-0a1b2c' }] }, { reach: [{ ...one, streamId: PERSON.streamId }] }, { reach: [{ label: '', reason: 'x' }] }, { reach: [{ label: 'p-0a1b2c', reason: '长'.repeat(81) }] }, { reach: [{ label: 'p-0a1b2c', reason: ' ' }] }];
+  for (const args of bad) await assert.rejects(tool.execute('call', args), { code: 'INVALID_REQUEST' }, JSON.stringify(args));
   assert.deepEqual([sent.length, guarded], [0, 0]);
-  assert.deepEqual(await call({ mood: '长'.repeat(120), note: 'MOCK 随笔', outreach: 'yes' }), { mood: '记下了。', note: '没有记下：涉及密码、证件、健康等敏感信息，按规定不保存。不要换说法重试。', outreach: '档位现在是 yes。' });
-  assert.deepEqual(sent, [{ streamId: OWN.streamId, mood: '长'.repeat(120), note: 'MOCK 随笔', outreach: 'yes' }]);
+  const told = await call({ mood: '长'.repeat(120), note: 'MOCK 随笔', reach: [one, { label: ' p-1b2c3d ', reason: 'MOCK 第二个理由' }] });
+  assert.deepEqual([told.mood, told.note], ['记下了。', '没有记下：涉及密码、证件、健康等敏感信息，按规定不保存。不要换说法重试。']);
+  assert.match(told.reach[0], /^p-0a1b2c：记下了。.*说不说仍然由你决定。$/);
+  assert.match(told.reach[1], /^p-1b2c3d：没有记下：理由里有不该带到对方那里的内容/);
+  assert.deepEqual(sent, [{ streamId: OWN.streamId, mood: '长'.repeat(120), note: 'MOCK 随笔', reach: [one, { label: 'p-1b2c3d', reason: 'MOCK 第二个理由' }] }]);
   assert.equal(guarded, 1);
+  // Nobody this time is a choice too; every refusal has its own words.
+  assert.deepEqual(await call({ reach: [] }), { reach: '这次不找人。' });
+  for (const [check, words] of Object.entries({ 'rejected:not_candidate': /不在这次的小卡里/, 'rejected:duplicate': /只用写一次/, 'rejected:sensitive:quote': /不该带到对方那里/, 'rejected:too_long': /太长了/, 'rejected:whatever': /被拒收/ })) {
+    answer = () => ({ reach: [check] });
+    assert.match((await call({ reach: [one] })).reach[0], words);
+  }
+  // An answer that does not match what was asked is not passed on as if it did.
+  answer = () => ({ reach: [] });
+  await assert.rejects(tool.execute('call', { reach: [one] }), { code: 'SELF_RESPONSE_INVALID' });
   answer = () => ({ mood: 'rejected:unsafe_text' });
   assert.match((await call({ mood: 'MOCK 1234567' })).mood, /^没有记下：里面有一长串数字/);
   // One stderr line per failed call: the tool and the code, never what she wrote.
-  assert.ok(lines.length === 10 && lines.every(line => line === 'conversation tool failed: companion_self - INVALID_REQUEST'));
+  assert.deepEqual(lines, [...bad.map(() => 'conversation tool failed: companion_self - INVALID_REQUEST'), 'conversation tool failed: companion_self - SELF_RESPONSE_INVALID']);
 });

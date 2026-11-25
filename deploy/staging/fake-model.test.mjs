@@ -158,7 +158,7 @@ test('scripted model: `activity` is a companion_activity call with the scripted 
 });
 
 test('scripted model: `self` is a companion_self call with the scripted arguments, only in a request that offers that tool (her private wake-up), then the reply', () => {
-  const self = { mood: 'MOCK 有点想找人说话', outreach: 'yes' }, script = [{ match: '私下时间', self, reply: '<休息>' }], own = [{ type: 'function', function: { name: 'companion_self' } }];
+  const self = { mood: 'MOCK 有点想找人说话', reach: [{ label: 'p-0a1b2c', reason: 'MOCK 想聊聊' }] }, script = [{ match: '私下时间', self, reply: '<休息>' }], own = [{ type: 'function', function: { name: 'companion_self' } }];
   const turn = [{ role: 'system', content: system }, user('[私下时间 · 这不是任何人发来的话] 现在是 MOCK')];
   const first = planReply({ stream: true, tools: own, messages: turn }, script);
   assert.deepEqual([first.kind, first.call], ['tool', { name: 'companion_self', arguments: self }]);
