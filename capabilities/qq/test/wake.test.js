@@ -57,7 +57,7 @@ test('a wake-up names her own conversation and nothing else; one that cannot run
   const f = await fixture(t);
   const dropped = async (id, extra, before = () => {}) => { before(); f.offers.push(offer(id, extra)); await f.bridge.pollInitiations(); return f.acks.at(-1); };
   // A person's conversation, a missing or oversized briefing, a bad epoch: never run as a wake-up.
-  for (const [index, extra] of [{ streamId: OWNER_STREAM }, { streamId: 'qq:100:private:201' }, { streamId: 'qq:self:1' }, { streamId: undefined }, { briefing: undefined }, { briefing: '' }, { briefing: 'x'.repeat(2001) }, { briefing: 3 }, { memoryEpoch: '0' }].entries())
+  for (const [index, extra] of [{ streamId: OWNER_STREAM }, { streamId: 'qq:100:private:201' }, { streamId: 'qq:self:1' }, { streamId: undefined }, { briefing: undefined }, { briefing: '' }, { briefing: 'x'.repeat(20001) }, { briefing: 3 }, { memoryEpoch: '0' }].entries())
     assert.deepEqual(await dropped('bad-' + index, extra), { id: 'bad-' + index, outcome: 'dropped:target' });
   assert.deepEqual(await dropped('late', { expiresAt: Date.now() - 1 }), { id: 'late', outcome: 'dropped:expired' });
   assert.deepEqual(await dropped('paused', {}, () => { f.world.paused = true; }), { id: 'paused', outcome: 'dropped:paused' });

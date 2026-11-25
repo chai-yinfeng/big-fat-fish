@@ -40,7 +40,7 @@ export async function fakeAuthority(t, root) {
     paused: false, chatThinking: false, epoch: 0, entityId: 'entity:test', text: '[人格]\n大肥鱼', memory: '', memoryIds: [], profile: '', continuation: '', continuationIds: [], revision: 3, personaRevision: 2, worldNow: Date.parse('2026-11-01T00:00:00Z'),
     requests: [], search: () => ({ items: [], text: '' }), content: body => ({ ok: true, action: body.action }), receipts: {},
     // What Authority answers when she writes something down in her private wake-up (POST /v1/self).
-    self: body => Object.fromEntries(Object.keys(body).filter(key => key !== 'streamId').map(key => [key, key === 'outreach' ? body[key] : 'accepted'])),
+    self: body => Object.fromEntries(Object.keys(body).filter(key => key !== 'streamId').map(key => [key, key === 'reach' ? body.reach.map(() => 'accepted') : 'accepted'])),
   };
   await listen(t, socketPath, async (req, res) => {
     const body = await readJson(req);

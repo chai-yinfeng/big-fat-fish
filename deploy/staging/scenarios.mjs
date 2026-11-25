@@ -12,6 +12,7 @@
 // earlier replay left behind for its own.
 import fs from 'node:fs';
 import http from 'node:http';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 export const MOCK_MODEL_KEY = 'MOCK-KEY-staging-not-a-real-key';
@@ -697,54 +698,77 @@ export const STEPS = {
     const set = (await run.operator('POST', '/initiative/settings', { quietHours })).quietHours;
     if (window !== 'default' && set.now !== (window === 'now')) fail(`the quiet hours ${set.from}-${set.to} ${set.now ? 'cover' : 'do not cover'} the present`);
   },
-  /** Her private wake-up through the operator route (POST /initiative/settings `wake`): the switch, and how many a day. */
-  async wake(run, _ctx, { enabled, perDay }) {
-    const set = (await run.operator('POST', '/initiative/settings', { wake: { enabled, ...(perDay === undefined ? {} : { perDay }) } })).wake;
+  /** Her private wake-up through the operator route (POST /initiative/settings `wake`): the switch, and its times of day. */
+  async wake(run, _ctx, { enabled, times }) {
+    const set = (await run.operator('POST', '/initiative/settings', { wake: { enabled, ...(times === undefined ? {} : { times }) } })).wake;
     if (set?.enabled !== enabled) fail(`the wake-up switch is ${set?.enabled}, expected ${enabled}`);
   },
+  /** Reaching out through the same route (`reach`): the switch, one person's switch by name (`people`: { "MOCK-T":
+   * true }, sent as that person's opaque label), how recent a chat keeps a person out (`recentMinutes`; 0 so that
+   * somebody who just spoke in the scenario still gets a card) and the high fuses. */
+  async reach(run, _ctx, { enabled, people, recentMinutes, fuses }) {
+    const labelled = people === undefined ? undefined : Object.fromEntries(await Promise.all(Object.entries(people).map(async ([name, on]) => [await run.personLabel(name), on])));
+    const set = (await run.operator('POST', '/initiative/settings', { reach: { ...(enabled === undefined ? {} : { enabled }), ...(labelled ? { people: labelled } : {}), ...(recentMinutes === undefined ? {} : { recentMinutes }), ...(fuses ? { fuses } : {}) } })).reach;
+    if (enabled !== undefined && set?.enabled !== enabled) fail(`the reach-out switch is ${set?.enabled}, expected ${enabled}`);
+    for (const [label, on] of Object.entries(labelled ?? {})) if (set.people.find(item => item.person === label)?.enabled !== on) fail(`the switch of ${label} was not set to ${on}`);
+  },
   /** The operator's "wake now" (POST /initiative/wake with an empty body: it names nothing). `expect`: what must stand
-   * in its way as things are ("off", "quiet_hours", "paused", ...), or nothing (default). The wake-ups already logged
-   * are remembered, so `expectWake` finds the one this step asked for. */
+   * in its way as things are ("off", "quiet_hours", "paused", "fuse", ...), or nothing (default). The wake-ups already
+   * logged are remembered, so `expectWake` finds the one this step asked for. */
   async wakeNow(run, ctx, { expect = null } = {}) {
     ctx.wakes = new Set((await run.operator('GET', '/initiative')).log.filter(entry => entry.type === 'wake').map(entry => entry.id));
     const value = await run.operator('POST', '/initiative/wake', {});
     if ((value.blocked ?? null) !== expect) fail(`the wake-up is held back by ${value.blocked ?? 'nothing'}, expected ${expect ?? 'nothing'}`);
-    if (expect === null && value.scheduledAt > Date.now() + 5000) fail('the wake-up was put off: an earlier one ran less than 45 minutes ago on this state');
   },
   /** The wake-up `wakeNow` asked for, as the operator's page shows it (GET /initiative): waits until it is logged and
-   * nothing is out, then checks how it ended (`outcome`), what she did (`did`: fields of the log entry's own), her
-   * `tier`, a `mood` she wrote in it, and with `picked: true` that the pick of a person was worked through: opaque
-   * labels only, six weights a candidate, a total that adds up, a result that is one of them or nobody, and marked as
-   * not acted on. The page never holds an account number. */
-  async expectWake(run, ctx, { outcome = 'done', did = {}, tier, mood, picked, timeoutMs = 60000 }) {
+   * nothing is out, then checks how it ended (`outcome`), what she did (`did`: fields of the log entry's own), how
+   * many `cards` she was given, a `mood` she wrote in it, and `reach`: the people she named, in order, each
+   * `{ person (a name; null: no card's label), check, outcome?, reason?, reasonAbsent? }`. With an `outcome` the step
+   * waits until the request to that person has ended that way; `reason` must be in her reason as Authority kept it,
+   * `reasonAbsent` (a text or a list) must not. `fuse`: the entry records that this high fuse was hit.
+   * The page never holds an account number, nor any of `pageAbsent`. */
+  async expectWake(run, ctx, { outcome = 'done', did = {}, cards, mood, reach, fuse, pageAbsent = [], timeoutMs = 90000 }) {
     if (!ctx.wakes) fail('expectWake: no wakeNow in this scenario');
     const fresh = value => value.log.find(entry => entry.type === 'wake' && !ctx.wakes.has(entry.id));
-    const page = await run.poll(async () => { const value = await run.operator('GET', '/initiative'); return fresh(value) && !value.out ? value : null; }, timeoutMs, 'she never woke');
-    const leaked = [run.data.bot, ...Object.values(run.data.people)].find(account => JSON.stringify(page).includes(account.qq));
+    const wanted = reach ?? [], settled = entry => wanted.every((item, index) => item.outcome === undefined || entry.reach?.[index]?.check !== 'accepted' || entry.reach[index].outcome === item.outcome);
+    const page = await run.poll(async () => { const value = await run.operator('GET', '/initiative'); const entry = fresh(value); return entry && !value.out && settled(entry) ? value : null; }, timeoutMs, 'she never woke, or a request from her wake-up did not end as expected');
+    const text = JSON.stringify(page), leaked = [run.data.bot, ...Object.values(run.data.people)].find(account => text.includes(account.qq));
     if (leaked) fail(`the wake-up page contains the account number ${leaked.qq}`);
+    const shown = list(pageAbsent).find(value => text.includes(value));
+    if (shown) fail(`the wake-up page contains ${JSON.stringify(shown)}`);
     const entry = fresh(page);
     if (entry.outcome !== outcome) fail(`the wake-up ended as ${entry.outcome}, expected ${outcome}`);
     for (const [key, value] of Object.entries(did)) if (entry.did?.[key] !== value) fail(`the wake-up log says ${key}: ${JSON.stringify(entry.did?.[key])}, expected ${JSON.stringify(value)}`);
-    if (tier !== undefined && entry.tier !== tier) fail(`her tier in the wake-up log is ${entry.tier}, expected ${tier}`);
+    if (cards !== undefined && entry.counts?.cards !== cards) fail(`she was given ${entry.counts?.cards} card(s), expected ${cards}`);
     if (mood !== undefined && !page.moods.some(item => item.text === mood && item.wakeId === entry.id)) fail(`the page does not show the mood ${JSON.stringify(mood)} under this wake-up`);
-    if (entry.second !== null) fail('the wake-up log records a second stage: this release must not act on the pick');
-    if (picked) {
-      const selection = entry.selection, label = /^p-[0-9a-f]{6}$/;
-      if (!selection || selection.dryRun !== true) fail('the wake-up log has no pick worked through (marked as not acted on)');
-      if (![...selection.candidates, ...selection.excluded].every(item => label.test(item.person))) fail('the pick names a person by something other than an opaque label');
-      if (!selection.candidates.every(item => ['intent', 'chatter', 'gap', 'reached', 'unanswered', 'newcomer'].every(key => Number.isFinite(item.weights?.[key])) && Number.isFinite(item.weight))) fail('a candidate of the pick lacks one of its six weights');
-      if (!selection.excluded.every(item => typeof item.reason === 'string')) fail('someone kept out of the pick has no reason');
-      if (selection.total !== null && Math.abs(selection.total - selection.candidates.reduce((sum, item) => sum + item.weight, selection.noneWeight)) > 1e-4) fail('the total weight of the pick does not add up');
-      if (selection.total !== null && !(selection.random >= 0 && selection.random < 1)) fail('the pick was drawn without a logged roll');
-      if (selection.result !== 'none' && !selection.candidates.some(item => item.person === selection.result)) fail('the result of the pick is not one of its candidates');
+    if (fuse !== undefined && !entry.fuses?.includes('fuse:' + fuse)) fail(`the wake-up log records the fuses ${JSON.stringify(entry.fuses)}, expected fuse:${fuse}`);
+    if (reach !== undefined) {
+      if (!Array.isArray(entry.reach) || entry.reach.length !== reach.length) fail(`the wake-up log names ${entry.reach?.length} person(s), expected ${reach.length}`);
+      for (const [index, item] of reach.entries()) {
+        const logged = entry.reach[index], label = item.person === null ? null : await run.personLabel(item.person);
+        if (logged.person !== null && !/^p-[0-9a-f]{6}$/.test(logged.person)) fail('the wake-up log names a person by something other than an opaque label');
+        if (item.person !== undefined && logged.person !== label) fail(`reach ${index + 1} names ${logged.person}, expected ${item.person} (${label})`);
+        if (logged.check !== item.check) fail(`reach ${index + 1} was ${logged.check}, expected ${item.check}`);
+        if (logged.check !== 'accepted' && (logged.reason !== undefined || logged.initiationId !== undefined)) fail(`reach ${index + 1} was refused, yet its reason or a request was kept`);
+        if (item.outcome !== undefined && logged.outcome !== item.outcome) fail(`the request of reach ${index + 1} ended as ${logged.outcome}, expected ${item.outcome}`);
+        if (item.reason !== undefined && !logged.reason?.includes(item.reason)) fail(`the reason of reach ${index + 1} is ${JSON.stringify(logged.reason)}, expected it to contain ${JSON.stringify(item.reason)}`);
+        const kept = list(item.reasonAbsent ?? []).find(value => logged.reason?.includes(value));
+        if (kept) fail(`the reason of reach ${index + 1} still contains ${JSON.stringify(kept)}`);
+      }
     }
   },
+  /** Whether a high fuse stands for today on the operator's page (GET /initiative `fuse`): `name`, or `none: true`. */
+  async expectFuse(run, _ctx, { name, none }) {
+    const fuse = (await run.operator('GET', '/initiative')).fuse;
+    if (none ? fuse !== null : fuse?.name !== name) fail(`the fuse on the page is ${JSON.stringify(fuse)}, expected ${none ? 'none' : name}`);
+  },
   /** The model requests of her wake-up in this scenario (the typed text starts with the wake-up marker): each offers
-   * the one tool companion_self and holds nothing of any person: no account number, no opaque person label, no
-   * conversation ID and none of the `absent` texts (what people said, her intents about them) anywhere in the request.
-   * Every other chat request of the scenario offers no such tool and holds none of the `onlyHere` texts (what she
-   * wrote down in the wake-up). */
-  async expectWakeRequest(run, ctx, { absent = [], onlyHere = [] }) {
+   * the one tool companion_self and holds nothing that identifies a person outside Authority (no account number, no
+   * person ID, no conversation ID) and none of the `absent` texts (what people said; anything of somebody who has no
+   * card). The newest one's briefing has a card for each of `cards` (names; their opaque labels) and none for
+   * `noCards`. Every other chat request of the scenario offers no such tool and holds none of the `onlyHere` texts
+   * (what she wrote down in the wake-up, what only a card told her). */
+  async expectWakeRequest(run, ctx, { absent = [], onlyHere = [], cards = [], noCards = [] }) {
     const log = run.modelLog(ctx).filter(entry => entry.stream), OPEN = '[私下时间 · 这不是任何人发来的话]';
     if (!log.every(entry => [entry.system, entry.context, entry.rest].every(value => typeof value === 'string') && Array.isArray(entry.tools))) fail('the model request log lacks system/context/rest/tools');
     const whole = entry => [entry.system, entry.context, entry.userText, entry.rest].join('\n'), wakes = log.filter(entry => entry.userText.startsWith(OPEN));
@@ -753,13 +777,16 @@ export const STEPS = {
       if (entry.tools.join(',') !== 'companion_self') fail(`a wake-up request offers the tools ${JSON.stringify(entry.tools)}`);
       const text = whole(entry), account = [run.data.bot, ...Object.values(run.data.people)].find(item => text.includes(item.qq));
       if (account) fail(`a wake-up request contains the account number ${account.qq}`);
-      const found = /p-[0-9a-f]{6}|private:|person:/.exec(text) ?? list(absent).find(value => text.includes(value));
+      const found = /private:|person:/.exec(text) ?? list(absent).find(value => text.includes(value));
       if (found) fail(`a wake-up request contains ${JSON.stringify(typeof found === 'string' ? found : found[0])}`);
     }
+    const briefing = wakes.at(-1).userText;
+    for (const name of list(cards)) if (!briefing.includes(`[${await run.personLabel(name)}]`)) fail(`the briefing has no card for ${name}`);
+    for (const name of list(noCards)) if (briefing.includes(await run.personLabel(name))) fail(`the briefing has a card for ${name}, who may not be reached out to`);
     for (const entry of log.filter(item => !item.userText.startsWith(OPEN))) {
       if (entry.tools.includes('companion_self')) fail(`the request for ${JSON.stringify(entry.userText.slice(0, 40))} offers companion_self`);
       const found = list(onlyHere).find(value => whole(entry).includes(value));
-      if (found) fail(`the request for ${JSON.stringify(entry.userText.slice(0, 40))} contains ${JSON.stringify(found)}, which she wrote in her wake-up`);
+      if (found) fail(`the request for ${JSON.stringify(entry.userText.slice(0, 40))} contains ${JSON.stringify(found)}, which belongs to her wake-up`);
     }
   },
   /** The operator's "try it on me" (POST /initiative/poke with an empty body: the route takes no target). `expect`:
@@ -1064,7 +1091,10 @@ export class Runner {
   }
   async scenario(written) {
     // `{run}`: new on every replay (letters and digits only, so it is one retrieval token).
-    const scenario = JSON.parse(JSON.stringify(written).replaceAll('{run}', 'R' + Date.now().toString(36).toUpperCase()));
+    // `{label:MOCK-X}`: the opaque label Authority gives that person (the first six hex digits of the SHA-256 of the
+    // person ID, authority/src/context.js `opaquePerson`), for what the scripted model writes in her wake-up.
+    const scenario = JSON.parse(JSON.stringify(written).replaceAll('{run}', 'R' + Date.now().toString(36).toUpperCase())
+      .replace(/\{label:(MOCK-[A-Z0-9-]{1,24})\}/g, (_, name) => this.data.people[name] ? 'p-' + createHash('sha256').update(this.personId(name)).digest('hex').slice(0, 6) : fail(`unknown person in {label:${name}}`)));
     const ctx = { matched: new Set(), observed: new Map(), logOffset: this.logLines().length };
     let done = 0, error = null;
     const each = async steps => { for (const step of steps) { const [name] = Object.keys(step); await STEPS[name](this, ctx, step[name]); done++; } };

@@ -7,7 +7,8 @@
 //
 // A diary is subjective memory: it carries the id of the persona card it was written under, and the earlier
 // private diaries she reads while writing are those of that same card only (a diary without a card id belongs
-// to the default card, as in cards.js). A private diary is read nowhere else: no conversation, no memory tool.
+// to the default card, as in cards.js). A private diary is read in one other place: the newest one of the current card, in her private wake-up (wake.js), which is
+// nobody's conversation. No conversation with a person and no memory tool reads it.
 // An open diary carries the card id as a record only: it is written for its person, who reads it whatever card is
 // current (open-diary.js); no conversation and no memory tool reads it either.
 //
@@ -72,7 +73,7 @@ export class DiaryDomain extends ConsolidationDomain {
       .map(row => this.store.memory(row)).filter(memory => !SENSITIVE.test(String(memory.text ?? '')));
     const notes = within(written.sort((a, b) => b.at - a.at), DIARY.noteChars, noteRow).sort((a, b) => a.at - b.at)
       .map((memory, index) => { const ref = 'n' + (index + 1); refs[ref] = memory.id; return { ref, ...noteRow(memory) }; });
-    // Only diaries of this format, of this card, of earlier days: the one place a private diary is read back.
+    // Only diaries of this format, of this card, of earlier days.
     const earlier = this.store.db.prepare("SELECT id,body FROM diaries WHERE entity_id=? AND kind='private' AND json_extract(body,'$.v')=2 AND COALESCE(json_extract(body,'$.cardId'),?)=? AND json_extract(body,'$.day')<? ORDER BY json_extract(body,'$.day') DESC,revision DESC LIMIT ?")
       .all(e.id, DEFAULT_CARD_ID, cardId, day, DIARY.previousDiaries).map(row => ({ id: row.id, ...JSON.parse(row.body) }));
     const previous = []; let chars = 0;
@@ -91,6 +92,14 @@ export class DiaryDomain extends ConsolidationDomain {
     const digests = within(found.sort((a, b) => b.pinned - a.pinned || b.toAt - a.toAt), DIARY.digestChars, digestRow).sort((a, b) => a.toAt - b.toAt)
       .map((memory, index) => { const ref = 'd' + (index + 1); refs[ref] = memory.id; return { ref, ...digestRow(memory) }; });
     return { refs, digests };
+  }
+  /** Her newest private diary written under one persona card, `{ day, text }` or null. Internal, for her private
+   * wake-up (her own conversation, which is nobody's): the second and last place a private diary is read back. */
+  latestPrivateDiary(entityId, cardId) {
+    const row = this.store.db.prepare("SELECT body FROM diaries WHERE entity_id=? AND kind='private' AND json_extract(body,'$.v')=2 AND COALESCE(json_extract(body,'$.cardId'),?)=? ORDER BY json_extract(body,'$.day') DESC,revision DESC LIMIT 1").get(entityId, DEFAULT_CARD_ID, cardId);
+    if (!row) return null;
+    const { day, text } = JSON.parse(row.body);
+    return typeof day === 'string' && typeof text === 'string' ? { day, text } : null;
   }
   openDiaryState() {
     const row = this.store.db.prepare('SELECT value FROM metadata WHERE key=?').get(OPEN_DIARY_KEY);
