@@ -552,6 +552,7 @@ def scenario_video_config(release, replaying):
     target = BASE / 'operator/providers/video.json'
     if not replaying or not (release / 'capabilities/providers/video/provider.js').is_file():
         target.unlink(missing_ok=True)
+        scenario_video_cookies(False)
         return False
     listed = subprocess.run([str(NODE), str(TOOLS / 'fake-ytdlp.mjs'), '--mock-site'], env={'PATH': '/usr/bin:/bin', 'HOME': str(ROOT), 'LANG': 'C.UTF-8'},
                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=True)
@@ -559,7 +560,32 @@ def scenario_video_config(release, replaying):
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'w') as handle:
         handle.write(json.dumps(video_scenario_config(json.loads(listed.stdout), NODE, TOOLS, ROOT / '.local/opt/companion')) + '\n')
+    scenario_video_cookies(True)
     return True
+
+
+# A made-up cookie jar (the same text as MOCK_COOKIES in fake-ytdlp.mjs): no real account's. Staging never has real cookies.
+MOCK_VIDEO_COOKIES = '# Netscape HTTP Cookie File\n# MOCK-STAGING-COOKIE: made up, staging only\n.video.mock.invalid\tTRUE\t/\tTRUE\t0\tMOCK_SESSION\tMOCK-STAGING\n'
+
+
+def scenario_video_cookies(replaying):
+    """operator/secrets/video-cookies.txt while scenarios replay: the made-up jar, 0600, so the video jobs copy it and ask
+    the stand-in for subtitles first (scenario V4). Removed afterwards, and only when it is that made-up jar: whatever
+    else is there is left alone. A release without cookie support does not read the file."""
+    target = BASE / 'operator/secrets/video-cookies.txt'
+    if not replaying:
+        try:
+            if not target.is_symlink() and target.is_file() and target.read_text().startswith(MOCK_VIDEO_COOKIES.split('\n')[0] + '\n# MOCK-STAGING-COOKIE'):
+                target.unlink()
+        except OSError:
+            pass
+        return
+    target.parent.mkdir(mode=0o700, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        return
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as handle:
+        handle.write(MOCK_VIDEO_COOKIES)
 
 
 def stop_fake_onebot():

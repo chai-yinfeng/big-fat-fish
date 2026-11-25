@@ -241,6 +241,7 @@ system、记忆中枢附注、用户原文、历史与工具结果全部在内�
   （后两个需要房间服务：staging 在房间已 prepare 时给回放加 `--room-port`，本机测试自己起一个）、
   `expectSplitReply`、`expectBeijingTime`、`expectToolResult`、
   `gatewayCall`、`noteUsage`、`expectUsage`、`expectUsageMatchesSpend`、`usageLimit`、`expectVisionRequests`、
+  `expectVideoCookie`（operator `/runtime` 里看视频的 Cookie 状态；回放时 staging 和本机测试在 `operator/secrets/` 放一份假 Cookie，回放后 staging 只删这份假的）、
   `providerKey`、`providerJob`、
   `pause`、`quietHours`、`poke`、`expectInitiation`、`loseReceipts`、`expectLostSends`、`expectModelCalls`、
   `noteMessages`、`expectMessages`、`expectInitiatedPrefix`、

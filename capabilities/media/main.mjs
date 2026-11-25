@@ -35,15 +35,16 @@ try {
   // reads this same content.json and ignores the file).
   // Watching a shared video. Its operator file sits beside this one (operator/providers/video.json, absent: the
   // capability is off); its cache and work directories are inside the media store's root, which the speech runner
-  // may read. No new key in content.json, for the same reason as above.
-  const video = createVideoProvider({ configFile: path.join(path.dirname(file), 'providers/video.json'), cacheRoot: path.join(store.root, 'video-cache'), workRoot: path.join(store.root, 'video-work'), store, speech, summarize: gateway.summarize, describeFrame: gateway.describeFrame, jobs: () => jobs });
+  // may read. No new key in content.json, for the same reason as above. The operator's cookies, when there are any,
+  // are operator/secrets/video-cookies.txt beside it (each job copies them into its work directory).
+  const video = createVideoProvider({ configFile: path.join(path.dirname(file), 'providers/video.json'), cookieFile: path.join(path.dirname(file), 'secrets/video-cookies.txt'), cacheRoot: path.join(store.root, 'video-cache'), workRoot: path.join(store.root, 'video-work'), store, speech, summarize: gateway.summarize, describeFrame: gateway.describeFrame, jobs: () => jobs });
   video.sweep({ start: true });
   jobs = createJobs({ file: path.join(cfg.store.root, 'jobs.json'), runners: { demo: createDemoRunner(), video: video.runner, 'video-frames': video.framesRunner }, worldStatus, usage: { reserve: capability => gateway.reserveUsage({ capability }), record: gateway.recordUsage } });
   const { summarize: _summarize, describeFrame: _describeFrame, ...ports } = gateway;
   const media = new MediaService({ store, speech, ...ports, normalizeImage, workRoot: cfg.workRoot, jobs, activities: { video } });
   // Every request somebody is waiting for goes through the gate, so a yielding background job lets it go first.
   const service = { call: (scope, input) => jobs.gate.timely(() => media.call(scope, input)) };
-  const operator = createContentOperator({ speechConfigFile: cfg.speechConfigFile, worldStatus, speechFactory: () => speech });
+  const operator = createContentOperator({ speechConfigFile: cfg.speechConfigFile, worldStatus, speechFactory: () => speech, videoStatus: () => video.status() });
   server = createContentServer({ ...cfg.control, service, worldStatus, operatorCall: (input, options) => input?.action === 'test' ? jobs.gate.timely(() => operator.call(input, options)) : operator.call(input, options), jobsCall: input => jobs.control(input), stickersCall: input => jobs.gate.timely(() => media.stickersCall(input)),
     // Forgetting, asked by Authority while the world is paused (forget.js `forgetLive`): this process's own stores. A
     // reply attachment still waiting to be picked up is dropped too. `startedAt` says which process confirmed.

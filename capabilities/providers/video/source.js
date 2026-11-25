@@ -2,6 +2,7 @@
 // are accepted, which media hosts to avoid and what a site's "blocked" looks like are the operator's, in the data
 // root (operator/providers/video.json); this repository and its tests only ever name the MOCK site.
 import fs from 'node:fs';
+import path from 'node:path';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { CEILINGS, defaults } from './config.js';
@@ -39,10 +40,49 @@ export function matchSite(config, url) {
 }
 export const videoKey = (siteId, id, part = 1) => `${siteId}:${id}${part > 1 ? `:p${part}` : ''}`;
 
+// The operator's cookies (operator/secrets/video-cookies.txt, Netscape format, put there by the operator): never read
+// for what they say, only copied into one job's work directory, where yt-dlp may rewrite its own copy. The original
+// is used only while it is a regular file of this service's user that nobody else may read or write.
+export const COOKIES = Object.freeze({ name: 'cookies.txt', bytes: 1024 * 1024 });
+/** What a stat of the cookie file says: 'configured', 'unsafe' (a link, another owner, or readable or writable by
+ * group or others) or 'invalid' (not a regular file, or over COOKIES.bytes). */
+function cookieJudge(stat, uid) {
+  if (stat.isSymbolicLink()) return 'unsafe';
+  if (!stat.isFile() || stat.size > COOKIES.bytes) return 'invalid';
+  return (stat.mode & 0o077) !== 0 || (uid !== undefined && stat.uid !== uid) ? 'unsafe' : 'configured';
+}
+const ownUid = () => (typeof process.getuid === 'function' ? process.getuid() : undefined);
+/** The cookie file's state without reading it: 'none' (absent), 'configured', 'unsafe' or 'invalid'. */
+export function cookieState(file, { uid = ownUid() } = {}) {
+  if (typeof file !== 'string' || !path.isAbsolute(file)) return 'none';
+  try { return cookieJudge(fs.lstatSync(file), uid); } catch (error) { return error?.code === 'ENOENT' ? 'none' : 'invalid'; }
+}
+/** Copies the cookie file into `workDir` as COOKIES.name (0600) when it is usable; -> its state ('configured' when the
+ * copy is there). The file is opened without following a link and judged on what was opened. */
+export function copyCookies(file, workDir, { uid = ownUid() } = {}) {
+  if (typeof file !== 'string' || !path.isAbsolute(file)) return 'none';
+  let fd;
+  try { fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK); }
+  catch (error) { return error?.code === 'ENOENT' ? 'none' : error?.code === 'ELOOP' ? 'unsafe' : 'invalid'; }
+  try {
+    const state = cookieJudge(fs.fstatSync(fd), uid);
+    if (state !== 'configured') return state;
+    const bytes = fs.readFileSync(fd);
+    if (bytes.length > COOKIES.bytes) return 'invalid';
+    fs.writeFileSync(path.join(workDir, COOKIES.name), bytes, { mode: 0o600, flag: 'wx' });
+    return 'configured';
+  } finally { fs.closeSync(fd); }
+}
+
 // Every command line is one of these fixed templates. Only generic options are used; the link goes after `--`
 // (and was refused above if it begins with `-`), a format is a name yt-dlp itself listed.
 const COMMON = ['--ignore-config', '--no-cache-dir', '--no-playlist', '--socket-timeout', '20'];
 export const metadataArgs = url => [...COMMON, '--retries', '1', '-J', '--', url];
+/** With the job's copy of the operator's cookies (in the work directory): these go before any template. */
+export const cookieArgs = present => present ? ['--cookies', COOKIES.name] : [];
+/** The platform's own subtitles only (no media): Chinese, uploaded or AI-made, written as subs.<language>.srt. */
+export const SUBTITLE_LANGS = 'zh.*,ai-zh';
+export const subtitleArgs = url => [...COMMON, '--retries', '1', '--skip-download', '--write-subs', '--write-auto-subs', '--sub-langs', SUBTITLE_LANGS, '--sub-format', 'srt/best', '-o', 'subs.%(ext)s', '--', url];
 export const downloadArgs = ({ format, maxFilesizeMiB }) => [...COMMON, '--retries', '2', '--max-filesize', `${maxFilesizeMiB}M`, '--load-info-json', 'info.json', '-f', format, '-o', 'audio.%(ext)s'];
 /** The lowest-quality video stream, for stills only (no sound needed). */
 export const videoDownloadArgs = ({ format, maxFilesizeMiB }) => [...COMMON, '--retries', '2', '--max-filesize', `${maxFilesizeMiB}M`, '--load-info-json', 'info.json', '-f', format, '-o', 'video.%(ext)s'];
@@ -148,4 +188,43 @@ export function videoFormat(info, site) {
   const lines = format => Number.isFinite(format.height) && format.height >= 100 ? format.height : Infinity;
   const rate = format => [format.tbr, format.vbr].find(value => Number.isFinite(value) && value > 0) ?? Infinity;
   return usable.sort((a, b) => lines(a) - lines(b) || rate(a) - rate(b))[0]?.format_id ?? null;
+}
+
+// Platform subtitles: external text like the rest, bounded here. yt-dlp writes them as SubRip (subs.<language>.srt).
+export const SUBTITLES = Object.freeze({ fileBytes: 2 * 1024 * 1024, cues: 4000, cueChars: 300, totalChars: 200000 });
+/**
+ * Which subtitle file to read among the work directory's `names`: an uploaded Chinese one before an AI-made one (its
+ * language begins `ai-`), then by name. -> { name, kind: 'uploaded' | 'ai' } or null.
+ */
+export function subtitleFile(names) {
+  const found = names.flatMap(name => {
+    const language = /^subs\.([A-Za-z0-9_-]{1,32})\.srt$/.exec(name)?.[1];
+    return language && /^(?:ai-)?zh/i.test(language) ? [{ name, kind: /^ai-/i.test(language) ? 'ai' : 'uploaded' }] : [];
+  }).sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'uploaded' ? -1 : 1) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return found[0] ?? null;
+}
+const STAMP = /^(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})/;
+/**
+ * A SubRip text as timed segments `[{ startMs, endMs, text }]` in time order: markup and control characters out, each
+ * cue at most SUBTITLES.cueChars characters, at most SUBTITLES.cues cues and SUBTITLES.totalChars characters in all
+ * (the rest is left out). Anything that is not a cue is skipped.
+ */
+export function parseSrt(input) {
+  if (typeof input !== 'string') return [];
+  const segments = []; let total = 0;
+  for (const block of input.slice(0, SUBTITLES.fileBytes).replace(/^﻿/, '').replace(/\r\n?/g, '\n').split(/\n[ \t]*\n/)) {
+    if (segments.length >= SUBTITLES.cues || total >= SUBTITLES.totalChars) break;
+    const lines = block.replace(/^\n+/, '').split('\n'), at = lines.findIndex(line => STAMP.test(line.trim()));
+    // A cue is an optional number line, the times, then its text.
+    if (at < 0 || at > 1) continue;
+    const [h1, m1, s1, ms1, h2, m2, s2, ms2] = STAMP.exec(lines[at].trim()).slice(1).map(Number);
+    if (m1 > 59 || s1 > 59 || m2 > 59 || s2 > 59) continue;
+    const startMs = ((h1 * 60 + m1) * 60 + s1) * 1000 + ms1, endMs = ((h2 * 60 + m2) * 60 + s2) * 1000 + ms2;
+    if (endMs < startMs) continue;
+    const text = lines.slice(at + 1).join(' ').replace(/<[^>]{0,64}>|\{\\[^}]{0,64}\}/g, '').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim()
+      .slice(0, Math.min(SUBTITLES.cueChars, SUBTITLES.totalChars - total));
+    if (!text) continue;
+    segments.push({ startMs, endMs, text }); total += text.length;
+  }
+  return segments.sort((a, b) => a.startMs - b.startMs);
 }

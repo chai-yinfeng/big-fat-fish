@@ -15,9 +15,21 @@ const closed = (input, keys, required = keys) => {
 };
 const shortText = (value, max) => typeof value === 'string' && value.trim() !== '' && [...value].length <= max && !value.includes('\0');
 
+const COOKIE_STATES = ['none', 'configured', 'unsafe', 'invalid'];
+/** The video capability's state for the console (`videoStatus` of the video provider), checked field by field:
+ * configured or not, and the cookies' state and times. Never anything of the cookies themselves. */
+function videoView(videoStatus) {
+  try {
+    const value = videoStatus(), cookie = value?.cookie;
+    if (typeof value?.configured !== 'boolean' || !COOKIE_STATES.includes(cookie?.state)) return null;
+    return { configured: value.configured, cookie: { state: cookie.state, lastSuccessAt: Number.isSafeInteger(cookie.lastSuccessAt) ? cookie.lastSuccessAt : null, suspectedExpired: cookie.suspectedExpired === true } };
+  } catch { return null; }
+}
+
 /** Host-only operation port. No model tool, Authority writer or platform action.
- * speechFactory is only a dependency-injection seam, never a JSON config field. */
-export function createContentOperator({ speechConfigFile, worldStatus, speechFactory = options => createLocalSpeechRunner(options), unlinkReference = file => fs.unlinkSync(file) }) {
+ * speechFactory is only a dependency-injection seam, never a JSON config field. `videoStatus` (optional): the video
+ * provider's `status`; when given, the status view carries `video`. */
+export function createContentOperator({ speechConfigFile, worldStatus, speechFactory = options => createLocalSpeechRunner(options), unlinkReference = file => fs.unlinkSync(file), videoStatus }) {
   if (!path.isAbsolute(speechConfigFile) || typeof worldStatus !== 'function') throw fail('CONTENT_OPERATOR_CONFIG', 503);
   const runner = speechFactory({ configFile: speechConfigFile });
   let busy = false;
@@ -51,9 +63,10 @@ export function createContentOperator({ speechConfigFile, worldStatus, speechFac
     return { speech: { status }, voices: null, imageGeneration: { configured: false, status: 'not_configured' } };
   }
   function statusView() {
-    let current;
-    try { current = read(); } catch { return unavailable(); }
-    return projected(current);
+    let current = null;
+    try { current = read(); } catch {}
+    const view = current ? projected(current) : unavailable();
+    return typeof videoStatus === 'function' ? { ...view, video: videoView(videoStatus) } : view;
   }
   async function paused(input, signal) {
     if (signal?.aborted) throw fail('CONTENT_OPERATOR_CANCELLED', 409);

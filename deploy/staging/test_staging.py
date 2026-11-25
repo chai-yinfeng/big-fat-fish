@@ -282,6 +282,26 @@ class InitiationReplayTests(unittest.TestCase):
         self.assertIn("'deploy/staging/fake-ytdlp.mjs': 'fake-ytdlp.mjs'", (HERE / 'run.mjs').read_text())
         self.assertIn("'deploy/staging/fake-ffmpeg.mjs': 'fake-ffmpeg.mjs'", (HERE / 'run.mjs').read_text())
 
+    def test_the_made_up_cookie_jar_is_private_while_replaying_and_only_it_is_removed_afterwards(self):
+        # The same text as fake-ytdlp.mjs MOCK_COOKIES (what the local replay writes).
+        fake = (HERE / 'fake-ytdlp.mjs').read_text()
+        self.assertIn(json.dumps(sa.MOCK_VIDEO_COOKIES.rstrip('\n'), ensure_ascii=False).replace('"', "'"), fake.replace('"', "'"))
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            (base / 'operator').mkdir(mode=0o700)
+            saved, sa.BASE = sa.BASE, base
+            self.addCleanup(setattr, sa, 'BASE', saved)
+            target = base / 'operator/secrets/video-cookies.txt'
+            sa.scenario_video_cookies(True)
+            self.assertEqual((target.read_text(), target.stat().st_mode & 0o777, target.parent.stat().st_mode & 0o777), (sa.MOCK_VIDEO_COOKIES, 0o600, 0o700))
+            sa.scenario_video_cookies(False)
+            self.assertFalse(target.exists())
+            # Anything else there (it never is on staging) is neither overwritten nor removed.
+            target.write_text('# Netscape HTTP Cookie File\nsomething else\n')
+            sa.scenario_video_cookies(True)
+            sa.scenario_video_cookies(False)
+            self.assertEqual(target.read_text(), '# Netscape HTTP Cookie File\nsomething else\n')
+
     def test_the_second_channel_gets_its_own_credential_executor_and_the_explicit_switch(self):
         config = {'credentials': [{'hash': 'a' * 64, 'role': 'capability', 'capabilityId': 'qq'}, {'hash': 'old', 'role': 'capability', 'capabilityId': 'mock'}],
                   'capabilities': [{'id': 'qq', 'policy': 'conversation.v1'}], 'operator': {'origins': []}}
