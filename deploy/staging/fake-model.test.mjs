@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createModelGateway } from '../../model-gateway/server.mjs';
-import { consolidationRows, diaryRows, openDiaryRows, DEFAULT_DIARY, DEFAULT_DIGEST, planReply, renderReply, evidenceRef, createFakeUpstream, DEFAULT_REPLY } from './fake-model.mjs';
+import { consolidationRows, diaryRows, openDiaryRows, DEFAULT_DIARY, DEFAULT_DIGEST, planReply, renderReply, evidenceRef, createFakeUpstream, DEFAULT_REPLY, MOCK_LONG_PAGE } from './fake-model.mjs';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 const system = 'persona';
@@ -191,6 +191,24 @@ test('scripted model: `scope` is a companion_scope call with the scripted argume
   assert.deepEqual([first.kind, first.call], ['tool', { name: 'companion_scope', arguments: scope }]);
   const second = planReply({ stream: true, tools, messages: [...turn, { role: 'assistant', tool_calls: [] }, { role: 'tool', content: '{"items":[]}' }] }, script);
   assert.deepEqual([second.kind, second.text, second.toolResult], ['text', 'MOCK-查到了', '{"items":[]}']);
+});
+
+test('scripted model: `content` is a companion_content call with the scripted arguments, then the reply; the fake web has one long page', async () => {
+  const content = { action: 'read', url: MOCK_LONG_PAGE.url, page: 2 };
+  const script = [{ match: '读第二页', content, reply: 'MOCK-读完了' }], offered = [...tools, { type: 'function', function: { name: 'companion_content' } }];
+  const turn = [{ role: 'system', content: system }, user('读第二页')];
+  assert.deepEqual(planReply({ stream: true, tools: offered, messages: turn }, script).call, { name: 'companion_content', arguments: content });
+  assert.equal(planReply({ stream: true, tools, messages: turn }, script).kind, 'text');
+  assert.equal(planReply({ stream: true, tools: offered, messages: [...turn, { role: 'assistant', tool_calls: [] }, { role: 'tool', content: '{}' }] }, script).text, 'MOCK-读完了');
+  const root = fs.realpathSync(fs.mkdtempSync('/tmp/fmod-')), log = path.join(root, 'requests.jsonl');
+  try {
+    const upstream = createFakeUpstream({ scriptFile: path.join(root, 'none.json'), logFile: log });
+    const page = await (await upstream('https://api.deepseek.com/v1/tools/fetch', { body: JSON.stringify({ url: MOCK_LONG_PAGE.url }) })).json();
+    assert.deepEqual(page, { title: MOCK_LONG_PAGE.title, content: MOCK_LONG_PAGE.content });
+    assert.ok(MOCK_LONG_PAGE.content.length > 8000 && MOCK_LONG_PAGE.content.startsWith('MOCK-LONG-PAGE-HEAD') && MOCK_LONG_PAGE.content.endsWith('MOCK-LONG-PAGE-TAIL'));
+    assert.equal((await upstream('https://api.deepseek.com/v1/tools/fetch', { body: JSON.stringify({ url: 'https://example.com/other' }) })).status, 503);
+    assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n').map(line => { const { at, ...entry } = JSON.parse(line); return entry; }), [{ stream: false, fetch: true, userText: MOCK_LONG_PAGE.url }]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('scripted model: a diary request is answered by a `diary` rule with the refs of the rows that matched; nothing else is', async () => {

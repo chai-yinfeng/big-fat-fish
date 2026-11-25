@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { createModelGateway } from './server.mjs';
+import { createModelGateway, WEB_PAGE_CHARS } from './server.mjs';
 
 const operator = 'operator-test-token-with-no-real-credential', infer = 'inference-test-token-with-no-real-credential';
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -166,7 +166,7 @@ test('vision and read-only web capabilities use fixed provider schemas, bounded 
       assert.deepEqual(body, { query: 'synthetic query', count: 5, need_content: false });
       return new Response(JSON.stringify({ results: Array.from({ length: 6 }, (_, i) => ({ title: 'result-' + i, url: 'https://example.com/' + i, snippet: 'short', summary: 'e'.repeat(900) })) }));
     }
-    if (url.endsWith('/tools/fetch')) return new Response(JSON.stringify({ title: 'page', content: 'c'.repeat(8100) }));
+    if (url.endsWith('/tools/fetch')) return new Response(JSON.stringify({ title: 'page', content: 'c'.repeat(WEB_PAGE_CHARS + 100) }));
     assert.equal(url, 'https://api.deepseek.com/chat/completions');
     assert.equal(body.model, 'deepseek-flash'); assert.deepEqual(body.thinking, { type: 'disabled' }); assert.equal(body.max_tokens, 512); assert.equal(body.tools, undefined);
     assert.deepEqual(body.messages[0].content[1], { type: 'image_url', image_url: { url: 'data:image/png;base64,' + png, detail: 'low' } });
@@ -184,7 +184,8 @@ test('vision and read-only web capabilities use fixed provider schemas, bounded 
   const search = (await f.capability('/v1/web/search', { query: 'synthetic query', count: 5 })).json().value;
   assert.equal(search.results.length, 5); assert.equal(search.results[0].excerpt.length, 800); assert.equal(search.truncated, true); assert.equal(search.external, true); assert.equal(search.usage, null);
   const page = (await f.capability('/v1/web/fetch', { url: 'https://example.com/page' })).json().value;
-  assert.equal(page.content.length, 8000); assert.equal(page.truncated, true); assert.equal(page.derived, true);
+  // The whole text up to WEB_PAGE_CHARS (well past the 8000 of before), in one call; the rest is cut and marked.
+  assert.equal(WEB_PAGE_CHARS, 60000); assert.equal(page.content.length, WEB_PAGE_CHARS); assert.equal(page.truncated, true); assert.equal(page.derived, true);
   assert.equal(calls[2].url, 'https://api.deepseek.com/v1/tools/fetch'); assert.equal(calls[2].headers.cookie, undefined);
   const saved = JSON.parse(await fs.readFile(f.usageFile, 'utf8'));
   assert.equal(saved.webCalls, 2); assert.equal(saved.visionCalls, 1); assert.equal(saved.inputTokens, 23); assert.equal(saved.outputTokens, 11);

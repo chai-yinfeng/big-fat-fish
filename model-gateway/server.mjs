@@ -38,6 +38,8 @@ const PURPOSES = Object.freeze({ __proto__: null, ...GATEWAY_PURPOSES.vision });
 export const MAINTENANCE_MAX_TOKENS = 4096;
 /** Output cap of an activity completion (/v1/activity/completions): thinking off, a bounded summary. */
 export const ACTIVITY_MAX_TOKENS = 1536;
+/** Text of one page read on the web (/v1/web/fetch), at most: longer is cut and marked `truncated`. */
+export const WEB_PAGE_CHARS = 60000;
 /** The thinking parameters of a completion with thinking on (DeepSeek: `thinking.type` plus `reasoning_effort`). */
 const THINKING = Object.freeze({ thinking: { type: 'enabled' }, reasoning_effort: 'high' });
 const failure = code => Object.assign(new Error(ERRORS[code][1]), { code });
@@ -456,7 +458,9 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       closed(body, ['url']); const url = publicUrl(body.url);
       const reply = await capabilityCall('web', 'https://api.deepseek.com/v1/tools/fetch', { url }, res, note);
       if (typeof reply.value.title !== 'string' || typeof reply.value.content !== 'string') throw failure('UPSTREAM_ERROR');
-      send(res, 200, { ok: true, value: { url, title: reply.value.title.slice(0, 300), content: reply.value.content.slice(0, 8000), truncated: reply.value.content.length > 8000 || reply.value.title.length > 300, usage: reply.usage, ...evidence } });
+      // The whole text up to WEB_PAGE_CHARS, in one fetch: the content service keeps it for the conversation and hands
+      // it to the model a page at a time.
+      send(res, 200, { ok: true, value: { url, title: reply.value.title.slice(0, 300), content: reply.value.content.slice(0, WEB_PAGE_CHARS), truncated: reply.value.content.length > WEB_PAGE_CHARS || reply.value.title.length > 300, usage: reply.usage, ...evidence } });
     }
   }
   async function inference(req, res) {
