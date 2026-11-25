@@ -49,7 +49,8 @@ export class ContentClient {
 }
 export function capabilityGateway({ socketPath, tokenFile }) {
   const call = (route, body) => unixJson({ socketPath, tokenFile, route, body, maxBytes: 65536, timeoutMs: 90000 });
-  return { vision: body => call('/v1/vision/describe', body), search: body => call('/v1/web/search', body), fetchPage: body => call('/v1/web/fetch', body),
+  // A page read on the web is its whole text (the gateway's WEB_PAGE_CHARS), so its answer may be larger than the rest.
+  return { vision: body => call('/v1/vision/describe', body), search: body => call('/v1/web/search', body), fetchPage: body => unixJson({ socketPath, tokenFile, route: '/v1/web/fetch', body, maxBytes: 512 * 1024, timeoutMs: 90000 }),
     // The gateway's usage ledger: how a local run ended (count, units, elapsed time; never text or audio).
     recordUsage: body => unixJson({ socketPath, tokenFile, route: '/v1/usage/record', body, maxBytes: 4096, timeoutMs: 5000 }),
     // One of today's slots of a local capability that has a daily limit; CONTENT_BUDGET_EXHAUSTED when none is left.

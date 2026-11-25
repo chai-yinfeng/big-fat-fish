@@ -100,6 +100,8 @@ const FROZEN_TOOLS = Object.freeze({
   // `proposeTypes`: the kinds of memory `propose` offers. intent.note (her intents) was added with the owner's approval
   // of 11-14 (design §3.2); the tool definition changed and the prompt cache is lost once.
   companion_scope: Object.freeze({ actions: ['evidence', 'propose', 'receipt', 'search', 'read', 'recall'], proposeTypes: ['fact.report', 'experience.remember', 'appraisal.record', 'learning.note', 'self.note', 'intent.note'], declared: [] }),
+  // `read` gained the optional field `page` (a long page read in pages) with the owner's approval of 11-24 (主人 11-24 批准);
+  // the tool definition changed and the prompt cache is lost once.
   companion_content: Object.freeze({ actions: ['search', 'read', 'describe', 'transcribe', 'attach'], declared: ['vision.describe', 'web.search', 'web.read', 'speech-asr.transcribe', 'media.attach'] }),
 });
 
@@ -159,7 +161,8 @@ test('executor (tools.js): every declared model action runs with its declared fi
       if (action.tool === ACTIVITY_TOOL) assert.deepEqual([request.capability, request.activity], [action.capability, action.action], where);
       // Nothing reaches the content service that the declaration does not list.
       assert.deepEqual(Object.keys(request).filter(key => ![...CONTENT_SCOPE_FIELDS, ...used.fields].includes(key)), [], where);
-      assert.equal(Object.hasOwn(request, 'sourceEventId'), used.source === 'required', where);
+      // (The evidence here has a user observation, so an optional source is taken as well.)
+      assert.equal(Object.hasOwn(request, 'sourceEventId'), used.source !== 'none', where);
       assert.equal(Object.hasOwn(request, 'requestId'), action.rules.includes('requestBound'), where);
     }
     // A field the declaration does not list is refused, and so is a missing required one.
@@ -267,7 +270,7 @@ test('configuration and forgetting: each declared loader exists, and the owners 
   assert.deepEqual(CONFIGS.map(row => [row.file, row.capabilities]), [['operator/speech.json', ['speech-tts', 'speech-asr']], ['operator/providers/video.json', ['video']]]);
   for (const row of CONFIGS) assert.equal(typeof (await import(new URL(`../../${row.module}`, import.meta.url)))[row.load], 'function', row.file);
   // Every declaration says who forgets for it, or that nothing is kept.
-  assert.deepEqual(DECLARATIONS.filter(item => item.forget === null).map(item => item.id), ['web']);
+  assert.deepEqual(DECLARATIONS.filter(item => item.forget === null).map(item => item.id), []);
   assert.deepEqual(sorted(Object.values(FORGET_OWNERS).flat()), sorted(DECLARATIONS.filter(item => item.forget).map(item => item.id)));
   assert.deepEqual(Object.keys(FORGET_OWNERS), ['companion-conversation', 'authority', 'companion-content']);
   const purge = source('deploy/authority/purge-execution.mjs');

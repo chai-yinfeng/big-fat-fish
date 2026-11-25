@@ -192,7 +192,16 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
         if (!declared) throw failure('INVALID_REQUEST');
         if (declared.sourceRequired && typeof body.sourceEventId !== 'string') throw failure('INVALID_REQUEST');
         const scopeInput = { streamId: body.streamId, memoryEpoch: body.memoryEpoch, ...(body.sourceEventId === undefined ? {} : { sourceEventId: body.sourceEventId }) };
-        const scope = authority.contentScope(grant.capabilityId, scopeInput);
+        let scope;
+        try { scope = authority.contentScope(grant.capabilityId, scopeInput); }
+        catch (error) {
+          // An action whose source is only optional (none of its uses requires one) runs without a source it may not
+          // use (forgotten, or not the bound person's own message): nothing is then filed under that message.
+          const optional = declared.uses.some(use => use.source === 'optional') && !declared.uses.some(use => use.source === 'required');
+          if (!optional || scopeInput.sourceEventId === undefined || error?.code !== 'FORBIDDEN') throw error;
+          delete scopeInput.sourceEventId; delete body.sourceEventId;
+          scope = authority.contentScope(grant.capabilityId, scopeInput);
+        }
         value = await contentControl(scope, body);
         const current = authority.contentScope(grant.capabilityId, scopeInput);
         if (current.worldRevision !== scope.worldRevision || current.entityId !== scope.entityId || current.personId !== scope.personId || current.audience !== scope.audience) throw failure('CONFLICT');

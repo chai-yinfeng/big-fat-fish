@@ -28,6 +28,13 @@ export const TOOL_RULES = Object.freeze({
       if (!asked) throw refuse('ACTIVITY_UNAVAILABLE', '这一回合没有对方发来的消息可以作为来源。');
       request.sourceEventId = asked.eventId;
     }),
+  // The same, where a turn may have no such message (she started it herself, or it is not the bound person's own): the
+  // source is then left out, and so is whatever would have been kept under it.
+  sourceFromEvidenceIfAny: rule('request', 'The source message, when this turn has a user observation, is taken from the evidence; the model cannot name it.',
+    ({ request, evidence }) => {
+      const asked = evidence.find(item => item.role === 'user');
+      if (asked) request.sourceEventId = asked.eventId;
+    }),
   requestBound: rule('request', 'requestId is the execution request\'s own.',
     ({ request, requestId }) => { request.requestId = requestId; }),
   neutralizeExternalText: rule('result', 'Memory-hub note delimiters in returned external text (note, text) are neutralized.',

@@ -119,6 +119,7 @@ export function planReply(body, rules = []) {
   }
   if (base.stream && rule.scope && !afterTool && body.tools?.some(tool => tool?.function?.name === 'companion_scope')) return { ...base, kind: 'tool', call: { name: 'companion_scope', arguments: rule.scope } };
   if (base.stream && rule.activity && !afterTool && body.tools?.some(tool => tool?.function?.name === 'companion_activity')) return { ...base, kind: 'tool', call: { name: 'companion_activity', arguments: rule.activity } };
+  if (base.stream && rule.content && !afterTool && body.tools?.some(tool => tool?.function?.name === 'companion_content')) return { ...base, kind: 'tool', call: { name: 'companion_content', arguments: rule.content } };
   if (base.stream && rule.self && !afterTool && body.tools?.some(tool => tool?.function?.name === 'companion_self')) return { ...base, kind: 'tool', call: { name: 'companion_self', arguments: rule.self } };
   if (base.stream && rule.propose && rule.activity && !rule.retry && ref && messages.slice(last + 1).filter(message => message?.role === 'tool').length === 1 && body.tools?.some(tool => tool?.function?.name === 'companion_activity')) return { ...base, kind: 'tool', call: { name: 'companion_activity', arguments: rule.activity } };
   if (base.stream && rule.propose && rule.retry && ref && messages.slice(last + 1).filter(message => message?.role === 'tool').length === 1) {
@@ -137,7 +138,10 @@ export function renderReply(plan) {
   return chunks.map(value => `data: ${JSON.stringify(value)}\n\n`).join('') + 'data: [DONE]\n\n';
 }
 
-/** fetch stand-in. Every request is appended to `logFile`; anything but chat completions and web search is refused. */
+/** The one page the fake web has: two pages of a read and longer than the 8000 characters the gateway once cut it to, its first and last lines marked. */
+export const MOCK_LONG_PAGE = Object.freeze({ url: 'https://example.com/MOCK-long-page', title: 'MOCK-LONG-PAGE', content: ['MOCK-LONG-PAGE-HEAD', ...Array.from({ length: 130 }, (_, n) => `MOCK-LONG-PAGE-LINE-${String(n).padStart(3, '0')} ` + 'x'.repeat(40)), 'MOCK-LONG-PAGE-TAIL'].join('\n') });
+/** fetch stand-in. Every request is appended to `logFile`; anything but chat completions, web search and reading the
+ * one fake page is refused. */
 export function createFakeUpstream({ scriptFile, logFile }) {
   const provider = createFakeProviderUpstream(entry => fs.appendFileSync(logFile, JSON.stringify({ at: Date.now(), stream: false, provider: entry.provider, userText: `${entry.method} ${entry.route}` }) + '\n', { mode: 0o600 }));
   return async (url, options = {}) => {
@@ -147,6 +151,12 @@ export function createFakeUpstream({ scriptFile, logFile }) {
       const query = String(JSON.parse(options.body)?.query ?? '');
       fs.appendFileSync(logFile, JSON.stringify({ at: Date.now(), stream: false, search: true, userText: query }) + '\n', { mode: 0o600 });
       return new Response(JSON.stringify({ results: [{ title: 'MOCK-SEARCH-RESULT', url: 'https://example.com/mock', snippet: 'MOCK-SEARCH-SNIPPET' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (String(url) === 'https://api.deepseek.com/v1/tools/fetch') {
+      let asked; try { asked = JSON.parse(options.body)?.url; } catch {}
+      if (asked !== MOCK_LONG_PAGE.url) return new Response('{}', { status: 503 });
+      fs.appendFileSync(logFile, JSON.stringify({ at: Date.now(), stream: false, fetch: true, userText: asked }) + '\n', { mode: 0o600 });
+      return new Response(JSON.stringify({ title: MOCK_LONG_PAGE.title, content: MOCK_LONG_PAGE.content }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (String(url) !== 'https://api.deepseek.com/chat/completions') return new Response('{}', { status: 503 });
     const body = JSON.parse(options.body);

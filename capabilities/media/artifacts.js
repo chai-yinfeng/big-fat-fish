@@ -81,6 +81,11 @@ export class ArtifactStore {
     const owner = scopeOf(scope), now = this.clock();
     return this.records().filter(meta => meta.kind === kind && meta.state === 'ready' && meta.expiresAt > now && sameScope(meta, owner)).sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
   }
+  /** Every readable artifact of one kind in exactly this scope (their metadata), newest first. */
+  list(scope, kind) {
+    const owner = scopeOf(scope), now = this.clock();
+    return this.records().filter(meta => meta.kind === kind && meta.state === 'ready' && meta.expiresAt > now && sameScope(meta, owner)).sort((a, b) => b.createdAt - a.createdAt);
+  }
   expire() {
     let removed = 0;
     for (const meta of this.records()) if (meta.expiresAt <= this.clock() && meta.state !== 'expired') {

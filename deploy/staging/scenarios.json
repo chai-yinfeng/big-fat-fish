@@ -546,8 +546,10 @@
     },
     {
       "id": "Q1",
-      "title": "ledger-counts-every-exit: a chat turn, a picture and a search each land in their usage row, and the rows add up to what the spend meter charged",
+      "title": "ledger-counts-every-exit: a chat turn, a picture and a search each land in their usage row, and the rows add up to what the spend meter charged; a long page is read in two pages for one fetch (the second page comes from what this conversation kept, not counted again)",
       "model": [
+        { "match": "MOCK-Q1-{run} 读长文", "content": { "action": "read", "url": "https://example.com/MOCK-long-page" }, "reply": "MOCK-REPLY-Q1 读了第一页" },
+        { "match": "MOCK-Q1-{run} 读第二页", "content": { "action": "read", "url": "https://example.com/MOCK-long-page", "page": 2 }, "reply": "MOCK-REPLY-Q1 读了第二页" },
         { "match": "MOCK-Q1-{run}", "reply": "MOCK-REPLY-Q1 好" }
       ],
       "steps": [
@@ -561,6 +563,19 @@
         { "expectUsage": { "capability": "web", "used": 1, "calls": 1, "ok": 1 } },
         { "expectUsage": { "capability": "speech-tts" } },
         { "expectUsage": { "capability": "speech-asr" } },
+        { "expectUsageMatchesSpend": { "minPaidRows": 3 } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-Q1-{run} 读长文 https://example.com/MOCK-long-page" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-Q1 读了第一页" } },
+        { "expectToolResult": { "userText": "MOCK-Q1-{run} 读长文", "nth": 1, "contains": "\"page\":1,\"pages\":2" } },
+        { "expectToolResult": { "userText": "MOCK-Q1-{run} 读长文", "nth": 1, "contains": "MOCK-LONG-PAGE-HEAD", "absent": "MOCK-LONG-PAGE-TAIL" } },
+        { "expectToolResult": { "userText": "MOCK-Q1-{run} 读长文", "nth": 1, "contains": "\"external\":true,\"derived\":true,\"isNewEvidence\":false" } },
+        { "expectToolResult": { "userText": "MOCK-Q1-{run} 读长文", "nth": 1, "contains": "\"isVerbatimUserText\":false" } },
+        { "say": { "from": "MOCK-A", "text": "MOCK-Q1-{run} 读第二页" } },
+        { "expectReply": { "to": "MOCK-A", "contains": "MOCK-REPLY-Q1 读了第二页" } },
+        { "expectToolResult": { "userText": "MOCK-Q1-{run} 读第二页", "nth": 1, "contains": "\"cached\":true", "absent": "MOCK-LONG-PAGE-HEAD" } },
+        { "expectToolResult": { "userText": "MOCK-Q1-{run} 读第二页", "nth": 1, "contains": "\"page\":2,\"pages\":2" } },
+        { "expectToolResult": { "userText": "MOCK-Q1-{run} 读第二页", "nth": 1, "contains": "MOCK-LONG-PAGE-TAIL" } },
+        { "expectUsage": { "capability": "web", "used": 2, "calls": 2, "ok": 2 } },
         { "expectUsageMatchesSpend": { "minPaidRows": 3 } }
       ]
     },
