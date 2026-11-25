@@ -20,7 +20,7 @@
 // admitted request is a maintenance_tasks row (mode 'diary' / 'diary.open'); a commit leaves a diary_receipts row
 // (kind 'diary') holding a hash only. A diary's call is one of the entity's daily consolidation batches.
 import { createHash, randomUUID } from 'node:crypto';
-import { canonical, closed, enumeration, fail, identifier } from './identity.js';
+import { SELF_PERSON, canonical, closed, enumeration, fail, identifier } from './identity.js';
 import { ConsolidationDomain, CONSOLIDATION, beijingDay, beijingHour } from './consolidation.js';
 import { SENSITIVE } from './policies.js';
 import { opaquePerson } from './context.js';
@@ -64,7 +64,8 @@ export class DiaryDomain extends ConsolidationDomain {
   #material(e, day, cardId) {
     const from = dayStart(day), to = from + DAY, refs = {};
     const digestRow = memory => ({ person: opaquePerson(memory.personId), time: beijingClock(memory.toAt), summary: String(memory.summary ?? ''), ...(feelingFor(memory, cardId) ? { feeling: memory.feeling } : {}) });
-    const found = this.store.db.prepare("SELECT * FROM memory_items WHERE entity_id=? AND kind='digest' AND status='active' AND json_extract(body,'$.toAt')>=? AND json_extract(body,'$.toAt')<?").all(e.id, from, to)
+    // Never a digest under her own conversation's reserved person (consolidation writes none; this holds regardless).
+    const found = this.store.db.prepare("SELECT * FROM memory_items WHERE entity_id=? AND COALESCE(person_id,'')<>? AND kind='digest' AND status='active' AND json_extract(body,'$.toAt')>=? AND json_extract(body,'$.toAt')<?").all(e.id, SELF_PERSON, from, to)
       .map(row => this.store.memory(row)).filter(memory => !SENSITIVE.test(`${memory.summary}\n${memory.feeling ?? ''}`));
     const digests = within(found.sort((a, b) => b.pinned - a.pinned || b.toAt - a.toAt), DIARY.digestChars, digestRow).sort((a, b) => a.toAt - b.toAt)
       .map((memory, index) => { const ref = 'd' + (index + 1); refs[ref] = memory.id; return { ref, ...digestRow(memory) }; });

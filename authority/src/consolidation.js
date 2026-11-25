@@ -8,7 +8,7 @@
 // is a maintenance_tasks row (mode 'consolidation') and a commit leaves a diary_receipts row
 // (kind 'consolidation') holding a hash only.
 import { createHash, randomUUID } from 'node:crypto';
-import { canonical, closed, enumeration, fail, identifier } from './identity.js';
+import { SELF_PERSON, canonical, closed, enumeration, fail, identifier } from './identity.js';
 import { MemoryDomain } from './memory.js';
 import { SENSITIVE } from './policies.js';
 import { opaquePerson, opaqueStream } from './context.js';
@@ -59,8 +59,10 @@ export class ConsolidationDomain extends MemoryDomain {
     if (own.day !== day) { own.day = day; own.calls = 0; for (const stream of Object.values(own.streams)) stream.calls = 0; }
     return own;
   }
+  // Her own conversation (the reserved `person:self`, wake.js) is never consolidated: its briefing carries other
+  // people's cards, intents and digests, which must not become anything under `person:self`.
   #privateStreams(entityId) {
-    return this.store.db.prepare("SELECT capability_id AS capabilityId,stream_id AS streamId,person_id AS personId FROM streams WHERE entity_id=? AND audience='private' ORDER BY capability_id,stream_id").all(entityId);
+    return this.store.db.prepare("SELECT capability_id AS capabilityId,stream_id AS streamId,person_id AS personId FROM streams WHERE entity_id=? AND audience='private' AND person_id<>? ORDER BY capability_id,stream_id").all(entityId, SELF_PERSON);
   }
   #cursorRow(state) {
     return state?.lastObservationId ? this.store.db.prepare('SELECT rowid FROM observations WHERE id=?').get(state.lastObservationId)?.rowid ?? 0 : 0;
@@ -188,7 +190,7 @@ export class ConsolidationDomain extends MemoryDomain {
       const row = this.store.db.prepare("SELECT * FROM maintenance_tasks WHERE id=? AND entity_id=? AND mode='consolidation'").get(input.taskId, e.id);
       if (!row || world.paused || row.world_revision !== world.revision) fail('CONFLICT', 'Consolidation batch is no longer current', 409);
       const task = JSON.parse(row.source_ids), key = streamKey(task.capabilityId, task.streamId);
-      const stream = this.store.db.prepare("SELECT person_id AS personId FROM streams WHERE capability_id=? AND stream_id=? AND entity_id=? AND audience='private'").get(task.capabilityId, task.streamId, e.id);
+      const stream = this.store.db.prepare("SELECT person_id AS personId FROM streams WHERE capability_id=? AND stream_id=? AND entity_id=? AND audience='private' AND person_id<>?").get(task.capabilityId, task.streamId, e.id, SELF_PERSON);
       const all = this.consolidationState(), own = this.#today(all, e.id, now), state = own.streams[key];
       if (!stream || !state || (state.lastObservationId ?? null) !== task.base || row.epoch !== this.streamEpoch(e, task.capabilityId, task.streamId)) fail('CONFLICT', 'Consolidation batch is no longer current', 409);
       const label = { stream: opaqueStream(task.capabilityId, task.streamId), person: opaquePerson(stream.personId) };
