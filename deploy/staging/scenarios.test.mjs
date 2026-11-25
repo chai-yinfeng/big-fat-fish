@@ -24,7 +24,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'V4', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2', 'I1', 'W1']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'V4', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2', 'I1', 'W1', 'W2', 'W3', 'W4', 'W5']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -960,59 +960,98 @@ test('sticker steps: a library sticker is found by its description with its leve
   assert.deepEqual(posted, [['/stickers/approve', { hash: hash(1) }], ['/stickers/reject', { hash: hash(1) }], ['/stickers/update', { hash: hash(2), status: 'disabled' }], ['/stickers/update', { hash: hash(2), status: 'disabled' }]]);
 });
 
-test('wake-up steps: a wake-up request with anything of a person in it fails, and so does what she wrote there showing up elsewhere', async t => {
+test('wake-up steps: a wake-up request that identifies a person, lacks a card or holds one it should not fails; so does what belongs to the wake-up showing up elsewhere, and a log entry that is not as expected', async t => {
   const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-wake-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const log = path.join(dir, 'requests.jsonl'), run = new Runner({ data: shipped(), modelLog: log });
+  const people = [{ personId: 'person:qq:999900000035', label: 'p-0a1b2c' }, { personId: 'person:qq:999900000036', label: 'p-3d4e5f' }, { personId: 'person:owner', label: 'p-6a7b8c' }];
+  const log = path.join(dir, 'requests.jsonl'), run = new Runner({ data: shipped(), modelLog: log, operator: async () => ({ people }) });
   const OPEN = '[私下时间 · 这不是任何人发来的话] ', entry = (userText, extra = {}) => ({ stream: true, tools: ['companion_scope', 'companion_content', 'companion_activity'], system: 'MOCK system', context: 'MOCK note', rest: '[]', userText, ...extra });
-  const wake = (extra = {}) => entry(OPEN + '现在是 2027年1月15日 周五 16:00（北京时间）。今天有 2 个人和你聊过。', { tools: ['companion_self'], ...extra });
+  const wake = (extra = {}) => entry(OPEN + '现在是 2027年1月15日 周五 16:00（北京时间）。\n现在可以去找的人有 1 个：\n[p-0a1b2c] 上次聊天是 3 天前。\n  你留给这个人的打算：\n  - （没定日子）"MOCK 问问看牙"', { tools: ['companion_self'], ...extra });
   const check = (entries, args = {}) => { fs.writeFileSync(log, entries.map(item => JSON.stringify(item)).join('\n') + '\n'); return STEPS.expectWakeRequest(run, { logOffset: 0 }, args); };
-  const mood = 'MOCK 有点想找人说话', said = 'MOCK-W 我下周去看牙';
-  await check([entry(said), wake(), wake({ rest: JSON.stringify([{ role: 'tool', content: mood }]) }), entry('MOCK-W 还在吗')], { absent: [said, '问问看牙'], onlyHere: [mood] });
-  // A wake-up request is refused wherever something of a person shows: the typed text, the note, the system message, earlier turns.
+  const said = 'MOCK-W 我下周去看牙', mood = 'MOCK 有点想找人说话';
+  await check([entry(said), wake(), wake({ rest: JSON.stringify([{ role: 'tool', content: mood }]) }), entry('MOCK-W 还在吗')], { cards: ['MOCK-T'], noCards: ['MOCK-U', 'MOCK-OWNER'], absent: [said], onlyHere: [mood] });
+  // A wake-up request is refused wherever something identifies a person or holds what it should not: the typed text, the note, the system message, earlier turns.
   const leaks = {
     'the account number 999900000011': wake({ context: 'MOCK note 好友 999900000011 说' }),
-    '"p-0a1b2c"': wake({ context: 'Reported by p-0a1b2c (unverified): 住处: MOCK' }),
     '"person:"': wake({ system: 'MOCK system person:owner' }),
+    '"private:"': wake({ rest: 'qq:1:private:2' }),
     [JSON.stringify(said)]: wake({ rest: JSON.stringify([{ role: 'user', content: said }]) }),
-    '"问问看牙"': wake({ userText: OPEN + '你给眼前这位留的打算：问问看牙' }),
   };
-  for (const [what, leaked] of Object.entries(leaks)) await assert.rejects(check([wake(), leaked], { absent: [said, '问问看牙'] }), new RegExp('a wake-up request contains ' + what.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), what);
+  for (const [what, leaked] of Object.entries(leaks)) await assert.rejects(check([wake(), leaked], { absent: [said] }), new RegExp('a wake-up request contains ' + what.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   await assert.rejects(check([wake({ tools: ['companion_self', 'companion_scope'] })]), /a wake-up request offers the tools/);
   await assert.rejects(check([entry(said)]), /the model received no wake-up request/);
-  // What she wrote in the wake-up must stay there; and no other request offers her tool.
-  await assert.rejects(check([wake(), entry('MOCK-W 还在吗', { context: 'MOCK note ' + mood })], { onlyHere: [mood] }), /the request for "MOCK-W 还在吗" contains "MOCK 有点想找人说话", which she wrote in her wake-up/);
+  // The cards are those of the newest briefing: one that is missing, one that should not be there.
+  await assert.rejects(check([wake()], { cards: ['MOCK-U'] }), /the briefing has no card for MOCK-U/);
+  await assert.rejects(check([wake()], { noCards: ['MOCK-T'] }), /the briefing has a card for MOCK-T/);
+  await check([wake({ userText: OPEN + '[p-3d4e5f] 之前那次' }), wake()], { noCards: ['MOCK-U'] });
+  // What belongs to the wake-up must stay there; and no other request offers her tool.
+  await assert.rejects(check([wake(), entry('MOCK-W 还在吗', { context: 'MOCK note ' + mood })], { onlyHere: [mood] }), /the request for "MOCK-W 还在吗" contains "MOCK 有点想找人说话", which belongs to her wake-up/);
   await assert.rejects(check([wake(), entry('MOCK-W 还在吗', { tools: ['companion_scope', 'companion_self'] })]), /offers companion_self/);
-  // A log without the tool names (an older fake model) is refused instead of passing vacuously.
+  // A request log without the fields these checks read is refused, not passed.
   await assert.rejects(check([wake({ tools: undefined })]), /lacks system\/context\/rest\/tools/);
 
-  // expectWake: the page must hold no account number; the entry must be new, ended as expected and not acted on.
-  const selection = { tier: 'yes', dryRun: true, candidates: [{ person: 'p-0a1b2c', weights: { intent: 1, chatter: 1, gap: 1, reached: 1, unanswered: 1, newcomer: 1 }, weight: 1 }], excluded: [{ person: 'p-3d4e5f', reason: 'recent' }], noneWeight: 1, total: 2, chance: null, random: 0.4, result: 'p-0a1b2c' };
-  const logged = (extra = {}) => ({ id: 'w-new', type: 'wake', at: 2, endedAt: 3, reason: 'manual', outcome: 'done', counts: {}, did: { mood: 'accepted', outreach: 'yes', rested: false }, tier: 'yes', selection, second: null, fuses: [], ...extra });
+  // expectWake: the page must hold no account number; the entry must be new and as expected, person by person.
+  const reach = [{ person: 'p-0a1b2c', check: 'accepted', reason: 'MOCK 另一个人 提到的事', initiationId: 'i-1', outcome: 'sent' }, { person: 'p-3d4e5f', check: 'rejected:sensitive:health' }, { person: null, check: 'rejected:not_candidate' }];
+  const logged = (extra = {}) => ({ id: 'w-new', type: 'wake', at: 2, endedAt: 3, reason: 'manual', outcome: 'done', counts: { cards: 2, excluded: {}, diary: false, mood: false }, did: { mood: 'accepted', reach: 3, rested: false }, reach, fuses: [], ...extra });
   let page;
-  const paged = new Runner({ data: shipped(), operator: async () => page, sleep: async () => {} }), ctx = { wakes: new Set(['w-old']) };
-  const expectWake = (item, args = {}, moods = [{ text: mood, at: 3, wakeId: 'w-new' }]) => { page = { out: null, moods, notes: [], log: [item, logged({ id: 'w-old' })] }; return STEPS.expectWake(paged, ctx, { timeoutMs: 0, ...args }); };
-  await expectWake(logged(), { did: { mood: 'accepted', rested: false }, tier: 'yes', mood, picked: true });
+  const paged = new Runner({ data: shipped(), operator: async (_method, route) => route === '/people' ? { people } : page, sleep: async () => {} }), ctx = { wakes: new Set(['w-old']) };
+  const expectWake = (item, args = {}, moods = [{ text: mood, at: 3, wakeId: 'w-new' }]) => { page = { out: null, fuse: null, moods, notes: [], log: [item, logged({ id: 'w-old' })] }; return STEPS.expectWake(paged, ctx, { timeoutMs: 0, ...args }); };
+  const wanted = [{ person: 'MOCK-T', check: 'accepted', outcome: 'sent', reason: '另一个人 提到', reasonAbsent: ['p-3d4e5f'] }, { person: 'MOCK-U', check: 'rejected:sensitive:health' }, { person: null, check: 'rejected:not_candidate' }];
+  await expectWake(logged(), { did: { mood: 'accepted', reach: 3, rested: false }, cards: 2, mood, reach: wanted });
   await assert.rejects(expectWake(logged({ id: 'w-old' })), /she never woke/);
   await assert.rejects(expectWake(logged({ outcome: 'failed' })), /ended as failed, expected done/);
   await assert.rejects(expectWake(logged(), { did: { note: 'accepted' } }), /the wake-up log says note: undefined/);
-  await assert.rejects(expectWake(logged(), { tier: 'maybe' }), /her tier in the wake-up log is yes/);
+  await assert.rejects(expectWake(logged(), { cards: 3 }), /she was given 2 card\(s\), expected 3/);
   await assert.rejects(expectWake(logged(), { mood: 'MOCK 别的' }), /does not show the mood/);
-  await assert.rejects(expectWake(logged({ second: { outcome: 'sent' } })), /must not act on the pick/);
-  await assert.rejects(expectWake(logged({ selection: null }), { picked: true }), /no pick worked through/);
-  await assert.rejects(expectWake(logged({ selection: { ...selection, dryRun: false } }), { picked: true }), /no pick worked through/);
-  await assert.rejects(expectWake(logged({ selection: { ...selection, excluded: [{ person: 'person:qq:1', reason: 'recent' }] } }), { picked: true }), /something other than an opaque label/);
-  await assert.rejects(expectWake(logged({ selection: { ...selection, total: 5 } }), { picked: true }), /does not add up/);
-  await assert.rejects(expectWake(logged({ selection: { ...selection, result: 'p-ffffff' } }), { picked: true }), /not one of its candidates/);
+  await assert.rejects(expectWake(logged(), { fuse: 'per_hour' }), /records the fuses \[\], expected fuse:per_hour/);
+  await expectWake(logged({ fuses: ['fuse:per_hour'] }), { fuse: 'per_hour' });
+  await assert.rejects(expectWake(logged(), { reach: wanted.slice(0, 2) }), /names 3 person\(s\), expected 2/);
+  await assert.rejects(expectWake(logged(), { reach: [{ ...wanted[0], person: 'MOCK-U' }, wanted[1], wanted[2]] }), /reach 1 names p-0a1b2c, expected MOCK-U/);
+  await assert.rejects(expectWake(logged(), { reach: [{ ...wanted[0], check: 'rejected:switch' }, wanted[1], wanted[2]] }), /reach 1 was accepted, expected rejected:switch/);
+  await assert.rejects(expectWake(logged(), { reach: [{ ...wanted[0], reason: 'MOCK 别的理由' }, wanted[1], wanted[2]] }), /expected it to contain "MOCK 别的理由"/);
+  await assert.rejects(expectWake(logged(), { reach: [{ ...wanted[0], reasonAbsent: '另一个人' }, wanted[1], wanted[2]] }), /still contains "另一个人"/);
+  // The request to a person has not ended as expected (still waiting, or ended otherwise): the step waits, then fails.
+  await assert.rejects(expectWake(logged({ reach: [{ ...reach[0], outcome: null }, reach[1], reach[2]] }), { reach: wanted }), /did not end as expected/);
+  await assert.rejects(expectWake(logged({ reach: [{ ...reach[0], outcome: 'declined' }, reach[1], reach[2]] }), { reach: wanted }), /did not end as expected/);
+  // A refused entry may keep neither its reason nor a request; a person is only ever an opaque label.
+  await assert.rejects(expectWake(logged({ reach: [reach[0], { ...reach[1], reason: 'MOCK 住院' }, reach[2]] }), { reach: wanted }), /was refused, yet its reason or a request was kept/);
+  await assert.rejects(expectWake(logged({ reach: [{ ...reach[0], person: 'person:qq:1' }, reach[1], reach[2]] }), { reach: wanted }), /something other than an opaque label/);
   await assert.rejects(expectWake(logged({ counts: { note: '999900000011' } })), /contains the account number 999900000011/);
+  await assert.rejects(expectWake(logged(), { pageAbsent: ['提到的事'] }), /the wake-up page contains "提到的事"/);
   await assert.rejects(STEPS.expectWake(paged, {}, {}), /no wakeNow in this scenario/);
+  // expectFuse and the settings steps.
+  page = { fuse: { name: 'per_hour', at: 3 } };
+  await STEPS.expectFuse(paged, {}, { name: 'per_hour' });
+  await assert.rejects(STEPS.expectFuse(paged, {}, { none: true }), /expected none/);
+  await assert.rejects(STEPS.expectFuse(paged, {}, { name: 'per_day' }), /expected per_day/);
+  const posted = [], setter = new Runner({ data: shipped(), sleep: async () => {}, operator: async (method, route, body) => { if (method === 'GET') return { people }; posted.push(body); return { wake: { enabled: true }, reach: { enabled: true, people: [{ person: 'p-0a1b2c', enabled: true }, { person: 'p-3d4e5f', enabled: true }] } }; } });
+  await STEPS.wake(setter, {}, { enabled: true, times: ['10:00'] });
+  await STEPS.reach(setter, {}, { enabled: true, recentMinutes: 0, people: { 'MOCK-T': true }, fuses: { per_hour: 1 } });
+  assert.deepEqual(posted, [{ wake: { enabled: true, times: ['10:00'] } }, { reach: { enabled: true, people: { 'p-0a1b2c': true }, recentMinutes: 0, fuses: { per_hour: 1 } } }]);
+  await assert.rejects(STEPS.reach(setter, {}, { people: { 'MOCK-U': false } }), /the switch of p-3d4e5f was not set to false/);
+  await assert.rejects(STEPS.wake(setter, {}, { enabled: false }), /the wake-up switch is true, expected false/);
+});
+
+test('`{label:MOCK-X}` in a scenario becomes that person\'s opaque label, as Authority computes it', async () => {
+  const data = shipped();
+  data.scenarios = [{ id: 'X1', title: 'labels', model: [{ match: 'x', self: { reach: [{ label: '{label:MOCK-T}', reason: '{label:MOCK-OWNER}' }] } }], steps: [{ expectFuse: { none: true } }] }];
+  const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-label-')), script = path.join(dir, 'script.json');
+  try {
+    const run = new Runner({ data, modelScript: script, modelLog: path.join(dir, 'log'), onebot: async () => ({}), operator: async () => ({ fuse: null }), sleep: async () => {} });
+    assert.equal((await run.scenario(data.scenarios[0])).ok, true);
+    const label = id => 'p-' + hash(id).slice(0, 6);
+    assert.deepEqual(JSON.parse(fs.readFileSync(script, 'utf8'))[0].self.reach, [{ label: label('person:qq:' + data.people['MOCK-T'].qq), reason: label('person:owner') }]);
+    data.scenarios[0].model[0].self.reach[0].label = '{label:MOCK-NOBODY}';
+    assert.match((await run.scenario(data.scenarios[0]).catch(error => ({ error: error.message }))).error, /unknown person in \{label:MOCK-NOBODY\}/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+
 });
 
 test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 900000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'V4', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2', 'I1', 'W1'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'V4', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2', 'I1', 'W1', 'W2', 'W3', 'W4', 'W5'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '60/60 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '64/64 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));
@@ -1024,8 +1063,8 @@ test('scenario replay against the real Authority, gateway (scripted upstream), e
     // Without S2 and S3: the spend meter and the owner's once-a-day notice are only reset by the staging agent.
     // Without M9-M13: so are the day's consolidation batches (two a conversation).
     // Without D1 and D2: so are the diary markers (the day's diary, and a person's open diary of it, are written once).
-    // Without W1: so is her wake-up schedule (two wake-ups are at least 45 minutes apart).
-    const again = ids.filter(id => !['S2', 'S3', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'W1'].includes(id)), second = await runner(data).run(again);
+    // Without W1-W5: so is her wake-up state (W5 leaves a fuse hit for the rest of the day, by design).
+    const again = ids.filter(id => !['S2', 'S3', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'W1', 'W2', 'W3', 'W4', 'W5'].includes(id)), second = await runner(data).run(again);
     assert.deepEqual(second.results.map(result => [result.id, result.ok, result.error]), again.map(id => [id, true, undefined]));
   });
 

@@ -83,10 +83,12 @@ export class AuthorityClient {
     return this.#request('POST', '/v1/initiations/next', value);
   }
   /** A conversation channel's credential, from inside her private wake-up on that channel (the executor's tool
-   * `companion_self`): a mood, a note, her outreach tier. Each text comes back `accepted` or `rejected:<reason>`. */
+   * `companion_self`): a mood, a note, and whom she wants to reach out to (`reach`: at most two `{label,reason}`). Each
+   * text and each reach entry comes back `accepted` or `rejected:<reason>`. */
   async selfRecord(value) {
-    closed(value, ['streamId', 'mood', 'note', 'outreach'], ['streamId']);
-    if (!text(value.streamId) || ['mood', 'note'].some(key => value[key] !== undefined && typeof value[key] !== 'string') || value.outreach !== undefined && !['none', 'maybe', 'yes'].includes(value.outreach)) throw fail('INVALID_REQUEST');
+    closed(value, ['streamId', 'mood', 'note', 'reach'], ['streamId']);
+    if (!text(value.streamId) || ['mood', 'note'].some(key => value[key] !== undefined && typeof value[key] !== 'string')) throw fail('INVALID_REQUEST');
+    if (value.reach !== undefined && (!Array.isArray(value.reach) || value.reach.length > 2 || value.reach.some(item => item === null || typeof item !== 'object' || typeof item.label !== 'string' || typeof item.reason !== 'string'))) throw fail('INVALID_REQUEST');
     return this.#request('POST', '/v1/self', value);
   }
   /** A conversation channel's credential, as an ordinary turn of this conversation begins: a finished background job of it that

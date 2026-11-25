@@ -220,7 +220,7 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
         // Whether everyday chat thinks; runs she starts herself think regardless. Applies from the next run on.
         value = authority.setConversationSettings(object(body, ['chatThinking']));
       } else if (req.url === '/initiative/settings') {
-        value = authority.initiationSettings(object(body, ['quietHours', 'wake']));
+        value = authority.initiationSettings(object(body, ['quietHours', 'wake', 'reach']));
       } else if (req.url === '/initiative/wake') {
         // "Wake now": the body is empty; every rule of a wake-up still applies when the bridge next asks.
         value = authority.initiativeWake(object(body, []));

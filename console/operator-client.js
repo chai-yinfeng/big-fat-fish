@@ -167,10 +167,13 @@ export function stickerQuery({ hash } = {}) {
   return `?${new URLSearchParams({ hash }).toString()}`;
 }
 /** Read-only query of GET /memory/sources: the one memory item whose source observations are read. */
-/** GET /initiative: her private wake-up: the switch and the day's count, her moods and notes, and the wake log. */
+/** GET /initiative: her private wake-up: the two switches, the times of day, each person's switch, her moods and
+ * notes, and the wake log. */
 export function validWake(value) {
   const words = list => Array.isArray(list) && list.every(item => typeof item?.text === 'string' && Number.isFinite(item.at));
-  return typeof value?.wake?.enabled === 'boolean' && Number.isInteger(value.wake.perDay) && words(value.moods) && words(value.notes)
+  const people = list => Array.isArray(list) && list.every(item => typeof item?.person === 'string' && /^p-[0-9a-f]{6}$/.test(item.person) && typeof item.enabled === 'boolean');
+  return typeof value?.wake?.enabled === 'boolean' && Array.isArray(value.wake.times) && value.wake.times.every(item => typeof item === 'string' && /^\d\d:\d\d$/.test(item))
+    && typeof value.reach?.enabled === 'boolean' && people(value.reach.people) && (value.fuse == null || typeof value.fuse.name === 'string') && words(value.moods) && words(value.notes)
     && Array.isArray(value.log) && value.log.every(entry => ['wake', 'skip'].includes(entry?.type) && Number.isFinite(entry.at));
 }
 export function sourcesQuery({ id } = {}) {

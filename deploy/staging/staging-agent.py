@@ -478,7 +478,7 @@ def reset_initiations(database):
     """Deterministic reruns of the initiation scenarios, while Authority is stopped: no request of an earlier
     replay is still open (one that was out when its replay died would hold the next ones back for minutes) and
     the quiet hours are the default again. Her private wake-up starts over as well (its switch off, no wake-up of an
-    earlier replay counted against the day or the 45 minutes between two, her moods, notes and wake log gone).
+    earlier replay counted against the day, no fuse still hit, every person's switch and reach-out record, her moods, notes and wake log gone).
     Returns whether there was anything to remove."""
     if not Path(database).exists():
         return False

@@ -100,19 +100,30 @@ export const CONTENT_TOOL_SCHEMA = {
 // definition is generated from the capability declarations (capabilities/providers).
 export const ACTIVITY_TOOL_SCHEMA = ACTIVITY_TOOL_DEFINITION;
 
-// The one tool of her private wake-up (agent.js `input.wake`): what she writes down for herself. It is offered in her
-// own conversation only and never beside the three above, whose definitions it does not touch. It names nobody and
-// sends nothing: Authority stores what passes its checks (authority/src/wake.js) for the wake-up that is out.
-export const SELF_MOOD_CHARS = 120, SELF_NOTE_CHARS = 400;
+// The one tool of her private wake-up (agent.js `input.wake`): what she writes down for herself, and whom she wants to
+// reach out to. It is offered in her own conversation only and never beside the three above, whose definitions it does
+// not touch. It sends nothing: Authority stores what passes its checks (authority/src/wake.js) for the wake-up that is
+// out. A person is named by the label on a card of this wake-up's briefing and in no other way; whether a turn towards
+// that person is then started is Authority's decision.
+export const SELF_MOOD_CHARS = 120, SELF_NOTE_CHARS = 400, SELF_REACH_PEOPLE = 2, SELF_REASON_CHARS = 80;
 export const SELF_TOOL_SCHEMA = {
   name: 'companion_self',
-  description: 'Only in your own private time. Write down for yourself, any of: mood (how you feel right now, one sentence), note (a jotting of your own), outreach (whether you feel like reaching out to someone to chat: none / maybe / yes; it stays as it was if omitted). Nothing here is sent to anyone and nobody can be named. To do nothing, do not call this tool: just reply <休息>.',
+  description: 'Only in your own private time. Any of: mood (how you feel right now, one sentence), note (a jotting of your own), reach (people you want to reach out to after this: none, one or two of the people on the cards you were just given, each with the label on the card and a short reason of your own). mood and note are for yourself and are sent to nobody. reach sends nothing by itself: if it is accepted, you will later get a turn in that person\'s own chat with your reason before you, and decide there what to say or whether to say anything. To do nothing, do not call this tool: just reply <休息>.',
   parameters: {
     type: 'object', additionalProperties: false,
     properties: {
       mood: { type: 'string', maxLength: SELF_MOOD_CHARS, description: 'One sentence, at most 120 characters.' },
       note: { type: 'string', maxLength: SELF_NOTE_CHARS, description: 'At most 400 characters.' },
-      outreach: { type: 'string', enum: ['none', 'maybe', 'yes'] },
+      reach: {
+        type: 'array', maxItems: SELF_REACH_PEOPLE, description: 'At most two people. Leave it out, or give an empty list, to reach out to nobody.',
+        items: {
+          type: 'object', additionalProperties: false, required: ['label', 'reason'],
+          properties: {
+            label: { type: 'string', description: 'The label on that person\'s card, e.g. p-1a2b3c.' },
+            reason: { type: 'string', maxLength: SELF_REASON_CHARS, description: 'Why you want to talk to them, at most 80 characters, in your own words. It is carried into that person\'s chat for you to read: keep out health, money, love life, accounts or numbers, and what anybody said word for word.' },
+          },
+        },
+      },
     },
   },
 };
@@ -122,6 +133,15 @@ const SELF_REFUSALS = {
   sensitive: '涉及密码、证件、健康等敏感信息，按规定不保存。不要换说法重试。',
   unsafe_text: '里面有一长串数字或记忆中枢的标记，没有记下；去掉以后可以再试一次。',
 };
+/** Authority's answer about one person she named (authority/src/initiations.js selfRecord), in her words. */
+function reachTold(check) {
+  if (check === 'accepted') return '记下了。这次醒来结束以后，你会在对方自己的聊天里得到一次开口的机会，理由会带过去；到时候说不说仍然由你决定。';
+  const why = String(check).replace(/^rejected:/, '');
+  if (why === 'not_candidate') return '没有记下：这个代号不在这次的小卡里，只能从这次的小卡里选人。';
+  if (why === 'duplicate') return '没有记下：同一个人只用写一次。';
+  if (why.startsWith('sensitive')) return '没有记下：理由里有不该带到对方那里的内容（健康、钱、感情私事、账号号码，或别人的原话）。可以换一个不带这些内容的理由再试一次，或者这次不找。';
+  return `没有记下：${SELF_REFUSALS[why] ?? '被拒收。'}`;
+}
 
 // Keep real URLs/refs intact; omit whole results or shorten content, never cut JSON.
 export function boundedContent(value) {
@@ -285,17 +305,28 @@ export function createCompanionTools({ authority, content, scope, windowFromAt, 
  * @param guard     re-checks Authority pause/entity/epoch before anything is written */
 export function createSelfTools({ authority, scope, guard, log = line => process.stderr.write(line + '\n') }) {
   async function run(args) {
-    const keys = ['mood', 'note', 'outreach'];
+    const keys = ['mood', 'note', 'reach'];
     closed(args, keys, []);
-    if (!keys.some(key => args[key] !== undefined)) throw invalid('mood、note、outreach 至少给一个；什么都不想做就不用调用这个工具，直接回复 <休息>');
+    if (!keys.some(key => args[key] !== undefined)) throw invalid('mood、note、reach 至少给一个；什么都不想做就不用调用这个工具，直接回复 <休息>');
     for (const [key, max] of [['mood', SELF_MOOD_CHARS], ['note', SELF_NOTE_CHARS]]) if (args[key] !== undefined && (typeof args[key] !== 'string' || !args[key].trim() || [...args[key]].length > max)) throw invalid(`${key} 必须是 1–${max} 个字符的文字`);
-    if (args.outreach !== undefined && !SELF_TOOL_SCHEMA.parameters.properties.outreach.enum.includes(args.outreach)) throw invalid('outreach 必须是 none、maybe、yes 之一');
+    if (args.reach !== undefined) {
+      if (!Array.isArray(args.reach) || args.reach.length > SELF_REACH_PEOPLE) throw invalid(`reach 是一个列表，最多 ${SELF_REACH_PEOPLE} 个人`);
+      for (const item of args.reach) {
+        if (!isObject(item)) throw invalid('reach 的每一项是 {label, reason}');
+        closed(item, ['label', 'reason']);
+        if (typeof item.label !== 'string' || !item.label.trim() || item.label.length > 64) throw invalid('label 是小卡上的代号');
+        if (typeof item.reason !== 'string' || !item.reason.trim() || [...item.reason].length > SELF_REASON_CHARS) throw invalid(`reason 必须是 1–${SELF_REASON_CHARS} 个字符的文字`);
+      }
+    }
     await guard();
-    const stored = await authority.selfRecord({ streamId: scope.streamId, ...Object.fromEntries(keys.filter(key => args[key] !== undefined).map(key => [key, args[key]])) });
+    const stored = await authority.selfRecord({ streamId: scope.streamId, ...Object.fromEntries(keys.filter(key => args[key] !== undefined).map(key => [key, key === 'reach' ? args.reach.map(({ label, reason }) => ({ label: label.trim(), reason })) : args[key]])) });
     if (!isObject(stored)) throw fail('SELF_RESPONSE_INVALID');
     const told = {};
     for (const key of ['mood', 'note']) if (typeof stored[key] === 'string') told[key] = stored[key] === 'accepted' ? '记下了。' : `没有记下：${SELF_REFUSALS[stored[key].replace(/^rejected:/, '')] ?? '被拒收。'}`;
-    if (typeof stored.outreach === 'string') told.outreach = `档位现在是 ${stored.outreach}。`;
+    if (args.reach !== undefined) {
+      if (!Array.isArray(stored.reach) || stored.reach.length !== args.reach.length || stored.reach.some(check => typeof check !== 'string')) throw fail('SELF_RESPONSE_INVALID');
+      told.reach = args.reach.length ? stored.reach.map((check, index) => `${args.reach[index].label.trim()}：${reachTold(check)}`) : '这次不找人。';
+    }
     return told;
   }
   return [{ ...SELF_TOOL_SCHEMA, label: 'Companion self', executionMode: 'sequential', execute: async (_id, params) => {

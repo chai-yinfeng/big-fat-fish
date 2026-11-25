@@ -511,6 +511,9 @@ export class MemoryDomain {
     const sourceStreams=new Set(sourceEvents.map(event=>`${event.capabilityId}\u0000${event.streamId}`));
     const scoped=allStreams.filter(stream=>people.has(stream.personId)||sourceStreams.has(`${stream.capabilityId}\u0000${stream.streamId}`));
     if(!scoped.length)entityWide=true;
+    // Her own conversation (the private wake-up) has read cards made of people's intents and digests: whatever is
+    // forgotten, it is retired too, so its session goes with the rest.
+    for(const stream of allStreams)if(stream.personId===SELF_PERSON&&!scoped.includes(stream))scoped.push(stream);
     return{
       entityId:e.id,
       memoryEpoch:e.memory_epoch,
@@ -773,18 +776,34 @@ export class MemoryDomain {
     const e=this.entity(entityId);
     return Object.fromEntries(this.store.db.prepare(`SELECT m.person_id AS personId,COUNT(*) AS n FROM memory_items m WHERE m.entity_id=? AND m.person_id IS NOT NULL AND m.collection='notes' AND m.kind='intent' AND m.status='active' AND ${OPEN_INTENT_SQL}${dueBy===undefined?'':" AND json_extract(m.body,'$.dueDate')<=?"} GROUP BY m.person_id`).all(e.id,this.now(),...(dueBy===undefined?[]:[dueBy])).map(row=>[row.personId,row.n]));
   }
-  /** Settles an open intent (state 'done'). The hook for a run she started that used it and was delivered (6c wires
-   * it); nothing calls it yet. An intent that is not open (settled, lapsed, gone) is left as it is: `{settled:false}`. */
+  /** Internal, for the private wake-up and the turn she starts from it: one person's unsettled intents
+   * `[{id,text,dueDate}]`, dated ones first by day. Read for that person's card in her own private space and for the
+   * event block of that person's own conversation, nowhere else. Not exposed on any route. */
+  openIntents(entityId,personId){
+    return this.store.db.prepare(`SELECT m.id,json_extract(m.body,'$.text') AS text,json_extract(m.body,'$.dueDate') AS dueDate FROM memory_items m WHERE m.entity_id=? AND m.person_id=? AND m.collection='notes' AND m.kind='intent' AND m.status='active' AND ${OPEN_INTENT_SQL}
+      ORDER BY dueDate IS NULL,dueDate,m.revision`).all(entityId,personId,this.now()).map(row=>({id:row.id,text:String(row.text??''),dueDate:row.dueDate??null}));
+  }
+  /** Internal, for a person's card in the private wake-up: that person's newest machine digests (the rule of the
+   * continuation block: active, private, pinned or inside retention), newest first. Not exposed on any route. */
+  recentDigests(entityId,personId,limit){
+    const e=this.entity(entityId),cutoff=this.worldStatus().worldNow-e.retention_days*DAY*4;
+    return this.store.db.prepare(`SELECT m.* FROM memory_items m WHERE m.entity_id=? AND m.kind='digest' AND m.collection='experiences' AND m.status='active' AND m.visibility='private' AND m.person_id=? AND (m.pinned=1 OR m.created_world_at>=?)
+      ORDER BY json_extract(m.body,'$.toAt') DESC,m.revision DESC LIMIT ?`).all(e.id,personId,cutoff,limit).map(row=>this.store.memory(row));
+  }
+  /** Settles an open intent (state 'done'): a turn she started that used it was delivered. An intent that is not open
+   * (settled, lapsed, gone) is left as it is: `{settled:false}`. */
   settleIntent({entityId=DEFAULT_ENTITY_ID,id}){
     identifier(id);
-    return this.store.transaction(()=>{
-      const e=this.entity(entityId),row=this.store.db.prepare("SELECT * FROM memory_items WHERE entity_id=? AND id=? AND collection='notes' AND kind='intent' AND status='active'").get(e.id,id);
-      if(!row||intentState(JSON.parse(row.body),this.now())!=='open')return{id,settled:false};
-      const revision=this.store.nextRevision(),body={...JSON.parse(row.body),state:'done',settledAt:this.now()};
-      this.store.db.prepare('UPDATE memory_items SET body=?,revision=? WHERE id=?').run(JSON.stringify(body),revision,row.id);
-      this.store.audit({type:'memory.intent-settled',entityId:e.id,id:row.id,revision,at:this.now()});
-      return{id,settled:true};
-    });
+    return this.store.transaction(()=>this.settleIntentNow(entityId,id));
+  }
+  /** The same inside a transaction the caller already holds. */
+  settleIntentNow(entityId,id){
+    const e=this.entity(entityId),row=this.store.db.prepare("SELECT * FROM memory_items WHERE entity_id=? AND id=? AND collection='notes' AND kind='intent' AND status='active'").get(e.id,id);
+    if(!row||intentState(JSON.parse(row.body),this.now())!=='open')return{id,settled:false};
+    const revision=this.store.nextRevision(),body={...JSON.parse(row.body),state:'done',settledAt:this.now()};
+    this.store.db.prepare('UPDATE memory_items SET body=?,revision=? WHERE id=?').run(JSON.stringify(body),revision,row.id);
+    this.store.audit({type:'memory.intent-settled',entityId:e.id,id:row.id,revision,at:this.now()});
+    return{id,settled:true};
   }
   /** Operator: removes one intent (the owner's delete on the memory page). Not a forget: its source message and
    * anything else taken from it stay, and a conversation that already saw it keeps that run as it was. */

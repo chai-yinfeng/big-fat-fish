@@ -168,11 +168,10 @@ export function WorldConsole({ t, standalone = false }) {
   const [openDiaryCode, setOpenDiaryCode] = useState(null);
   // Memory page type filter ('all' or a type), remembered for this browser tab (appended, same reason).
   const [memoryKind, setMemoryKind] = useState(() => { try { const value = sessionStorage.getItem(MEMORY_KIND_KEY); return typeof value === 'string' && /^[a-z_]{1,32}$/.test(value) ? value : 'all'; } catch { return 'all'; } });
-  // Her private wake-up (GET /initiative), the draft of "how many a day", and which log entry is unfolded (appended,
+  // Her private wake-up (GET /initiative) and the draft of its times of day (appended,
   // same reason: tests address the states above by position).
   const [wake, setWake] = useState(null);
   const [wakeDraft, setWakeDraft] = useState('');
-  const [wakeOpen, setWakeOpen] = useState(null);
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -835,69 +834,69 @@ export function WorldConsole({ t, standalone = false }) {
             h('td', null, reason ? named(`initiative.reason.${reason}`, reason) : named(`initiative.note.${result}`, '—')));
         })))));
   }
-  // Her private wake-up (step 6b of reaching out): the switch and how many a day, "wake now", her moods and notes
-  // (her own words; they are read here and in her next briefing, nowhere else), and the wake log: when and why she
-  // woke, what she was told as counts, what she did, and the pick of a person worked through. Nothing here sends
-  // anything to anybody: in this step the pick is only shown. People appear as opaque labels.
+  // Her private time (design §3.0): the two switches (may she wake, may she reach out), the times of day, each
+  // person's switch, "wake now", her moods and notes (her own words; read here and in her next briefing, nowhere else)
+  // and the wake log: when and why she woke, how many cards she was given, what she did, whom she named, what the
+  // checks said and whether anything went out. People appear as opaque labels.
   function wakeCard() {
     const named = (key, fallback) => { const label = t(key); return label === key ? fallback : label; };
     const head = cardHead(h('div', { className: 'bff-row' }, h('span', { className: 'bff-tile' }, icon('sparkles')), h('h2', null, t('wake.title'))),
       button('refresh', () => run(() => loadWake()), { className: 'bff-ghost bff-sm', icon: 'refresh' }));
     if (!wake) return h('section', { className: 'bff-card' }, head, text('wake.hint'), text('wake.unavailable'));
-    const { enabled, perDay, perDayMax = 24 } = wake.wake;
+    const { enabled, times, maxTimes = 2, jitterMinutes = 30 } = wake.wake, reach = wake.reach;
+    const save = payload => run(async () => { await request('/initiative/settings', payload); await loadWake(); setNotice(t('saved')); });
     const words = (list, empty) => !list.length ? text(empty) : h('div', { className: 'bff-table' }, h('table', null, h('tbody', null, ...list.map((item, index) => h('tr', { key: `${item.at}:${index}` },
       h('td', { style: { whiteSpace: 'nowrap' } }, time(item.at)), h('td', null, item.text))))));
     const tail = outcome => outcome.replace(/^[a-z]+:/, '');
-    const did = entry => entry.outcome !== 'done' ? named(`wake.outcome.${entry.outcome.replace(/:.*$/, '')}`, entry.outcome) + (entry.outcome.includes(':') ? `（${named(`wake.skip.${tail(entry.outcome)}`, tail(entry.outcome))}）` : '')
-      : entry.did?.rested ? t('wake.did.rested') : ['mood', 'note'].filter(key => entry.did?.[key]).map(key => `${t(`wake.did.${key}`)}${entry.did[key] === 'accepted' ? '' : `（${t('wake.did.refused')}）`}`).concat(entry.did?.outreach ? [`${t('wake.did.outreach')} ${named(`wake.tier.${entry.did.outreach}`, entry.did.outreach)}`] : []).join('、');
-    const picked = selection => !selection ? '—' : selection.chance && !selection.chance.passed ? t('wake.pick.chanceMissed') : selection.result === 'none' ? t('wake.pick.none') : selection.result;
-    const factor = value => String(Math.round(value * 1000) / 1000);
-    const FACTORS = ['intent', 'chatter', 'gap', 'reached', 'unanswered', 'newcomer'];
-    const who = item => h('td', { className: 'bff-mono' }, item.person, item.owner ? ` ${t('wake.pick.owner')}` : '');
-    const detail = entry => h('tr', { key: entry.id + ':detail' }, h('td', { colSpan: 5 },
-      h('p', { className: 'bff-small bff-muted' }, `${t('wake.counts')}: ${['wokeToday', 'reachedToday', 'intentPeople', 'chattedPeople'].map(key => `${t(`wake.count.${key}`)} ${entry.counts?.[key] ?? '—'}`).join(' · ')}`),
-      !entry.selection ? h('p', { className: 'bff-small bff-muted' }, t('wake.pick.noPick')) : h(React.Fragment, null,
-        h('p', { className: 'bff-small bff-muted' }, t('wake.pick.dryRun')),
-        entry.selection.chance && h('p', { className: 'bff-small' }, `${t('wake.pick.chance')}: ${factor(entry.selection.chance.roll)} / ${factor(entry.selection.chance.needed)}`),
-        h('div', { className: 'bff-table' }, h('table', null,
-          h('thead', null, h('tr', null, h('th', { scope: 'col' }, t('wake.pick.person')), ...FACTORS.map(key => h('th', { key, scope: 'col' }, t(`wake.factor.${key}`))), h('th', { scope: 'col' }, t('wake.pick.weight')))),
-          h('tbody', null,
-            ...entry.selection.candidates.map(item => h('tr', { key: item.person }, who(item), ...FACTORS.map(key => h('td', { key }, `×${factor(item.weights[key])}`)), h('td', null, factor(item.weight)))),
-            ...entry.selection.excluded.map(item => h('tr', { key: item.person }, who(item), h('td', { colSpan: FACTORS.length + 1 }, `${t('wake.pick.excluded')}: ${named(`wake.excluded.${item.reason}`, item.reason)}`))),
-            h('tr', { key: 'none' }, h('td', null, t('wake.pick.none')), h('td', { colSpan: FACTORS.length }), h('td', null, factor(entry.selection.noneWeight)))))),
-        entry.selection.total !== null && h('p', { className: 'bff-small' }, `${t('wake.pick.total')} ${factor(entry.selection.total)} · ${t('wake.pick.random')} ${factor(entry.selection.random)} · ${t('wake.pick.result')} ${picked(entry.selection)}`),
-        entry.fuses?.length ? h('p', { className: 'bff-small' }, `${t('wake.pick.fuses')}: ${entry.fuses.join(', ')}`) : null)));
+    const ended = outcome => named(`wake.outcome.${outcome.replace(/:.*$/, '')}`, outcome) + (outcome.includes(':') ? `（${named(`wake.skip.${tail(outcome)}`, tail(outcome))}）` : '');
+    const did = entry => entry.outcome !== 'done' ? ended(entry.outcome)
+      : entry.did?.rested ? t('wake.did.rested') : ['mood', 'note'].filter(key => entry.did?.[key]).map(key => `${t(`wake.did.${key}`)}${entry.did[key] === 'accepted' ? '' : `（${t('wake.did.refused')}）`}`).concat(Number.isInteger(entry.did?.reach) ? [`${t('wake.did.reach')} ${entry.did.reach}`] : []).join('、') || '—';
+    const input = entry => Number.isInteger(entry.counts?.cards) ? `${entry.counts.cards}${Object.keys(entry.counts.excluded ?? {}).length ? `（${t('wake.leftOut')} ${Object.entries(entry.counts.excluded).map(([reason, count]) => `${named(`wake.excluded.${reason}`, reason)} ×${count}`).join('、')}）` : ''}` : '—';
+    // One person she named: the label, what the checks said (and why not), her reason as it was kept, what became of the request.
+    const reached = (item, index) => {
+      const why = String(item.check ?? '').replace(/^rejected:/, '');
+      return h('p', { key: index, className: 'bff-small' }, h('span', { className: 'bff-mono' }, item.person ?? '?'), item.owner ? ` ${t('wake.owner')}` : '', '：',
+        item.check === 'accepted' ? `${t('wake.check.accepted')} → ${item.outcome ? (item.outcome === 'sent' || item.outcome === 'partial' || item.outcome === 'declined' ? t(`wake.sent.${item.outcome}`) : `${t('wake.sent.none')}（${ended(item.outcome)}）`) : t('wake.sent.waiting')}`
+          : `${t('wake.check.rejected')}（${named(`wake.rejected.${why}`, why)}）`,
+        item.reason ? ` · ${t('wake.reasonGiven')}“${item.reason}”` : '');
+    };
+    const day = at => Number.isFinite(at) ? time(at) : '—';
     return h('section', { className: 'bff-card' }, head,
-      statusLine(t(enabled ? 'wake.on' : 'wake.off'), enabled ? 'primary' : 'ok'),
+      statusLine(`${t('wake.switch')}：${t(enabled ? 'wake.on' : 'wake.off')} · ${t('wake.reachSwitch')}：${t(reach.enabled ? 'wake.on' : 'wake.off')}`, enabled ? 'primary' : 'ok'),
+      wake.fuse ? statusLine(`${t('wake.fuse')}${named(`wake.skip.fuse:${wake.fuse.name}`, wake.fuse.name)}`, 'danger') : null,
       text('wake.hint'),
-      h('p', { className: 'bff-small bff-muted' }, `${t('wake.today')} ${wake.wokeToday ?? 0} / ${perDay} · ${t('wake.next')} ${enabled && Number.isFinite(wake.nextAt) ? time(wake.nextAt) : '—'} · ${t('wake.tierNow')} ${named(`wake.tier.${wake.outreach}`, String(wake.outreach ?? '—'))}`),
-      h('label', { className: 'bff-check' }, h('input', { type: 'checkbox', checked: enabled, disabled: busy, onChange: event => {
-        const next = event.target.checked;
-        void run(async () => { await request('/initiative/settings', { wake: { enabled: next } }); await loadWake(); setNotice(t('saved')); });
-      } }), h('span', null, t('wake.switch'))),
+      h('p', { className: 'bff-small bff-muted' }, `${t('wake.today')} ${wake.wokeToday ?? 0} · ${t('wake.next')} ${enabled && Number.isFinite(wake.nextAt) ? time(wake.nextAt) : '—'} · ${t('wake.times')} ${times.join('、')}（±${jitterMinutes} ${t('wake.minutes')}）`),
+      h('label', { className: 'bff-check' }, h('input', { type: 'checkbox', checked: enabled, disabled: busy, onChange: event => { const next = event.target.checked; void save({ wake: { enabled: next } }); } }), h('span', null, t('wake.switch'))),
+      h('label', { className: 'bff-check' }, h('input', { type: 'checkbox', checked: reach.enabled, disabled: busy, onChange: event => { const next = event.target.checked; void save({ reach: { enabled: next } }); } }), h('span', null, t('wake.reachSwitch'))),
       h('form', { className: 'bff-stack-sm', onSubmit: event => { event.preventDefault(); void run(async () => {
-        const count = Number(wakeDraft);
-        if (!Number.isInteger(count) || count < 1 || count > perDayMax) throw Object.assign(new Error('invalid_wake'), { code: 'invalid_wake' });
-        await request('/initiative/settings', { wake: { perDay: count } }); setWakeDraft(''); await loadWake(); setNotice(t('saved'));
+        const wanted = wakeDraft.split(/[\s,，、]+/).filter(Boolean).map(value => value.replace('：', ':'));
+        if (!wanted.length || wanted.length > maxTimes || new Set(wanted).size !== wanted.length || wanted.some(value => !/^([01]\d|2[0-3]):[0-5]\d$/.test(value))) throw Object.assign(new Error('invalid_wake'), { code: 'invalid_wake' });
+        await request('/initiative/settings', { wake: { times: wanted } }); setWakeDraft(''); await loadWake(); setNotice(t('saved'));
       }); } },
-        h('label', null, h('span', null, `${t('wake.perDay')}（${t('wake.perDayNow')} ${perDay}）`), h('input', { type: 'number', min: 1, max: perDayMax, step: 1, value: wakeDraft, placeholder: String(perDay), disabled: busy, onChange: event => setWakeDraft(event.target.value) })),
-        h('div', { className: 'bff-actions' }, h('button', { type: 'submit', className: 'bff-sm', disabled: busy || wakeDraft === '' }, t('wake.perDaySave')),
+        h('label', null, h('span', null, t('wake.timesLabel')), h('input', { type: 'text', value: wakeDraft, placeholder: times.join(', '), disabled: busy, onChange: event => setWakeDraft(event.target.value) })),
+        h('div', { className: 'bff-actions' }, h('button', { type: 'submit', className: 'bff-sm', disabled: busy || wakeDraft === '' }, t('wake.timesSave')),
           button('wake.now', () => run(async () => {
             const value = await request('/initiative/wake', {});
             await loadWake();
             setNotice(value?.blocked ? `${t('wake.blocked')}${named(`wake.skip.${value.blocked}`, value.blocked)}` : t('wake.asked'));
           }), { className: 'bff-primary bff-sm', icon: 'sparkles' }))),
+      h('h3', null, t('wake.people')),
+      !reach.people.length ? text('wake.noPeople') : h('div', { className: 'bff-table' }, h('table', null,
+        h('thead', null, h('tr', null, ...['person', 'allowed', 'lastAt', 'reachedAt', 'unanswered', 'reached7', 'openIntents'].map(key => h('th', { key, scope: 'col' }, t(`wake.person.${key}`))))),
+        h('tbody', null, ...reach.people.map(item => h('tr', { key: item.person },
+          h('td', { className: 'bff-mono' }, item.person, item.owner ? ` ${t('wake.owner')}` : ''),
+          h('td', null, h('input', { type: 'checkbox', 'aria-label': `${t('wake.person.allowed')} ${item.person}`, checked: item.enabled, disabled: busy, onChange: event => { const next = event.target.checked; void save({ reach: { people: { [item.person]: next } } }); } })),
+          h('td', null, day(item.lastAt)), h('td', null, day(item.reachedAt)), h('td', null, String(item.unanswered ?? 0)), h('td', null, String(item.reached7 ?? 0)), h('td', null, String(item.openIntents ?? 0))))))),
       h('h3', null, t('wake.moods')), words(wake.moods, 'wake.noMoods'),
       h('h3', null, t('wake.notes')), words(wake.notes, 'wake.noNotes'),
       h('h3', null, t('wake.log')),
       !wake.log.length ? text('wake.noLog') : h('div', { className: 'bff-table' }, h('table', null,
-        h('thead', null, h('tr', null, ...['time', 'reason', 'did', 'pick', 'more'].map(key => h('th', { key, scope: 'col' }, t(`wake.columns.${key}`))))),
-        h('tbody', null, ...wake.log.slice(0, 40).flatMap(entry => entry.type === 'skip'
-          ? [h('tr', { key: 'skip:' + entry.day }, h('td', { style: { whiteSpace: 'nowrap' } }, entry.day), h('td', { colSpan: 4 }, `${t('wake.skipped')}: ${Object.entries(entry.counts ?? {}).map(([reason, count]) => `${named(`wake.skip.${reason}`, reason)} ×${count}`).join('、')}`))]
-          : [h('tr', { key: entry.id }, h('td', { style: { whiteSpace: 'nowrap' } }, time(entry.at)), h('td', null, named(`wake.reason.${entry.reason}`, entry.reason)), h('td', null, did(entry)),
-              h('td', null, entry.tier ? `${named(`wake.tier.${entry.tier}`, entry.tier)} → ${picked(entry.selection)}` : '—'),
-              h('td', null, h('button', { type: 'button', className: 'bff-ghost bff-sm', 'aria-expanded': wakeOpen === entry.id, onClick: () => setWakeOpen(wakeOpen === entry.id ? null : entry.id) }, t(wakeOpen === entry.id ? 'wake.fold' : 'wake.unfold')))),
-            ...(wakeOpen === entry.id ? [detail(entry)] : [])])))));
+        h('thead', null, h('tr', null, ...['time', 'reason', 'cards', 'did', 'reach'].map(key => h('th', { key, scope: 'col' }, t(`wake.columns.${key}`))))),
+        h('tbody', null, ...wake.log.slice(0, 40).map(entry => entry.type === 'skip'
+          ? h('tr', { key: 'skip:' + entry.day }, h('td', { style: { whiteSpace: 'nowrap' } }, entry.day), h('td', { colSpan: 4 }, `${t('wake.skipped')}: ${Object.entries(entry.counts ?? {}).map(([reason, count]) => `${named(`wake.skip.${reason}`, reason)} ×${count}`).join('、')}`))
+          : h('tr', { key: entry.id }, h('td', { style: { whiteSpace: 'nowrap' } }, time(entry.at)), h('td', null, named(`wake.reason.${entry.reason}`, entry.reason)), h('td', null, input(entry)), h('td', null, did(entry)),
+              // (An entry of the release before this one has no `reach`: it only worked a pick through and sent nothing.)
+              h('td', null, !Array.isArray(entry.reach) ? t('wake.older') : !entry.reach.length ? t('wake.nobody') : entry.reach.map(reached))))))));
   }
   // Background jobs: the demonstration job is registered here, in the owner's own QQ conversation (the request names
   // nobody), and the list shows each job's state, result, why one was refused and how telling the person ended.

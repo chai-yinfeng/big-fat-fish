@@ -20,7 +20,7 @@ const SCHEMAS = {
   '/v1/initiations/next': ['busy'],
   '/v1/initiations/ack': ['id', 'outcome'],
   '/v1/initiations/carry': ['streamId'],
-  '/v1/self': ['streamId', 'mood', 'note', 'outreach'],
+  '/v1/self': ['streamId', 'mood', 'note', 'reach'],
   '/v1/maintenance/batch': ['afterRevision', 'limit', 'mode'],
   '/v1/maintenance/diary': ['taskId', 'kind', 'text', 'sourceIds'],
   '/v1/maintenance/consolidation/next': [],
