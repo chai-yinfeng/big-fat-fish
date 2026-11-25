@@ -24,9 +24,10 @@ database (new release migrates behind a backup, old release still opens and writ
 used, and a second rollback rolls forward again before the from-release is pruned.
 
 Forgetting is followed across the round trip too: under the new release one message is
-forgotten while the QQ bridge is stopped, so its cleanup job waits for that one party; the
-from-release must list the job as pending and refuse to resume the world; after the
-roll-forward the new release's services close it by confirming, and the world resumes.
+forgotten while the QQ bridge is stopped, so its cleanup job waits for that one party; a
+from-release before step 7b must list the job as pending and refuse to resume the world, and
+after the roll-forward the new release's services close it by confirming; a from-release of 7b
+or later closes it by its own bridge's confirmation. Either way the world resumes after the roll-forward.
 
 The room page (companion-room unit) is followed through all of it: unprepared after the
 upgrade (page up, state 503), prepared by the release's ops/prepare-room.mjs, gone after
@@ -843,9 +844,35 @@ def cleanup_carry(deployer, carried):
 
 
 def cleanup_under_from(job):
-    """From-release, after the rollback: the job the new release left is still pending there and still holds the world."""
+    """From-release, after the rollback. One from before step 7b (no GET /memory/cleanup/status) does not read the
+    party confirmations: the job the new release left is still pending there and still holds the world. One from
+    7b on runs the same parties: its QQ bridge, started by the rollback, confirms the last part itself, the job is
+    closed by the parties with nothing left pending, and the world stays paused (a confirmation never resumes)."""
     if job is None:
         raise RuntimeError('no cleanup job was carried over the rollback')
+    try:
+        operator('GET', '/memory/cleanup/status')
+    except RuntimeError as error:
+        if '-> 404' not in str(error):
+            raise
+    else:
+        deadline, waiting = time.time() + 90, None
+        while time.time() < deadline:
+            waiting = cleanup_waiting(job)
+            if waiting is None:
+                break
+            time.sleep(2)
+        if waiting is not None:
+            raise RuntimeError('under the from-release the cleanup still waits for %s' % waiting)
+        row = next(item for item in operator('GET', '/memory/cleanup/status')['jobs'] if item['id'] == job)
+        bridge = next((party for party in row['parties'] if party['party'] == 'bridge:qq'), None)
+        if row.get('completedBy') != 'parties' or not bridge or not bridge.get('confirmed') or not bridge.get('report'):
+            raise RuntimeError('the cleanup was not closed by the from-release bridge: completedBy %s, bridge %s' % (row.get('completedBy'), bridge))
+        if operator('GET', '/memory/cleanup/pending'):
+            raise RuntimeError('the from-release still lists a cleanup as pending')
+        if not operator('GET', '/world')['world']['paused']:
+            raise RuntimeError('the world resumed without the operator')
+        return 'job %s closed under the from-release by its bridge:qq (report %s); nothing pending; world still paused' % (job[:8], json.dumps(bridge['report'], sort_keys=True))
     if not any(item.get('id') == job for item in operator('GET', '/memory/cleanup/pending')):
         raise RuntimeError('the from-release does not list cleanup job %s as pending' % job)
     world = operator('GET', '/world')['world']
@@ -861,7 +888,8 @@ def cleanup_under_from(job):
 
 
 def cleanup_closes(job):
-    """New release again, after the roll-forward: its running services confirm what was left, and the world resumes."""
+    """New release again, after the roll-forward: its running services confirm what was left (nothing, when the
+    from-release already closed the job), and the world resumes."""
     if job is None:
         raise RuntimeError('no cleanup job was carried over the rollback')
     deadline, waiting = time.time() + 150, None

@@ -204,6 +204,68 @@ class LedgerRollbackTests(unittest.TestCase):
         self.assertNotIn("'providers.json'", source)
 
 
+class CleanupUnderFromTests(unittest.TestCase):
+    JOB = 'job-1234-abcd'
+
+    def answers(self, status, pending, paused=True, resume=409):
+        def operator(method, route, body=None):
+            if route == '/memory/cleanup/status':
+                if status is None:
+                    raise RuntimeError('GET /memory/cleanup/status -> 404 NOT_FOUND')
+                return {'jobs': [status]}
+            if route == '/memory/cleanup/pending':
+                return pending
+            if route == '/world':
+                return {'world': {'paused': paused, 'revision': 3}}
+            if route == '/world/pause' and resume:
+                raise RuntimeError('POST /world/pause -> %d CONFLICT' % resume)
+            return {}
+        return operator
+
+    def row(self, bridge, completed='parties'):
+        return {'id': self.JOB, 'status': 'complete' if completed else 'pending', 'completedBy': completed,
+                'parties': [{'party': 'content', 'confirmed': True, 'report': {}}, {'party': 'executor:qq', 'confirmed': True, 'report': {}}, bridge]}
+
+    def test_a_from_release_before_7b_keeps_the_job_and_one_from_7b_on_closes_it_by_its_bridge(self):
+        original, sleep = sa.operator, sa.time.sleep
+        try:
+            sa.time.sleep = lambda _seconds: None
+            # Before 7b: no status route; the job is pending and resuming is refused.
+            sa.operator = self.answers(None, [{'id': self.JOB}])
+            self.assertIn('resume refused (409)', sa.cleanup_under_from(self.JOB))
+            sa.operator = self.answers(None, [])
+            with self.assertRaisesRegex(RuntimeError, 'does not list cleanup job'):
+                sa.cleanup_under_from(self.JOB)
+            sa.operator = self.answers(None, [{'id': self.JOB}], resume=0)
+            with self.assertRaisesRegex(RuntimeError, 'resumed the world with a cleanup pending'):
+                sa.cleanup_under_from(self.JOB)
+            # 7b on: the from-release bridge confirms, the parties close the job, the world stays paused.
+            bridge = {'party': 'bridge:qq', 'confirmed': True, 'report': {'dispatchForgotten': 1}}
+            sa.operator = self.answers(self.row(bridge), [])
+            self.assertIn('closed under the from-release by its bridge:qq', sa.cleanup_under_from(self.JOB))
+            sa.operator = self.answers(self.row(bridge, completed='operator'), [])
+            with self.assertRaisesRegex(RuntimeError, 'not closed by the from-release bridge'):
+                sa.cleanup_under_from(self.JOB)
+            sa.operator = self.answers(self.row(bridge), [{'id': 'other'}])
+            with self.assertRaisesRegex(RuntimeError, 'still lists a cleanup as pending'):
+                sa.cleanup_under_from(self.JOB)
+            sa.operator = self.answers(self.row(bridge), [], paused=False)
+            with self.assertRaisesRegex(RuntimeError, 'resumed without the operator'):
+                sa.cleanup_under_from(self.JOB)
+            clock = iter(range(0, 1000, 50))
+            sa.time.time, now = (lambda: next(clock)), sa.time.time
+            try:
+                sa.operator = self.answers(self.row({'party': 'bridge:qq', 'confirmed': False, 'report': None}, completed=None), [{'id': self.JOB}])
+                with self.assertRaisesRegex(RuntimeError, r"still waits for \['bridge:qq'\]"):
+                    sa.cleanup_under_from(self.JOB)
+            finally:
+                sa.time.time = now
+            with self.assertRaisesRegex(RuntimeError, 'no cleanup job was carried'):
+                sa.cleanup_under_from(None)
+        finally:
+            sa.operator, sa.time.sleep = original, sleep
+
+
 class ConsolidationResetTests(unittest.TestCase):
     def test_every_private_conversation_restarts_with_nothing_waiting_and_unused_batches(self):
         import json
