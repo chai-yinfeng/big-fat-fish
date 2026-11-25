@@ -233,6 +233,23 @@ test('the scope is bound and the world re-checked for every model action, whatev
   await assert.rejects(open[1].execute('call', { action: 'search', query: 'MOCK', streamId: 'other' }), { code: 'INVALID_REQUEST' });
 });
 
+test('read: page goes to the content service with this turn\'s message as the source when there is one; a page answer reaches the model whole', async () => {
+  const asked = [], url = 'https://example.com/MOCK-long', page = '页'.repeat(5000);
+  const answer = { url, title: 'MOCK 长文', page: 2, pages: 3, content: page, truncated: false, usage: null, cached: true, external: true, derived: true, isNewEvidence: false };
+  const tools = evidence => createCompanionTools({ authority: {}, content: { call: async request => { asked.push(request); return answer; } }, scope, requestId: 'r1', evidence, guard: async () => {} });
+  const [, content] = tools([{ ref: 'obs-1', eventId: 'e1', role: 'user' }]);
+  const told = JSON.parse((await content.execute('call', { action: 'read', url, page: 2 })).content[0].text);
+  assert.deepEqual(asked[0], { action: 'fetch', url, page: 2, streamId: scope.streamId, memoryEpoch: scope.memoryEpoch, sourceEventId: 'e1' });
+  assert.deepEqual([told.content, told.truncated, told.page, told.pages, told.isNewEvidence, told.isVerbatimUserText], [page, false, 2, 3, false, false]);
+  // A turn without a message of theirs (she started it herself): the same read, with no source.
+  const [, initiated] = tools([]);
+  await initiated.execute('call', { action: 'read', url });
+  assert.deepEqual(asked[1], { action: 'fetch', url, streamId: scope.streamId, memoryEpoch: scope.memoryEpoch });
+  for (const bad of [0, -1, 1.5, '2', 1000]) await assert.rejects(content.execute('call', { action: 'read', url, page: bad }), { code: 'INVALID_REQUEST', message: /page 必须是从 1 开始的整数页码/ });
+  await assert.rejects(content.execute('call', { action: 'search', query: 'MOCK', page: 2 }), { code: 'INVALID_REQUEST' });
+  assert.equal(asked.length, 2);
+});
+
 test('attach: an answer of the content service that is not an object is refused, never reported as queued', async () => {
   for (const answer of [null, 'ok', 7, ['x']]) {
     const [, content] = createCompanionTools({ authority: {}, content: { call: async () => answer }, scope, requestId: 'r1', evidence: [], guard: async () => {} });
