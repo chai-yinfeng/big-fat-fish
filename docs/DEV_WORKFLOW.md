@@ -75,7 +75,7 @@ user manager（`systemctl restart user@$(id -u companion).service`）才会生�
 安装后在控制台“音色”中登记参考录音。发布与安装工具按
 `process.arch` / `uname -m` 在 arm64 与 x64 之间选择私有 Node、CMake、sherpa 原生包和
 NapCat 平台。
-home-agent 网络问题一律先走本机代理 `http://127.0.0.1:7890`（git/curl/pip/npm/Docker；PyPI 可用清华镜像），交给用户的联网命令须提示加代理，详见 AGENTS.md。
+home-agent 网络问题一律先走本机代理 `http://127.0.0.1:7890`（git/curl/pip/npm/Docker；PyPI 可用清华镜像），交给用户的联网命令须提示加代理，详见 AGENTS.md。代理工具在本仓库维护（含 status/update/diagnose 命令与回滚；节点域名依赖订阅自带的 DNS 规则），见 `deploy/home-agent-proxy/README.md`。
 
 生产主机只用于生产。服务以专用用户 companion（uid 由主机分配，不固定；密码锁定、不可登录，
 home 0700）运行，由 root 通过 `systemctl --user -M companion@ ...` 管理。人类和
