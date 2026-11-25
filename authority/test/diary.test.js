@@ -13,6 +13,7 @@ import { CONSOLIDATION } from '../src/consolidation.js';
 import { DIARY } from '../src/diary.js';
 import { DEFAULT_CARD_ID } from '../src/cards.js';
 import { opaquePerson } from '../src/context.js';
+import { SELF_PERSON } from '../src/identity.js';
 
 // Visibly fake accounts: 12 digits starting with 9999.
 const SELF = '999900000001', OWNER = '999900000002', A = '999900000011', B = '999900000012';
@@ -101,6 +102,17 @@ test('one private diary for the day that ended (no open one), from opaque labels
   // The old automatic private diary: no task of that kind was admitted, and none of its diaries exists.
   assert.equal(a.store.db.prepare("SELECT COUNT(*) AS n FROM maintenance_tasks WHERE mode IN ('private','public')").get().n, 0);
   assert.equal(a.listMemory({ limit: 100 }).diaries.filter(diary => diary.v !== 2).length, 0);
+});
+
+test('the diary material holds no digest under her own conversation\'s reserved person', t => {
+  const { a, clock, chat, next } = fixture(t);
+  chat(A, '我周末去了MOCK-海边', 'MOCK-摘要甲：对方说周末去了海边。');
+  // Consolidation never writes one; a digest under person:self is written directly here to check the material.
+  a.store.insertMemory(DEFAULT_ENTITY_ID, 'experiences', { id: 'self-digest', personId: SELF_PERSON, visibility: 'private', kind: 'digest', via: 'consolidation', summary: 'MOCK-她自己会话的摘要', derivedFrom: [], fromAt: clock.now, toAt: clock.now, eventAt: clock.now, scope: { kind: 'person' }, revision: a.store.nextRevision(), at: clock.now }, clock.now);
+  clock.now = at(1, 3.5);
+  const { task } = next();
+  assert.deepEqual(task.digests.map(row => [row.person, row.summary]), [[opaquePerson(person(A)), 'MOCK-摘要甲：对方说周末去了海边。']]);
+  assert.ok(!JSON.stringify(task).includes('她自己会话') && !JSON.stringify(task).includes(opaquePerson(SELF_PERSON)));
 });
 
 test('when it is written: after nightly consolidation is done, at 05:00 regardless; a missed night is caught up for the last two days only', t => {

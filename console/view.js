@@ -172,6 +172,8 @@ export function WorldConsole({ t, standalone = false }) {
   // same reason: tests address the states above by position).
   const [wake, setWake] = useState(null);
   const [wakeDraft, setWakeDraft] = useState('');
+  // The intent whose deletion awaits confirmation (appended, same reason).
+  const [intentConfirm, setIntentConfirm] = useState(null);
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -197,7 +199,7 @@ export function WorldConsole({ t, standalone = false }) {
     setQuota(null); setQuotaOpen(null); setQuotaHistory(null); setLimitDraft({});
     setProviders(null); setProviderClear(null);
     setInitiations(null); setJobs(null);
-    setCards(null); setCardEdit(null); setCardMeta(null); setCardNew(CARD_NEW); setCardConfirm(null);
+    setCards(null); setCardEdit(null); setCardMeta(null); setCardNew(CARD_NEW); setCardConfirm(null); setIntentConfirm(null);
     if (stickerFileInput.current) stickerFileInput.current.value = '';
     stickerLoaded.current = new Set(); setStickers(null); setStickerImages({}); setStickerEdit(null); setStickerNew(STICKER_NEW); setStickerThreshold(''); setStickerShown(STICKER_PAGE);
   }
@@ -355,7 +357,7 @@ export function WorldConsole({ t, standalone = false }) {
   const effectiveTheme = theme === 'system' ? (systemDark() ? 'dark' : 'light') : theme;
   const toggleTheme = () => setTheme(effectiveTheme === 'dark' ? 'light' : 'dark');
   function go(key) {
-    if (key !== 'memory') { setMemory(null); setForgetPreview(null); setMemoryFilter(''); setConsolidation(null); setMemorySources({}); setOpenDiary(null); setOpenDiaryCode(null); }
+    if (key !== 'memory') { setMemory(null); setForgetPreview(null); setMemoryFilter(''); setConsolidation(null); setMemorySources({}); setOpenDiary(null); setOpenDiaryCode(null); setIntentConfirm(null); }
     if (key !== 'quota') { setQuotaOpen(null); setQuotaHistory(null); setLimitDraft({}); }
     if (key !== 'persona') setCardConfirm(null);
     setTab(key); setDrawer(false);
@@ -1095,7 +1097,7 @@ export function WorldConsole({ t, standalone = false }) {
             setOpenDiaryCode({ label: person.label, owner: person.owner === true, code: value.code }); await loadOpenDiary();
           }), { className: 'bff-ghost bff-sm', icon: 'refresh' }) : null)))))));
     const validConsolidation = value => value && Array.isArray(value.streams) && Array.isArray(value.staleDigestIds) && Number.isFinite(value.calls) && Number.isFinite(value.limits?.perDay) && Number.isFinite(value.limits?.perStreamPerDay);
-    const refused = consolidation ? Object.values(consolidation.extracted?.rejected || {}).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0) : 0;
+    const refused = counts => Object.values(counts?.rejected || {}).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0);
     const consolidationCard = h('section', { className: 'bff-card' }, cardHead(h('h2', null, t('consolidation.title')),
       button('consolidation.read', () => run(async () => { const value = await request('/memory/consolidation'); if (!validConsolidation(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' }); setConsolidation(value); }), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
       text('consolidation.hint'),
@@ -1103,7 +1105,9 @@ export function WorldConsole({ t, standalone = false }) {
         consolidation.paused === 'spend' || consolidation.paused === 'daily' ? alert('warn', t(`consolidation.paused.${consolidation.paused}`)) : null,
         consolidation.staleDigestIds.length ? alert('warn', `${t('consolidation.stale')}: ${consolidation.staleDigestIds.length}`) : null,
         h('p', { className: 'bff-small bff-muted' }, `${t('consolidation.today')} (${consolidation.day}): ${consolidation.calls} / ${consolidation.limits.perDay} · ${t('consolidation.perConversation')}: ${consolidation.limits.perStreamPerDay} · ${t('consolidation.lastRun')}: ${consolidation.lastCommittedAt ? time(consolidation.lastCommittedAt) : '—'}`),
-        h('p', { className: 'bff-small bff-muted' }, `${t('consolidation.extracted')}: ${consolidation.extracted?.accepted ?? 0} · ${t('consolidation.refused')}: ${refused}`),
+        h('p', { className: 'bff-small bff-muted' }, `${t('consolidation.extracted')}: ${consolidation.extracted?.accepted ?? 0} · ${t('consolidation.refused')}: ${refused(consolidation.extracted)}`),
+        // An older Authority counts intents within `extracted` and sends no `extractedIntents`: no line rather than a fake zero.
+        consolidation.extractedIntents ? h('p', { className: 'bff-small bff-muted' }, `${t('consolidation.extractedIntents')}: ${consolidation.extractedIntents.accepted ?? 0} · ${t('consolidation.refused')}: ${refused(consolidation.extractedIntents)}`) : null,
         consolidation.streams.length ? h('div', { className: 'bff-table' }, h('table', null,
           h('thead', null, h('tr', null, ...['peoplePanel.person', 'consolidation.behind', 'consolidation.waiting', 'consolidation.callsToday', 'consolidation.digests', 'consolidation.skipped', 'consolidation.lastRun'].map(key => h('th', { key, scope: 'col' }, t(key))))),
           h('tbody', null, ...consolidation.streams.map(row => h('tr', { key: row.stream },
@@ -1149,7 +1153,7 @@ export function WorldConsole({ t, standalone = false }) {
           h('div', { className: 'bff-actions' },
             button(item.pinned ? 'memoryUnpin' : 'memoryPin', () => mutate('/memory/retention', { entityId: memory.entityId, id: item.id, pinned: !item.pinned }), { className: 'bff-ghost bff-sm', icon: 'pin' }),
             item.source?.machine || looseQuote(item) ? readSources(item) : null,
-            isIntent(item) ? button('memoryPanel.intentDelete', () => mutate('/memory/intent/delete', { entityId: memory.entityId, id: item.id }), { className: 'bff-danger-ghost bff-sm', icon: 'trash' }) : null,
+            isIntent(item) ? button('memoryPanel.intentDelete', () => setIntentConfirm({ id: item.id, text: item.text }), { className: 'bff-danger-ghost bff-sm', icon: 'trash' }) : null,
             item.visibility !== 'public' && item.kind !== 'inner' && item.kind !== 'digest' && !isIntent(item) && button('memoryPublicAuthorize', () => mutate('/memory/public', { entityId: memory.entityId, id: item.id }), { className: 'bff-ghost bff-sm', icon: 'shield' }),
             preview(item.id)))),
         ...diaryDays.map(day => h('article', { className: 'bff-card bff-memory', key: 'diary:' + day },
@@ -1180,7 +1184,13 @@ export function WorldConsole({ t, standalone = false }) {
         button('memoryForgetConfirm', () => run(async () => {
           await request('/memory/forget', { entityId: forgetPreview.entityId, ids: forgetPreview.ids, expectedMemoryEpoch: forgetPreview.memoryEpoch, expectedRevision: forgetPreview.revision });
           setForgetPreview(null); await loadMemory(); await load(); setNotice(t('memoryCleanupPending'));
-        }), { disabled: busy || !data.world.paused, className: 'bff-danger', icon: 'trash', key: 'confirm' })], () => setForgetPreview(null)));
+        }), { disabled: busy || !data.world.paused, className: 'bff-danger', icon: 'trash', key: 'confirm' })], () => setForgetPreview(null)),
+      intentConfirm && dialog(t('memoryPanel.intentDeleteTitle'), [h('p', { key: 'intent' }, h('strong', null, String(intentConfirm.text ?? ''))), h('p', { key: 'warning', className: 'bff-muted' }, t('memoryPanel.intentDeleteWarning'))], [
+        button('cardsPanel.cancel', () => setIntentConfirm(null), { className: 'bff-ghost', autoFocus: true, key: 'cancel' }),
+        button('memoryPanel.intentDeleteConfirm', () => run(async () => {
+          await request('/memory/intent/delete', { entityId: memory.entityId, id: intentConfirm.id });
+          setIntentConfirm(null); await loadMemory(); setNotice(t('saved'));
+        }), { className: 'bff-danger', icon: 'trash', key: 'confirm' })], () => setIntentConfirm(null)));
   }
   function speechSettings() {
     const paused = data.world.paused, voices = runtimeInfo?.voices, unavailable = runtimeInfo && runtimeInfo.speech.status !== 'ready';
@@ -1323,11 +1333,12 @@ export function WorldConsole({ t, standalone = false }) {
       else if (forgetPreview && !busy) setForgetPreview(null);
       else if (confirmRemove !== false && !busy) setConfirmRemove(false);
       else if (cardConfirm && !busy) setCardConfirm(null);
+      else if (intentConfirm && !busy) setIntentConfirm(null);
       else if (drawer) setDrawer(false);
       return;
     }
     const target = event.target || {};
-    if (palette || forgetPreview || confirmRemove !== false || cardConfirm || event.metaKey || event.ctrlKey || event.altKey || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable) return;
+    if (palette || forgetPreview || confirmRemove !== false || cardConfirm || intentConfirm || event.metaKey || event.ctrlKey || event.altKey || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.isContentEditable) return;
     if (key.toLowerCase() === 'g') { gPressedAt.current = Date.now(); return; }
     if (Date.now() - gPressedAt.current < 1200) {
       gPressedAt.current = 0;

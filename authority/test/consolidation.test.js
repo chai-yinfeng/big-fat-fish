@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Authority, DEFAULT_ENTITY_ID } from '../src/engine.js';
 import { CONSOLIDATION } from '../src/consolidation.js';
+import { SELF_PERSON } from '../src/identity.js';
 import { opaquePerson, CONTINUATION_CHARS, RETRIEVED_CHARS } from '../src/context.js';
 
 // Visibly fake accounts: 12 digits starting with 9999.
@@ -268,6 +269,8 @@ test('intents: at most two a batch, reviewed like one proposed in the chat, that
   assert.equal(result.status, 'committed');
   assert.equal(result.proposals.length, 2);
   assert.deepEqual(a.processPending().map(receipt => [receipt.proposalId.startsWith('cons:'), receipt.status, receipt.reason]), [[true, 'accepted', undefined], [true, 'rejected', 'unconfirmed_identity']]);
+  // The status counts extracted intents apart from extracted facts.
+  assert.deepEqual([a.consolidationStatus().extracted, a.consolidationStatus().extractedIntents], [{ accepted: 0, pending: 0, rejected: {} }, { accepted: 1, pending: 0, rejected: { unconfirmed_identity: 1 } }]);
   const [intent] = a.listMemory({ limit: 100 }).items.filter(item => item.kind === 'intent');
   assert.deepEqual([intent.personId, intent.text, intent.dueDate, intent.state, intent.visibility], [person(A), 'MOCK-明天问问面试怎么样', '2027-01-16', 'open', 'private']);
   assert.ok(a.context('qq', { streamId: stream(A), query: 'MOCK 面试', budgetChars: 16000 }).memoryText.includes('MOCK-明天问问面试怎么样'));
@@ -455,6 +458,29 @@ test('forgetting a line removes the digest derived from it and restarts only tha
   assert.ok(a.listMemory({ limit: 100 }).items.find(item => item.id === digestId).derivedFrom.includes(more));
   a.store.db.prepare('UPDATE observations SET forgotten=1 WHERE id=?').run(more);
   assert.deepEqual(a.consolidationStatus().staleDigestIds, [digestId]);
+});
+
+test('her own conversation (person:self) is never consolidated, nightly or not, and is not in the status', t => {
+  const { a, clock, say, next, commit, digests } = fixture(t);
+  const at = clock.now, OWN = `qq:${SELF}:private:${SELF}`;
+  // As the wake-up binds it (initiations.js). observe() refuses this conversation; rows are written directly here
+  // as if a briefing and her answer had been stored, carrying another person's words.
+  a.store.db.prepare('INSERT INTO streams(capability_id,stream_id,person_id,audience,entity_id) VALUES(?,?,?,?,?)').run('qq', OWN, SELF_PERSON, 'private', DEFAULT_ENTITY_ID);
+  for (let i = 0; i < 5; i++) {
+    const body = { eventId: `own-${i}`, streamId: OWN, actorId: i % 2 ? 'qq:model' : 'qq:self', role: i % 2 ? 'assistant' : 'user', text: `MOCK-简报里另一个人的打算${i}`, at: at - 2 * HOUR + i };
+    a.store.db.prepare('INSERT INTO observations(id,capability_id,stream_id,event_id,canonical,body,entity_id) VALUES(?,?,?,?,?,?,?)').run(`own-obs-${i}`, 'qq', OWN, body.eventId, JSON.stringify(body), JSON.stringify(body), DEFAULT_ENTITY_ID);
+  }
+  for (let i = 0; i < 4; i++) say(A, `MOCK-A 昨天第${i}句`, { at: at - 2 * HOUR + i });
+  clock.now = at + 12 * HOUR; // 04:00 the next Beijing day: the nightly routine
+  const batches = [];
+  for (let task; (task = next().task);) { batches.push(task.observations.map(row => row.text)); commit(answer(task.taskId)); }
+  assert.deepEqual(batches, [[0, 1, 2, 3].map(i => `MOCK-A 昨天第${i}句`)]);
+  assert.equal(digests(A).length, 1);
+  assert.equal(a.listMemory({ limit: 100 }).items.filter(item => item.personId === SELF_PERSON).length, 0);
+  assert.equal(a.consolidationWaiting(DEFAULT_ENTITY_ID), false);
+  const status = a.consolidationStatus();
+  assert.ok(!status.streams.some(row => row.person === opaquePerson(SELF_PERSON)));
+  assert.equal(status.streams.length, 3, 'the owner, A and B');
 });
 
 test('nightly routine: between 03:00 and 06:00 Beijing, dialogue from before today is consolidated without a window report; the first run goes back 14 days only', t => {
