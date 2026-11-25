@@ -7,6 +7,7 @@ import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { Authority } from '../src/engine.js';
 import { createOperatorServer } from '../src/operator.js';
+import { SELF_PERSON } from '../src/identity.js';
 
 test('operator UI uses its separate credential and real world/persona operations', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'world-operator-'));
@@ -49,6 +50,28 @@ test('operator UI uses its separate credential and real world/persona operations
   assert.equal((await call('POST', '/persona/preview', { patch: { name: '' } })).status, 400);
   assert.equal((await call('GET', '/world')).body.value.persona.revision, 3, 'preview never writes');
   assert.equal((await call('GET', '/world')).body.value.bindings.length, 0);
+});
+
+test('/world hides her own conversation (the reserved person:self) from the bindings and the channel count; Authority keeps it', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'world-operator-'));
+  const authority = new Authority({ file: path.join(dir, 'world.sqlite'), initialPaused: true });
+  authority.registerCapability({ id: 'qq', policy: 'conversation.v1' });
+  authority.bindActor({ capabilityId: 'qq', externalActorId: 'qq:999900000001:user:999900000002', personId: 'person:owner' });
+  authority.bindStream({ capabilityId: 'qq', streamId: 'qq:999900000001:private:999900000002', personId: 'person:owner', audience: 'private' });
+  // As the wake-up binds it (initiations.js): an ordinary private stream of the reserved person.
+  authority.store.db.prepare('INSERT INTO streams(capability_id,stream_id,person_id,audience,entity_id) VALUES(?,?,?,?,?)').run('qq', 'qq:999900000001:private:999900000001', SELF_PERSON, 'private', authority.snapshot().streams[0].entityId);
+  const token = 'o'.repeat(43), socketPath = path.join(dir, 'operator.sock');
+  const app = createOperatorServer({ authority, socketPath, tokenHash: createHash('sha256').update(token).digest('hex'), origins: [] });
+  await app.start();
+  t.after(async () => { await app.close(); authority.close(); fs.rmSync(dir, { recursive: true }); });
+  const world = await new Promise((resolve, reject) => {
+    const req = http.request({ socketPath, path: '/world', method: 'GET', headers: { authorization: `Bearer ${token}` } }, res => { let raw = ''; res.on('data', chunk => { raw += chunk; }); res.on('end', () => resolve(JSON.parse(raw).value)); });
+    req.on('error', reject); req.end();
+  });
+  assert.deepEqual(world.bindings.map(row => row.personId), ['person:owner']);
+  assert.equal(world.channels.find(item => item.id === 'qq').boundStreams, 1);
+  assert.ok(!JSON.stringify(world).includes(SELF_PERSON));
+  assert.deepEqual(authority.snapshot().streams.map(row => row.personId).sort(), ['person:owner', SELF_PERSON]);
 });
 
 test('the everyday-chat thinking switch: off by default, changed only by the operator, read by every context() call', async t => {

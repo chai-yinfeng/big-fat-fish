@@ -282,7 +282,9 @@ export class DiaryDomain extends ConsolidationDomain {
     return { status: 'committed', ...result };
   }
   /** Staging and tests only (the operator route exists only with `allowDiaryTrigger`): the running Beijing day is
-   * written as if it had ended, once, the next time the worker asks. Production writes finished days only. */
+   * handed out by diaryNext as if it had ended, for as many ticks as it has diaries to write. The trigger is used up
+   * only by a tick, while the world runs, that finds nothing left to write for that day (a paused tick, one held back
+   * by consolidation or one out of budget leaves it), or when the day ends. Production writes finished days only. */
   diaryTrigger(input = {}) {
     closed(input, ['entityId'], []);
     return this.store.transaction(() => {

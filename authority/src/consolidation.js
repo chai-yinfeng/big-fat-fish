@@ -276,6 +276,8 @@ export class ConsolidationDomain extends MemoryDomain {
       return { stream: opaqueStream(stream.capabilityId, stream.streamId), person: opaquePerson(stream.personId), owner: stream.personId === 'person:owner', behind, waiting: rolledOut.filter(row => !silent(row)).length, calls: today ? state?.calls ?? 0 : 0, digests: state?.digests ?? 0, skipped: state?.skipped ?? 0, lastAt: state?.lastAt ?? null };
     });
     const deferredAt = own?.deferredAt ?? null, calls = today ? own.calls : 0;
+    const reviewed = type => this.store.db.prepare("SELECT status,json_extract(receipt,'$.reason') AS reason,COUNT(*) AS n FROM inbox WHERE entity_id=? AND proposal_id LIKE 'cons:%' AND json_extract(body,'$.type')=? GROUP BY status,reason").all(e.id, type)
+      .reduce((counts, row) => { if (row.status === 'rejected') counts.rejected[row.reason ?? 'unknown'] = row.n; else counts[row.status] = row.n; return counts; }, { accepted: 0, pending: 0, rejected: {} });
     return {
       entityId: e.id, day, timezone: 'Asia/Shanghai', calls, limits: { perDay: CONSOLIDATION.perDay, perStreamPerDay: CONSOLIDATION.perStreamPerDay },
       since, lastIssuedAt: own?.lastIssuedAt ?? null, lastCommittedAt: own?.lastCommittedAt ?? null, deferredAt,
@@ -286,9 +288,8 @@ export class ConsolidationDomain extends MemoryDomain {
       // Her diary (diary.js): the last Beijing day that is done, when, and how many days were given up. `liveDay`
       // (staging and tests only): today while a `diaryTrigger` of the running day is not used up yet.
       diary: { lastDay: own?.diary?.lastDay ?? null, lastAt: own?.diary?.lastAt ?? null, skipped: own?.diary?.skipped ?? 0, liveDay: own?.diary?.liveDay === day ? day : null },
-      // What review() made of the facts consolidation extracted, by its own reason codes.
-      extracted: this.store.db.prepare("SELECT status,json_extract(receipt,'$.reason') AS reason,COUNT(*) AS n FROM inbox WHERE entity_id=? AND proposal_id LIKE 'cons:%' GROUP BY status,reason").all(e.id)
-        .reduce((counts, row) => { if (row.status === 'rejected') counts.rejected[row.reason ?? 'unknown'] = row.n; else counts[row.status] = row.n; return counts; }, { accepted: 0, pending: 0, rejected: {} }),
+      // What review() made of the facts and of the intents consolidation extracted, each by its own reason codes.
+      extracted: reviewed('fact.report'), extractedIntents: reviewed('intent.note'),
       // Digests that still cover a forgotten observation (an older release forgot it without the cascade).
       staleDigestIds: this.store.db.prepare("SELECT DISTINCT m.id FROM memory_items m,json_each(m.body,'$.derivedFrom') j JOIN observations o ON o.id=j.value WHERE m.entity_id=? AND m.kind='digest' AND o.forgotten=1").all(e.id).map(row => row.id),
     };

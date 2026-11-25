@@ -268,6 +268,8 @@ test('intents: at most two a batch, reviewed like one proposed in the chat, that
   assert.equal(result.status, 'committed');
   assert.equal(result.proposals.length, 2);
   assert.deepEqual(a.processPending().map(receipt => [receipt.proposalId.startsWith('cons:'), receipt.status, receipt.reason]), [[true, 'accepted', undefined], [true, 'rejected', 'unconfirmed_identity']]);
+  // The status counts extracted intents apart from extracted facts.
+  assert.deepEqual([a.consolidationStatus().extracted, a.consolidationStatus().extractedIntents], [{ accepted: 0, pending: 0, rejected: {} }, { accepted: 1, pending: 0, rejected: { unconfirmed_identity: 1 } }]);
   const [intent] = a.listMemory({ limit: 100 }).items.filter(item => item.kind === 'intent');
   assert.deepEqual([intent.personId, intent.text, intent.dueDate, intent.state, intent.visibility], [person(A), 'MOCK-明天问问面试怎么样', '2027-01-16', 'open', 'private']);
   assert.ok(a.context('qq', { streamId: stream(A), query: 'MOCK 面试', budgetChars: 16000 }).memoryText.includes('MOCK-明天问问面试怎么样'));
