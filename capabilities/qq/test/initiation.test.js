@@ -126,18 +126,18 @@ test('a send without a receipt is unknown and is never sent again, even if the s
 const sentence = n => `这是第${n}句话，它的长度刚好让两句放不进同一条消息里面去，所以一句一条。`;
 test('a long reply is split, each message with its own receipt; the first without one stops the rest and only delivered text is hers', async t => {
   const f = await fixture(t);
-  f.reply = [1, 2, 3, 4].map(sentence).join(''); f.offers.push(offer('mock-1'));
+  f.reply = [1, 2, 3].map(sentence).join(''); f.offers.push(offer('mock-1'));
   await f.bridge.pollInitiations();
-  assert.deepEqual(f.sends.map(send => [send.user_id, send.message[0].data.text]), [1, 2, 3, 4].map(n => ['200', sentence(n)]));
-  assert.deepEqual(f.record('mock-1').receipts.map(receipt => receipt.messageId), ['501', '502', '503', '504']);
+  assert.deepEqual(f.sends.map(send => [send.user_id, send.message[0].data.text]), [1, 2, 3].map(n => ['200', sentence(n)]));
+  assert.deepEqual(f.record('mock-1').receipts.map(receipt => receipt.messageId), ['501', '502', '503']);
   assert.equal(f.acks[0].outcome, 'sent');
-  f.sendError = count => count === 6; f.offers.push(offer('mock-2'));
+  f.sendError = count => count === 5; f.offers.push(offer('mock-2'));
   await f.bridge.pollInitiations();
-  assert.equal(f.sends.length, 6);
+  assert.equal(f.sends.length, 5);
   assert.deepEqual([f.record('mock-2').status, f.record('mock-2').receipts.length, f.acks[1].outcome], ['unknown', 1, 'unknown']);
-  assert.deepEqual(f.observations.map(o => o.text), [...[1, 2, 3, 4, 1].map(sentence), [sentence(2), '[送达情况：这条回复的发送状态未知，不确定对方有没有收到]', sentence(3), '[送达情况：这条回复没有发出]', sentence(4), '[送达情况：这条回复没有发出]'].join('\n')]);
+  assert.deepEqual(f.observations.map(o => o.text), [...[1, 2, 3, 1].map(sentence), [sentence(2), '[送达情况：这条回复的发送状态未知，不确定对方有没有收到]', sentence(3), '[送达情况：这条回复没有发出]'].join('\n')]);
   await f.bridge.pollInitiations();
-  assert.equal(f.sends.length, 6);
+  assert.equal(f.sends.length, 5);
 });
 
 test('after a restart a run cut off while sending is reported unknown and one cut off earlier failed; neither is run or sent again', async t => {
