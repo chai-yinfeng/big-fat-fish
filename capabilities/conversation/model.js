@@ -72,10 +72,11 @@ export function createGatewayStream({ socketPath, tokenFile }) {
     return response;
   };
   // A run she starts herself: its requests carry a header the gateway counts as proactive work; body bytes are untouched.
-  const marked = inner => (input, init = {}) => { const headers = new Headers(init.headers); headers.set(INITIATED_HEADER, 'initiated'); return inner(input, { ...init, headers }); };
+  // A group run is marked the same way with its own value: the gateway counts it as group work.
+  const marked = (inner, value = 'initiated') => (input, init = {}) => { const headers = new Headers(init.headers); headers.set(INITIATED_HEADER, value); return inner(input, { ...init, headers }); };
   // No provider retries: a retried completion may be billed twice.
-  return { model, streamFn: (m, context, { gatewayFailure, initiated, ...options } = {}) => {
+  return { model, streamFn: (m, context, { gatewayFailure, initiated, group, ...options } = {}) => {
     const reported = typeof gatewayFailure === 'function' ? observed(gatewayFailure) : fetch;
-    return models.streamSimple(m, context, { ...options, apiKey: token(), fetch: initiated === true ? marked(reported) : reported, maxRetries: 0 });
+    return models.streamSimple(m, context, { ...options, apiKey: token(), fetch: initiated === true ? marked(reported) : group === true ? marked(reported, 'group') : reported, maxRetries: 0 });
   } };
 }
