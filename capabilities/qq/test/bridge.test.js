@@ -130,9 +130,9 @@ test('forgetting inside the running bridge: the dispatch record becomes a tombst
   assert.deepEqual(stored()[id], { status: 'forgotten' });
 });
 
-// A reply of four sentences, each too long to share a message with the next: four messages.
+// A reply of three sentences, each too long to share a message with the next: three messages.
 const sentence = n => `这是第${n}句话，它的长度刚好让两句放不进同一条消息里面去，所以一句一条。`;
-const LONG = [1, 2, 3, 4].map(sentence).join('');
+const LONG = [1, 2, 3].map(sentence).join('');
 /** The fixture with a long reply, numbered send receipts and a recorded (not waited) pause between messages. */
 async function longReply(t, { failAt = 0, onGap = () => {} } = {}) {
   const f = await fixture(t), gaps = [], texts = []; let runs = 0;
@@ -147,20 +147,20 @@ async function longReply(t, { failAt = 0, onGap = () => {} } = {}) {
 }
 
 test('a long text reply goes out as short messages in order, each observed under its own receipt', async t => {
-  const f = await longReply(t); await f.bridge.receive(f.event);
-  assert.deepEqual(f.texts, [1, 2, 3, 4].map(sentence)); assert.equal(f.texts.join(''), LONG);
+  const f = await longReply(t); const now = Date.now(); f.bridge.clock = () => now; await f.bridge.receive(f.event);
+  assert.deepEqual(f.texts, [1, 2, 3].map(sentence)); assert.equal(f.texts.join(''), LONG);
   for (const text of f.texts) assert.ok(text.length <= 60);
-  // A short random pause first, then one growing with the next message's length (random fixed at 0.5).
-  assert.deepEqual(f.gaps, [950, 2363, 2363, 2363]);
+  // Reading and typing the first, then typing each next one, within the ceiling (random fixed at 0.5, no time passed).
+  assert.deepEqual(f.gaps, [10250, 8000, 8000]);
   assert.equal(f.record().status, 'sent');
-  assert.deepEqual(f.record().receipts, [501, 502, 503, 504].map(id => ({ messageId: String(id), type: 'text' })));
-  assert.deepEqual(f.observations.slice(1).map(o => [o.eventId, o.role, o.text]), [1, 2, 3, 4].map(n => ['qq:sent:' + (500 + n), 'assistant', sentence(n)]));
+  assert.deepEqual(f.record().receipts, [501, 502, 503].map(id => ({ messageId: String(id), type: 'text' })));
+  assert.deepEqual(f.observations.slice(1).map(o => [o.eventId, o.role, o.text]), [1, 2, 3].map(n => ['qq:sent:' + (500 + n), 'assistant', sentence(n)]));
 });
 test('a short reply is one message with the model text unchanged, after only the short first pause', async t => {
-  const f = await fixture(t), gaps = []; f.bridge.sleep = async ms => { gaps.push(ms); };
+  const f = await fixture(t), gaps = []; f.bridge.sleep = async ms => { gaps.push(ms); }; const now = Date.now(); f.bridge.clock = () => now;
   await f.bridge.receive(f.event);
   assert.deepEqual(f.sends.map(send => send.message), [[{ type: 'text', data: { text: '[CQ:file,file=/secret] just text' } }]]);
-  assert.deepEqual(gaps, [950]); assert.equal(f.observations[1].text, '[CQ:file,file=/secret] just text');
+  assert.deepEqual(gaps, [9500]); assert.equal(f.observations[1].text, '[CQ:file,file=/secret] just text');
 });
 test('a message of a split reply without a receipt stops the rest: nothing is resent, only delivered text is recorded as said', async t => {
   const f = await longReply(t, { failAt: 2 }); await f.bridge.receive(f.event); await f.bridge.receive(f.event);
@@ -168,12 +168,12 @@ test('a message of a split reply without a receipt stops the rest: nothing is re
   assert.equal(f.record().status, 'partial_unknown');
   assert.deepEqual(f.record().receipts, [{ messageId: '501', type: 'text' }]);
   // The rest is observed once, as the turn ends, each message with what became of it.
-  assert.deepEqual(f.observations.map(o => [o.role, o.text]), [['user', 'Hello'], ['assistant', sentence(1)], ['assistant', [sentence(2), '[送达情况：这条回复的发送状态未知，不确定对方有没有收到]', sentence(3), '[送达情况：这条回复没有发出]', sentence(4), '[送达情况：这条回复没有发出]'].join('\n')]]);
+  assert.deepEqual(f.observations.map(o => [o.role, o.text]), [['user', 'Hello'], ['assistant', sentence(1)], ['assistant', [sentence(2), '[送达情况：这条回复的发送状态未知，不确定对方有没有收到]', sentence(3), '[送达情况：这条回复没有发出]'].join('\n')]]);
   assert.equal(f.observations[2].eventId, 'qq:undelivered:' + qqRequestId(observationFromOneBot(f.event, { expectedSelfId: '100' })));
   // The first message failing leaves nothing recorded as said.
   const g = await longReply(t, { failAt: 1 }); await g.bridge.receive(g.event); await g.bridge.receive(g.event);
   assert.deepEqual(g.texts, [sentence(1)]); assert.equal(g.record().status, 'unknown');
-  assert.deepEqual(g.observations.slice(1).map(o => o.text), [[sentence(1), '[送达情况：这条回复的发送状态未知，不确定对方有没有收到]', sentence(2), '[送达情况：这条回复没有发出]', sentence(3), '[送达情况：这条回复没有发出]', sentence(4), '[送达情况：这条回复没有发出]'].join('\n')]);
+  assert.deepEqual(g.observations.slice(1).map(o => o.text), [[sentence(1), '[送达情况：这条回复的发送状态未知，不确定对方有没有收到]', sentence(2), '[送达情况：这条回复没有发出]', sentence(3), '[送达情况：这条回复没有发出]'].join('\n')]);
 });
 test('a pause between the messages of a split reply stops the rest', async t => {
   const f = await longReply(t, { onGap: (f, n) => { if (n === 3) { f.world.paused = true; f.world.revision++; } } });
