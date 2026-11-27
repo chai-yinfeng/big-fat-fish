@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { loadConsole } from './test-harness.mjs';
-import { operatorRequest, personaDraft, validCards, cardTags } from './operator-client.js';
+import { operatorRequest, personaDraft, validCards, cardTags, parseCardBundle, cardSyncPlan } from './operator-client.js';
 
 const location = { protocol: 'http:', hostname: '127.0.0.1', hash: '' };
 const persona = name => ({ name, userCallName: '你', identity: 'MOCK-身份', traits: [], boundaries: [], speechStyle: 's', relationshipStage: 'new', principles: [], examples: [] });
@@ -191,4 +191,72 @@ test('card library: a refused save names the field and the rule it broke, in bot
     assert.deepEqual(Object.keys(locale.errors.rules).sort(), ['invalid', 'maxChars', 'maxItems', 'required']);
     assert.deepEqual(Object.keys(locale.errors.fields).sort(), ['boundaries', 'examples', 'identity', 'name', 'persona', 'principles', 'relationshipStage', 'speechStyle', 'summary', 'tag', 'tags', 'title', 'traits', 'userCallName']);
   }
+});
+
+// A card bundle as deploy/persona/build-cards.mjs writes it.
+const bundleCard = (title, name, extra = {}) => ({ title, tags: [], summary: '', persona: { name, userCallName: '你', identity: 'MOCK-身份', traits: [], boundaries: [], speechStyle: 's', principles: [], examples: [] }, ...extra });
+const bundleOf = cards => JSON.stringify({ kind: 'big-fat-fish/persona-cards', version: 1, cards });
+// Hook position of the bundle awaiting confirmation in view.js.
+const SYNC = 52;
+const choose = async (h, source) => {
+  h.nodes(h.render()).find(node => node.type === 'input' && node.props.name === 'bundleFile').props.onChange({ target: { value: 'x', files: [{ size: source.length, text: async () => source }] } });
+  await settled();
+};
+
+test('card bundle: parsing checks the shape and the card limits; the plan matches by title and names the changed fields', () => {
+  const ok = bundleOf([bundleCard(' MOCK-乙卡 ', 'MOCK-乙', { tags: ['MOCK-外冷内热', 'MOCK-嘴直'], summary: 'MOCK-新简介' }), bundleCard('MOCK-新卡', 'MOCK-新')]);
+  const parsed = parseCardBundle(ok);
+  assert.deepEqual(parsed.map(card => card.title), ['MOCK-乙卡', 'MOCK-新卡']);
+  for (const bad of ['nope', '{}', bundleOf([]), JSON.stringify({ kind: 'other', version: 1, cards: [bundleCard('a', 'b')] }), bundleOf([bundleCard('a', 'b'), bundleCard('a', 'c')]),
+    bundleOf([bundleCard('x'.repeat(41), 'b')]), bundleOf([bundleCard('a', 'b', { tags: ['1', '2', '3', '4', '5', '6', '7'] })]), bundleOf([bundleCard('a', 'b', { tags: ['x'.repeat(13)] })]),
+    bundleOf([bundleCard('a', 'b', { summary: 'x'.repeat(61) })]), bundleOf(Array.from({ length: 25 }, (_, i) => bundleCard(`c${i}`, 'b'))), bundleOf([{ ...bundleCard('a', 'b'), persona: { mood: 'x' } }]), bundleOf([{ ...bundleCard('a', 'b'), id: 'card:b' }])]) {
+    assert.throws(() => parseCardBundle(bad), /invalid_card_bundle/, bad.slice(0, 80));
+  }
+  const plan = cardSyncPlan(library('card:default'), [...parsed, bundleCard('MOCK-默认卡', 'MOCK-甲')]);
+  assert.deepEqual(plain(plan.items.map(({ title, action, id, current, changed }) => ({ title, action, id, current, changed }))), [
+    { title: 'MOCK-乙卡', action: 'update', id: 'card:b', current: false, changed: ['summary'] },
+    { title: 'MOCK-新卡', action: 'create', changed: [] },
+    { title: 'MOCK-默认卡', action: 'same', id: 'card:default', current: true, changed: [] }]);
+  assert.equal(plan.blocked, null);
+  assert.equal(cardSyncPlan({ ...library('card:default'), limit: 2 }, parsed).blocked, 'full');
+  const twins = library('card:default'); twins.cards[1].title = 'MOCK-默认卡';
+  assert.equal(cardSyncPlan(twins, [bundleCard('MOCK-默认卡', 'x')]).blocked, 'duplicate');
+});
+
+test('card bundle: choosing a file only previews; confirming writes through the card operations, current card with its revision', async () => {
+  const states = page();
+  const h = await harness(states, call => call.method === 'POST' && call.url === '/persona/cards' ? { ...library('card:default'), id: 'card:new' } : call.url === '/persona/cards' ? library('card:default') : call.url === '/world' ? worldOf('MOCK-甲改', 4) : {});
+  const dialog = () => h.nodes(h.render()).find(node => node.props.role === 'alertdialog');
+  await choose(h, bundleOf([bundleCard('MOCK-默认卡', 'MOCK-甲改'), bundleCard('MOCK-乙卡', 'MOCK-乙', { tags: ['MOCK-外冷内热', 'MOCK-嘴直'], summary: 'MOCK-乙卡的一句话简介' }), bundleCard('MOCK-新卡', 'MOCK-新', { tags: ['MOCK-新'] })]));
+  assert.equal(h.calls.length, 0, 'nothing is sent before the confirmation');
+  for (const shown of ['cardsPanel.syncTitle', 'MOCK-默认卡', 'cardsPanel.syncUpdate', 'errors.fields.name', 'cardsPanel.syncSame', 'MOCK-新卡', 'cardsPanel.syncCreate', 'cardsPanel.syncCurrent', 'cardsPanel.syncKeeps']) assert.ok(h.textOf(dialog()).includes(shown), shown);
+  h.press(dialog(), 'cardsPanel.cancel');
+  assert.deepEqual([states[SYNC], h.calls.length], [null, 0]);
+  await choose(h, bundleOf([bundleCard('MOCK-默认卡', 'MOCK-甲改'), bundleCard('MOCK-新卡', 'MOCK-新', { tags: ['MOCK-新'] })]));
+  h.press(dialog(), 'cardsPanel.syncConfirm'); await settled();
+  assert.deepEqual(h.calls.map(call => `${call.method} ${call.url}`), ['GET /persona/cards', 'POST /persona/cards/update', 'POST /persona/cards', 'POST /persona/cards/update', 'GET /world', 'GET /persona/cards']);
+  assert.deepEqual(plain(h.calls[1].payload), { id: 'card:default', patch: { name: 'MOCK-甲改' }, expectedRevision: 3 });
+  assert.deepEqual(plain(h.calls[2].payload), { title: 'MOCK-新卡', tags: ['MOCK-新'], summary: '' });
+  assert.deepEqual([h.calls[3].payload.id, h.calls[3].payload.patch.name, 'expectedRevision' in h.calls[3].payload], ['card:new', 'MOCK-新', false]);
+  assert.deepEqual([states[SYNC], states[ERROR]], [null, '']);
+});
+
+test('card bundle: a library changed since the preview writes nothing; an unchanged or over-full import cannot be confirmed; a bad file says so', async () => {
+  const states = page();
+  let changed = false;
+  const h = await harness(states, call => call.url === '/persona/cards' ? (changed ? { ...library('card:default'), cards: library('card:default').cards.map(card => card.id === 'card:b' ? { ...card, updatedAt: 9 } : card) } : library('card:default')) : {});
+  const dialog = () => h.nodes(h.render()).find(node => node.props.role === 'alertdialog');
+  const confirmButton = () => h.nodes(dialog()).find(node => node.type === 'button' && node.children.includes('cardsPanel.syncConfirm'));
+  await choose(h, bundleOf([bundleCard('MOCK-乙卡', 'MOCK-乙改')]));
+  changed = true;
+  confirmButton().props.onClick(); await settled();
+  assert.deepEqual([h.calls.map(call => `${call.method} ${call.url}`), states[SYNC], states[ERROR]], [['GET /persona/cards'], null, 'cardsPanel.syncStale']);
+  h.calls.length = 0; changed = false; states[CARDS] = library('card:default');
+  await choose(h, bundleOf([bundleCard('MOCK-默认卡', 'MOCK-甲')]));
+  assert.ok(h.textOf(dialog()).includes('cardsPanel.syncNothing') && confirmButton().props.disabled);
+  states[CARDS] = { ...library('card:default'), limit: 2 };
+  await choose(h, bundleOf([bundleCard('MOCK-新卡', 'MOCK-新')]));
+  assert.ok(h.textOf(dialog()).includes('cardsPanel.syncFull') && confirmButton().props.disabled);
+  await choose(h, '{"cards":[]}');
+  assert.deepEqual([states[SYNC], states[ERROR], h.calls.length], [null, 'cardsPanel.syncInvalid', 0]);
 });
