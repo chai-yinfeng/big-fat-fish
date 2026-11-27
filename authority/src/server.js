@@ -17,6 +17,8 @@ const SCHEMAS = {
   '/v1/memory/read': ['streamId', 'id', 'windowFromAt'],
   '/v1/memory/recall': ['streamId', 'fromAt', 'toAt', 'limit', 'budgetChars', 'windowFromAt'],
   '/v1/people/admit': ['uid', 'actorId', 'streamId'],
+  '/v1/groups': [],
+  '/v1/groups/members': ['streamId', 'members', 'complete'],
   '/v1/initiations/next': ['busy'],
   '/v1/initiations/ack': ['id', 'outcome'],
   '/v1/initiations/carry': ['streamId'],
@@ -231,6 +233,10 @@ export function createAuthorityServer({ authority, socketPath, credentials, cont
         else if (route === '/v1/memory/read') value = authority.memoryRead(grant.capabilityId, body);
         else if (route === '/v1/memory/recall') value = authority.memoryRecall(grant.capabilityId, body);
         else if (route === '/v1/people/admit') value = authority.admitPerson(grant.capabilityId, body);
+        // Group chat: the caller's own channel only. Which of its groups she listens in (and the names she answers to),
+        // and the bridge's report of who is in one of them.
+        else if (route === '/v1/groups') value = authority.groupsFor(grant.capabilityId, body);
+        else if (route === '/v1/groups/members') value = authority.syncGroupMembers(grant.capabilityId, body);
         // The person of this conversation asked for their diary passcode: the bridge sends the answer itself.
         else if (route === '/v1/diary/code') value = authority.diaryCode(grant.capabilityId, body);
         // Forgetting: a channel's bridge or executor takes its part of a pending cleanup job and confirms it.

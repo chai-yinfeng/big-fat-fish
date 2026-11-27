@@ -1,9 +1,9 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { SELF_PERSON, capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, text } from './identity.js';
+import { SELF_PERSON, GROUP_PREFIX, capability, canonical, closed, contextScope, enumeration, fail, groupScope, identifier, integer, jsonValue, text } from './identity.js';
 import { DEFAULT_ENTITY_ID } from './store.js';
 import { normalizePersona, renderPersona } from './persona.js';
 import { tokenize, uniqueTokens } from './util.js';
-import { memoryContent, opaquePerson, CONTINUATION_ITEMS, DIGEST_LABEL, beijingDated } from './context.js';
+import { memoryContent, opaquePerson, opaqueMember, CONTINUATION_ITEMS, DIGEST_LABEL, GROUP_DIGEST_LABEL, beijingDated } from './context.js';
 import { SENSITIVE } from './policies.js';
 import { DEFAULT_CARD_ID, feelingFor } from './cards.js';
 import { OPEN_INTENT_SQL, intentState } from './intents.js';
@@ -17,10 +17,22 @@ const CLEANUP_CHANNEL_PARTIES=['bridge','executor'];
 /** A machine digest as a memory tool returns it: its ID, the label, the summary (cut to `chars`), her feeling and
  * the Beijing day the dialogue ended. Nothing else of the body (stream, observation IDs, account numbers).
  * `cardId`: the persona card now current; a feeling written under another card is left out (cards.js). */
-const digestItem=(memory,chars,cardId)=>({
-  id:memory.id,kind:'digest',label:DIGEST_LABEL,summary:String(memory.summary??'').slice(0,chars),
-  ...(feelingFor(memory,cardId)?{feeling:memory.feeling}:{}),...beijingDated(memory.toAt)
+const digestItem=(memory,chars,cardId,you=null)=>({
+  id:memory.id,kind:'digest',label:memory.scope?.kind==='group'?GROUP_DIGEST_LABEL:DIGEST_LABEL,summary:String(memory.summary??'').slice(0,chars),
+  ...(feelingFor(memory,cardId)?{feeling:memory.feeling}:{}),...beijingDated(memory.toAt),
+  // A group digest read in a member's private conversation: which member label in it is that person.
+  ...(you?{you}:{})
 });
+/** A machine digest of a group conversation (consolidation.js): bound to the group's scope key, never to a person. */
+const GROUP_DIGEST="(m.kind='digest' AND json_extract(m.body,'$.scope.kind')='group')";
+/** Whether the person (one `?`) is, through an account bound to them, a present member of the enabled group digest `m`
+ * is of, and has been one since before the dialogue it covers began. Leaving the group, or the group being switched
+ * off, ends it at once; nothing is rewritten when an account is admitted or moved to another person. */
+const GROUP_MEMBER=`EXISTS (SELECT 1 FROM group_members g
+  JOIN actors a ON a.capability_id=g.capability_id AND a.actor_id=g.actor_id AND a.person_id=?
+  JOIN conversation_flags f ON f.capability_id=g.capability_id AND f.stream_id=g.stream_id AND f.enabled=1
+  JOIN streams s ON s.capability_id=g.capability_id AND s.stream_id=g.stream_id AND s.audience='shared' AND s.person_id=m.person_id
+  WHERE g.left_at IS NULL AND g.joined_at<=json_extract(m.body,'$.fromAt'))`;
 const placeholders=values=>values.map(()=>'?').join(',');
 const uniqueIds=ids=>{
   if(!Array.isArray(ids)||!ids.length||ids.length>100)fail('VALIDATION_ERROR','Select 1 to 100 source IDs');
@@ -96,12 +108,24 @@ export class MemoryDomain {
    * read, recall or profile. `digestsBefore` (context(), and the memory tools given `windowFromAt`) lets the person's
    * own private conversation retrieve that person's digests whose dialogue ended before that time, i.e. has left the
    * replay window. Her intents (kind 'intent') are private to their person like any person's item, and only while
-   * open: a settled or lapsed one is in no conversation. */
+   * open: a settled or lapsed one is in no conversation.
+   * A shared conversation reads public material only, nothing of any person. An enabled group (the callers give
+   * `digestsBefore` to a shared conversation only when it is one) also reads its own group digests whose dialogue has
+   * left the window, and no other group's. A member's private conversation, given `digestsBefore`, also reads the
+   * digests of the enabled groups that person is in (GROUP_MEMBER); nothing of a private conversation is ever read in
+   * a group. */
   visibility(scope,policy,{digestsBefore}={}){
-    if(scope.audience==='shared')return{
-      sql:"m.visibility='public' AND COALESCE(m.kind,'') NOT IN ('inner','digest')",
-      args:[]
-    };
+    if(scope.audience==='shared'){
+      const open="m.visibility='public' AND COALESCE(m.kind,'') NOT IN ('inner','digest')";
+      if(digestsBefore!==undefined&&policy==='conversation.v1'&&scope.personId.startsWith(GROUP_PREFIX))return{
+        sql:`((${open}) OR (${GROUP_DIGEST} AND m.person_id=? AND m.visibility='private' AND json_extract(m.body,'$.toAt')<?))`,
+        args:[scope.personId,digestsBefore]
+      };
+      return{
+        sql:open,
+        args:[]
+      };
+    }
     if(policy==='learning.v1')return{
       sql:"COALESCE(m.kind,'') NOT IN ('inner','digest') AND m.collection='notes' AND m.kind='learning'",
       args:[]
@@ -113,10 +137,14 @@ export class MemoryDomain {
       sql:"COALESCE(m.kind,'') NOT IN ('inner','digest','intent') AND ((m.visibility='public' AND m.person_id IS NULL) OR m.person_id=? OR (m.collection='notes' AND m.kind='learning' AND m.person_id IS NULL))",
       args:[SELF_PERSON]
     };
-    if(digestsBefore!==undefined&&scope.audience==='private'&&policy==='conversation.v1')return{
-      sql:"COALESCE(m.kind,'')<>'inner' AND (COALESCE(m.kind,'')<>'digest' OR (m.person_id=? AND m.visibility='private' AND json_extract(m.body,'$.toAt')<?)) AND (m.visibility='public' OR m.person_id=? OR (m.collection='notes' AND m.kind='learning')) AND "+OPEN_INTENT_SQL,
-      args:[scope.personId,digestsBefore,scope.personId,this.now()]
-    };
+    if(digestsBefore!==undefined&&scope.audience==='private'&&policy==='conversation.v1'){
+      // Without the group tables (a migration list of a test or a drill) there is no group and no such clause.
+      const member=this.store.groups?` OR (${GROUP_DIGEST} AND m.visibility='private' AND ${GROUP_MEMBER})`:'',own=this.store.groups?[scope.personId]:[];
+      return{
+        sql:`COALESCE(m.kind,'')<>'inner' AND (COALESCE(m.kind,'')<>'digest' OR (m.person_id=? AND m.visibility='private' AND json_extract(m.body,'$.toAt')<?)${member}) AND (m.visibility='public' OR m.person_id=? OR (m.collection='notes' AND m.kind='learning')${member}) AND `+OPEN_INTENT_SQL,
+        args:[scope.personId,digestsBefore,...own,scope.personId,...own,this.now()]
+      };
+    }
     return{
       sql:"COALESCE(m.kind,'') NOT IN ('inner','digest') AND (m.visibility='public' OR m.person_id=? OR (m.collection='notes' AND m.kind='learning')) AND "+OPEN_INTENT_SQL,
       args:[scope.personId,this.now()]
@@ -151,14 +179,18 @@ export class MemoryDomain {
   }
   /** The continuation of a private conversation: the newest digests (at most CONTINUATION_ITEMS) of the
    * person it is with whose dialogue ended before `before` (the start of the replay window), newest
-   * first, minus the ones in `exclude`. Nobody else's conversation, and no shared one, gets any. */
+   * first, minus the ones in `exclude`. Nobody else's conversation, and no shared one, gets any. An enabled group
+   * (the caller gives `before` to a shared conversation only when it is one) gets its own newest group digests the
+   * same way; a member's private conversation gets group digests by retrieval only, never here. */
   continuationEntries(scope,policy,before,exclude=[]){
-    if(before===undefined||scope.audience!=='private'||policy!=='conversation.v1')return[];
+    const group=scope.audience==='shared'&&scope.personId.startsWith(GROUP_PREFIX);
+    if(before===undefined||(scope.audience!=='private'&&!group)||policy!=='conversation.v1')return[];
     const e=this.entity(scope.entityId),
     cutoff=this.worldStatus().worldNow-e.retention_days*DAY*4;
     return this.store.db.prepare(`SELECT m.* FROM memory_items m WHERE m.entity_id=? AND m.kind='digest' AND m.collection='experiences'
+      AND COALESCE(json_extract(m.body,'$.scope.kind'),'person')=?
       AND m.status='active' AND m.visibility='private' AND m.person_id=? AND json_extract(m.body,'$.toAt')<? AND (m.pinned=1 OR m.created_world_at>=?)
-      ORDER BY json_extract(m.body,'$.toAt') DESC,m.revision DESC LIMIT ?`).all(e.id,scope.personId,before,cutoff,CONTINUATION_ITEMS)
+      ORDER BY json_extract(m.body,'$.toAt') DESC,m.revision DESC LIMIT ?`).all(e.id,group?'group':'person',scope.personId,before,cutoff,CONTINUATION_ITEMS)
       .filter(row=>!exclude.includes(row.id)).map(row=>this.store.memory(row));
   }
   /** The facts of the person this private conversation is with, for their standing profile: pinned
@@ -177,11 +209,20 @@ export class MemoryDomain {
   }
   /** The memory tools' `windowFromAt` (when the oldest run the executor replays began): in the person's own private
    * conversation.v1 chat, their digests of dialogue that ended before it (capped at now) may be returned; otherwise,
-   * or without it, none. It does not change the window Authority keeps for consolidation (context() reports that). */
-  toolDigestsBefore(scope,policy,windowFromAt){
+   * or without it, none. It does not change the window Authority keeps for consolidation (context() reports that).
+   * An enabled group is treated the same way for its own group digests (no tool is offered in a group run yet, but
+   * these endpoints answer the channel's credential all the same). */
+  toolDigestsBefore(scope,policy,windowFromAt,capabilityId){
     if(windowFromAt===undefined)return undefined;
     integer(windowFromAt);
-    return scope.audience==='private'&&policy==='conversation.v1'?Math.min(windowFromAt,this.now()):undefined;
+    return policy==='conversation.v1'&&(scope.audience==='private'||groupScope(this.store,capabilityId,scope.streamId))?Math.min(windowFromAt,this.now()):undefined;
+  }
+  /** For a group digest read in a private conversation: the member label, in that digest's group, of the person the
+   * conversation is with (their account that is there now), or null. */
+  memberLabel(scope,memory){
+    if(!this.store.groups||scope.audience!=='private'||memory?.kind!=='digest'||memory.scope?.kind!=='group')return null;
+    const row=this.store.db.prepare('SELECT g.actor_id AS actorId FROM group_members g JOIN actors a ON a.capability_id=g.capability_id AND a.actor_id=g.actor_id WHERE g.capability_id=? AND g.stream_id=? AND a.person_id=? AND g.left_at IS NULL ORDER BY g.joined_at,g.actor_id LIMIT 1').get(memory.capabilityId,memory.streamId,scope.personId);
+    return row?opaqueMember(memory.capabilityId,memory.streamId,row.actorId):null;
   }
   memorySearch(capabilityId,input){
     closed(input,['streamId','query','limit','budgetChars','windowFromAt'],['streamId','query']);
@@ -191,12 +232,12 @@ export class MemoryDomain {
     text(input.query,2000,true);
     const limit=integer(input.limit??8,1,32),
     budget=integer(input.budgetChars??2400,0,16000),
-    rows=this.candidates(scope,policy,input.query,limit,{ includeArchived: true, digestsBefore: this.toolDigestsBefore(scope,policy,input.windowFromAt) });
+    rows=this.candidates(scope,policy,input.query,limit,{ includeArchived: true, digestsBefore: this.toolDigestsBefore(scope,policy,input.windowFromAt,capabilityId) });
     let remaining=budget;
     const items=[];
     for(const row of rows){
       if(row.kind==='digest'){
-        const item=digestItem(row,Math.min(remaining,1000),this.currentCardId(scope.entityId));
+        const item=digestItem(row,Math.min(remaining,1000),this.currentCardId(scope.entityId),this.memberLabel(scope,row));
         if(!item.summary)continue;
         items.push(item);
         remaining-=item.summary.length;
@@ -215,7 +256,7 @@ export class MemoryDomain {
       memoryEpoch:this.streamEpoch(e,capabilityId,scope.streamId),
       items,
       text:items.map(i=>JSON.stringify(i.kind==='digest'?{
-        id:i.id,label:i.label,text:i.summary,...(i.feeling?{feeling:i.feeling}:{}),...(i.date?{date:i.date}:{})
+        id:i.id,label:i.label,text:i.summary,...(i.feeling?{feeling:i.feeling}:{}),...(i.date?{date:i.date}:{}),...(i.you?{you:i.you}:{})
       }:{
         id:i.id,text:i.excerpt
       })).join('\n').slice(0,budget),
@@ -228,12 +269,12 @@ export class MemoryDomain {
     const policy=capability(this.store,capabilityId).policy,
     scope=contextScope(this.store,capabilityId,input.streamId),
     e=this.entity(scope.entityId),
-    v=this.visibility(scope,policy,{digestsBefore:this.toolDigestsBefore(scope,policy,input.windowFromAt)}),
+    v=this.visibility(scope,policy,{digestsBefore:this.toolDigestsBefore(scope,policy,input.windowFromAt,capabilityId)}),
     cutoff=this.worldStatus().worldNow-e.retention_days*DAY*4;
     const row=this.store.db.prepare(`SELECT m.* FROM memory_items m WHERE m.id=? AND m.entity_id=? AND ${v.sql} AND m.status='active' AND m.collection IN ('facts','notes','experiences')`).get(input.id,e.id,...v.args);
     const memory = row ? this.store.memory(row) : null;
     // A digest is read as its safe fields only.
-    if(memory?.kind==='digest')return{entityId:e.id,memoryEpoch:this.streamEpoch(e,capabilityId,scope.streamId),item:digestItem(memory,1000,this.currentCardId(e.id))};
+    if(memory?.kind==='digest')return{entityId:e.id,memoryEpoch:this.streamEpoch(e,capabilityId,scope.streamId),item:digestItem(memory,1000,this.currentCardId(e.id),this.memberLabel(scope,memory))};
     // Model-facing read: the person is an opaque label, never a raw person ID.
     const item = memory ? { ...memory, ...(memory.personId ? { personId: opaquePerson(memory.personId) } : {}), archived: !row.pinned && row.created_world_at < cutoff } : null;
     return{
@@ -504,9 +545,14 @@ export class MemoryDomain {
     let entityWide=false;
     const people=new Set();
     for(const id of memoryIds){
-      const row=this.store.db.prepare('SELECT person_id,visibility FROM memory_items WHERE id=?').get(id);
+      const row=this.store.db.prepare('SELECT person_id,visibility,kind,body FROM memory_items WHERE id=?').get(id);
       if(!row.person_id||row.visibility==='public')entityWide=true;
       else people.add(row.person_id);
+      // A group digest (bound to the group's scope key, so the group's own conversation is already in) may also have
+      // been read in the private conversations of the group's members: every person an account with a member row in
+      // that group is bound to, those who have left included, has their conversations retired with it.
+      const body=row.kind==='digest'&&this.store.groups?JSON.parse(row.body):null;
+      if(body?.scope?.kind==='group')for(const member of this.store.db.prepare('SELECT DISTINCT a.person_id AS personId FROM group_members g JOIN actors a ON a.capability_id=g.capability_id AND a.actor_id=g.actor_id WHERE g.capability_id=? AND g.stream_id=?').all(body.capabilityId,body.streamId))people.add(member.personId);
     }
     const sourceStreams=new Set(sourceEvents.map(event=>`${event.capabilityId}\u0000${event.streamId}`));
     const scoped=allStreams.filter(stream=>people.has(stream.personId)||sourceStreams.has(`${stream.capabilityId}\u0000${stream.streamId}`));
@@ -736,7 +782,7 @@ export class MemoryDomain {
     const policy = capability(this.store, capabilityId).policy;
     const scope = contextScope(this.store, capabilityId, input.streamId);
     const entity = this.entity(scope.entityId),
-    visible = this.visibility(scope, policy, { digestsBefore: this.toolDigestsBefore(scope, policy, input.windowFromAt) });
+    visible = this.visibility(scope, policy, { digestsBefore: this.toolDigestsBefore(scope, policy, input.windowFromAt, capabilityId) });
     integer(input.fromAt);
     integer(input.toAt, input.fromAt);
     const limit = integer(input.limit ?? 8, 1, 16),
@@ -750,7 +796,7 @@ export class MemoryDomain {
     const items = rows.map(row => {
       const memory = this.store.memory(row);
       // A digest (dated by the end of its dialogue, which is its eventAt): its safe fields only.
-      if (memory.kind === 'digest') { const item = digestItem(memory, Math.min(1000, remaining), this.currentCardId(entity.id)); remaining -= item.summary.length; return item.summary ? item : null; }
+      if (memory.kind === 'digest') { const item = digestItem(memory, Math.min(1000, remaining), this.currentCardId(entity.id), this.memberLabel(scope, memory)); remaining -= item.summary.length; return item.summary ? item : null; }
       const content = memoryContent(memory).slice(0, Math.min(1000, remaining));
        remaining -= content.length;
        return {

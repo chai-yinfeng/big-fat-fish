@@ -10,6 +10,8 @@ export default {
   forget: null,
   faceNames: [],
   prompt: '这段私聊在一个只能发文字的测试渠道（MOCK-CHANNEL）里：这里没有语音、图片和小表情。',
+  groups: false,
+  groupPrompt: '',
   turnPolicy: {},
   testOnly: true,
 };

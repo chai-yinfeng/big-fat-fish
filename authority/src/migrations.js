@@ -12,7 +12,7 @@
 //   must declare `rollbackLevel: 1`; the deploy preflight refuses it while `current` is below that.
 // - Before anything is applied to an existing database it is backed up (VACUUM INTO) next to the
 //   database; a failed backup refuses the start. All pending migrations run in one transaction.
-// - With nothing registered the database is not read or written by this module at all.
+// - With nothing registered (a list a test or a drill passes) the database is not read or written by this module at all.
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -26,8 +26,19 @@ export const BACKUP_DIR = 'migration-backups';
 export const KEEP_BACKUPS = 3;
 const BACKUP_NAME = /^authority-m\d+-m\d+-(\d{8}T\d{9}Z)\.sqlite$/;
 
-/** { id, name, rollbackLevel?, up(db) }. Empty: deploying this release migrates nothing. */
-export const MIGRATIONS = Object.freeze([]);
+/** { id, name, rollbackLevel?, up(db) }. */
+export const MIGRATIONS = Object.freeze([
+  // QQ group chat, phase 2. Two new, empty tables; nothing existing is touched (rollbackLevel 0).
+  // conversation_flags: whether a group conversation (a `shared` stream) is enabled. `updated_at` is real time (ms).
+  // group_members: the accounts (actors, not people) of an enabled group that Authority keeps a row for. `name` is a
+  // cleaned snapshot of the member's group card (untrusted, display only), `joined_at` since when the account has
+  // been in the group, `left_at` NULL while it is.
+  { id: 1, name: 'group-chat-tables', up(db) {
+    db.exec(`CREATE TABLE conversation_flags(capability_id TEXT NOT NULL REFERENCES capabilities(id),stream_id TEXT NOT NULL,enabled INTEGER NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(capability_id,stream_id));
+      CREATE TABLE group_members(capability_id TEXT NOT NULL REFERENCES capabilities(id),stream_id TEXT NOT NULL,actor_id TEXT NOT NULL,name TEXT NOT NULL DEFAULT '',joined_at INTEGER NOT NULL,first_seen_at INTEGER NOT NULL,last_seen_at INTEGER NOT NULL,left_at INTEGER,PRIMARY KEY(capability_id,stream_id,actor_id));
+      CREATE INDEX group_members_actor ON group_members(capability_id,actor_id);`);
+  } },
+]);
 
 export function checkList(migrations) {
   if (!Array.isArray(migrations)) fail('MIGRATION_INVALID', 'Migrations must be a list', 500);

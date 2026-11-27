@@ -70,6 +70,16 @@ export class AuthorityClient {
   }
   /** A conversation channel's credential: the person of this private conversation asked for their diary passcode.
    * `{listed:true,code}` (a new passcode; the caller sends it and keeps it nowhere) or `{listed:false}`. */
+  /** A conversation channel's credential: the group conversations of that channel she listens in (`groups`, each a
+   * `streamId`) and the names she answers to there (`callNames`). */
+  groups() { return this.#request('POST', '/v1/groups', {}); }
+  /** The channel's bridge reports who is in one of those groups (`complete`: the whole roster, otherwise accounts that
+   * are speaking now); the answer gives each reported account's member label. */
+  async syncGroupMembers(value) {
+    closed(value, ['streamId', 'members', 'complete'], ['streamId', 'members', 'complete']);
+    if (!text(value.streamId) || typeof value.complete !== 'boolean' || !Array.isArray(value.members) || value.members.some(member => !object(member) || !text(member.actorId))) throw fail('INVALID_REQUEST');
+    return this.#request('POST', '/v1/groups/members', value);
+  }
   async diaryCode(value) {
     closed(value, ['streamId'], ['streamId']);
     if (!text(value.streamId)) throw fail('INVALID_REQUEST');
