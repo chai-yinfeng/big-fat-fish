@@ -9,6 +9,10 @@ const cdn = value => {
   if (!['https:', 'http:'].includes(u.protocol) || u.username || u.password || u.port && !['80', '443'].includes(u.port) || !['qpic.cn', 'qq.com', 'qq.com.cn', 'gtimg.cn'].some(domain => h === domain || h.endsWith('.' + domain))) throw fail('QQ_MEDIA_URL');
   return u;
 };
+/** The OneBot action and parameters that send `message` to a private conversation or to a group. */
+export function sendCall(target, message) {
+  return target?.groupId !== undefined ? ['send_group_msg', { group_id: target.groupId, message, auto_escape: true }] : ['send_private_msg', { user_id: target.userId, message, auto_escape: true }];
+}
 export function explicitSpeechRequested(text) {
   if (/(?:不要|不用|不必|别|无需).{0,8}(?:语音|朗读|声音)|\b(?:do not|don't|no)\b.{0,12}\b(?:voice|audio|speak)\b/i.test(text)) return false;
   return /(?:用|请|发|回|给).{0,8}语音|语音.{0,8}(?:回|发|回答|回复)|朗读|念给我听|读给我听|(?:用|请).{0,8}qwen3[ -]?tts.{0,12}(?:说|读|合成)|\b(?:speak|read aloud|voice reply|audio reply)\b/i.test(text);
@@ -90,7 +94,9 @@ export class QQMedia {
     const picked = await this.call(scope, 'stickerPick', { query: word, sourceEventId });
     return picked?.found === true && typeof picked.ref === 'string' && typeof picked.name === 'string' ? { type: 'image', ref: picked.ref, sticker: true, name: picked.name, ...(typeof picked.description === 'string' && picked.description ? { description: picked.description, machine: picked.machine === true } : {}) } : null;
   }
-  async send({ scope, userId, part }) {
+  /** `target`: `{ userId }` (a private conversation, the default) or `{ groupId }` (a group). `replyTo`: the platform
+   * id of a message this one quotes (a `reply` segment leads it). */
+  async send({ scope, userId, target = { userId }, part, replyTo }) {
     let segment;
     if (part.type !== 'text') {
       const asset = await this.call(scope, 'asset', { ref: part.ref });
@@ -103,7 +109,7 @@ export class QQMedia {
     }
     // A text message carries her `[名字]` face markers as face segments, in the same message, when faces are on.
     const message = part.type === 'text' ? replySegments(part.text, this.faces) : [segment];
-    const result = await this.onebot.call('send_private_msg', { user_id: userId, message, auto_escape: true });
+    const result = await this.onebot.call(...sendCall(target, replyTo ? [{ type: 'reply', data: { id: replyTo } }, ...message] : message));
     const messageId = receiptId(result.message_id); if (!messageId) throw fail('INVALID_SEND_RECEIPT');
     return { messageId, type: part.type, text: part.type === 'text' ? part.text : part.type === 'audio' ? `[已发送语音；以下为合成文本而非逐字收听验证]\n${part.text}` : part.sticker ? `[已发送表情包：${part.name}]` : `[已发送${part.type === 'sticker' ? '表情' : '图片'}；素材 ${part.ref}]` };
   }

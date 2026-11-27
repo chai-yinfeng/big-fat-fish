@@ -210,7 +210,7 @@ test('member reports: rows only for bound accounts and for accounts that spoke; 
     assert.throws(() => a.syncGroupMembers('qq', bad), { code: 'VALIDATION_ERROR' });
   forbidden(() => a.syncGroupMembers('qq', { streamId: G2, complete: true, members: [{ actorId: actor(A) }] }));
   // A group card is untrusted text: no brackets, no line breaks, short, and never an account-like number.
-  assert.deepEqual(['［管理员］小明〔m-000000〕', '小\n明​', 'MOCK 一二三四五六七八九十十一', '我的号 99990000011', '  '].map(memberName), ['管理员小明m-00000', '小 明', 'MOCK 一二三四五六七', '（群友）', '']);
+  assert.deepEqual(['［管理员］小明〔m-000000〕', '小\n明\u200b', 'MOCK 一二三四五六七八九十十一', '我的号 99990000011', '  '].map(memberName), ['管理员小明m-00000', '小 明', 'MOCK 一二三四五六七', '（群友）', '']);
 });
 
 test('privacy: nothing of anybody\'s private conversation is readable in a group, by context, search, recall, read or profile', t => {

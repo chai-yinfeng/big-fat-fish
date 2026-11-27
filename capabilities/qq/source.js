@@ -85,6 +85,35 @@ export function replyProbeLines(event) {
   });
 }
 const replyId = data => { try { return id(data?.id, true); } catch { return null; } };
+/** One log line per `at` segment of an inbound group message, to see what NapCat really sends: the names of the
+ * segment's data fields and whom it names (this bot, everyone, somebody else, or nothing usable). Never a value. */
+export function atProbeLines(event) {
+  if (!Array.isArray(event?.message)) return [];
+  const same = (a, b) => { try { return id(a) === id(b); } catch { return false; } };
+  return event.message.filter(segment => segment?.type === 'at' && segment.data && typeof segment.data === 'object').map(({ data }) => {
+    const keys = Object.keys(data).filter(key => /^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(key)).slice(0, 24).join(',');
+    return `qq at segment: keys=${keys || '-'} target=${data.qq === 'all' ? 'all' : same(data.qq, event.self_id) ? 'self' : atTarget(data) ? 'other' : '?'}`;
+  });
+}
+/** One log line per group message, to see which fields of `sender` really arrive: the field names only. */
+export function senderProbeLine(event) {
+  const keys = Object.keys(event?.sender && typeof event.sender === 'object' ? event.sender : {}).filter(key => /^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(key)).slice(0, 24).join(',');
+  return `qq group sender: keys=${keys || '-'} card=${typeof event?.sender?.card === 'string' && event.sender.card ? 'yes' : 'no'}`;
+}
+const atTarget = data => { try { return id(data?.qq); } catch { return null; } };
+/** Where a mention of another member stands in a group message's text: the bridge writes the member's card and label
+ * there (bridge.js). The two marks are private-use characters, taken out of whatever a person typed in a group. */
+export const MENTION_OPEN = '\uE000', MENTION_CLOSE = '\uE001';
+const MENTION_MARKS = /[\uE000\uE001]/g;
+/** A member's group card as the bridge shows it: untrusted text, so no control characters and no brackets of any
+ * kind (it cannot open a line head or a label of its own), at most 12 characters, never an account-like run of
+ * digits. '' when nothing is left. (Authority cleans what it keeps the same way: engine.js `memberName`.) */
+export function cardName(value) {
+  const cleaned = [...String(typeof value === 'string' ? value : '').normalize('NFKC').replace(/[\p{Cc}\u2028\u2029]/gu, ' ').replace(/[\p{Cf}\uE000\uE001\[\]［］【】〔〕〖〗「」『』《》〈〉<>＜＞(){}（）｛｝]/gu, '').replace(/\s+/g, ' ').trim()].slice(0, 12).join('').trim();
+  return /\d{7,}/.test(cleaned) ? '（群友）' : cleaned;
+}
+/** What stands for a group message that only mentions her (no words, no attachment). */
+export const AT_ONLY = '[在群里 @ 了你]';
 /** At most this many characters of a quoted message reach the model. */
 export const QUOTE_CHARS = 100;
 /** What a quoted message says, as one line for the model, or '' when nothing readable is left: text and small faces
@@ -143,6 +172,9 @@ export function messageFromOneBot(event, { expectedSelfId }) {
   if (!Number.isSafeInteger(event.time) || event.time < 0 || event.time > Math.floor(Number.MAX_SAFE_INTEGER / 1000)) throw new Error('INVALID_ONEBOT_TIME');
   // Pictures and voice beyond MAX_MEDIA are not fetched; `skippedMedia` counts them, so the model is told.
   const media = []; let authoredText, skippedMedia = 0, audio = 0, replyTo = null;
+  // A group message: who it mentions (`at` segments: this bot, everyone, other members) and what the person typed
+  // themselves (text segments only: no card title, no face name). A private message has neither.
+  const mentions = []; let mentionsSelf = false, typed = '';
   if (typeof event.message === 'string') authoredText = event.message; // CQ-looking text remains literal text.
   else if (Array.isArray(event.message) && event.message.length <= 32) {
     // Text segments joined by line breaks; a small face is its name (`[微笑]`) where it stands, not an attachment.
@@ -151,7 +183,15 @@ export function messageFromOneBot(event, { expectedSelfId }) {
     const pieces = []; let cards = 0;
     for (const [segmentIndex, segment] of event.message.entries()) {
       const data = segment?.data;
-      if (segment?.type === 'text' && typeof data?.text === 'string') pieces.push({ text: data.text, line: true });
+      if (segment?.type === 'text' && typeof data?.text === 'string') { const said = group ? data.text.replace(MENTION_MARKS, '') : data.text; typed += said + '\n'; pieces.push({ text: said, line: true }); }
+      // A mention: of her (not part of the text), of everyone (not a call to her), or of another member (a marked place
+      // in the text). Only in a group; an `at` segment anywhere else is ignored as before.
+      else if (group && segment?.type === 'at') {
+        const target = data?.qq === 'all' ? 'all' : atTarget(data);
+        if (target === self) mentionsSelf = true;
+        else if (target === 'all') pieces.push({ text: '@全体成员 ' });
+        else if (target) { if (!mentions.includes(target) && mentions.length < 16) mentions.push(target); pieces.push({ text: `${MENTION_OPEN}${target}${MENTION_CLOSE} ` }); }
+      }
       else if (segment?.type === 'face' && /^\d{1,10}$/.test(String(data?.id))) pieces.push({ text: faceText(String(data.id)) });
       else if (segment?.type === 'record' && mediaFile(data?.file)) { audio++; if (media.length < MAX_MEDIA) media.push({ kind: 'audio', file: data.file, segmentIndex }); else skippedMedia++; }
       else if (segment?.type === 'image' && mediaFile(data?.file)) { if (media.length < MAX_MEDIA) media.push({ kind: 'image', file: data.file, segmentIndex, ...stickerOf(data) }); else skippedMedia++; }
@@ -160,9 +200,12 @@ export function messageFromOneBot(event, { expectedSelfId }) {
     }
     authoredText = pieces.map((piece, index) => (piece.line && pieces[index - 1]?.line ? '\n' : '') + piece.text).join('');
   } else throw new Error('INVALID_ONEBOT_MESSAGE');
-  if (typeof authoredText !== 'string' || authoredText.length > 16000 || authoredText.includes('\0') || !authoredText && !media.length || audio > 1) throw new Error('INVALID_ONEBOT_MESSAGE');
+  // A group message that only mentions her says nothing else: it is still a message (AT_ONLY stands for it).
+  const atOnly = group !== null && mentionsSelf && !authoredText.trim() && !media.length;
+  if (typeof authoredText !== 'string' || authoredText.length > 16000 || authoredText.includes('\0') || !authoredText && !media.length && !atOnly || audio > 1) throw new Error('INVALID_ONEBOT_MESSAGE');
   const placeholder = media.length === 1 ? { audio: '[QQ语音消息]', image: '[QQ图片消息]' }[media[0].kind] : '[QQ附件消息]';
   const anonymous = event.anonymous != null;
-  return { authoredText, media, skippedMedia, ...(replyTo ? { replyTo } : {}), observation: { eventId: `onebot:v11:message:${messageId}`, streamId: group ? `qq:${self}:group:${group}` : `qq:${self}:private:${sender}`, actorId: anonymous ? `qq:${self}:anonymous` : `qq:${self}:user:${sender}`, role: anonymous ? 'external' : 'user', text: authoredText || placeholder, at: event.time * 1000, ...(!authoredText.trim() ? { origin: 'attachment' } : {}) } };
+  const inGroup = group === null ? {} : { groupId: group, messageId, senderName: cardName(event.sender?.card) || cardName(event.sender?.nickname), mentionsSelf, mentions, typedText: typed, anonymous };
+  return { authoredText, media, skippedMedia, ...(replyTo ? { replyTo } : {}), ...inGroup, observation: { eventId: `onebot:v11:message:${messageId}`, streamId: group ? `qq:${self}:group:${group}` : `qq:${self}:private:${sender}`, actorId: anonymous ? `qq:${self}:anonymous` : `qq:${self}:user:${sender}`, role: anonymous ? 'external' : 'user', text: atOnly ? AT_ONLY : authoredText || placeholder, at: event.time * 1000, ...(!authoredText.trim() ? { origin: 'attachment' } : {}) } };
 }
 export function observationFromOneBot(event, config) { return messageFromOneBot(event, config)?.observation || null; }

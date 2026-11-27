@@ -7,7 +7,8 @@ import { ContentClient } from '../media/client.js';
 import { channel, channelGroupPrompt, channelPrompt, CHANNEL_PROMPT_CHARS } from '../channels/index.js';
 import { SessionStore, conversationSessionId } from './sessions.js';
 import { createGatewayStream } from './model.js';
-import { createConversationExecutor, NOTE_OPEN, GROUP_CALLED } from './agent.js';
+import { createConversationExecutor, NOTE_OPEN } from './agent.js';
+import { GROUP_CALLED } from './executor.js';
 import { tempRoot, fakeAuthority, fakeGateway, reply, toolCall } from './fixtures.js';
 
 const GROUP = 'qq:100:group:999900009001', PRIVATE = 'qq:100:private:200';

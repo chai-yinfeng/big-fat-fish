@@ -173,7 +173,8 @@ export class ConsolidationDomain extends MemoryDomain {
           // The persona card this batch is written under (its persona sets the tone of `feeling`).
           cardId: this.currentCardId(e.id),
           // A group batch says so, with the member labels its digest may name.
-          ...(stream.group ? { group: true, speakers: [...new Set([...speakers.values()].map(item => item.label))] } : {}),
+          // (A label written in a line itself, where the bridge named a mentioned member, is one of them too.)
+          ...(stream.group ? { group: true, speakers: [...new Set([...[...speakers.values()].map(item => item.label), ...shown.filter(row => !row.omitted).flatMap(row => row.text.match(MEMBER_LABEL) ?? [])])] } : {}),
         }));
         // Counted when handed out: a worker that dies after the model call has still spent it.
         own.calls++; state.calls++; state.issued = taskId; own.lastIssuedAt = now;

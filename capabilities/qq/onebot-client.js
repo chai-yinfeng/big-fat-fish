@@ -39,7 +39,9 @@ export class OneBotClient {
     });
   }
   call(action, params = {}) {
-    if (!['get_login_info', 'get_friend_list', 'send_private_msg', 'get_record', 'get_image', 'get_msg'].includes(action)) return Promise.reject(new Error('ONEBOT_ACTION_DENIED'));
+    // Group chat adds sending to a group and reading who is in one; nothing that changes a group (no leaving, kicking,
+    // renaming, or answering a request to join).
+    if (!['get_login_info', 'get_friend_list', 'send_private_msg', 'get_record', 'get_image', 'get_msg', 'send_group_msg', 'get_group_list', 'get_group_member_list', 'get_group_member_info'].includes(action)) return Promise.reject(new Error('ONEBOT_ACTION_DENIED'));
     if (!this.connected) return Promise.reject(new Error('ONEBOT_DISCONNECTED'));
     const echo = randomUUID();
     return new Promise((resolve, reject) => {

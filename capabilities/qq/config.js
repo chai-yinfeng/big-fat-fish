@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { INITIATION_POLL_MS } from './bridge.js';
 import { PACING, pacingFrom } from './pacing.js';
+import { GROUP, groupFrom } from './group.js';
 
 /** Every key this release reads. `since`: every release so far carries package version 0.10.0. */
 export const KEYS = Object.freeze({
@@ -21,11 +22,13 @@ export const KEYS = Object.freeze({
   initiationPollMs: { required: false, range: 'integer 1000..600000', since: '0.10.0' },
   stickerSubType: { required: false, range: 'boolean', since: '0.10.0' },
   pacing: { required: false, range: 'object, keys and ranges of capabilities/qq/pacing.js', since: '0.10.0', keys: Object.keys(PACING) },
+  // Group chat's numbers. No release writes this key (production runs on the defaults); staging does.
+  group: { required: false, range: 'object, keys and ranges of capabilities/qq/group.js', since: '0.10.0', keys: Object.keys(GROUP) },
 });
 /** Written by the DSH-era prepare-qq; read by no release since. */
 export const LEGACY = Object.freeze(['accessFile', 'inboxFile', 'workerConfigFile', 'workerAuthoritySocket', 'workerTokenFile', 'workerInboxFile']);
 /** Defaults of the optional keys. */
-export const defaults = Object.freeze({ onebotPort: 3001, contentEnabled: false, initiationPollMs: INITIATION_POLL_MS, stickerSubType: true, pacing: PACING });
+export const defaults = Object.freeze({ onebotPort: 3001, contentEnabled: false, initiationPollMs: INITIATION_POLL_MS, stickerSubType: true, pacing: PACING, group: GROUP });
 
 const fail = (code, fields) => Object.assign(new Error(code), { code, ...(fields ? { fields } : {}) });
 const plain = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -48,11 +51,17 @@ export function validate(raw) {
     for (const [key, value] of Object.entries(config.pacing)) if (KEYS.pacing.keys.includes(key)) pacing[key] = value; else unknown.push(`pacing.${fieldName(key)}`);
     config.pacing = pacing;
   }
+  // group: the same.
+  if (plain(config.group)) {
+    const group = {};
+    for (const [key, value] of Object.entries(config.group)) if (KEYS.group.keys.includes(key)) group[key] = value; else unknown.push(`group.${fieldName(key)}`);
+    config.group = group;
+  }
   if (!plain(config.authority) || !plain(config.conversation) || !absolute(config.controlSocket) || !absolute(config.onebotTokenFile) || !absolute(config.settingsFile) || !absolute(config.stateFile)
     || typeof config.operatorTokenHash !== 'string' || !/^[a-f0-9]{64}$/.test(config.operatorTokenHash) || !port(config.onebotPort)) throw fail('CONFIG_INVALID');
   if (config.initiationPollMs !== undefined && !(Number.isInteger(config.initiationPollMs) && config.initiationPollMs >= 1000 && config.initiationPollMs <= 600000)) throw fail('CONFIG_INVALID');
   if (config.stickerSubType !== undefined && typeof config.stickerSubType !== 'boolean') throw fail('CONFIG_INVALID');
-  try { pacingFrom(config.pacing); } catch { throw fail('CONFIG_INVALID'); }
+  try { pacingFrom(config.pacing); groupFrom(config.group); } catch { throw fail('CONFIG_INVALID'); }
   return { config, unknown, legacy };
 }
 

@@ -168,7 +168,8 @@ export const CONTENT_SERVICE_ACTIONS = Object.freeze({
     // A sticker somebody sent is collected into her library and its sender counted (stickers.js `collect`; never
     // an ordinary picture, never one that was not recognized). Who sent it stays in the library's own opaque
     // counts: nothing of it is in this answer. Collecting is best effort and never fails the look.
-    if (sticker) {
+    // Only from a private conversation: a group is nobody, and counting it as one sender would be wrong.
+    if (sticker && scope.audience === 'private') {
       try { this.stickers.collect({ hash, data: original.data, mime: original.meta.mime, kind: known.kind, name: libraryName(known), tags: known.tags ?? [], personId: scope.personId, origin: { entityId: scope.entityId, streamId: scope.streamId, eventId: original.meta.sourceEventId } }); }
       catch { process.stderr.write('A sticker could not be collected; the library is unchanged.\n'); }
     }

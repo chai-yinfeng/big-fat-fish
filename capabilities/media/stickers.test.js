@@ -449,3 +449,14 @@ test('the console reaches the library through Authority\'s operator port: list, 
   await bare.start(); t.after(() => bare.close());
   assert.deepEqual([(await call('GET', '/stickers', undefined, { socket: path.join(dir, 'bare.sock') })).status, (await call('POST', '/stickers/approve', { hash }, { socket: path.join(dir, 'bare.sock') })).status], [503, 503]);
 });
+
+test('a sticker sent in a group is looked at like any other but not collected: a group is nobody, not a sender', async t => {
+  const f = fixture(t), picture = png('MOCK-G1');
+  const group = { entityId: 'entity:test', streamId: 'qq:1:group:999900009001', personId: 'group:qq:1:group:999900009001', audience: 'shared', memoryEpoch: 0 };
+  const seen = await f.service.call(group, { action: 'describe', ref: (await f.ingest(group, picture)).id, sticker: true });
+  assert.deepEqual([seen.kind, seen.description, f.state.asked.length], ['sticker', 'MOCK 一只猫在笑', 1]);
+  assert.deepEqual(f.stickers.list().stickers, []);
+  // The same picture from a person in their private conversation is collected as before (and not looked at again).
+  await f.service.call(OTHER, { action: 'describe', ref: (await f.ingest(OTHER, picture)).id, sticker: true });
+  assert.deepEqual([f.stickers.list().stickers.map(item => item.senders), f.state.asked.length], [[1], 1]);
+});

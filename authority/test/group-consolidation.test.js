@@ -89,6 +89,14 @@ test('a group digest must name only member labels of its batch; an account-like 
   ({ task } = next());
   assert.equal(commit({ taskId: task.taskId, outcome: 'ok', digest: { summary: 'MOCK-摘要：m-ffffff 说了一句。' } }).status, 'skipped');
   assert.deepEqual(digests(), []);
+  // A member the bridge named in a line (a mention) may be named in the digest though they did not speak.
+  clock.now += DAY;
+  say(G1, A, `MOCK-第四句 @MOCK-阿姨〔${label(B)}〕 你来吗`); rollOut(G1);
+  ({ task } = next());
+  assert.equal(commit({ taskId: task.taskId, outcome: 'ok', digest: { summary: `MOCK-摘要：MOCK-小明〔${label(A)}〕问 MOCK-阿姨〔${label(B)}〕 来不来。` } }).status, 'committed');
+  assert.deepEqual(digests().map(item => item.speakers.sort()), [[label(A), label(B)].sort()]);
+  // (Taken out again, so the checks below start from no digest.)
+  a.store.transaction(() => a.store.db.prepare('DELETE FROM memory_items WHERE id=?').run(digests()[0].id));
   // The ordinary guards hold for a group digest: no account-like number, nothing sensitive.
   say(G1, A, 'MOCK-第二句'); rollOut(G1);
   ({ task } = next());
