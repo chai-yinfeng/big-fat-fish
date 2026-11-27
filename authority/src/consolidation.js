@@ -3,15 +3,18 @@
 // The worker only carries text between Authority and the model: Authority picks the conversation,
 // builds the input, validates the output and writes. One batch holds one conversation of one
 // person, and everything it produces belongs to that person.
+// An enabled group conversation is consolidated the same way, after the private ones, into a group digest only:
+// bound to the group's scope key, its people written as `card〔m-label〕`, with no feeling, no fact and no intent of
+// anybody (whatever the model answers).
 // Storage (no schema change): digests are memory_items (collection 'experiences', kind 'digest'),
 // the cursor and the daily counters live under the metadata key 'consolidation', an admitted batch
 // is a maintenance_tasks row (mode 'consolidation') and a commit leaves a diary_receipts row
 // (kind 'consolidation') holding a hash only.
 import { createHash, randomUUID } from 'node:crypto';
-import { SELF_PERSON, canonical, closed, enumeration, fail, identifier } from './identity.js';
+import { SELF_PERSON, canonical, closed, enumeration, fail, groupKey, groupScope, identifier } from './identity.js';
 import { MemoryDomain } from './memory.js';
 import { SENSITIVE } from './policies.js';
-import { opaquePerson, opaqueStream } from './context.js';
+import { opaquePerson, opaqueStream, opaqueMember } from './context.js';
 import { renderPersona } from './persona.js';
 import { INTENT, OPEN_INTENT_SQL, validDueDate } from './intents.js';
 
@@ -43,6 +46,10 @@ const streamKey = (capabilityId, streamId) => `${capabilityId}\u0000${streamId}`
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 /** Characters one observation takes in the worker's request (a JSON row of ref, speaker, time and text). */
 const rowChars = text => JSON.stringify(text).length + 34;
+/** What a group row takes more than a private one: its speaker is a card and a member label, not one word. */
+const GROUP_SPEAKER_CHARS = 26;
+/** A member label wherever a group digest names somebody. */
+const MEMBER_LABEL = /m-[0-9a-f]{6}/g;
 const bounded = (value, max) => typeof value === 'string' && value.trim() && value.length <= max && !value.includes('\0');
 
 export class ConsolidationDomain extends MemoryDomain {
@@ -63,6 +70,13 @@ export class ConsolidationDomain extends MemoryDomain {
   // people's cards, intents and digests, which must not become anything under `person:self`.
   #privateStreams(entityId) {
     return this.store.db.prepare("SELECT capability_id AS capabilityId,stream_id AS streamId,person_id AS personId FROM streams WHERE entity_id=? AND audience='private' AND person_id<>? ORDER BY capability_id,stream_id").all(entityId, SELF_PERSON);
+  }
+  /** The conversations consolidation reads: the private ones, then the enabled groups (`group: true`, bound to their
+   * own scope key). A group that is switched off is not read. */
+  #streams(entityId) {
+    const groups = !this.store.groups ? [] : this.store.db.prepare("SELECT s.capability_id AS capabilityId,s.stream_id AS streamId,s.person_id AS personId FROM streams s JOIN conversation_flags f ON f.capability_id=s.capability_id AND f.stream_id=s.stream_id AND f.enabled=1 WHERE s.entity_id=? AND s.audience='shared' ORDER BY s.capability_id,s.stream_id").all(entityId)
+      .filter(row => row.personId === groupKey(row.streamId)).map(row => ({ ...row, group: true }));
+    return [...this.#privateStreams(entityId), ...groups];
   }
   #cursorRow(state) {
     return state?.lastObservationId ? this.store.db.prepare('SELECT rowid FROM observations WHERE id=?').get(state.lastObservationId)?.rowid ?? 0 : 0;
@@ -97,9 +111,10 @@ export class ConsolidationDomain extends MemoryDomain {
     for (const row of taken) {
       if (silent(row)) { batch.push({ id: row.id }); continue; }
       const omitted = SENSITIVE.test(row.text), text = omitted ? OMITTED : row.text.length > CONSOLIDATION.observationChars ? row.text.slice(0, CONSOLIDATION.observationChars - CUT.length) + CUT : row.text;
-      if (shown && (chars + rowChars(text) > CONSOLIDATION.batchChars || shown >= CONSOLIDATION.batchObservations)) break;
-      chars += rowChars(text); shown++;
-      batch.push({ id: row.id, ref: 'o' + shown, role: row.role, at: row.at, text, omitted });
+      const size = rowChars(text) + (stream.group ? GROUP_SPEAKER_CHARS : 0);
+      if (shown && (chars + size > CONSOLIDATION.batchChars || shown >= CONSOLIDATION.batchObservations)) break;
+      chars += size; shown++;
+      batch.push({ id: row.id, ref: 'o' + shown, role: row.role, at: row.at, text, omitted, actorId: row.actorId });
     }
     return { trigger, batch };
   }
@@ -109,8 +124,9 @@ export class ConsolidationDomain extends MemoryDomain {
     let reason = 'idle';
     // In the night hours one of the day's batches is kept for the diary of the day that just ended (diary.js).
     const perDay = CONSOLIDATION.perDay - (beijingHour(now) < CONSOLIDATION.nightlyToHour && !((own.diary?.lastDay ?? '') >= beijingDay(now - DAY)) ? 1 : 0);
-    const streams = this.#privateStreams(e.id).map(stream => ({ stream, key: streamKey(stream.capabilityId, stream.streamId) }))
-      .sort((a, b) => (own.streams[a.key]?.calls ?? 0) - (own.streams[b.key]?.calls ?? 0));
+    // Private conversations first, whatever they have used today: a tight day's batches go to them before any group.
+    const streams = this.#streams(e.id).map(stream => ({ stream, key: streamKey(stream.capabilityId, stream.streamId) }))
+      .sort((a, b) => Boolean(a.stream.group) - Boolean(b.stream.group) || (own.streams[a.key]?.calls ?? 0) - (own.streams[b.key]?.calls ?? 0));
     for (const { stream, key } of streams) {
       const state = own.streams[key] ||= { calls: 0 };
       let found = this.#batch(stream, state, own.since, now);
@@ -145,13 +161,23 @@ export class ConsolidationDomain extends MemoryDomain {
       if (found) {
         const shown = found.batch.filter(row => row.ref), epoch = this.streamEpoch(e, stream.capabilityId, stream.streamId), base = state.lastObservationId ?? null, ids = found.batch.map(row => row.id);
         const taskId = sha256(canonical({ entityId: e.id, capabilityId: stream.capabilityId, streamId: stream.streamId, base, ids, epoch, worldRevision: world.revision }));
+        // A group batch: who said each line, as the member's kept card and its label in this group. No account, no person.
+        const speaker = row => {
+          const label = opaqueMember(stream.capabilityId, stream.streamId, row.actorId);
+          const name = this.store.db.prepare('SELECT name FROM group_members WHERE capability_id=? AND stream_id=? AND actor_id=?').get(stream.capabilityId, stream.streamId, row.actorId)?.name;
+          return { label, text: `${name || '群友'}〔${label}〕` };
+        };
+        const speakers = stream.group ? new Map(shown.filter(row => row.role === 'user').map(row => [row.id, speaker(row)])) : null;
         this.store.db.prepare('INSERT OR IGNORE INTO maintenance_tasks(id,entity_id,epoch,cursor,world_revision,mode,source_ids) VALUES(?,?,?,?,?,?,?)').run(taskId, e.id, epoch, 0, world.revision, 'consolidation', JSON.stringify({
           capabilityId: stream.capabilityId, streamId: stream.streamId, base, ids, refs: Object.fromEntries(shown.filter(row => !row.omitted).map(row => [row.ref, row.id])),
           // The persona card this batch is written under (its persona sets the tone of `feeling`).
           cardId: this.currentCardId(e.id),
+          // A group batch says so, with the member labels its digest may name.
+          ...(stream.group ? { group: true, speakers: [...new Set([...speakers.values()].map(item => item.label))] } : {}),
         }));
         // Counted when handed out: a worker that dies after the model call has still spent it.
         own.calls++; state.calls++; state.issued = taskId; own.lastIssuedAt = now;
+        // (A group's scope key owns no fact and no intent, so both lists are empty for a group.)
         const facts = this.store.db.prepare("SELECT DISTINCT json_extract(body,'$.key') AS key FROM memory_items WHERE entity_id=? AND collection='facts' AND person_id=? AND status='active' ORDER BY revision DESC LIMIT 64").all(e.id, stream.personId);
         const knownKeys = []; let keyChars = 0;
         for (const { key: name } of facts) if (typeof name === 'string' && keyChars + name.length + 1 <= 400) { knownKeys.push(name); keyChars += name.length + 1; }
@@ -162,10 +188,11 @@ export class ConsolidationDomain extends MemoryDomain {
         const last = this.store.db.prepare("SELECT body FROM memory_items WHERE entity_id=? AND person_id=? AND kind='digest' AND status='active' AND json_extract(body,'$.streamId')=? ORDER BY revision DESC LIMIT 1").get(e.id, stream.personId, stream.streamId);
         task = {
           taskId, trigger: found.trigger,
-          personaText: renderPersona({ ...JSON.parse(e.persona), userCallName: '你', relationshipStage: 'new' }).slice(0, 1000),
+          // A group digest has no feeling of hers, so its batch carries no persona.
+          ...(stream.group ? { scope: { kind: 'group' }, personaText: '' } : { personaText: renderPersona({ ...JSON.parse(e.persona), userCallName: '你', relationshipStage: 'new' }).slice(0, 1000) }),
           knownKeys, knownIntents, lastDigest: last ? String(JSON.parse(last.body).summary ?? '').slice(0, CONSOLIDATION.summaryChars) : '',
           // Short refs and Beijing minutes only: no observation, stream or person ID leaves Authority here.
-          observations: shown.map(row => ({ ref: row.ref, role: row.role, time: beijingMinute(row.at), text: row.text })),
+          observations: shown.map(row => ({ ref: row.ref, role: row.role, time: beijingMinute(row.at), text: row.text, ...(speakers?.has(row.id) ? { speaker: speakers.get(row.id).text } : {}) })),
         };
       }
       // An idle tick writes nothing.
@@ -190,7 +217,9 @@ export class ConsolidationDomain extends MemoryDomain {
       const row = this.store.db.prepare("SELECT * FROM maintenance_tasks WHERE id=? AND entity_id=? AND mode='consolidation'").get(input.taskId, e.id);
       if (!row || world.paused || row.world_revision !== world.revision) fail('CONFLICT', 'Consolidation batch is no longer current', 409);
       const task = JSON.parse(row.source_ids), key = streamKey(task.capabilityId, task.streamId);
-      const stream = this.store.db.prepare("SELECT person_id AS personId FROM streams WHERE capability_id=? AND stream_id=? AND entity_id=? AND audience='private' AND person_id<>?").get(task.capabilityId, task.streamId, e.id, SELF_PERSON);
+      // The conversation must still be what the batch was cut from: a person's private one, or a group that is still enabled.
+      const stream = task.group ? (groupScope(this.store, task.capabilityId, task.streamId) && this.store.db.prepare("SELECT person_id AS personId FROM streams WHERE capability_id=? AND stream_id=? AND entity_id=? AND audience='shared'").get(task.capabilityId, task.streamId, e.id)) || undefined
+        : this.store.db.prepare("SELECT person_id AS personId FROM streams WHERE capability_id=? AND stream_id=? AND entity_id=? AND audience='private' AND person_id<>?").get(task.capabilityId, task.streamId, e.id, SELF_PERSON);
       const all = this.consolidationState(), own = this.#today(all, e.id, now), state = own.streams[key];
       if (!stream || !state || (state.lastObservationId ?? null) !== task.base || row.epoch !== this.streamEpoch(e, task.capabilityId, task.streamId)) fail('CONFLICT', 'Consolidation batch is no longer current', 409);
       const label = { stream: opaqueStream(task.capabilityId, task.streamId), person: opaquePerson(stream.personId) };
@@ -198,7 +227,12 @@ export class ConsolidationDomain extends MemoryDomain {
         state.lastObservationId = task.ids.at(-1); state.invalid = 0; delete state.issued;
         this.store.db.prepare("DELETE FROM maintenance_tasks WHERE entity_id=? AND mode='consolidation' AND json_extract(source_ids,'$.capabilityId')=? AND json_extract(source_ids,'$.streamId')=?").run(e.id, task.capabilityId, task.streamId);
       };
-      const answer = input.outcome === 'ok' ? validAnswer(input) : null;
+      // A group batch yields a digest and nothing else: whatever facts or intents the answer carries are dropped
+      // (counted in the audit), her feeling is not kept, and a digest that names a member label the batch did not
+      // contain is an unusable answer.
+      const groupDropped = task.group ? { facts: Array.isArray(input.facts) ? input.facts.length : 0, intents: Array.isArray(input.intents) ? input.intents.length : 0 } : null;
+      let answer = input.outcome === 'ok' ? validAnswer(task.group ? { digest: input.digest, facts: [], intents: [] } : input) : null;
+      if (answer && task.group) answer = (answer.summary.match(MEMBER_LABEL) ?? []).every(label => task.speakers.includes(label)) ? { ...answer, feeling: '' } : null;
       if (input.outcome === 'deferred') {
         // Only the batch that is out: a repeated report returns nothing twice.
         if (state.issued === input.taskId) { own.calls = Math.max(0, own.calls - 1); state.calls = Math.max(0, state.calls - 1); delete state.issued; }
@@ -231,13 +265,14 @@ export class ConsolidationDomain extends MemoryDomain {
           // Her feeling is subjective: it carries the card it was written under and is read back to that card only.
           summary: answer.summary, ...(answer.feeling ? { feeling: answer.feeling, cardId: task.cardId ?? this.currentCardId(e.id) } : {}),
           derivedFrom: shown.map(source => source.id), fromAt: Math.min(...shown.map(source => source.at)), toAt, eventAt: toAt,
-          capabilityId: task.capabilityId, streamId: task.streamId, taskId: input.taskId, scope: { kind: 'person' }, revision, at: now,
+          capabilityId: task.capabilityId, streamId: task.streamId, taskId: input.taskId, ...(task.group ? { scope: { kind: 'group' }, speakers: task.speakers } : { scope: { kind: 'person' } }), revision, at: now,
         }, world.worldNow);
         state.digests = (state.digests ?? 0) + 1;
       }
       // Facts go through the ordinary inbox and review(): the cited observation must be this person's own words;
       // a quote that is not word for word is stored marked (evidence.quoteVerbatim false).
       const policy = this.store.db.prepare('SELECT policy FROM capabilities WHERE id=?').get(task.capabilityId).policy, proposals = [], dropped = [];
+      if (groupDropped && (groupDropped.facts || groupDropped.intents)) dropped.push({ reason: 'group_scope', ...groupDropped });
       answer.facts.forEach((fact, index) => {
         const observationId = task.refs[fact.ref];
         if (!observationId) { dropped.push({ index, reason: 'ref_unavailable' }); return; }
@@ -269,13 +304,13 @@ export class ConsolidationDomain extends MemoryDomain {
     closed(input, ['entityId'], []);
     const e = this.entity(input.entityId), now = this.now(), day = beijingDay(now), own = this.consolidationState()[e.id];
     const today = own?.day === day, since = own?.since ?? now - CONSOLIDATION.backfillDays * DAY;
-    const streams = this.#privateStreams(e.id).map(stream => {
+    const streams = this.#streams(e.id).map(stream => {
       const state = own?.streams[streamKey(stream.capabilityId, stream.streamId)];
       const behind = this.store.db.prepare("SELECT COUNT(*) AS observations,COALESCE(SUM(LENGTH(json_extract(body,'$.text'))),0) AS chars FROM observations WHERE capability_id=? AND stream_id=? AND rowid>? AND forgotten=0 AND json_extract(body,'$.at')>=?")
         .get(stream.capabilityId, stream.streamId, this.#cursorRow(state), since);
       const { silent, rolledOut } = this.#after(stream, state, since);
       // `behind`: everything not consolidated yet, the live window included; `waiting`: what has already left the window.
-      return { stream: opaqueStream(stream.capabilityId, stream.streamId), person: opaquePerson(stream.personId), owner: stream.personId === 'person:owner', behind, waiting: rolledOut.filter(row => !silent(row)).length, calls: today ? state?.calls ?? 0 : 0, digests: state?.digests ?? 0, skipped: state?.skipped ?? 0, lastAt: state?.lastAt ?? null };
+      return { stream: opaqueStream(stream.capabilityId, stream.streamId), person: opaquePerson(stream.personId), owner: stream.personId === 'person:owner', ...(stream.group ? { group: true } : {}), behind, waiting: rolledOut.filter(row => !silent(row)).length, calls: today ? state?.calls ?? 0 : 0, digests: state?.digests ?? 0, skipped: state?.skipped ?? 0, lastAt: state?.lastAt ?? null };
     });
     const deferredAt = own?.deferredAt ?? null, calls = today ? own.calls : 0;
     const reviewed = type => this.store.db.prepare("SELECT status,json_extract(receipt,'$.reason') AS reason,COUNT(*) AS n FROM inbox WHERE entity_id=? AND proposal_id LIKE 'cons:%' AND json_extract(body,'$.type')=? GROUP BY status,reason").all(e.id, type)
