@@ -427,3 +427,42 @@ class InitiationReplayTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class GroupRollbackTests(unittest.TestCase):
+    ROWS = [
+        {'streamId': 'qq:999900000001:private:999900000002', 'audience': 'private', 'messages': 9},
+        {'streamId': 'qq:999900000001:group:999900009002', 'audience': 'shared', 'messages': 12, 'group': True, 'enabled': True},
+        {'streamId': 'qq:999900000001:group:999900009004', 'audience': 'shared', 'messages': 30, 'group': True, 'enabled': False},
+        {'streamId': 'mock:shared:MOCK-ROOM', 'audience': 'shared', 'messages': 2},
+    ]
+
+    def test_group_conversations_are_found_whether_or_not_the_release_marks_them(self):
+        expected = {'qq:999900000001:group:999900009002': 12, 'qq:999900000001:group:999900009004': 30}
+        self.assertEqual(sa.group_rows(self.ROWS), expected)
+        # An older release lists the same conversations without the `group` and `enabled` marks.
+        self.assertEqual(sa.group_rows([{key: value for key, value in row.items() if key not in ('group', 'enabled')} for row in self.ROWS]), expected)
+        self.assertEqual(sa.group_rows([]), {})
+
+    def test_the_groups_carried_over_the_rollback_need_one_that_is_enabled(self):
+        original = sa.operator
+        try:
+            sa.operator = lambda method, route, body=None: self.ROWS
+            carried = []
+            self.assertRegex(sa.group_carry(carried), r'^2 group conversation\(s\), 1 enabled, 42 recorded line\(s\)$')
+            self.assertEqual(carried, [{'groups': sa.group_rows(self.ROWS), 'enabled': ['qq:999900000001:group:999900009002']}])
+            sa.operator = lambda method, route, body=None: [dict(row, enabled=False) for row in self.ROWS]
+            with self.assertRaisesRegex(RuntimeError, 'no enabled group conversation'):
+                sa.group_carry([])
+            # Under the from-release: a group conversation that is gone, or has other lines, fails the step.
+            sa.operator = lambda method, route, body=None: self.ROWS[:2]
+            with self.assertRaisesRegex(RuntimeError, 'group conversations under the from-release: 1 with 12'):
+                sa.group_after_rollback(None, carried[0])
+            with self.assertRaisesRegex(RuntimeError, 'no group conversation was carried'):
+                sa.group_after_rollback(None, None)
+        finally:
+            sa.operator = original
+
+    def test_a_replay_starts_with_no_group_turns_counted_for_the_day(self):
+        source = (HERE / 'staging-agent.py').read_text()
+        self.assertIn("for key in ('budgetNotice', 'groupTurns') if state.pop(key, None) is not None", source)

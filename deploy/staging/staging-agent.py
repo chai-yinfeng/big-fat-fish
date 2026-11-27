@@ -694,7 +694,8 @@ def scenarios(deployer, only=None):
     dispatch = Path(qq_config['stateFile'])
     if dispatch.exists():
         state = json.loads(dispatch.read_text())
-        if state.pop('budgetNotice', None) is not None:
+        # ... and each group's turns of the day (the bridge keeps them in the same file).
+        if [key for key in ('budgetNotice', 'groupTurns') if state.pop(key, None) is not None]:
             dispatch.write_text(json.dumps(state) + '\n')
     SCENARIO.mkdir(mode=0o700, exist_ok=True)
     (SCENARIO / 'model-script.json').write_text('[]\n')
@@ -910,6 +911,105 @@ def cleanup_closes(job):
     return 'job %s closed by %s; world resumed' % (job[:8], ', '.join(party['party'] for party in row['parties']))
 
 
+def group_rows(conversations):
+    """The group conversations in operator GET /conversations, as {streamId: recorded lines}: a new release marks them
+    (`group`); an older one lists them as the shared conversations they are bound as."""
+    return {row['streamId']: row['messages'] for row in conversations
+            if row.get('audience') == 'shared' and re.search(r':group:[1-9]\d*$', row.get('streamId', ''))}
+
+
+def group_carry(carried):
+    """New release, before the rollback: the group conversations the scenario replay left (G scenarios), at least one of
+    them enabled. `carried` receives {streamId: recorded lines}."""
+    conversations = operator('GET', '/conversations')
+    groups = group_rows(conversations)
+    enabled = [row['streamId'] for row in conversations if row.get('group') and row.get('enabled')]
+    if not groups or not enabled:
+        raise RuntimeError('the scenario replay left no enabled group conversation (%d group conversations)' % len(groups))
+    carried.append({'groups': groups, 'enabled': enabled})
+    return '%d group conversation(s), %d enabled, %d recorded line(s)' % (len(groups), len(enabled), sum(groups.values()))
+
+
+def onebot_control(method, route, body=None):
+    """The fake OneBot's control socket (tools/fake-onebot.mjs); returns the `value` of an ok envelope."""
+    connection = UnixConnection(SCENARIO / 'onebot.sock')
+    payload = None if body is None else json.dumps(body)
+    connection.request(method, route, body=payload, headers={'content-type': 'application/json'} if payload else {})
+    response = connection.getresponse()
+    text = response.read(1048576).decode('utf8', 'replace')
+    connection.close()
+    value = json.loads(text)
+    if response.status != 200 or value.get('ok') is not True:
+        raise RuntimeError('fake OneBot %s %s -> %d' % (method, route, response.status))
+    return value['value']
+
+
+def group_after_rollback(deployer, carried):
+    """From-release, after the rollback, on the database the new release migrated (group tables, group bindings, member
+    rows, group digests). Its Authority must still list every group conversation with the lines it had: nothing was
+    lost and the unknown tables do not stop it. Then its bridge is pointed at the fake OneBot and somebody mentions
+    her in a group the new release had enabled: nothing may be sent to that group or to anybody, and nothing more may
+    be recorded in it. A from-release from before group chat never takes a group message; one that has group chat is
+    silent here too, because the world is still paused by the cleanup job carried over the rollback. (Her private
+    replies under the from-release are not replayed here: the scripted model belongs to the scenario replay.)
+    If the from-release's bridge cannot be brought to the fake OneBot, that is said and the first check stands alone."""
+    if not carried:
+        raise RuntimeError('no group conversation was carried over the rollback')
+    before, now = carried['groups'], group_rows(operator('GET', '/conversations'))
+    if now != before:
+        raise RuntimeError('group conversations under the from-release: %d with %d line(s), expected %d with %d' % (len(now), sum(now.values()), len(before), sum(before.values())))
+    kept = '%d group conversation(s) and their %d line(s) are still listed' % (len(now), sum(now.values()))
+    data = json.loads((TOOLS / 'scenarios.json').read_text())
+    self_id, owner = data['bot']['qq'], next(person['qq'] for person in data['people'].values() if person.get('owner'))
+    target = next((stream for stream in carried['enabled'] if stream.startswith('qq:%s:group:' % self_id)), None)
+    bridge = [name for name in deployer.installed_units() if name.endswith('-qq.service')]
+    if target is None or len(bridge) != 1:
+        return kept + '; not injected (no enabled group of the bot, or no single QQ unit)'
+    group_id = target.rsplit(':', 1)[1]
+    path = deployer.config.units / bridge[0]
+    path.write_text(scenario_unit(bridge[0], path.read_text()))
+    deployer.system.systemctl('daemon-reload')
+    stop_fake_onebot()
+    control = SCENARIO / 'onebot.sock'
+    control.unlink(missing_ok=True)
+    env = {'PATH': '/usr/bin:/bin', 'HOME': str(ROOT), 'LANG': 'C.UTF-8'}
+    fake = subprocess.Popen([str(NODE), str(TOOLS / 'fake-onebot.mjs'), '--port', str(ONEBOT_PORT), '--token-file', str(BASE / 'qq-runtime/private/onebot.token'),
+                             '--control', str(control), '--self', self_id], cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.time() + 15
+        while not control.is_socket():
+            if fake.poll() is not None or time.time() > deadline:
+                return kept + '; not injected (the fake OneBot did not start)'
+            time.sleep(0.2)
+        deployer.system.systemctl('restart', *bridge)
+        deadline, connected = time.time() + 45, False
+        while time.time() < deadline and not connected:
+            time.sleep(1)
+            try:
+                connected = onebot_control('GET', '/state')['clients'] > 0 and bool(operator('GET', '/qq').get('loggedIn'))
+            except (RuntimeError, OSError, ValueError):
+                connected = False
+        if not connected:
+            return kept + '; not injected (the from-release bridge did not log in to the fake OneBot)'
+        onebot_control('POST', '/groups', {'groups': [{'group_id': group_id, 'name': 'MOCK-GROUP-ROLLBACK', 'members': [{'user_id': owner, 'card': 'MOCK-OWNER'}]}]})
+        onebot_control('POST', '/reset', {})
+        onebot_control('POST', '/group-message', {'group_id': group_id, 'user_id': owner, 'at': ['self'], 'text': 'MOCK-ROLLBACK 回退以后在群里叫她'})
+        time.sleep(8)
+        sent = onebot_control('GET', '/groups')['groupSent'] + onebot_control('GET', '/state')['sent']
+        if sent:
+            raise RuntimeError('under the from-release %d message(s) were sent after a mention in a group' % len(sent))
+        after = group_rows(operator('GET', '/conversations'))
+        if after != before:
+            raise RuntimeError('under the from-release a mention in a group was recorded (%d line(s), was %d)' % (sum(after.values()), sum(before.values())))
+        return kept + '; a mention in an enabled group: nothing sent to the group or to anybody, nothing recorded'
+    finally:
+        fake.terminate()
+        try:
+            fake.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            fake.kill()
+
+
 def migration_drill(deployer, from_name, to_name):
     """tools/migration-drill.mjs on a COPY of the staging database, taken while the units are stopped."""
     live = BASE / 'authority-data/authority.sqlite'
@@ -1081,10 +1181,13 @@ def lifecycle(from_tarball, to_tarball):
     ledger = []
     step('ledger-before-rollback', lambda: ledger.append(usage_rows()) or 'day %s: %d capabilities used' % (ledger[0][0], sum(1 for row in ledger[0][1].values() if row['calls'])))
     step('migration-drill (copy)', lambda: migration_drill(deployer, from_name, to_name))
+    groups = []
+    step('groups-before-rollback', lambda: group_carry(groups))
     carried = []
     step('forget-pending-before-rollback', lambda: cleanup_carry(deployer, carried))
     step('rollback (to from)', lambda: switch_back(from_name))
     step('forget-pending-under-from', lambda: cleanup_under_from(carried[0] if carried else None))
+    step('group-after-rollback', lambda: group_after_rollback(deployer, groups[0] if groups else None))
     step('room-after-rollback', lambda: room_after_rollback(from_name))
     step('smoke-from', smoke)
     declared = []

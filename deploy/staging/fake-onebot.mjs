@@ -13,7 +13,16 @@
 //                                     its `emoji_id` fields with `name` as the summary)
 //   POST /poke { user_id }            -> {}  (a private poke at the bot: notice `notify`/`poke`, user_id pokes target_id = the bot)
 //   POST /lose-receipts { count }     -> the next `count` send_private_msg calls get no receipt (recorded in `lost`, never in `sent`)
-//   POST /reset                       -> forgets recorded send_private_msg calls and pending lost receipts
+//   POST /reset                       -> forgets recorded send_private_msg and send_group_msg calls and pending lost receipts
+// Groups (the bot is a member of every group set here):
+//   GET  /groups                      -> { groups: [{ group_id, name, members: [{ user_id, card, nickname, join_time }] }], groupSent, groupLost }
+//                                     (each groupSent item: group_id, its text segments joined, segment types, `reply`: the quoted message id or null)
+//   POST /groups { groups: [{ group_id, name, members: [{ user_id, card?, nickname?, join_time? }] }] }   (replaces every group)
+//   POST /group-members { group_id, join?: { user_id, card?, nickname? }, leave?: user_id }   (also emits group_increase / group_decrease)
+//   POST /group-message { group_id, user_id, text?, at?: ["self" | "all" | <user_id>...], reply_to?, image?, anonymous? } -> { message_id }
+//                                     (a group message event: `at` segments first, then a `reply` segment, the text, one image;
+//                                     `sender.card` is the member's card. The sender need not be a listed member.)
+//   `lose-receipts` counts send_group_msg calls too (recorded in `groupLost`).
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -79,6 +88,10 @@ export function createFakeOneBot({ port, token, controlSocket, selfId, nickname 
   if (!Number.isInteger(port) || port < 1024 || port > 65535 || [3001, 3082, 6099].includes(port)) throw new Error('FAKE_ONEBOT_PORT');
   if (typeof token !== 'string' || !token || !qq(selfId) || !path.isAbsolute(controlSocket)) throw new Error('FAKE_ONEBOT_CONFIG');
   const clients = new Set(), sent = [], lost = [], pictures = new Map(), received = new Map();
+  // Groups: group_id -> { name, members: Map(user_id -> { card, nickname, join_time }) }; what the bot sent to a group
+  // is kept apart from `sent` (which stays "private messages delivered to a person").
+  const groups = new Map(), groupSent = [], groupLost = [];
+  const memberRow = (uid, member) => ({ user_id: Number(uid), card: member.card, nickname: member.nickname, join_time: member.join_time, role: 'member' });
   let losing = 0, friends = [], nextMessageId = Math.floor(Date.now() / 1000) % 1000000 * 1000;
   const broadcast = event => { const frame = encodeFrame(JSON.stringify(event)); for (const socket of clients) socket.write(frame); };
   const envelope = () => ({ time: Math.floor(Date.now() / 1000), self_id: Number(selfId) });
@@ -90,6 +103,8 @@ export function createFakeOneBot({ port, token, controlSocket, selfId, nickname 
     // A message by id, as get_msg shows it: one the bot sent (its text) or one injected through /message.
     if (name === 'get_msg') {
       const mine = sent.find(item => item.message_id === Number(params.message_id)), theirs = received.get(Number(params.message_id));
+      const grouped = groupSent.find(item => item.message_id === Number(params.message_id));
+      if (grouped) return ok({ message_id: grouped.message_id, message_type: 'group', group_id: Number(grouped.group_id), sender: { user_id: Number(selfId), nickname }, message: [{ type: 'text', data: { text: grouped.text } }] });
       if (mine) return ok({ message_id: mine.message_id, message_type: 'private', sender: { user_id: Number(selfId), nickname }, message: [{ type: 'text', data: { text: mine.text } }] });
       if (theirs) return ok(theirs);
       return { status: 'failed', retcode: 1200, data: null, echo };
@@ -101,6 +116,16 @@ export function createFakeOneBot({ port, token, controlSocket, selfId, nickname 
       if (losing > 0) { losing--; lost.push({ user_id: String(params.user_id), text, at: Date.now() }); return { status: 'failed', retcode: 1200, data: null, echo }; }
       const message_id = ++nextMessageId;
       sent.push({ message_id, user_id: String(params.user_id), text, types: params.message.map(segment => segment?.type), faces: params.message.filter(segment => segment?.type === 'face').map(segment => String(segment.data?.id)), images: params.message.filter(segment => segment?.type === 'image').map(segment => ({ subType: segment.data?.sub_type ?? 0, base64: typeof segment.data?.file === 'string' && segment.data.file.startsWith('base64://') })), at: Date.now() });
+      return ok({ message_id });
+    }
+    if (name === 'get_group_list') return ok([...groups].map(([id, group]) => ({ group_id: Number(id), group_name: group.name, member_count: group.members.size + 1, max_member_count: 200 })));
+    if (name === 'get_group_member_list' && groups.has(String(params.group_id))) return ok([{ user_id: Number(selfId), card: '', nickname, join_time: 1, role: 'member' }, ...[...groups.get(String(params.group_id)).members].map(([uid, member]) => memberRow(uid, member))]);
+    if (name === 'get_group_member_info' && groups.get(String(params.group_id))?.members.has(String(params.user_id))) return ok(memberRow(String(params.user_id), groups.get(String(params.group_id)).members.get(String(params.user_id))));
+    if (name === 'send_group_msg' && groups.has(String(params.group_id)) && Array.isArray(params.message)) {
+      const text = params.message.filter(segment => segment?.type === 'text').map(segment => String(segment.data?.text ?? '')).join('');
+      if (losing > 0) { losing--; groupLost.push({ group_id: String(params.group_id), text, at: Date.now() }); return { status: 'failed', retcode: 1200, data: null, echo }; }
+      const message_id = ++nextMessageId, quoted = params.message.find(segment => segment?.type === 'reply');
+      groupSent.push({ message_id, group_id: String(params.group_id), text, types: params.message.map(segment => segment?.type), reply: quoted ? String(quoted.data?.id) : null, at: Date.now() });
       return ok({ message_id });
     }
     return { status: 'failed', retcode: 1404, data: null, echo };
@@ -133,11 +158,41 @@ export function createFakeOneBot({ port, token, controlSocket, selfId, nickname 
   const control = http.createServer(async (req, res) => {
     const send = (status, value) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
     try {
+      if (req.method === 'GET' && req.url === '/groups') { send(200, { ok: true, value: { groups: [...groups].map(([id, group]) => ({ group_id: id, name: group.name, members: [...group.members].map(([uid, member]) => ({ user_id: uid, ...member })) })), groupSent, groupLost } }); return; }
       if (req.method === 'GET' && req.url === '/state') { send(200, { ok: true, value: { selfId: String(selfId), clients: clients.size, friends, sent, lost } }); return; }
       if (req.method !== 'POST') { send(404, { ok: false }); return; }
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
-      if (req.url === '/reset') { sent.length = 0; lost.length = 0; losing = 0; received.clear(); send(200, { ok: true, value: {} }); return; }
+      if (req.url === '/reset') { sent.length = 0; lost.length = 0; groupSent.length = 0; groupLost.length = 0; losing = 0; received.clear(); send(200, { ok: true, value: {} }); return; }
+      const member = (row, at) => ({ card: typeof row.card === 'string' ? row.card : '', nickname: typeof row.nickname === 'string' ? row.nickname : '', join_time: Number.isSafeInteger(row.join_time) ? row.join_time : at });
+      if (req.url === '/groups') {
+        if (!Array.isArray(body.groups) || body.groups.some(group => !qq(group?.group_id) || typeof group.name !== 'string' || !Array.isArray(group.members) || group.members.some(row => !qq(row?.user_id)))) throw new Error('GROUPS');
+        groups.clear();
+        for (const group of body.groups) groups.set(String(group.group_id), { name: group.name, members: new Map(group.members.map(row => [String(row.user_id), member(row, 1)])) });
+        send(200, { ok: true, value: { groups: groups.size } }); return;
+      }
+      if (req.url === '/group-members') {
+        const group = groups.get(String(body.group_id));
+        if (!group || (body.join === undefined) === (body.leave === undefined) || body.join !== undefined && !qq(body.join?.user_id) || body.leave !== undefined && !qq(body.leave)) throw new Error('GROUP_MEMBERS');
+        if (body.join) group.members.set(String(body.join.user_id), member(body.join, Math.floor(Date.now() / 1000))); else group.members.delete(String(body.leave));
+        broadcast({ ...envelope(), post_type: 'notice', notice_type: body.join ? 'group_increase' : 'group_decrease', sub_type: body.join ? 'approve' : 'leave', group_id: Number(body.group_id), user_id: Number(body.join ? body.join.user_id : body.leave), operator_id: 0 });
+        send(200, { ok: true, value: { members: group.members.size } }); return;
+      }
+      if (req.url === '/group-message') {
+        const group = groups.get(String(body.group_id)), mentions = body.at ?? [];
+        if (!group || !qq(body.user_id) || body.text !== undefined && typeof body.text !== 'string' || !Array.isArray(mentions) || mentions.length > 8 || mentions.some(target => !['self', 'all'].includes(target) && !qq(target))) throw new Error('GROUP_MESSAGE');
+        if (!body.text && !mentions.length && !body.image) throw new Error('GROUP_MESSAGE');
+        if (body.reply_to !== undefined && !Number.isSafeInteger(body.reply_to)) throw new Error('GROUP_MESSAGE');
+        if (body.image !== undefined && (typeof body.image?.seed !== 'string' || !body.image.seed || body.image.seed.length > 80 || !['picture', 'sticker', undefined].includes(body.image.as))) throw new Error('GROUP_MESSAGE');
+        if (!clients.size) { send(409, { ok: false, error: 'NO_BRIDGE_CONNECTED' }); return; }
+        const message_id = ++nextMessageId, user_id = Number(body.user_id), image = body.image ? imageSegment(body.image) : null, known = group.members.get(String(body.user_id)) ?? { card: '', nickname: '' };
+        if (image) pictures.set(image.data.file, mockPicture(body.image.seed).toString('base64'));
+        const message = [...mentions.map(target => ({ type: 'at', data: { qq: target === 'self' ? String(selfId) : String(target) } })), ...(body.reply_to !== undefined ? [{ type: 'reply', data: { id: String(body.reply_to) } }] : []), ...(body.text ? [{ type: 'text', data: { text: body.text } }] : []), ...(image ? [image] : [])];
+        const sender = { user_id, nickname: known.nickname, card: known.card, role: 'member' };
+        received.set(message_id, { message_id, message_type: 'group', group_id: Number(body.group_id), sender, message });
+        broadcast({ ...envelope(), post_type: 'message', message_type: 'group', sub_type: body.anonymous ? 'anonymous' : 'normal', message_id, group_id: Number(body.group_id), user_id, ...(body.anonymous ? { anonymous: { id: 1, name: 'MOCK-ANONYMOUS', flag: 'mock' } } : {}), message, raw_message: body.text ?? '', font: 14, sender, message_format: 'array' });
+        send(200, { ok: true, value: { message_id } }); return;
+      }
       if (req.url === '/lose-receipts') {
         if (!Number.isInteger(body.count) || body.count < 0 || body.count > 20) throw new Error('LOSE');
         losing = body.count; send(200, { ok: true, value: { losing } }); return;
@@ -173,7 +228,7 @@ export function createFakeOneBot({ port, token, controlSocket, selfId, nickname 
   });
 
   return {
-    sent, lost, clients,
+    sent, lost, clients, groupSent, groupLost,
     async start() {
       fs.mkdirSync(path.dirname(controlSocket), { recursive: true, mode: 0o700 });
       fs.rmSync(controlSocket, { force: true });

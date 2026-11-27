@@ -300,7 +300,8 @@ export class Authority extends InitiationDomain {
     this.#groupTables();
     return this.store.transaction(()=>{
       const flag=groupFlag(this.store,capabilityId,streamId);
-      if(!flag)fail('NOT_FOUND','Group not found',404);
+      // Never enabled: whoever asks is looking at an outdated list.
+      if(!flag)fail('CONFLICT','Group not found',409);
       if(!flag.enabled)return{capabilityId,streamId,enabled:false,changed:false};
       this.store.db.prepare('UPDATE conversation_flags SET enabled=0,updated_at=? WHERE capability_id=? AND stream_id=?').run(this.now(),capabilityId,streamId);
       this.adminAudit('group.disable',{capabilityId,streamId});

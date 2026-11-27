@@ -416,3 +416,27 @@ test('ops/config-keys.mjs prints only key names and the version, including every
   for (const [label, key] of [['memory-worker.json', 'tickMs'], ['memory-worker.json', 'consolidationDeferMs'], ['qq-bridge.json', 'onebotPort'], ['qq-bridge.json', 'initiationPollMs'], ['qq-bridge.json', 'pacing'], ['content.json', 'allowRawSmallPng'], ['authority.json', 'operator']]) assert.ok(printed.files[label].includes(key), `${label} ${key}`);
   assert.ok(printed.files['model-gateway.json'].includes('budgets.web'));
 });
+
+test('the QQ bridge group settings are optional (no release writes them); a value out of range is refused, as the bridge would refuse to start; an unknown key is refused here only', async t => {
+  const w = world(t);
+  w.edit('qq-bridge.json', c => { c.group = { contextMessages: 15, contextWindowMs: 7200000, contextMaxMessages: 50, contextMaxChars: 4000, perGroupMessagesPerHour: 200 }; });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), []);
+  w.edit('qq-bridge.json', c => { c.group = { later: 1 }; });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['qq-bridge.json CONFIG_UNKNOWN_KEY group.later']);
+  for (const bad of [null, [], { contextMessages: -1 }, { contextMessages: '15' }, { contextMaxMessages: 101 }, { groupConcurrency: 3 }, { perSenderTurns: 0 }]) {
+    w.edit('qq-bridge.json', c => { c.group = bad; });
+    assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['qq-bridge.json CONFIG_INVALID'], JSON.stringify(bad));
+  }
+  // The key is listed for staging, which asks a release before writing it.
+  const printed = JSON.parse(spawnSync(process.execPath, [path.join(here, 'config-keys.mjs')], { encoding: 'utf8' }).stdout);
+  assert.ok(printed.files['qq-bridge.json'].includes('group') && printed.files['qq-bridge.json'].includes('group.contextMessages'));
+});
+
+test('this release\'s first migration is reported for a database from before it, and a database it already migrated has nothing pending', async t => {
+  const w = world(t), { file, authority } = await database(w, []);
+  t.after(() => authority.close());
+  const before = fs.readFileSync(file);
+  let result = await preflight({ base: w.base, release: w.release });
+  assert.deepEqual([codes(result.failures), codes(result.warnings)], [[], ['authority-db MIGRATION_PENDING m1-group-chat-tables']]);
+  assert.ok(before.equals(fs.readFileSync(file)), 'the preflight only reads');
+});

@@ -20,7 +20,21 @@
     "MOCK-T": { "qq": "999900000035", "friend": true },
     "MOCK-U": { "qq": "999900000036", "friend": true },
     "MOCK-STRANGER": { "qq": "999900000099", "friend": false },
-    "MOCK-M": { "qq": "999900000021", "friend": false, "channel": "mock" }
+    "MOCK-M": { "qq": "999900000021", "friend": false, "channel": "mock" },
+    "MOCK-GA": { "qq": "999900000041", "friend": true },
+    "MOCK-GB": { "qq": "999900000042", "friend": true },
+    "MOCK-GC": { "qq": "999900000043", "friend": true },
+    "MOCK-GE": { "qq": "999900000044", "friend": true },
+    "MOCK-GR": { "qq": "999900000045", "friend": true },
+    "MOCK-GS": { "qq": "999900000046", "friend": false }
+  },
+  "groups": {
+    "MOCK-GROUP-X": { "id": "999900009001", "members": ["MOCK-OWNER", "MOCK-GA"] },
+    "MOCK-GROUP-A": { "id": "999900009002", "members": ["MOCK-OWNER", "MOCK-GA", "MOCK-GB", "MOCK-GS"] },
+    "MOCK-GROUP-B": { "id": "999900009003", "members": ["MOCK-OWNER", "MOCK-GB"] },
+    "MOCK-GROUP-D": { "id": "999900009004", "members": ["MOCK-OWNER", "MOCK-GA", "MOCK-GB", "MOCK-GE"] },
+    "MOCK-GROUP-L": { "id": "999900009005", "members": ["MOCK-OWNER", "MOCK-GA", "MOCK-GB"] },
+    "MOCK-GROUP-N": { "id": "999900009006", "members": ["MOCK-GA"] }
   },
   "scenarios": [
     {
@@ -482,6 +496,346 @@
         { "openDiaryList": { "person": "MOCK-T", "listed": false } },
         { "readDiary": { "as": "MOCK-T" } },
         { "askDiaryCode": { "from": "MOCK-T", "listed": false } }
+      ]
+    },
+    {
+      "id": "G1",
+      "title": "group-not-enabled: in a group nobody enabled, a mention and her name get silence, no model call, no conversation and nothing recorded; a group the owner is not in cannot be enabled",
+      "model": [{"match": "MOCK-G1-{run}", "reply": "MOCK-REPLY-G1 不该出现"}],
+      "steps": [
+        {"groupSay": {"group": "MOCK-GROUP-X", "from": "MOCK-GA", "text": "MOCK-G1-{run} 在吗", "at": ["self"]}},
+        {"groupSay": {"group": "MOCK-GROUP-X", "from": "MOCK-GA", "text": "大肥鱼 MOCK-G1-{run} 叫名字"}},
+        {"expectGroupSilence": {"group": "*", "afterMs": 5000}},
+        {"expectSilence": {"to": "*", "afterMs": 0}},
+        {"expectNoModelCall": {"userText": "MOCK-G1-{run}"}},
+        {"expectGroupConversation": {"group": "MOCK-GROUP-X", "bound": false}},
+        {"groupEnable": {"group": "MOCK-GROUP-N", "expect": "refused"}},
+        {"expectGroupConversation": {"group": "MOCK-GROUP-N", "bound": false}}
+      ]
+    },
+    {
+      "id": "G2",
+      "title": "group-enabled-mention: after the owner enables a group, a mention is answered in the group, quoting the call; the request has the group system text, no profile and no tools, and is counted as group work",
+      "model": [{"match": "MOCK-G2-{run} 群里问", "reply": "MOCK-REPLY-G2-{run} 群里答"}, {"match": "MOCK-G2", "reply": "MOCK-REPLY-G2 私聊"}],
+      "steps": [
+        {"say": {"from": "MOCK-GA", "text": "MOCK-G2 {run} 私聊先打个招呼（MOCK-GA）"}},
+        {"expectReply": {"to": "MOCK-GA", "contains": "MOCK-REPLY-G2 私聊"}},
+        {"say": {"from": "MOCK-GB", "text": "MOCK-G2 {run} 私聊先打个招呼（MOCK-GB）"}},
+        {"expectReply": {"to": "MOCK-GB", "contains": "MOCK-REPLY-G2 私聊"}},
+        {"groupEnable": {"group": "MOCK-GROUP-A"}},
+        {"expectGroupConversation": {"group": "MOCK-GROUP-A", "bound": true, "enabled": true}},
+        {"noteUsage": {}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-GA", "text": "MOCK-G2-{run} 群里问", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-A", "contains": "MOCK-REPLY-G2-{run} 群里答", "quotes": true, "types": ["reply", "text"]}},
+        {"expectSilence": {"to": "*", "afterMs": 2000}},
+        {"expectPrompt": {"userText": "MOCK-G2-{run} 群里问", "contains": "这里是一个有好几个人的群，不是私聊", "in": "system"}},
+        {"expectPrompt": {"userText": "MOCK-G2-{run} 群里问", "contains": "这是 QQ 里的一个群", "in": "system"}},
+        {"expectPrompt": {"userText": "MOCK-G2-{run} 群里问", "absent": "常驻档案", "in": "system"}},
+        {"expectPrompt": {"userText": "MOCK-G2-{run} 群里问", "absent": "每段私聊都是独立的", "in": "system"}},
+        {"expectPrompt": {"userText": "MOCK-G2-{run} 群里问", "contains": "[叫到你的 · MOCK-GA〔{member:MOCK-GROUP-A:MOCK-GA}〕] MOCK-G2-{run} 群里问"}},
+        {"expectPrompt": {"userText": "MOCK-G2-{run} 群里问", "absent": "9999"}},
+        {"expectTools": {"userText": "MOCK-G2-{run} 群里问", "names": []}},
+        {"expectUsage": {"capability": "group-chat", "used": 1, "calls": 1, "ok": 1}}
+      ]
+    },
+    {
+      "id": "G3",
+      "title": "group-called-or-not: chatter, a mention of everyone and her name said to somebody else get no reply and no model call; her name and a quote of her message are answered",
+      "model": [{"match": "MOCK-G3-{run} 引用", "reply": "MOCK-REPLY-G3-{run} 引用的回答"}, {"match": "MOCK-G3-{run} 叫名字", "reply": "MOCK-REPLY-G3-{run} 名字的回答"}, {"match": "MOCK-G3", "reply": "MOCK-REPLY-G3 不该出现"}],
+      "steps": [
+        {"groupEnable": {"group": "MOCK-GROUP-A"}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-GA", "text": "MOCK-G3-{run} 没叫她的闲聊"}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-GA", "text": "MOCK-G3-{run} 全体成员", "at": ["all"]}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-GA", "text": "大肥鱼 MOCK-G3-{run} 说给别人听", "at": ["MOCK-GB"]}},
+        {"expectGroupSilence": {"group": "MOCK-GROUP-A", "afterMs": 5000}},
+        {"expectModelCalls": {"userText": "MOCK-G3-{run}", "count": 0}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-GB", "text": "大肥鱼 MOCK-G3-{run} 叫名字"}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-A", "contains": "MOCK-REPLY-G3-{run} 名字的回答"}},
+        {"expectPrompt": {"userText": "MOCK-G3-{run} 叫名字", "contains": "@MOCK-GB〔{member:MOCK-GROUP-A:MOCK-GB}〕 大肥鱼 MOCK-G3-{run} 说给别人听"}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-OWNER", "text": "MOCK-G3-{run} 引用", "quote": "her"}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-A", "contains": "MOCK-REPLY-G3-{run} 引用的回答"}},
+        {"expectPrompt": {"userText": "MOCK-G3-{run} 引用", "contains": "［引用 你之前说的：MOCK-REPLY-G3-{run} 名字的回答］ MOCK-G3-{run} 引用"}}
+      ]
+    },
+    {
+      "id": "G4",
+      "title": "group-context-lines: three lines of chatter and one call are read by the model in one turn, in order, each under its member label; exactly those four lines and her reply are recorded",
+      "model": [{"match": "MOCK-G4-{run} 你觉得呢", "reply": "MOCK-REPLY-G4-{run} 好"}],
+      "steps": [
+        {"groupEnable": {"group": "MOCK-GROUP-A"}},
+        {"noteGroupMessages": {"group": "MOCK-GROUP-A"}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-GA", "text": "MOCK-G4-{run} 第一句"}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-GS", "text": "MOCK-G4-{run} 第二句"}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-GB", "text": "MOCK-G4-{run} 第三句"}},
+        {"expectGroupSilence": {"group": "MOCK-GROUP-A", "afterMs": 3000}},
+        {"expectGroupMessages": {"group": "MOCK-GROUP-A", "added": 0}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-OWNER", "text": "MOCK-G4-{run} 你觉得呢", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-A", "contains": "MOCK-REPLY-G4-{run} 好"}},
+        {"expectGroupMessages": {"group": "MOCK-GROUP-A", "added": 5}},
+        {"expectModelCalls": {"userText": "MOCK-G4-{run}", "count": 1}},
+        {"expectPrompt": {"userText": "MOCK-G4-{run} 你觉得呢", "contains": "[MOCK-GA〔{member:MOCK-GROUP-A:MOCK-GA}〕] MOCK-G4-{run} 第一句\n[MOCK-GS〔{member:MOCK-GROUP-A:MOCK-GS}〕] MOCK-G4-{run} 第二句\n[MOCK-GB〔{member:MOCK-GROUP-A:MOCK-GB}〕] MOCK-G4-{run} 第三句\n[叫到你的 · MOCK-OWNER〔{member:MOCK-GROUP-A:MOCK-OWNER}〕] MOCK-G4-{run} 你觉得呢"}},
+        {"expectPrompt": {"userText": "MOCK-G4-{run} 你觉得呢", "contains": "只是上下文；带“叫到你的”的才是对你说的"}},
+        {"expectPrompt": {"userText": "MOCK-G4-{run} 你觉得呢", "absent": "owner"}}
+      ]
+    },
+    {
+      "id": "G5",
+      "title": "group-reads-nothing-private: what a friend told her in private (in their profile there) is nowhere in the request when that same friend asks about it in a group",
+      "model": [{"match": "MOCK-G5-{run} 请记住", "propose": {"type": "fact.report", "payload": {"key": "MOCK-G5 暗号", "value": "MOCK-G5-SECRET-{run}", "quote": "我的暗号是MOCK-G5-SECRET-{run}"}}, "reply": "MOCK-REPLY-G5 记住了"}, {"match": "MOCK-G5-{run} 群里问", "reply": "MOCK-REPLY-G5-{run} 群里答"}, {"match": "MOCK-G5-{run} 私聊问", "reply": "MOCK-REPLY-G5 私聊答"}],
+      "steps": [
+        {"say": {"from": "MOCK-GA", "text": "MOCK-G5-{run} 请记住：我的暗号是MOCK-G5-SECRET-{run}"}},
+        {"expectReply": {"to": "MOCK-GA", "contains": "MOCK-REPLY-G5 记住了"}},
+        {"expectMemory": {"person": "MOCK-GA", "contains": "MOCK-G5-SECRET-{run}"}},
+        {"say": {"from": "MOCK-GA", "text": "MOCK-G5-{run} 私聊问 MOCK-G5 暗号 是什么"}},
+        {"expectReply": {"to": "MOCK-GA", "contains": "MOCK-REPLY-G5 私聊答"}},
+        {"expectPrompt": {"userText": "MOCK-G5-{run} 私聊问", "contains": "MOCK-G5-SECRET-{run}"}},
+        {"groupEnable": {"group": "MOCK-GROUP-A"}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-GA", "text": "MOCK-G5-{run} 群里问 MOCK-G5 暗号 是什么", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-A", "contains": "MOCK-REPLY-G5-{run} 群里答"}},
+        {"expectPrompt": {"userText": "MOCK-G5-{run} 群里问", "absent": "MOCK-G5-SECRET-{run}"}},
+        {"expectPrompt": {"userText": "MOCK-G5-{run} 群里问", "absent": "{label:MOCK-GA}"}},
+        {"expectPrompt": {"userText": "MOCK-G5-{run} 群里问", "absent": "常驻档案"}},
+        {"expectTools": {"userText": "MOCK-G5-{run} 群里问", "names": []}}
+      ]
+    },
+    {
+      "id": "G6",
+      "title": "group-digests-by-membership: two groups each get a digest of their own dialogue (no fact, no feeling); a member reads the digests of the groups they are in, in their private chat, with their own member label; somebody in neither group reads none; a group never reads another group's",
+      "model": [{"match": "MOCK-G6D-{run} 第一轮", "consolidate": {"summary": "MOCK-GDIGEST-D-{run} 丁群摘要：MOCK-GA〔{member:MOCK-GROUP-D:MOCK-GA}〕说周末去爬山", "feeling": "MOCK-FEELING-G6 不该留下", "facts": [{"key": "MOCK-G6 爬山", "value": "MOCK-G6-FACT-{run}", "quote": "周末去爬山"}]}}, {"match": "MOCK-G6B-{run} 第一轮", "consolidate": {"summary": "MOCK-GDIGEST-B-{run} 乙群摘要：有人说起考试"}}, {"match": "MOCK-G6", "reply": "MOCK-REPLY-G6 好"}],
+      "steps": [
+        {"say": {"from": "MOCK-GA", "text": "MOCK-G6 {run} 私聊先打个招呼（MOCK-GA）"}},
+        {"expectReply": {"to": "MOCK-GA", "contains": "MOCK-REPLY-G6 好"}},
+        {"say": {"from": "MOCK-GB", "text": "MOCK-G6 {run} 私聊先打个招呼（MOCK-GB）"}},
+        {"expectReply": {"to": "MOCK-GB", "contains": "MOCK-REPLY-G6 好"}},
+        {"say": {"from": "MOCK-GC", "text": "MOCK-G6 {run} 私聊先打个招呼（MOCK-GC）"}},
+        {"expectReply": {"to": "MOCK-GC", "contains": "MOCK-REPLY-G6 好"}},
+        {"say": {"from": "MOCK-GE", "text": "MOCK-G6 {run} 私聊先打个招呼（MOCK-GE）"}},
+        {"expectReply": {"to": "MOCK-GE", "contains": "MOCK-REPLY-G6 好"}},
+        {"groupEnable": {"group": "MOCK-GROUP-D"}},
+        {"groupEnable": {"group": "MOCK-GROUP-B"}},
+        {"groupMembers": {"group": "MOCK-GROUP-D", "sync": true}},
+        {"groupMembers": {"group": "MOCK-GROUP-B", "sync": true}},
+        {"groupSay": {"group": "MOCK-GROUP-D", "from": "MOCK-GA", "text": "MOCK-G6D-{run} 第一轮 周末去爬山", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-D", "contains": "MOCK-REPLY-G6 好"}},
+        {"groupConverse": {"group": "MOCK-GROUP-D", "from": "MOCK-OWNER", "padFrom": "MOCK-GB", "text": "MOCK-G6D-{run} 第{n}轮", "times": 3, "reply": "MOCK-REPLY-G6 好"}},
+        {"expectGroupDigest": {"group": "MOCK-GROUP-D", "contains": "MOCK-GDIGEST-D-{run}", "covers": "MOCK-G6D-{run} 第一轮"}},
+        {"groupSay": {"group": "MOCK-GROUP-B", "from": "MOCK-GB", "text": "MOCK-G6B-{run} 第一轮 说起考试", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-B", "contains": "MOCK-REPLY-G6 好"}},
+        {"groupConverse": {"group": "MOCK-GROUP-B", "from": "MOCK-OWNER", "padFrom": "MOCK-GB", "text": "MOCK-G6B-{run} 第{n}轮", "times": 3, "reply": "MOCK-REPLY-G6 好"}},
+        {"expectGroupDigest": {"group": "MOCK-GROUP-B", "contains": "MOCK-GDIGEST-B-{run}", "covers": "MOCK-G6B-{run} 第一轮"}},
+        {"expectConsolidationInput": {"contains": "MOCK-G6D-{run}", "absent": "MOCK-G6B-{run}"}},
+        {"expectConsolidationInput": {"contains": "MOCK-G6D-{run}", "absent": "9999"}},
+        {"expectConsolidationInput": {"contains": "MOCK-G6D-{run}", "absent": "persona"}},
+        {"expectConsolidationInput": {"contains": "MOCK-GA〔{member:MOCK-GROUP-D:MOCK-GA}〕"}},
+        {"expectMemory": {"person": "MOCK-GA", "absent": "MOCK-G6-FACT-{run}"}},
+        {"expectMemory": {"person": "MOCK-OWNER", "absent": "MOCK-G6-FACT-{run}"}},
+        {"say": {"from": "MOCK-GA", "text": "MOCK-G6 {run} 甲问 丁群 乙群 摘要 周末 爬山 考试"}},
+        {"expectReply": {"to": "MOCK-GA", "contains": "MOCK-REPLY-G6 好"}},
+        {"expectPrompt": {"userText": "MOCK-G6 {run} 甲问", "contains": "MOCK-GDIGEST-D-{run} 丁群摘要", "in": "context"}},
+        {"expectPrompt": {"userText": "MOCK-G6 {run} 甲问", "contains": "群里的经历摘要（机器整理，不是原话；人名是群名片，可被本人修改）；每条的 you 是眼前这位在那个群里的标签", "in": "context"}},
+        {"expectPrompt": {"userText": "MOCK-G6 {run} 甲问", "contains": "\"you\":\"{member:MOCK-GROUP-D:MOCK-GA}\"", "in": "context"}},
+        {"expectPrompt": {"userText": "MOCK-G6 {run} 甲问", "absent": "MOCK-GDIGEST-B-{run}"}},
+        {"expectPrompt": {"userText": "MOCK-G6 {run} 甲问", "absent": "MOCK-GDIGEST-D-{run}", "in": "system"}},
+        {"say": {"from": "MOCK-GB", "text": "MOCK-G6 {run} 乙问 丁群 乙群 摘要 周末 爬山 考试"}},
+        {"expectReply": {"to": "MOCK-GB", "contains": "MOCK-REPLY-G6 好"}},
+        {"expectPrompt": {"userText": "MOCK-G6 {run} 乙问", "contains": "MOCK-GDIGEST-D-{run}", "in": "context"}},
+        {"expectPrompt": {"userText": "MOCK-G6 {run} 乙问", "contains": "MOCK-GDIGEST-B-{run}", "in": "context"}},
+        {"say": {"from": "MOCK-GC", "text": "MOCK-G6 {run} 丙问 丁群 乙群 摘要 周末 爬山 考试"}},
+        {"expectReply": {"to": "MOCK-GC", "contains": "MOCK-REPLY-G6 好"}},
+        {"expectPrompt": {"userText": "MOCK-G6 {run} 丙问", "absent": "MOCK-GDIGEST-D-{run}"}},
+        {"expectPrompt": {"userText": "MOCK-G6 {run} 丙问", "absent": "MOCK-GDIGEST-B-{run}"}},
+        {"groupSay": {"group": "MOCK-GROUP-D", "from": "MOCK-GA", "text": "MOCK-G6D-{run} 再问 丁群 乙群 摘要 周末 爬山 考试", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-D", "contains": "MOCK-REPLY-G6 好"}},
+        {"expectPrompt": {"userText": "MOCK-G6D-{run} 再问", "contains": "MOCK-GDIGEST-D-{run}", "in": "context"}},
+        {"expectPrompt": {"userText": "MOCK-G6D-{run} 再问", "absent": "MOCK-GDIGEST-B-{run}"}},
+        {"expectPrompt": {"userText": "MOCK-G6D-{run} 再问", "absent": "MOCK-FEELING-G6"}}
+      ]
+    },
+    {
+      "id": "G7",
+      "title": "group-digest-join-and-leave (after G6): a friend who joined the group after a digest was made does not read it in private, nor does one who has left; one who was there all along does",
+      "model": [{"match": "MOCK-G7", "reply": "MOCK-REPLY-G7 好"}],
+      "steps": [
+        {"say": {"from": "MOCK-GR", "text": "MOCK-G7 {run} 私聊先打个招呼"}},
+        {"expectReply": {"to": "MOCK-GR", "contains": "MOCK-REPLY-G7 好"}},
+        {"expectGroupDigest": {"group": "MOCK-GROUP-D", "contains": "丁群摘要"}},
+        {"groupMembers": {"group": "MOCK-GROUP-D", "join": "MOCK-GR"}},
+        {"say": {"from": "MOCK-GR", "text": "MOCK-G7 {run} 新人问 丁群 摘要 周末 爬山"}},
+        {"expectReply": {"to": "MOCK-GR", "contains": "MOCK-REPLY-G7 好"}},
+        {"expectPrompt": {"userText": "MOCK-G7 {run} 新人问", "absent": "MOCK-GDIGEST-D-"}},
+        {"groupMembers": {"group": "MOCK-GROUP-D", "leave": "MOCK-GE"}},
+        {"say": {"from": "MOCK-GE", "text": "MOCK-G7 {run} 退群的人问 丁群 摘要 周末 爬山"}},
+        {"expectReply": {"to": "MOCK-GE", "contains": "MOCK-REPLY-G7 好"}},
+        {"expectPrompt": {"userText": "MOCK-G7 {run} 退群的人问", "absent": "MOCK-GDIGEST-D-"}},
+        {"say": {"from": "MOCK-OWNER", "text": "MOCK-G7 {run} 一直在的人问 丁群 摘要 周末 爬山"}},
+        {"expectReply": {"to": "MOCK-OWNER", "contains": "MOCK-REPLY-G7 好"}},
+        {"expectPrompt": {"userText": "MOCK-G7 {run} 一直在的人问", "contains": "MOCK-GDIGEST-D-"}}
+      ],
+      "finally": [
+        {"groupMembers": {"group": "MOCK-GROUP-D", "leave": "MOCK-GR"}},
+        {"groupMembers": {"group": "MOCK-GROUP-D", "join": "MOCK-GE"}}
+      ]
+    },
+    {
+      "id": "G8",
+      "title": "group-stranger: somebody in the group who is not a friend is answered when they call her; nobody is admitted, nothing about them is remembered, and their private message still gets silence",
+      "model": [{"match": "MOCK-G8-{run} 路人问", "reply": "MOCK-REPLY-G8-{run} 回路人"}, {"match": "MOCK-G8", "reply": "MOCK-REPLY-G8 不该出现"}],
+      "steps": [
+        {"groupEnable": {"group": "MOCK-GROUP-A"}},
+        {"notePeople": {}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-GS", "text": "MOCK-G8-{run} 路人问 我叫MOCK-G8-NAME-{run}，记住我", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-A", "contains": "MOCK-REPLY-G8-{run} 回路人"}},
+        {"expectPrompt": {"userText": "MOCK-G8-{run} 路人问", "contains": "[叫到你的 · MOCK-GS〔{member:MOCK-GROUP-A:MOCK-GS}〕]"}},
+        {"expectPeopleUnchanged": {"absent": "MOCK-G8-NAME-{run}"}},
+        {"expectAdmitted": {"person": "MOCK-GS", "admitted": false}},
+        {"say": {"from": "MOCK-GS", "text": "MOCK-G8-{run} 路人私聊"}},
+        {"expectSilence": {"to": "MOCK-GS", "afterMs": 4000}},
+        {"expectAdmitted": {"person": "MOCK-GS", "admitted": false}},
+        {"expectNoModelCall": {"userText": "路人私聊"}}
+      ]
+    },
+    {
+      "id": "G9",
+      "title": "group-stops-at-restricted: at the restricted spend tier a call in a group reaches no model and gets silence, counted as a spend_tier refusal of group work, with no notice to the owner; the owner's private chat goes on",
+      "model": [{"match": "MOCK-G9-{run} 群里问", "reply": "MOCK-REPLY-G9 不该出现"}, {"match": "MOCK-G9-{run}", "reply": "MOCK-REPLY-G9-{run} 私聊照常"}],
+      "steps": [
+        {"groupEnable": {"group": "MOCK-GROUP-L"}},
+        {"spendSettings": {"dailyCapYuan": 5, "reducedPercent": 0.0004, "restrictedPercent": 0.0005}},
+        {"say": {"from": "MOCK-OWNER", "text": "MOCK-G9-{run} 先聊一句"}},
+        {"expectReply": {"to": "MOCK-OWNER", "contains": "MOCK-REPLY-G9-{run} 私聊照常"}},
+        {"expectSpend": {"tier": "restricted"}},
+        {"noteUsage": {}},
+        {"groupSay": {"group": "MOCK-GROUP-L", "from": "MOCK-OWNER", "text": "MOCK-G9-{run} 群里问", "at": ["self"]}},
+        {"expectGroupSilence": {"group": "*", "afterMs": 6000}},
+        {"expectSilence": {"to": "*", "afterMs": 0}},
+        {"expectModelCalls": {"userText": "MOCK-G9-{run} 群里问", "count": 0}},
+        {"expectUsage": {"capability": "group-chat", "denied": {"spend_tier": 1}}},
+        {"say": {"from": "MOCK-OWNER", "text": "MOCK-G9-{run} 私聊再聊"}},
+        {"expectReply": {"to": "MOCK-OWNER", "contains": "MOCK-REPLY-G9-{run} 私聊照常"}}
+      ],
+      "finally": [
+        {"spendSettings": {"dailyCapYuan": 5, "reducedPercent": 60, "restrictedPercent": 80}}
+      ]
+    },
+    {
+      "id": "G10",
+      "title": "group-voice-only-by-mention: asked for a voice reply by name alone she answers in text and is not told the reply will be spoken; asked with a mention she is told so (whether a voice message can be made here is the speech runtime's)",
+      "model": [{"match": "MOCK-G10-{run} 艾特", "reply": "MOCK-REPLY-G10-{run} 艾特的回答"}, {"match": "MOCK-G10-{run} 叫名字", "reply": "MOCK-REPLY-G10-{run} 名字的回答"}],
+      "steps": [
+        {"groupEnable": {"group": "MOCK-GROUP-L"}},
+        {"groupSay": {"group": "MOCK-GROUP-L", "from": "MOCK-GB", "text": "大肥鱼 MOCK-G10-{run} 叫名字 用语音回答一下"}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-L", "contains": "MOCK-REPLY-G10-{run} 名字的回答", "absent": "语音合成未完成", "types": ["reply", "text"]}},
+        {"expectPrompt": {"userText": "MOCK-G10-{run} 叫名字", "absent": "渠道表达策略"}},
+        {"groupSay": {"group": "MOCK-GROUP-L", "from": "MOCK-GB", "text": "MOCK-G10-{run} 艾特 用语音回答一下", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-L"}},
+        {"expectPrompt": {"userText": "MOCK-G10-{run} 艾特", "contains": "渠道表达策略：用户想听你说话"}},
+        {"expectModelCalls": {"userText": "MOCK-G10-{run} 艾特", "count": 1}}
+      ]
+    },
+    {
+      "id": "G11",
+      "title": "group-unknown-is-not-resent: her reply to a group gets no platform receipt; it is not sent again, and her next turn in that group shows that reply with its delivery marked unknown",
+      "model": [{"match": "MOCK-G11-{run} 第二问", "reply": "MOCK-REPLY-G11-{run} 第二个回复"}, {"match": "MOCK-G11-{run} 第一问", "reply": "MOCK-REPLY-G11-{run} 丢回执的回复"}],
+      "steps": [
+        {"groupEnable": {"group": "MOCK-GROUP-A"}},
+        {"loseReceipts": {"count": 1}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-GB", "text": "MOCK-G11-{run} 第一问", "at": ["self"]}},
+        {"expectGroupLostSends": {"group": "MOCK-GROUP-A", "count": 1}},
+        {"expectGroupSilence": {"group": "MOCK-GROUP-A", "afterMs": 6000}},
+        {"expectModelCalls": {"userText": "MOCK-G11-{run} 第一问", "count": 1}},
+        {"groupSay": {"group": "MOCK-GROUP-A", "from": "MOCK-OWNER", "text": "MOCK-G11-{run} 第二问", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-A", "contains": "MOCK-REPLY-G11-{run} 第二个回复", "quotes": true}},
+        {"expectPrompt": {"userText": "MOCK-G11-{run} 第二问", "contains": "MOCK-REPLY-G11-{run} 丢回执的回复"}},
+        {"expectPrompt": {"userText": "MOCK-G11-{run} 第二问", "contains": "送达情况"}},
+        {"expectGroupLostSends": {"group": "MOCK-GROUP-A", "count": 1}}
+      ],
+      "finally": [
+        {"loseReceipts": {"count": 0}}
+      ]
+    },
+    {
+      "id": "G12",
+      "title": "group-forget-line (after G6): forgetting a line said in a group takes the group digest made from it along; the group conversation and its members' private conversations are retired, nobody else's; every party confirms before the world may resume",
+      "model": [],
+      "steps": [
+        {"forgetGroupLine": {"group": "MOCK-GROUP-B", "contains": "乙群摘要", "source": "说起考试", "members": ["MOCK-GB", "MOCK-OWNER"], "others": ["MOCK-GC", "MOCK-GA"]}},
+        {"expectCleanup": {"complete": true}},
+        {"resume": {}},
+        {"expectNoGroupDigest": {"group": "MOCK-GROUP-B", "contains": "乙群摘要"}},
+        {"expectGroupDigest": {"group": "MOCK-GROUP-D", "contains": "丁群摘要"}}
+      ],
+      "finally": [
+        {"resume": {}}
+      ]
+    },
+    {
+      "id": "G13",
+      "title": "group-disabled (after G6): a disabled group gets silence and no model call, and its digest is no longer read in a member's private chat; enabled again, both are back",
+      "model": [{"match": "MOCK-G13-{run} 启用后", "reply": "MOCK-REPLY-G13-{run} 启用后的回答"}, {"match": "MOCK-G13-{run} 停用后", "reply": "MOCK-REPLY-G13 不该出现"}, {"match": "MOCK-G13", "reply": "MOCK-REPLY-G13 好"}],
+      "steps": [
+        {"expectGroupDigest": {"group": "MOCK-GROUP-D", "contains": "丁群摘要"}},
+        {"groupDisable": {"group": "MOCK-GROUP-D"}},
+        {"expectGroupConversation": {"group": "MOCK-GROUP-D", "bound": true, "enabled": false}},
+        {"groupSay": {"group": "MOCK-GROUP-D", "from": "MOCK-GB", "text": "MOCK-G13-{run} 停用后", "at": ["self"]}},
+        {"expectGroupSilence": {"group": "*", "afterMs": 5000}},
+        {"expectNoModelCall": {"userText": "MOCK-G13-{run} 停用后"}},
+        {"say": {"from": "MOCK-GB", "text": "MOCK-G13 {run} 停用时问 丁群 摘要 周末 爬山"}},
+        {"expectReply": {"to": "MOCK-GB", "contains": "MOCK-REPLY-G13 好"}},
+        {"expectPrompt": {"userText": "MOCK-G13 {run} 停用时问", "absent": "MOCK-GDIGEST-D-", "in": "context"}},
+        {"groupEnable": {"group": "MOCK-GROUP-D"}},
+        {"groupSay": {"group": "MOCK-GROUP-D", "from": "MOCK-GB", "text": "MOCK-G13-{run} 启用后", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-D", "contains": "MOCK-REPLY-G13-{run} 启用后的回答"}},
+        {"expectGroupDigest": {"group": "MOCK-GROUP-D", "contains": "丁群摘要"}}
+      ]
+    },
+    {
+      "id": "G14",
+      "title": "groups-never-in-her-own-time: her private wake-up holds nothing of any group (no line, no digest, no member label) and no card of one; \"try it on me\" still goes to the owner's private chat and nothing goes to a group",
+      "model": [{"match": "私下时间", "self": {"mood": "MOCK-G14-{run} 没什么事"}, "reply": "<休息>"}, {"match": "后台事件", "reply": "MOCK-INIT-G14-{run} 在忙吗"}, {"match": "MOCK-G14", "reply": "MOCK-REPLY-G14 好"}],
+      "steps": [
+        {"quietHours": {"window": "none"}},
+        {"reach": {"enabled": true, "recentMinutes": 0, "people": {"MOCK-GA": true}, "fuses": {"per_day": 1000, "per_person_day": 1000, "per_person_week": 1000, "per_hour": 1000}}},
+        {"say": {"from": "MOCK-GA", "text": "MOCK-G14 {run} 私聊说一句"}},
+        {"expectReply": {"to": "MOCK-GA", "contains": "MOCK-REPLY-G14 好"}},
+        {"wake": {"enabled": true}},
+        {"wakeNow": {}},
+        {"expectWake": {"outcome": "done", "timeoutMs": 200000, "pageAbsent": ["MOCK-GDIGEST-", "群摘要"]}},
+        {"expectWakeRequest": {"cards": ["MOCK-GA"], "absent": ["MOCK-GDIGEST-", "丁群摘要", "乙群摘要", "〔m-", "叫到你的", "group:"]}},
+        {"poke": {}},
+        {"expectReply": {"to": "MOCK-OWNER", "contains": "MOCK-INIT-G14-{run} 在忙吗"}},
+        {"expectInitiation": {"outcome": "sent"}},
+        {"expectGroupSilence": {"group": "*", "afterMs": 3000}}
+      ],
+      "finally": [
+        {"wake": {"enabled": false}},
+        {"reach": {"enabled": false, "recentMinutes": 30, "people": {"MOCK-GA": false}, "fuses": {"per_day": 20, "per_person_day": 4, "per_person_week": 12, "per_hour": 3}}},
+        {"quietHours": {"window": "default"}}
+      ]
+    },
+    {
+      "id": "G15",
+      "title": "group-per-sender-limit: one account may call her six times in ten minutes; the seventh gets silence and no model call, while somebody else is still answered (once per bridge process: the limit is kept in memory)",
+      "model": [{"match": "MOCK-G15-{run}", "reply": "MOCK-REPLY-G15-{run} 回"}],
+      "steps": [
+        {"groupEnable": {"group": "MOCK-GROUP-L"}},
+        {"groupSay": {"group": "MOCK-GROUP-L", "from": "MOCK-GA", "text": "MOCK-G15-{run} 第1次", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-L", "contains": "MOCK-REPLY-G15-{run} 回"}},
+        {"groupSay": {"group": "MOCK-GROUP-L", "from": "MOCK-GA", "text": "MOCK-G15-{run} 第2次", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-L", "contains": "MOCK-REPLY-G15-{run} 回"}},
+        {"groupSay": {"group": "MOCK-GROUP-L", "from": "MOCK-GA", "text": "MOCK-G15-{run} 第3次", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-L", "contains": "MOCK-REPLY-G15-{run} 回"}},
+        {"groupSay": {"group": "MOCK-GROUP-L", "from": "MOCK-GA", "text": "MOCK-G15-{run} 第4次", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-L", "contains": "MOCK-REPLY-G15-{run} 回"}},
+        {"groupSay": {"group": "MOCK-GROUP-L", "from": "MOCK-GA", "text": "MOCK-G15-{run} 第5次", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-L", "contains": "MOCK-REPLY-G15-{run} 回"}},
+        {"groupSay": {"group": "MOCK-GROUP-L", "from": "MOCK-GA", "text": "MOCK-G15-{run} 第6次", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-L", "contains": "MOCK-REPLY-G15-{run} 回"}},
+        {"groupSay": {"group": "MOCK-GROUP-L", "from": "MOCK-GA", "text": "MOCK-G15-{run} 第7次", "at": ["self"]}},
+        {"expectGroupSilence": {"group": "MOCK-GROUP-L", "afterMs": 6000}},
+        {"expectModelCalls": {"userText": "MOCK-G15-{run} 第7次", "count": 0}},
+        {"groupSay": {"group": "MOCK-GROUP-L", "from": "MOCK-GB", "text": "MOCK-G15-{run} 别人叫", "at": ["self"]}},
+        {"expectGroupReply": {"group": "MOCK-GROUP-L", "contains": "MOCK-REPLY-G15-{run} 回"}},
+        {"expectPrompt": {"userText": "MOCK-G15-{run} 别人叫", "contains": "[MOCK-GA〔{member:MOCK-GROUP-L:MOCK-GA}〕] MOCK-G15-{run} 第7次"}}
       ]
     },
     {

@@ -177,15 +177,25 @@ test('several people calling at once are answered by one turn; a long reply is a
   assert.equal(f.sends.length - before, 1);
 });
 
-test('the platform refuses a message with a quote: it is sent once without one, and later messages carry no quote', async t => {
+test('a refused send is never made again; two quoted messages refused in a row and later ones go without a quote', async t => {
   const f = await fixture(t);
   f.state.sendError = (action, args) => args.message[0].type === 'reply' ? new Error('ONEBOT_REJECTED') : null;
   await f.call(301, [at(SELF), text('在吗')]);
-  assert.deepEqual(f.sends.map(send => send.message[0].type), ['reply', 'text']);
-  assert.equal(f.records().at(-1).status, 'sent');
-  await f.call(301, [at(SELF), text('还在吗')]);
-  assert.deepEqual(f.sends.slice(2).map(send => send.message[0].type), ['text']);
-  assert.ok(f.logs.includes('qq group send: a message with a quote was refused; sending without quotes'));
+  // Refused once: not sent again in any form (a refusal does not prove nothing went out), and the next still quotes.
+  assert.deepEqual([f.sends.map(send => send.message[0].type), f.records().at(-1).status], [['reply'], 'unknown']);
+  await f.call(302, [at(SELF), text('还在吗')]);
+  assert.deepEqual([f.sends.map(send => send.message[0].type), f.records().at(-1).status], [['reply', 'reply'], 'unknown']);
+  assert.ok(f.logs.includes('qq group send: two quoted messages in a row were refused; sending without quotes'));
+  await f.call(OWNER, [at(SELF), text('现在呢')]);
+  assert.deepEqual([f.sends.map(send => send.message[0].type), f.records().at(-1).status], [['reply', 'reply', 'text'], 'sent']);
+  // One refusal between messages that go through does not switch quotes off.
+  const g = await fixture(t);
+  let refuse = true;
+  g.state.sendError = () => { if (!refuse) return null; refuse = false; return new Error('ONEBOT_REJECTED'); };
+  await g.call(301, [at(SELF), text('一')]); await g.call(302, [at(SELF), text('二')]);
+  refuse = true;
+  await g.call(OWNER, [at(SELF), text('三')]); await g.call(301, [at(SELF), text('四')]);
+  assert.deepEqual(g.sends.map(send => send.message[0].type), ['reply', 'reply', 'reply', 'reply']);
 });
 
 test('limits: silence, one line without any number, and the call stays a line of the group', async t => {

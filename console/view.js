@@ -1,7 +1,7 @@
 // Shared UI for the standalone browser entry. Styling lives in standalone.css.
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
-import { TOKEN_KEY, ROOM_PORT_KEY, validRoomPort, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validCards, cardTags, validWorld, validQQ, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, validWake, initiationResult, validJobs, jobNotice, validStickers, stickerDataUrl, stickerWords, readStickerFile } from './operator-client.js';
+import { TOKEN_KEY, ROOM_PORT_KEY, validRoomPort, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validCards, cardTags, validWorld, validQQ, validGroups, callNamesPayload, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, validWake, initiationResult, validJobs, jobNotice, validStickers, stickerDataUrl, stickerWords, readStickerFile } from './operator-client.js';
 import { validRuntime, ttsBackend, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
@@ -174,6 +174,11 @@ export function WorldConsole({ t, standalone = false }) {
   const [wakeDraft, setWakeDraft] = useState('');
   // The intent whose deletion awaits confirmation (appended, same reason).
   const [intentConfirm, setIntentConfirm] = useState(null);
+  // Group chat (GET /groups), the group whose enabling awaits confirmation and the draft of her other names
+  // (appended, same reason).
+  const [groups, setGroups] = useState(null);
+  const [groupConfirm, setGroupConfirm] = useState(null);
+  const [groupNames, setGroupNames] = useState(null);
   function clearReferenceInputs() {
     if (referenceFileInput.current) referenceFileInput.current.value = '';
     if (referenceTranscriptInput.current) referenceTranscriptInput.current.value = '';
@@ -202,6 +207,7 @@ export function WorldConsole({ t, standalone = false }) {
     setCards(null); setCardEdit(null); setCardMeta(null); setCardNew(CARD_NEW); setCardConfirm(null); setIntentConfirm(null);
     if (stickerFileInput.current) stickerFileInput.current.value = '';
     stickerLoaded.current = new Set(); setStickers(null); setStickerImages({}); setStickerEdit(null); setStickerNew(STICKER_NEW); setStickerThreshold(''); setStickerShown(STICKER_PAGE);
+    setGroups(null); setGroupConfirm(null); setGroupNames(null);
   }
   async function request(path, payload, credential = token, query) {
     const controller = new AbortController();
@@ -212,6 +218,8 @@ export function WorldConsole({ t, standalone = false }) {
   }
   function describeError(caught) {
     const key = caught.code || 'network';
+    // A group that could not be enabled: which condition was not met.
+    if (typeof caught.reason === 'string' && Object.hasOwn(DICTIONARIES.en.groups.refused, caught.reason)) return t(`groups.refused.${caught.reason}`);
     // Which field broke which rule, when the operator said so: "标签最多 6 个" rather than "内容不符合字段要求".
     const detail = key === 'validation_error' ? caught.detail : null;
     if (detail && Object.hasOwn(DICTIONARIES.en.errors.rules, detail.rule) && (!['maxChars', 'maxItems'].includes(detail.rule) || detail.limit)) {
@@ -320,6 +328,12 @@ export function WorldConsole({ t, standalone = false }) {
       setStickerImages(images => ({ ...images, [item.hash]: url }));
     }
   }
+  // Her QQ groups; an Authority that cannot answer (an older one) leaves the card saying so.
+  async function loadGroups(credential = token) {
+    const current = generation.current, value = await request('/groups', undefined, credential).catch(caught => { if (caught.code === 'authorization_required') throw caught; return null; });
+    if (!mounted.current || generation.current !== current) return;
+    setGroups(validGroups(value) ? value : null); setGroupConfirm(null); setGroupNames(null);
+  }
   async function loadRuntime(credential = token) {
     const current = generation.current, value = await request('/runtime', undefined, credential);
     if (!validRuntime(value)) throw Object.assign(new Error('invalid_response'), { code: 'invalid_response' });
@@ -327,7 +341,7 @@ export function WorldConsole({ t, standalone = false }) {
     setRuntimeInfo(value); setSpeechDraft(value.speech.status === 'ready' ? { numThreads: value.speech.numThreads, maxTextChars: value.speech.maxTextChars } : null);
   }
   useEffect(() => { if (token) void run(async () => { await load(token); if (tab === 'runtime') await loadProviders(token); if (standalone && tab === 'runtime') await loadRuntime(token); }); }, [token]);
-  useEffect(() => { if (token && tab === 'channels') void run(async () => { await loadQQ(token); await loadStickers(token); await loadInitiations(token); await loadJobs(token); await loadWake(token); }); }, [token, tab]);
+  useEffect(() => { if (token && tab === 'channels') void run(async () => { await loadQQ(token); await loadStickers(token); await loadInitiations(token); await loadJobs(token); await loadWake(token); await loadGroups(token); }); }, [token, tab]);
   useEffect(() => { if (token && tab === 'people') void run(() => loadPeople(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'persona') void run(() => loadCards(token)); }, [token, tab]);
   useEffect(() => { if (token && tab === 'quota') void run(() => loadQuota(token)); }, [token, tab]);
@@ -560,7 +574,8 @@ export function WorldConsole({ t, standalone = false }) {
         people.conversations.length ? h('div', { className: 'bff-table' }, h('table', null,
           h('thead', null, h('tr', null, ...['peoplePanel.person', 'source', 'audience', 'peoplePanel.messages', 'peoplePanel.lastActive', 'peoplePanel.epoch'].map(key => h('th', { key, scope: 'col' }, t(key))))),
           h('tbody', null, ...people.conversations.map((conversation, index) => h('tr', { key: `${conversation.capabilityId}:${index}` },
-            h('td', null, who(conversation.personId)), h('td', null, conversation.capabilityId), h('td', null, conversation.audience),
+            // A group conversation is nobody's: it says so instead of a person.
+            h('td', null, conversation.group ? badge(t('groups.conversation'), conversation.enabled ? 'ok' : 'warn') : who(conversation.personId)), h('td', null, conversation.capabilityId), h('td', null, conversation.audience),
             h('td', { className: 'bff-mono' }, String(conversation.messages)), h('td', null, conversation.lastAt ? time(conversation.lastAt) : '—'), h('td', { className: 'bff-mono' }, String(conversation.memoryEpoch))))))) : text('noBindings')));
   }
   function persona() {
@@ -734,6 +749,36 @@ export function WorldConsole({ t, standalone = false }) {
         h('label', null, h('span', null, t('qqCallerUID')), h('input', { ref: qqCallerInput, type: 'text', inputMode: 'numeric', pattern: '[0-9]+', required: true, disabled: gated, autoComplete: 'off', spellCheck: false })),
         text('qqCallerHint'), text('qqCallerPrivacy'),
         h('button', { type: 'submit', disabled: gated }, t('qqSave')))));
+  }
+  // Group chat on QQ: every group her account is in, one row each, with a switch. Enabling asks first and says what
+  // it means; there is no "leave the group" here, and a group that is not enabled is only a row: she is silent in it.
+  function groupsCard() {
+    const apply = value => { if (validGroups(value)) { setGroups(value); setGroupConfirm(null); setGroupNames(null); } };
+    const act = (path, payload) => run(async () => { apply(await request(path, payload)); setNotice(t('saved')); });
+    const tone = { enabled: 'ok', disabled: 'warn', none: '' }, names = groupNames ?? (groups ? groups.settings.callNames.join('，') : '');
+    const asked = groups && groupConfirm ? groups.groups.find(row => row.groupId === groupConfirm) : null;
+    return h('section', { className: 'bff-card' }, cardHead(h('div', null, h('h2', null, t('groups.title')), text('groups.hint')),
+      button('refresh', () => run(() => loadGroups()), { className: 'bff-ghost bff-sm', icon: 'refresh' })),
+      !groups ? text('groups.unavailable') : h(React.Fragment, null,
+        !groups.available && alert('warn', t('groups.bridgeDown')),
+        groups.groups.length ? h('div', { className: 'bff-table' }, h('table', null,
+          h('thead', null, h('tr', null, ...['groups.group', 'groups.size', 'groups.state', 'groups.recorded', 'groups.action'].map(key => h('th', { key, scope: 'col' }, t(key))))),
+          h('tbody', null, ...groups.groups.map(row => h('tr', { key: row.groupId },
+            h('td', null, row.name || t(row.present ? 'groups.unnamed' : 'groups.left'), ' ', h('code', { className: 'bff-subtle' }, row.groupId)),
+            h('td', { className: 'bff-mono' }, row.memberCount === null ? '—' : String(row.memberCount)),
+            h('td', null, badge(t(`groups.states.${row.state}`), tone[row.state], h('span', { className: 'bff-dot' }))),
+            h('td', { className: 'bff-small bff-muted' }, row.state === 'none' ? '—' : `${t('groups.members')} ${row.members} · ${t('groups.digests')} ${row.digests} · ${t('groups.lastReply')} ${row.lastReplyAt ? time(row.lastReplyAt) : '—'}`),
+            h('td', null, row.state === 'enabled' ? button('groups.disable', () => act('/groups/disable', { capabilityId: 'qq', groupId: row.groupId }), { className: 'bff-ghost bff-sm' })
+              : row.present && groups.available ? button('groups.enable', () => setGroupConfirm(row.groupId), { className: 'bff-ghost bff-sm' }) : null)))))) : text('groups.none'),
+        asked && h('div', { className: 'bff-alert warn', role: 'alertdialog', 'aria-label': t('groups.confirmTitle') }, icon('alert'), h('div', { className: 'bff-stack-sm' },
+          h('p', null, h('strong', null, `${t('groups.confirmTitle')}${asked.name ? `：${asked.name}` : ''}`)),
+          h('ul', null, ...['groups.confirm1', 'groups.confirm2', 'groups.confirm3'].map(key => h('li', { key }, t(key)))),
+          h('p', { className: 'bff-small bff-muted' }, t('groups.confirmNote')),
+          h('div', { className: 'bff-actions' }, button('groups.confirmEnable', () => act('/groups/enable', { capabilityId: 'qq', groupId: asked.groupId })), button('groups.cancel', () => setGroupConfirm(null), { className: 'bff-ghost' })))),
+        h('form', { onSubmit: event => { event.preventDefault(); void run(async () => { apply(await request('/groups/settings', callNamesPayload(names))); setNotice(t('saved')); }); } },
+          h('label', null, h('span', null, t('groups.callNames')), h('input', { type: 'text', value: names, disabled: busy, autoComplete: 'off', spellCheck: false, onChange: event => setGroupNames(event.target.value) })),
+          text('groups.callNamesHint'),
+          h('button', { type: 'submit', disabled: busy || groupNames === null }, t('groups.saveNames')))));
   }
   // Her sticker library (design §1.1), on the channels page because stickers are QQ's own: the pictures collected
   // from others that wait for the owner's word, the library itself (rename, retag, off and on), and an upload form.
@@ -939,12 +984,13 @@ export function WorldConsole({ t, standalone = false }) {
       initiationCard(),
       jobsCard(),
       wakeCard(),
+      groupsCard(),
       stickersCard(),
       h('section', { className: 'bff-card' }, h('h2', null, t('channels')), data.bindings.length ? h('div', { className: 'bff-table' }, h('table', null,
         h('thead', null, h('tr', null, ...['source', 'conversation', 'person', 'audience'].map(key => h('th', { key, scope: 'col' }, t(key))))),
         h('tbody', null, ...data.bindings.map((binding, index) => h('tr', { key: `${binding.sourceId}:${index}` },
           // A private conversation's ID carries account numbers on any channel: it is not shown.
-          ...['sourceId', 'conversationId', 'personId', 'audience'].map(key => h('td', { key, className: key === 'personId' ? 'bff-mono' : '' }, binding.audience === 'private' && key === 'conversationId' ? t('privateConversation') : String(binding[key] ?? '—')))))))) : text('noBindings')));
+          ...['sourceId', 'conversationId', 'personId', 'audience'].map(key => h('td', { key, className: key === 'personId' ? 'bff-mono' : '' }, binding.audience === 'private' && key === 'conversationId' ? t('privateConversation') : String(binding.personId ?? '').startsWith('group:') && ['conversationId', 'personId'].includes(key) ? t('groups.conversation') : String(binding[key] ?? '—')))))))) : text('noBindings')));
   }
   function modelSettings() {
     const model = data.model;
@@ -1032,7 +1078,8 @@ export function WorldConsole({ t, standalone = false }) {
     const mutate = (path, payload) => run(async () => { await request(path, payload); await loadMemory(); setNotice(t('saved')); });
     const preview = id => button('memoryForgetPreview', () => run(async () => { setForgetPreview(await request('/memory/forget-preview', { entityId: memory.entityId, ids: [id] })); }), { className: 'bff-danger-ghost bff-sm', icon: 'trash' });
     // Read-only provenance: whose item it is (opaque label, as on the people page) and where it came from.
-    const belongs = item => item.personIsOwner ? badge(t('peoplePanel.owner'), 'primary', icon('star')) : item.personLabel ? h('code', null, item.personLabel) : badge(t('memoryPanel.unowned'));
+    // A group digest belongs to its group, which is nobody: it says so instead of a person's label.
+    const belongs = item => item.scope?.kind === 'group' ? badge(t('groups.conversation')) : item.personIsOwner ? badge(t('peoplePanel.owner'), 'primary', icon('star')) : item.personLabel ? h('code', null, item.personLabel) : badge(t('memoryPanel.unowned'));
     const origin = item => {
       const role = ['user', 'assistant', 'external'].includes(item.source?.role) ? t(`memoryPanel.role.${item.source.role}`) : null;
       const proposal = /^(fact|experience|appraisal|learning|self|intent)\./.test(item.source?.proposal || '') ? t(`memoryPanel.proposal.${item.source.proposal.split('.')[0]}`) : null;

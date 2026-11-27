@@ -109,7 +109,7 @@ export class QQBridge {
     // Group chat, in memory only: the enabled groups (each with its members' cards and labels and the lines kept until
     // she is called), the names she answers to, the sliding-window limits, and which conversation each of her delivered
     // messages went to (a quote of one is only read in that same conversation).
-    this.groupSettings = group; this.groups = new Map(); this.callNames = []; this.groupLimits = new Limiter(); this.groupActive = 0; this.groupWaiting = []; this.groupProbe = null; this.sentStreams = new Map();
+    this.groupSettings = group; this.groups = new Map(); this.callNames = []; this.groupLimits = new Limiter(); this.groupActive = 0; this.groupWaiting = []; this.groupProbe = null; this.sentStreams = new Map(); this.groupQuoteRefusals = 0;
     // Forgetting while the bridge stays up (pollForget below); `startedAt` in a confirmation says which process forgot.
     const startedAt = clock();
     this.cleanup = createCleanupParty({ authority, party: 'bridge', forget: async job => ({ ...this.forgetDispatch(job), startedAt }) });
@@ -411,7 +411,7 @@ export class QQBridge {
     if (!this.connected || !this.selfId) throw new Error('QQ_GROUPS_UNAVAILABLE');
     const list = await this.onebot.call('get_group_list');
     const title = value => [...String(typeof value === 'string' ? value : '').replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, ' ').replace(/\s+/g, ' ').trim()].slice(0, 40).join('');
-    return { selfId: this.selfId, groups: (Array.isArray(list) ? list : []).map(row => ({ groupId: String(row?.group_id), name: title(row?.group_name), memberCount: Number.isSafeInteger(row?.member_count) ? row.member_count : null })).filter(row => identifier(row.groupId)).slice(0, 500)
+    return { selfId: this.selfId, groups: (Array.isArray(list) ? list : []).map(row => ({ groupId: String(row?.group_id), name: title(row?.group_name), memberCount: Number.isSafeInteger(row?.member_count) ? row.member_count : null })).filter(row => identifier(row.groupId)).slice(0, 100)
       .map(row => ({ ...row, listening: this.groups.has(`qq:${this.selfId}:group:${row.groupId}`) })) };
   }
   /** Operator (control socket), before a group is enabled: is she in it, is the owner in it, and how large is it. */
@@ -496,23 +496,25 @@ export class QQBridge {
     return this.state.groupTurns.counts[streamId] ?? 0;
   }
   /** Sends one message of a group reply. `replyTo`: the message it quotes (the first message of a reply quotes the call
-   * it answers). Should the platform refuse a message with a quote outright, it is sent once without one, and no
-   * later message carries a quote (a refusal is not a lost receipt: nothing went out). */
+   * it answers). A send that fails is never made again, with or without the quote: the platform's refusal does not
+   * prove that nothing went out. Should two quoted messages in a row be refused (an implementation that does not take
+   * a `reply` segment in a group message), later messages go without a quote; one that goes through resets the count. */
   async sendGroup({ scope, target, part, replyTo }) {
-    const once = async quote => {
-      if (this.media) return this.media.send({ scope, target, part, ...(quote ? { replyTo: quote } : {}) });
-      const body = replySegments(part.text, this.faces);
-      const sent = await this.onebot.call(...sendCall(target, quote ? [{ type: 'reply', data: { id: quote } }, ...body] : body));
-      const messageId = String(sent.message_id); if (!/^-?\d{1,20}$/.test(messageId)) throw new Error('INVALID_SEND_RECEIPT');
-      return { messageId, type: 'text', text: part.text };
-    };
-    if (!replyTo || this.groupQuoteRefused) return once(null);
-    try { return await once(replyTo); }
-    catch (error) {
-      if (error?.message !== 'ONEBOT_REJECTED') throw error;
-      const receipt = await once(null);
-      this.groupQuoteRefused = true; this.log('qq group send: a message with a quote was refused; sending without quotes');
+    const quote = replyTo && this.groupQuoteRefusals < 2 ? replyTo : null;
+    try {
+      let receipt;
+      if (this.media) receipt = await this.media.send({ scope, target, part, ...(quote ? { replyTo: quote } : {}) });
+      else {
+        const body = replySegments(part.text, this.faces);
+        const sent = await this.onebot.call(...sendCall(target, quote ? [{ type: 'reply', data: { id: quote } }, ...body] : body));
+        const messageId = String(sent.message_id); if (!/^-?\d{1,20}$/.test(messageId)) throw new Error('INVALID_SEND_RECEIPT');
+        receipt = { messageId, type: 'text', text: part.text };
+      }
+      if (quote) this.groupQuoteRefusals = 0;
       return receipt;
+    } catch (error) {
+      if (quote && error?.message === 'ONEBOT_REJECTED' && ++this.groupQuoteRefusals === 2) this.log('qq group send: two quoted messages in a row were refused; sending without quotes');
+      throw error;
     }
   }
   /** One turn in a group: it answers the messages that called her (one or more, of one or several people; see

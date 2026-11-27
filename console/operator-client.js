@@ -133,6 +133,19 @@ export function validPeople(value) {
   return value && Array.isArray(value.people) && value.people.every(p => typeof p.personId === 'string' && typeof p.label === 'string' && typeof p.owner === 'boolean' && Array.isArray(p.actors))
     && Number.isFinite(value.limit) && Number.isFinite(value.admitted);
 }
+/** GET /groups: her QQ groups with Authority's switch and counts for each, and the group-chat settings. */
+export function validGroups(value) {
+  return Boolean(value) && typeof value.available === 'boolean' && Array.isArray(value.settings?.callNames) && value.settings.callNames.every(name => typeof name === 'string')
+    && Array.isArray(value.groups) && value.groups.every(row => typeof row?.groupId === 'string' && /^[1-9]\d{0,19}$/.test(row.groupId) && typeof row.name === 'string' && typeof row.present === 'boolean'
+      && ['none', 'enabled', 'disabled'].includes(row.state) && (row.memberCount === null || Number.isFinite(row.memberCount)) && ['members', 'messages', 'digests'].every(key => Number.isFinite(row[key])) && (row.lastReplyAt === null || Number.isFinite(row.lastReplyAt)));
+}
+/** POST /groups/settings: the other names she answers to in a group, as typed (separated by commas): at most 8, each
+ * of 2 to 12 characters. One character is refused: it would be "called" by ordinary sentences all the time. */
+export function callNamesPayload(typed) {
+  const names = [...new Set(String(typed ?? '').split(/[,，、\n]/).map(name => name.normalize('NFKC').trim()).filter(Boolean))];
+  if (names.length > 8 || names.some(name => [...name].length < 2 || [...name].length > 12 || /[\p{Cc}]/u.test(name))) throw Object.assign(new Error('invalid_call_names'), { code: 'invalid_call_names' });
+  return { callNames: names };
+}
 export function validConversations(value) {
   return Array.isArray(value) && value.every(c => typeof c.streamId === 'string' && typeof c.label === 'string' && typeof c.audience === 'string' && Number.isFinite(c.messages));
 }
@@ -182,9 +195,9 @@ export function sourcesQuery({ id } = {}) {
 }
 export async function operatorRequest({ location, token, path, payload, query, fetchImpl = fetch, signal, sameOrigin = false }) {
   if (!token) throw Object.assign(new Error('authorization_required'), { code: 'authorization_required' });
-  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/persona/cards', '/persona/cards/update', '/persona/cards/activate', '/persona/cards/delete', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/memory/intent/delete', '/diary/publish', '/diary/open', '/diary/open/listed', '/diary/open/code', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/memory/cleanup/status', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/people/attach', '/conversations', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits', '/providers', '/providers/key', '/providers/clear', '/initiative/log', '/initiative/poke', '/initiative', '/initiative/wake', '/initiative/settings', '/jobs', '/jobs/demo', '/jobs/cancel', '/stickers', '/stickers/image', '/stickers/update', '/stickers/upload', '/stickers/describe', '/stickers/approve', '/stickers/reject', '/stickers/settings', '/conversation/settings'].includes(path)) throw new Error('unsupported_operator_path');
-  if (['/model', '/model/test', '/memory/intent/delete', '/diary/open/listed', '/diary/open/code', '/persona/cards/update', '/persona/cards/activate', '/persona/cards/delete', '/people/attach', '/spend/settings', '/usage/limits', '/providers/key', '/providers/clear', '/initiative/poke', '/initiative/wake', '/initiative/settings', '/jobs/demo', '/jobs/cancel', '/stickers/update', '/stickers/upload', '/stickers/describe', '/stickers/approve', '/stickers/reject', '/stickers/settings', '/conversation/settings', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test'].includes(path) && payload === undefined) throw new Error('operator_post_required');
-  if (['/runtime', '/diary/open', '/people', '/conversations', '/spend', '/usage', '/usage/history', '/providers', '/initiative/log', '/initiative', '/jobs', '/stickers', '/stickers/image', '/memory/consolidation', '/memory/sources', '/memory/cleanup/status'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
+  if (!['/world', '/world/pause', '/persona', '/persona/preview', '/persona/cards', '/persona/cards/update', '/persona/cards/activate', '/persona/cards/delete', '/model', '/model/test', '/qq', '/memory', '/memory/consolidation', '/memory/sources', '/memory/retention', '/memory/public', '/memory/intent/delete', '/diary/publish', '/diary/open', '/diary/open/listed', '/diary/open/code', '/memory/forget-preview', '/memory/forget', '/memory/cleanup/pending', '/memory/cleanup/status', '/runtime', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/people', '/people/attach', '/conversations', '/spend', '/spend/settings', '/usage', '/usage/history', '/usage/limits', '/providers', '/providers/key', '/providers/clear', '/initiative/log', '/initiative/poke', '/initiative', '/initiative/wake', '/initiative/settings', '/jobs', '/jobs/demo', '/jobs/cancel', '/stickers', '/stickers/image', '/stickers/update', '/stickers/upload', '/stickers/describe', '/stickers/approve', '/stickers/reject', '/stickers/settings', '/conversation/settings', '/groups', '/groups/enable', '/groups/disable', '/groups/settings'].includes(path)) throw new Error('unsupported_operator_path');
+  if (['/model', '/model/test', '/memory/intent/delete', '/diary/open/listed', '/diary/open/code', '/persona/cards/update', '/persona/cards/activate', '/persona/cards/delete', '/people/attach', '/spend/settings', '/usage/limits', '/providers/key', '/providers/clear', '/initiative/poke', '/initiative/wake', '/initiative/settings', '/jobs/demo', '/jobs/cancel', '/stickers/update', '/stickers/upload', '/stickers/describe', '/stickers/approve', '/stickers/reject', '/stickers/settings', '/conversation/settings', '/speech', '/voice/reference', '/voice/reference/remove', '/voice/default', '/voice/test', '/groups/enable', '/groups/disable', '/groups/settings'].includes(path) && payload === undefined) throw new Error('operator_post_required');
+  if (['/runtime', '/diary/open', '/people', '/conversations', '/spend', '/usage', '/usage/history', '/providers', '/initiative/log', '/initiative', '/jobs', '/stickers', '/stickers/image', '/memory/consolidation', '/memory/sources', '/memory/cleanup/status', '/groups'].includes(path) && payload !== undefined) throw new Error('operator_get_required');
   if (query !== undefined && (!['/memory', '/memory/sources', '/stickers/image'].includes(path) || payload !== undefined) || ['/memory/sources', '/stickers/image'].includes(path) && query === undefined) throw new Error('operator_query_unsupported');
   const response = await fetchImpl(`${operatorOrigin(location, { sameOrigin })}${path}${query === undefined ? '' : path === '/memory/sources' ? sourcesQuery(query) : path === '/stickers/image' ? stickerQuery(query) : memoryQuery(query)}`, {
     method: payload === undefined ? 'GET' : 'POST',
@@ -204,7 +217,9 @@ export async function operatorRequest({ location, token, path, payload, query, f
     // A validation error may name the field and the rule it broke (Authority never sends the content back).
     const error = body?.error, detail = code === 'validation_error' && typeof error?.field === 'string' && /^[A-Za-z]{1,32}$/.test(error.field) && ['maxChars', 'maxItems', 'required', 'invalid'].includes(error.rule)
       ? { field: error.field, rule: error.rule, ...(Number.isSafeInteger(error.limit) && error.limit > 0 ? { limit: error.limit } : {}) } : null;
-    throw Object.assign(new Error(code), { code, status: response.status, ...(detail ? { detail } : {}) });
+    // A refused group operation says which condition was not met (a fixed word, never content).
+    const reason = typeof error?.reason === 'string' && /^[a-z_]{1,32}$/.test(error.reason) ? error.reason : null;
+    throw Object.assign(new Error(code), { code, status: response.status, ...(detail ? { detail } : {}), ...(reason ? { reason } : {}) });
   }
   return body.value;
 }

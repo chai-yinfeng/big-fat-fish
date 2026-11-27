@@ -133,7 +133,7 @@ test('enabling a group: only a channel that declares groups, only inside its nam
   say(G1, A, 'MOCK-群里一句');
   assert.equal(a.context('qq', { streamId: G1, query: 'MOCK', windowFromAt: 5 }).group, true);
   // Switched off: no observation, no context, no member report; everything recorded stays. On again: as before.
-  assert.throws(() => a.disableGroup({ capabilityId: 'qq', streamId: G2 }), { code: 'NOT_FOUND' });
+  assert.throws(() => a.disableGroup({ capabilityId: 'qq', streamId: G2 }), { code: 'CONFLICT' });
   assert.deepEqual(a.disableGroup({ capabilityId: 'qq', streamId: G1 }), { capabilityId: 'qq', streamId: G1, enabled: false, changed: true });
   assert.equal(a.disableGroup({ capabilityId: 'qq', streamId: G1 }).changed, false);
   forbidden(() => say(G1, A, 'MOCK-停用后的一句'));

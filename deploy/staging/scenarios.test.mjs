@@ -1097,3 +1097,50 @@ test('scenario replay against the real Authority, gateway (scripted upstream), e
     assert.match((await runner(silent).run()).results[0].error, /expected silence, but MOCK-A received "MOCK-REPLY"/);
   });
 });
+
+test('group steps: groups are visibly fake and made of known people; `{member:GROUP:PERSON}` is Authority\'s member label; a group reply is matched once, must quote the call when asked, and silence means no unmatched group send', async () => {
+  const { opaqueMember } = await import('../../authority/src/context.js');
+  const data = shipped();
+  assert.ok(Object.keys(data.groups).length >= 2 && Object.values(data.groups).every(group => /^9999\d{8}$/.test(group.id)));
+  for (const change of [
+    d => { d.groups['Family'] = { id: '999900009090', members: ['MOCK-OWNER'] }; },
+    d => { d.groups['MOCK-GROUP-A'].id = '123456'; },
+    d => { d.groups['MOCK-GROUP-A'].id = d.people['MOCK-A'].qq; },
+    d => { d.groups['MOCK-GROUP-A'].members.push('MOCK-NOBODY'); },
+    d => { d.scenarios[0].steps.push({ groupSay: { group: 'MOCK-GROUP-NOWHERE', from: 'MOCK-A', text: 'x' } }); },
+  ]) { const broken = shipped(); change(broken); assert.throws(() => validateScenarios(broken)); }
+  const bot = data.bot.qq, group = 'MOCK-GROUP-A', gid = data.groups[group].id, stream = `qq:${bot}:group:${gid}`;
+  const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-group-')), script = path.join(dir, 'script.json');
+  try {
+    const state = { groupSent: [], posted: [], rows: [{ streamId: stream, messages: 3, group: true, audience: 'shared', owner: false, enabled: true }] };
+    const onebot = async (method, route, body) => {
+      if (method === 'GET' && route === '/groups') return { groupSent: state.groupSent, groupLost: [] };
+      if (route === '/group-message') { state.posted.push(body); return { message_id: 700 + state.posted.length }; }
+      return {};
+    };
+    const run = new Runner({ data, modelScript: script, modelLog: path.join(dir, 'log'), onebot, operator: async (method, route) => route === '/conversations' ? state.rows : {}, sleep: async () => {} });
+    assert.deepEqual([run.groupId(group), run.groupStream(group), run.memberLabel(group, 'MOCK-GA')], [gid, stream, opaqueMember('qq', stream, `qq:${bot}:user:${data.people['MOCK-GA'].qq}`)]);
+    const scenario = steps => run.scenario({ id: 'X1', title: 'groups', model: [{ match: 'x', reply: '{member:MOCK-GROUP-A:MOCK-GA}' }], steps });
+    // The placeholder; a mention of her, of everyone and of a person become what the fake OneBot takes.
+    let result = await scenario([{ groupSay: { group, from: 'MOCK-GA', text: 'MOCK 你好', at: ['self', 'all', 'MOCK-GB'] } }]);
+    assert.equal(result.ok, true, result.error);
+    assert.equal(JSON.parse(fs.readFileSync(script, 'utf8'))[0].reply, run.memberLabel(group, 'MOCK-GA'));
+    assert.deepEqual(state.posted.at(-1), { group_id: gid, user_id: data.people['MOCK-GA'].qq, text: 'MOCK 你好', at: ['self', 'all', data.people['MOCK-GB'].qq] });
+    assert.match((await run.scenario({ id: 'X1', title: 'groups', model: [{ match: 'x', reply: '{member:MOCK-GROUP-A:MOCK-NOBODY}' }], steps: [{ expectGroupSilence: { afterMs: 0 } }] }).catch(error => ({ error: error.message }))).error, /unknown group or person in \{member:/);
+    // A reply that quotes the call; each sent message is matched once.
+    state.groupSent = [{ message_id: 1, group_id: gid, text: 'MOCK-REPLY 好', types: ['reply', 'text'], reply: String(700 + state.posted.length + 1) }];
+    result = await scenario([{ groupSay: { group, from: 'MOCK-GA', text: 'MOCK 再问', at: ['self'] } }, { expectGroupReply: { group, contains: 'MOCK-REPLY', quotes: true, types: ['reply', 'text'] } }, { expectGroupSilence: { group, afterMs: 0 } }]);
+    assert.equal(result.ok, true, result.error);
+    result = await scenario([{ groupSay: { group, from: 'MOCK-GA', text: 'MOCK 三问', at: ['self'] } }, { expectGroupReply: { group, contains: 'MOCK-REPLY', quotes: true } }]);
+    assert.match(result.error, /^step 2 .*quotes \d+, expected the message that called her/);
+    result = await scenario([{ expectGroupReply: { group, contains: '别的话', timeoutMs: 1 } }]);
+    assert.match(result.error, /received "MOCK-REPLY 好", expected it to contain "别的话"/);
+    result = await scenario([{ expectGroupSilence: { group: '*', afterMs: 0 } }]);
+    assert.match(result.error, /expected silence in \*, but a group received "MOCK-REPLY 好"/);
+    // The group's conversation: listed as a group that is nobody's, and its recorded lines counted from a noted point.
+    result = await scenario([{ expectGroupConversation: { group, bound: true, enabled: true } }, { noteGroupMessages: { group } }, { expectGroupMessages: { group, added: 0 } }, { expectGroupConversation: { group: 'MOCK-GROUP-X', bound: false } }]);
+    assert.equal(result.ok, true, result.error);
+    state.rows[0].owner = true;
+    assert.match((await scenario([{ expectGroupConversation: { group, bound: true } }])).error, /not listed as a group conversation that is nobody's/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
