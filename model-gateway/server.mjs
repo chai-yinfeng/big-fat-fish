@@ -206,7 +206,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
         write({ outcome: 'failed', ...spent() });
         // One line per failed capability call, for diagnosis: the upstream HTTP status, our code and fixed enums only;
         // never a URL, a query, page or image content, a key or a request body. Chat failures are not logged here.
-        if (!['chat', 'proactive'].includes(id)) {
+        if (!['chat', 'proactive', 'group-chat'].includes(id)) {
           const extra = [note.upstream && `upstream=${note.upstream}`, note.cause && `cause=${note.cause}`].filter(Boolean).join(' ');
           try { log(`gateway capability failed: ${id}${note.operation ? ` ${note.operation}` : ''} status=${note.status ?? '-'} code=${shortCode(error.code) ?? 'UNKNOWN'} ms=${spent().busyMs}${extra ? ` ${extra}` : ''}`); } catch {}
         }
@@ -475,7 +475,10 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     // A run she starts herself (the executor marks its requests; the model cannot) is `proactive` work: its own usage
     // row and spend category, refused from the reduced tier on.
     const proactive = !maintenance && req.headers[INITIATED_HEADER] === 'initiated';
-    await metered(activity ? 'video-note' : maintenance ? 'consolidation' : proactive ? 'proactive' : 'chat', 'spend_tier', note => completion(req, res, maintenance, note, proactive, activity));
+    // A turn in a group conversation (marked the same way) is `group` work: its own usage row and spend category,
+    // refused from the restricted tier on. Any other value of the header is ordinary chat.
+    const group = !maintenance && req.headers[INITIATED_HEADER] === 'group';
+    await metered(activity ? 'video-note' : maintenance ? 'consolidation' : proactive ? 'proactive' : group ? 'group-chat' : 'chat', 'spend_tier', note => completion(req, res, maintenance, note, proactive ? 'proactive' : group ? 'group' : 'conversation', activity));
   }
   /** A provider adapter's operation (model-gateway/providers.mjs): submit it, ask how it is doing, fetch a result file. */
   async function provider(req, res) {
@@ -495,7 +498,8 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
     await ledger.reserve(body.capability);
     send(res, 200, { ok: true, value: { reserved: true } });
   }
-  async function completion(req, res, maintenance, note, proactive = false, activity = false) {
+  /** `category`: the spend category of a chat completion (`conversation`, `proactive` or `group`). */
+  async function completion(req, res, maintenance, note, category = 'conversation', activity = false) {
     // Check before reading a potentially large prompt and again immediately before fetch.
     if ((await world()).paused) throw failure('WORLD_PAUSED');
     if (!settings.apiKey) throw failure('UNCONFIGURED');
@@ -514,7 +518,7 @@ export function createModelGateway({ settingsFile, inferenceSocket, controlSocke
       // chooses thinking or its effort.
       const thinking = object(body.thinking) && body.thinking.type === 'disabled' ? { thinking: { type: 'disabled' } } : THINKING;
       const { reasoning_effort: _effort, ...rest } = body;
-      await call({ ...rest, max_tokens: Math.min(body.max_tokens ?? 4096, 4096), ...thinking }, 'inference', res, proactive ? 'proactive' : 'conversation', note);
+      await call({ ...rest, max_tokens: Math.min(body.max_tokens ?? 4096, 4096), ...thinking }, 'inference', res, category, note);
     }
   }
   // Requests still being handled; a handler outlives its response by its bookkeeping (settling spend, the usage ledger).

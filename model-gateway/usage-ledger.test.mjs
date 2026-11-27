@@ -423,3 +423,37 @@ test('gateway: a client that hangs up once the reply is complete is ok; one that
   rows = await f.usage(seen => seen.chat.calls === 2);
   assert.deepEqual([rows.chat.ok, rows.chat.failed], [1, 1]);
 });
+
+test('gateway: a turn in a group is group work, with its own row and spend category, stopped at the restricted tier while private chat goes on', async t => {
+  const f = await gateway(t), body = { model: 'deepseek', messages: [{ role: 'user', content: 'MOCK synthetic test' }], stream: true };
+  // What the conversation executor sends for a group run: the same chat completion, marked by the request header.
+  const marked = value => new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: f.directory + '/infer.sock', path: '/v1/chat/completions', method: 'POST', agent: false, headers: { authorization: `Bearer ${infer}`, 'content-type': 'application/json', [INITIATED_HEADER]: value } }, res => {
+      const chunks = []; res.on('data', chunk => chunks.push(chunk)); res.on('error', reject);
+      res.on('end', () => resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString() }));
+    });
+    req.on('error', reject); req.end(JSON.stringify(body));
+  });
+  assert.equal((await marked('group')).status, 200);
+  let rows = await f.usage(seen => seen['group-chat'].ok === 1), spend = (await f.control('/spend')).json().value;
+  assert.deepEqual([rows['group-chat'].title, rows['group-chat'].calls, rows['group-chat'].units, rows['group-chat'].spendCategory, rows['group-chat'].stopTier, rows.chat.calls, rows.proactive.calls], ['群聊', 1, { inputTokens: 1000, outputTokens: 100 }, 'group', 'restricted', 0, 0]);
+  assert.deepEqual([spend.byTier.group, spend.byTier.conversation, spend.byTier.proactive], [rows['group-chat'].costYuan, 0, 0]);
+  assert.ok(spend.categories.some(row => row.category === 'group' && row.capabilities.some(item => item.id === 'group-chat')));
+  // The provider is sent exactly what a private turn is sent; an unknown value of the header is ordinary chat.
+  assert.equal((await marked('something-else')).status, 200);
+  assert.deepEqual(f.calls[0].body, f.calls[1].body);
+  rows = await f.usage(seen => seen.chat.ok === 1);
+  assert.deepEqual([rows.chat.calls, rows['group-chat'].calls], [1, 1]);
+  // The reduced tier stops what she starts herself, not a group turn.
+  assert.equal((await f.control('/spend/settings', { dailyCapYuan: 0.02, reducedPercent: 10, restrictedPercent: 90 })).status, 200);
+  assert.equal((await f.control('/spend')).json().value.tier, 'reduced');
+  assert.deepEqual([(await marked('initiated')).status, (await marked('group')).status, f.calls.length], [429, 200, 3]);
+  // From the restricted tier on a group turn is refused before the provider is contacted; a private reply is not.
+  assert.equal((await f.control('/spend/settings', { dailyCapYuan: 0.02, reducedPercent: 10, restrictedPercent: 20 })).status, 200);
+  assert.equal((await f.control('/spend')).json().value.tier, 'restricted');
+  const refused = await marked('group');
+  assert.deepEqual([refused.status, JSON.parse(refused.text).error.code, f.calls.length], [429, 'BUDGET_EXHAUSTED', 3]);
+  assert.equal((await f.chat()).status, 200);
+  rows = await f.usage(seen => seen['group-chat'].denied.spend_tier === 1 && seen.chat.ok === 2);
+  assert.deepEqual([rows['group-chat'].calls, rows['group-chat'].denied, rows.chat.denied, f.calls.length], [2, { spend_tier: 1 }, {}, 4]);
+});
