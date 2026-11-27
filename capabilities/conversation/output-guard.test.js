@@ -58,3 +58,18 @@ test('a run she starts herself: bracketed asides only are not speaking; an ordin
 test('an ordinary reply is returned unchanged, byte for byte', () => {
   for (const text of ['你好呀', '  前后有空格  \n\n\n三个换行', `${DECLINE_MARK}`, '<<<不是附注>>>', '[表情:开心]']) assert.deepEqual(guardOutput(text), { text, kinds: [] });
 });
+
+test('markdown a chat would show as it is: the marks go, the words stay; code blocks and URLs are untouched', () => {
+  // The production leak.
+  assert.deepEqual(guardOutput('最近在听 **ヨルシカ（Yorushika）** 的歌'), { text: '最近在听 ヨルシカ（Yorushika） 的歌', kinds: ['markdown'] });
+  assert.equal(guardOutput('__真的__假的').text, '真的假的');
+  // A heading mark or a list bullet at a line start: the line stays, without it.
+  assert.equal(guardOutput('# 今天\n## 晚饭\n- 面条\n* 青菜\n  - 汤').text, '今天\n晚饭\n面条\n青菜\n  汤');
+  assert.equal(guardOutput('试试 `npm i` 就好').text, '试试 npm i 就好');
+  // A URL keeps its own underscores and asterisks; a bold mark around it still goes.
+  assert.equal(guardOutput('看这个 https://example.com/a__b__c 和 **https://example.com/x**').text, '看这个 https://example.com/a__b__c 和 https://example.com/x');
+  // A code block is left as it is.
+  assert.equal(guardOutput('```\n**x**\n- y\n```\n**z**').text, '```\n**x**\n- y\n```\nz');
+  // Not markdown: a lone asterisk, a hashtag without a space, an emoticon, unmatched or spaced-out marks.
+  for (const text of ['2*3 = 6', '#话题 好玩', '-_- 无语', '** 不是 **', '*单个星号*', 'a_b']) assert.deepEqual(guardOutput(text), { text, kinds: [] }, text);
+});

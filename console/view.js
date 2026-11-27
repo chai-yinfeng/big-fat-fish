@@ -1,7 +1,7 @@
 // Shared UI for the standalone browser entry. Styling lives in standalone.css.
 import React from 'react';
 import DICTIONARIES from './dictionaries.js';
-import { TOKEN_KEY, ROOM_PORT_KEY, validRoomPort, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validCards, cardTags, validWorld, validQQ, validGroups, callNamesPayload, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, validWake, initiationResult, validJobs, jobNotice, validStickers, stickerDataUrl, stickerWords, readStickerFile } from './operator-client.js';
+import { TOKEN_KEY, ROOM_PORT_KEY, validRoomPort, operatorRequest, personaDraft, personaPatch, personaExport, personaImport, validCards, cardTags, parseCardBundle, cardSyncPlan, cardLibraryStamp, validWorld, validQQ, validGroups, callNamesPayload, qqPayload, modelPayload, spendPayload, validSpend, validPeople, validConversations, maskAccount, limitsPayload, validUsage, validUsageHistory, providerKeyPayload, validProviders, validInitiations, validWake, initiationResult, validJobs, jobNotice, validStickers, stickerDataUrl, stickerWords, readStickerFile } from './operator-client.js';
 import { validRuntime, ttsBackend, speechPayload, readReferenceFile, referencePayload, voiceTestBlob } from './runtime-client.js';
 const h = React.createElement;
 const { useState, useRef, useEffect } = React;
@@ -174,6 +174,9 @@ export function WorldConsole({ t, standalone = false }) {
   const [wakeDraft, setWakeDraft] = useState('');
   // The intent whose deletion awaits confirmation (appended, same reason).
   const [intentConfirm, setIntentConfirm] = useState(null);
+  // A card bundle chosen for import, awaiting confirmation (appended, same reason): what it would do to the library
+  // and the stamp of the library it was previewed against.
+  const [cardSync, setCardSync] = useState(null);
   // Group chat (GET /groups), the group whose enabling awaits confirmation and the draft of her other names
   // (appended, same reason).
   const [groups, setGroups] = useState(null);
@@ -204,7 +207,7 @@ export function WorldConsole({ t, standalone = false }) {
     setQuota(null); setQuotaOpen(null); setQuotaHistory(null); setLimitDraft({});
     setProviders(null); setProviderClear(null);
     setInitiations(null); setJobs(null);
-    setCards(null); setCardEdit(null); setCardMeta(null); setCardNew(CARD_NEW); setCardConfirm(null); setIntentConfirm(null);
+    setCards(null); setCardEdit(null); setCardMeta(null); setCardNew(CARD_NEW); setCardConfirm(null); setIntentConfirm(null); setCardSync(null);
     if (stickerFileInput.current) stickerFileInput.current.value = '';
     stickerLoaded.current = new Set(); setStickers(null); setStickerImages({}); setStickerEdit(null); setStickerNew(STICKER_NEW); setStickerThreshold(''); setStickerShown(STICKER_PAGE);
     setGroups(null); setGroupConfirm(null); setGroupNames(null);
@@ -621,7 +624,8 @@ export function WorldConsole({ t, standalone = false }) {
       h('p', { className: 'bff-grow' }, t('conflictHint')),
       button('discard', () => { setDraft(personaDraft(base)); setCardMeta(null); }, { className: 'bff-ghost' }),
       h('button', { type: 'submit', disabled: busy }, icon('save'), t('save')))),
-    cardConfirm && cardConfirmation());
+    cardConfirm && cardConfirmation(),
+    cardSync && cardSyncConfirmation());
   }
   // The card library: every card, which one is current and which one the editor holds; a new card is a copy of an
   // existing one or the built-in default persona. Picking another card would drop unsaved edits, so it waits for them.
@@ -657,7 +661,63 @@ export function WorldConsole({ t, standalone = false }) {
           h('label', null, h('span', null, t('cardsPanel.source')), h('select', { name: 'newCardSource', value: cardNew.copyFrom, disabled: busy || dirty || full, onChange: event => setCardNew({ ...cardNew, copyFrom: event.target.value }) },
             h('option', { value: '' }, t('cardsPanel.blank')), ...cards.cards.map(card => h('option', { key: card.id, value: card.id }, `${t('cardsPanel.copyOf')} ${card.title}`))))),
         full && text('cardsPanel.full'),
-        h('button', { type: 'submit', disabled: busy || dirty || full || !cardNew.title.trim() }, icon('plus'), t('cardsPanel.create'))));
+        h('button', { type: 'submit', disabled: busy || dirty || full || !cardNew.title.trim() }, icon('plus'), t('cardsPanel.create'))),
+      h('div', { className: 'bff-stack' }, text('cardsPanel.syncHint'),
+        h('div', { className: 'bff-actions' },
+          h('label', { className: 'bff-file-btn' }, icon('upload'), h('span', null, t('cardsPanel.syncImport')), h('input', { type: 'file', name: 'bundleFile', className: 'bff-sr-only', accept: 'application/json,.json', disabled: busy || dirty, onChange: event => { void chooseBundle(event); } })))));
+  }
+  // A card bundle: read and checked here, compared with the library by title, and shown for confirmation.
+  async function chooseBundle(event) {
+    const file = event.target.files?.[0]; event.target.value = '';
+    if (!file || !cards) return;
+    setError(''); setNotice('');
+    try {
+      if (file.size > 1048576) throw new Error('too large');
+      const plan = cardSyncPlan(cards, parseCardBundle(await file.text()));
+      setCardSync({ ...plan, stamp: cardLibraryStamp(cards) });
+    } catch { setCardSync(null); setError(t('cardsPanel.syncInvalid')); }
+  }
+  // Writes the bundle card by card through the library operations, only if the library is still what was previewed.
+  function cardSyncConfirmation() {
+    const close = () => setCardSync(null), writes = cardSync.items.filter(item => item.action !== 'same');
+    const label = key => t(`errors.fields.${key}`);
+    const confirm = () => run(async () => {
+      const fresh = await loadCards();
+      if (cardLibraryStamp(fresh) !== cardSync.stamp) { setCardSync(null); setError(t('cardsPanel.syncStale')); return; }
+      let done = 0;
+      try {
+        for (const item of writes) {
+          if (item.action === 'create') {
+            const made = await request('/persona/cards', { title: item.card.title, tags: item.card.tags, summary: item.card.summary });
+            await request('/persona/cards/update', { id: made.id, patch: item.card.persona });
+          } else {
+            const patch = Object.fromEntries(item.changed.filter(key => Object.hasOwn(item.card.persona, key)).map(key => [key, item.card.persona[key]]));
+            await request('/persona/cards/update', { id: item.id, ...(item.changed.includes('tags') ? { tags: item.card.tags } : {}), ...(item.changed.includes('summary') ? { summary: item.card.summary } : {}),
+              ...(Object.keys(patch).length ? { patch } : {}), ...(item.current ? { expectedRevision: fresh.personaRevision } : {}) });
+          }
+          done++;
+        }
+      } finally {
+        setCardSync(null);
+        // The editor goes back to the current card: what it held may have just been rewritten.
+        await load(); await loadCards();
+        if (done < writes.length) setNotice(t('cardsPanel.syncPartial').replace('{done}', String(done)).replace('{total}', String(writes.length)));
+      }
+      setNotice(t('cardsPanel.synced').replace('{count}', String(done)));
+    });
+    const kind = { create: ['cardsPanel.syncCreate', 'primary'], update: ['cardsPanel.syncUpdate', 'warn'], same: ['cardsPanel.syncSame', ''] };
+    const body = [
+      ...cardSync.items.map(item => h('div', { key: item.title, className: 'bff-list-row' },
+        h('div', { className: 'bff-grow' },
+          h('div', { className: 'bff-row' }, h('strong', null, item.title), badge(t(kind[item.action][0]), kind[item.action][1]), item.current && item.action === 'update' ? badge(t('cardsPanel.current'), 'ok', icon('check')) : null),
+          item.action === 'update' ? h('div', { className: 'bff-small bff-muted' }, `${t('cardsPanel.syncChanged')}: ${item.changed.map(label).join('、')}`) : null))),
+      cardSync.items.some(item => item.current && item.action === 'update') ? h('p', { key: 'current', className: 'bff-muted' }, t('cardsPanel.syncCurrent')) : null,
+      cardSync.blocked ? alert('danger', t(cardSync.blocked === 'full' ? 'cardsPanel.syncFull' : 'cardsPanel.syncDuplicate'), { key: 'blocked' }) : null,
+      !cardSync.blocked && !writes.length ? h('p', { key: 'nothing', className: 'bff-muted' }, t('cardsPanel.syncNothing')) : null,
+      h('p', { key: 'keep', className: 'bff-small bff-muted' }, t('cardsPanel.syncKeeps'))].filter(Boolean);
+    return dialog(t('cardsPanel.syncTitle'), body, [
+      button('cardsPanel.cancel', close, { className: 'bff-ghost', autoFocus: true, key: 'cancel' }),
+      button('cardsPanel.syncConfirm', confirm, { icon: 'check', key: 'confirm', disabled: busy || Boolean(cardSync.blocked) || !writes.length })], close);
   }
   function cardConfirmation() {
     const target = cards?.cards.find(card => card.id === cardConfirm.id), close = () => setCardConfirm(null);

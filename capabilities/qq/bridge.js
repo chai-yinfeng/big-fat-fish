@@ -214,7 +214,7 @@ export class QQBridge {
     if (!Number.isSafeInteger(scope.memoryEpoch) || scope.memoryEpoch < 0 || typeof scope.entityId !== 'string') { item.status = 'failed'; this.save(); return; }
     item.memoryEpoch = scope.memoryEpoch; item.entityId = scope.entityId;
     if (message.replyTo) message.quote = await this.quoteOf(message.replyTo, uid);
-    return this.gather(observation.streamId, { cfg, message, requestId, item, userId: uid, arrival });
+    return this.gather(observation.streamId, { cfg, message, requestId, item, userId: uid, arrival, receivedAt: this.clock() });
   }
   /** Adds a message to its conversation's burst; resolves when the turn that answers the burst has ended. The burst
    * waits for the person to be quiet for burstQuietMs (each message restarts the wait), at most burstMaxWaitMs after its
@@ -487,7 +487,7 @@ export class QQBridge {
       if (error?.status === 403) void this.refreshGroups();
       return;
     }
-    return this.gather(streamId, { cfg, message, requestId, item, userId: uid, arrival, by, line }, { max: settings.burstMaxMessages, run: entries => this.processGroup(group, entries), gate: job => this.groupGate(job) });
+    return this.gather(streamId, { cfg, message, requestId, item, userId: uid, arrival, receivedAt: this.clock(), by, line }, { max: settings.burstMaxMessages, run: entries => this.processGroup(group, entries), gate: job => this.groupGate(job) });
   }
   /** Turns of one group counted for today (Beijing day), kept in the state file: a restart does not reset them. */
   groupTurnsToday(streamId) {
@@ -605,7 +605,7 @@ export class QQBridge {
       if (!report.parts.length) report.parts = [{ kind: 'text', status: 'unsent' }];
       for (const [index, part] of parts.entries()) {
         if (part.follows) await this.sleep(segmentGap(part.text, this.pacing, this.random));
-        else if (!index && part.type === 'text' && !voiceRequested) await this.sleep(firstDelay(this.pacing, this.random));
+        else if (!index && part.type === 'text' && !voiceRequested) await this.sleep(firstDelay(part.text, turn.reduce((n, entry) => n + [...entry.message.authoredText].length, 0), this.clock() - Math.max(...turn.map(entry => entry.receivedAt ?? this.clock())), this.pacing, this.random));
         if (!await this.current(cfg, stream, item)) return end(item.receipts?.length ? 'partial' : 'paused');
         if (this.groupLimits.count(`sent\0${streamId}`, HOUR_MS, this.clock()) >= settings.perGroupMessagesPerHour) { this.log('qq group limited: perGroupMessagesPerHour'); return end(item.receipts?.length ? 'partial' : 'limited'); }
         sending = true; end('sending'); records.get(part).status = 'unknown';
@@ -910,9 +910,10 @@ export class QQBridge {
       if (!report.parts.length) report.parts = [{ kind: 'text', status: 'unsent' }];
       if (this.media && !prepared.voiceRequested) this.noteSticker(observation.streamId, Boolean(sticker));
       for (const [index, part] of parts.entries()) {
-        // A short random pause before a text reply, and one growing with its length before each following message.
+        // Before a text reply, what is left of reading the person's messages and typing it (since the last of them
+        // arrived); before each following message, the time typing it takes.
         if (part.follows) await this.sleep(segmentGap(part.text, this.pacing, this.random));
-        else if (!index && part.type === 'text' && !prepared.voiceRequested) await this.sleep(firstDelay(this.pacing, this.random));
+        else if (!index && part.type === 'text' && !prepared.voiceRequested) await this.sleep(firstDelay(part.text, turn.reduce((n, entry) => n + [...entry.message.authoredText].length, 0), this.clock() - Math.max(...turn.map(entry => entry.receivedAt ?? this.clock())), this.pacing, this.random));
         if (!await this.current(cfg, observation, item)) { end(item.receipts?.length ? 'partial' : 'paused'); return; }
         sending = true; end('sending'); records.get(part).status = 'unknown';
         let receipt;

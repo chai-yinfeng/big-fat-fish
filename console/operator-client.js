@@ -263,6 +263,44 @@ export function validCards(value) {
 export function cardTags(line) {
   return [...new Set(String(line || '').split(/[,，、;；\s]+/).map(tag => tag.trim()).filter(Boolean))];
 }
+/** A card bundle (deploy/persona/build-cards.mjs): several cards, each a title, tags, summary and persona fields.
+ * Checked here for shape and the card limits; Authority checks the persona again when it is written. */
+export function parseCardBundle(source) {
+  let value;
+  try { value = JSON.parse(source); } catch { value = null; }
+  const text = (item, limit, empty) => typeof item === 'string' && item.trim().length <= limit && (empty || item.trim().length > 0) && !/[\u0000-\u001f\u007f]/u.test(item);
+  const persona = item => Boolean(item) && typeof item === 'object' && !Array.isArray(item) && Object.keys(item).every(key => PERSONA_FIELDS.includes(key))
+    && PERSONA_TEXT.every(key => !(key in item) || typeof item[key] === 'string')
+    && PERSONA_LISTS.every(key => !(key in item) || (Array.isArray(item[key]) && item[key].every(entry => typeof entry === 'string')))
+    && (!('examples' in item) || (Array.isArray(item.examples) && item.examples.every(entry => entry && typeof entry.user === 'string' && typeof entry.assistant === 'string' && Object.keys(entry).every(key => key === 'user' || key === 'assistant'))));
+  const card = item => Boolean(item) && typeof item === 'object' && Object.keys(item).every(key => ['title', 'tags', 'summary', 'persona'].includes(key))
+    && text(item.title, 40) && Array.isArray(item.tags) && item.tags.length <= 6 && item.tags.every(tag => text(tag, 12)) && text(item.summary, 60, true) && persona(item.persona);
+  const ok = value && value.kind === 'big-fat-fish/persona-cards' && value.version === 1 && Array.isArray(value.cards) && value.cards.length > 0 && value.cards.length <= 24
+    && value.cards.every(card) && new Set(value.cards.map(item => item.title.trim())).size === value.cards.length;
+  if (!ok) throw Object.assign(new Error('invalid_card_bundle'), { code: 'invalid_card_bundle' });
+  return value.cards.map(item => ({ title: item.title.trim(), tags: item.tags.map(tag => tag.trim()), summary: item.summary.trim(), persona: item.persona }));
+}
+/** What importing a bundle would do to the library, matched by title: per card 'create', 'update' (with the fields
+ * that change) or 'same'. `blocked` is 'duplicate' (a title names two library cards) or 'full' (over the limit). */
+export function cardSyncPlan(library, bundle) {
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  let blocked = null;
+  const items = bundle.map(card => {
+    const matches = library.cards.filter(existing => existing.title === card.title);
+    if (matches.length > 1) blocked = 'duplicate';
+    const existing = matches[0];
+    if (!existing) return { title: card.title, action: 'create', changed: [], card };
+    const changed = [...['tags', 'summary'].filter(key => !same(existing[key], card[key])), ...Object.keys(card.persona).filter(key => !same(existing.persona?.[key], card.persona[key]))];
+    return { title: card.title, action: changed.length ? 'update' : 'same', id: existing.id, current: existing.current, changed, card };
+  });
+  const limit = Number.isFinite(library.limit) ? library.limit : 24;
+  if (!blocked && library.cards.length + items.filter(item => item.action === 'create').length > limit) blocked = 'full';
+  return { items, blocked };
+}
+/** What a sync preview was made against: if this differs when it is confirmed, the library changed in between. */
+export function cardLibraryStamp(library) {
+  return JSON.stringify([library.personaRevision, library.cards.map(card => [card.id, card.title, card.tags, card.summary, card.persona, card.updatedAt])]);
+}
 export function validWorld(value) {
   return value && typeof value.world?.paused === 'boolean' && Number.isSafeInteger(value.world.revision)
     && Number.isSafeInteger(value.persona?.revision) && value.persona.value && value.counts

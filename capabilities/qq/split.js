@@ -1,7 +1,7 @@
 /** A text reply longer than this (UTF-16 units) goes out as several short messages. */
 export const SPLIT_MAX_CHARS = 60;
 /** Most messages for one reply; what is left over stays in the last one. */
-export const SPLIT_MAX_PARTS = 4;
+export const SPLIT_MAX_PARTS = 3;
 // The pause before each message after the first: segmentGap in pacing.js.
 
 const SENTENCE = '。！？…～!?~.', CLOSERS = '”’」』）)】》', COMMA = '，、；：,;';

@@ -11,8 +11,8 @@ function split(text) {
   return parts;
 }
 
-test('the constants: 60 characters a message, at most 4 messages', () => {
-  assert.deepEqual([SPLIT_MAX_CHARS, SPLIT_MAX_PARTS], [60, 4]);
+test('the constants: 60 characters a message, at most 3 messages', () => {
+  assert.deepEqual([SPLIT_MAX_CHARS, SPLIT_MAX_PARTS], [60, 3]);
 });
 
 test('a short reply without a blank line is returned as it is, byte for byte', () => {
@@ -72,10 +72,10 @@ test('a stretch with no natural place is cut at the limit, without breaking a su
   assert.deepEqual(split('甲'.repeat(59) + '😀' + '乙'.repeat(30)), ['甲'.repeat(59), '😀' + '乙'.repeat(30)]);
 });
 
-test('more than 4 messages: the rest stays in the last one, nothing is lost', () => {
-  assert.deepEqual(split('一\n\n二\n\n三\n\n四\n\n五\n\n六'), ['一', '二', '三', '四\n\n五\n\n六']);
+test('more than 3 messages: the rest stays in the last one, nothing is lost', () => {
+  assert.deepEqual(split('一\n\n二\n\n三\n\n四\n\n五\n\n六'), ['一', '二', '三\n\n四\n\n五\n\n六']);
   const sentence = n => `这是第${n}句话，它的长度刚好让两句放不进同一条消息里面去，所以一句一条。`;
-  assert.deepEqual(split([1, 2, 3, 4, 5, 6].map(sentence).join('')), [sentence(1), sentence(2), sentence(3), sentence(4) + sentence(5) + sentence(6)]);
+  assert.deepEqual(split([1, 2, 3, 4, 5, 6].map(sentence).join('')), [sentence(1), sentence(2), sentence(3) + sentence(4) + sentence(5) + sentence(6)]);
 });
 
 test('a reply of about 150 characters in several sentences becomes 2 to 4 messages of at most 60', () => {

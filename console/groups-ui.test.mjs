@@ -10,8 +10,8 @@ const world = { world: { paused: false, revision: 1 }, persona: { revision: 1, v
 const G1 = '999900009001', G2 = '999900009002', G3 = '999900009003';
 const row = (groupId, state, extra = {}) => ({ capabilityId: 'qq', groupId, name: 'MOCK-群' + groupId.slice(-1), memberCount: 5, present: true, state, members: state === 'none' ? 0 : 3, messages: state === 'none' ? 0 : 12, lastReplyAt: state === 'none' ? null : 1794000000000, digests: state === 'none' ? 0 : 2, ...extra });
 const listing = (groups, extra = {}) => ({ available: true, settings: { callNames: ['小鱼'] }, groups, ...extra });
-// Hook position in view.js: the group states follow the intent confirmation (51).
-const GROUPS = 52, CONFIRM = 53, NAMES = 54;
+// Hook position in view.js: the group states follow the card import awaiting confirmation (52).
+const GROUPS = 53, CONFIRM = 54, NAMES = 55;
 
 function harness(states, responses) {
   const refs = [], calls = [];
