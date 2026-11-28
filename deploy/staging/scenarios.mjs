@@ -29,6 +29,10 @@ export function validateScenarios(data) {
   for (const [name, person] of Object.entries(people)) if (!MOCK_NAME.test(name) || !MOCK_QQ.test(person?.qq ?? '')) fail(`not visibly fake: ${name} ${person?.qq} (use MOCK-<NAME> and a 12-digit QQ number starting with 9999)`);
   if (new Set(Object.values(people).map(person => person.qq)).size !== Object.keys(people).length) fail('duplicate QQ number');
   if (Object.values(data.people).filter(person => person.owner).length !== 1) fail('exactly one person must be the owner');
+  // Groups are as visibly fake as people: MOCK- names, 12-digit numbers starting with 9999, members from `people`.
+  const groups = data.groups ?? {};
+  for (const [name, group] of Object.entries(groups)) if (!MOCK_NAME.test(name) || !MOCK_QQ.test(group?.id ?? '') || !Array.isArray(group.members) || group.members.some(member => !data.people[member])) fail(`not a visibly fake group of known people: ${name}`);
+  if (new Set([...Object.values(groups).map(group => group.id), ...Object.values(people).map(person => person.qq)]).size !== Object.keys(groups).length + Object.keys(people).length) fail('duplicate group number');
   const ids = new Set();
   for (const scenario of data.scenarios) {
     if (!/^[A-Z][A-Z0-9-]{0,15}$/.test(scenario?.id ?? '') || ids.has(scenario.id) || typeof scenario.title !== 'string' || !Array.isArray(scenario.steps) || !scenario.steps.length) fail('invalid scenario ' + scenario?.id);
@@ -38,6 +42,7 @@ export function validateScenarios(data) {
       if (keys.length !== 1 || !Object.hasOwn(STEPS, keys[0])) fail(`${scenario.id}: unknown step ${JSON.stringify(step)}`);
       const args = step[keys[0]];
       for (const name of [args.from, args.person, ...list(args.observedFrom ?? []), ...list(args.to ?? []).filter(to => to !== '*')].filter(value => value !== undefined)) if (!data.people[name]) fail(`${scenario.id}: unknown person ${name}`);
+      if (args.group !== undefined && args.group !== '*' && !groups[args.group]) fail(`${scenario.id}: unknown group ${args.group}`);
     }
   }
   return data;
@@ -75,6 +80,146 @@ const mockActor = name => `mock:user:${name}`, mockStream = name => `mock:privat
 const mock = (run, method, route, body) => typeof run.mock === 'function' ? run.mock(method, route, body) : fail('this replay has no second channel (--mock-control)');
 
 export const STEPS = {
+  /** Group chat (the fake OneBot's groups, set from the scenario file's `groups` when the replay starts).
+   * `groupEnable` / `groupDisable`: the owner's switch on the console (operator POST /groups/enable, /groups/disable).
+   * After enabling, the step waits until the bridge has reported the group's roster (Authority has member rows).
+   * `expect: "refused"`: enabling must be refused (409) and the group stay as it was. */
+  async groupEnable(run, _ctx, { group, expect = 'ok' }) {
+    const body = { capabilityId: 'qq', groupId: run.groupId(group) }, state = async () => (await run.operator('GET', '/groups')).groups.find(row => row.groupId === body.groupId)?.state ?? 'none';
+    if (expect === 'refused') {
+      const before = await state();
+      let refused = false;
+      try { await run.operator('POST', '/groups/enable', body); } catch (error) { if (!/ -> 409 /.test(error.message + ' ')) throw error; refused = true; }
+      if (!refused || await state() !== before) fail(`enabling ${group} was not refused`);
+      return;
+    }
+    await run.operator('POST', '/groups/enable', body);
+    await run.poll(async () => { const row = (await run.operator('GET', '/groups')).groups.find(item => item.groupId === body.groupId); return row?.state === 'enabled' && row.members > 0; }, 30000, `the bridge never reported who is in ${group}`);
+  },
+  async groupDisable(run, _ctx, { group }) {
+    const value = await run.operator('POST', '/groups/disable', { capabilityId: 'qq', groupId: run.groupId(group) });
+    if (value.groups.find(row => row.groupId === run.groupId(group))?.state !== 'disabled') fail(`${group} is not disabled`);
+  },
+  /** The other names she answers to in a group (operator POST /groups/settings). */
+  async groupNames(run, _ctx, { names }) { await run.operator('POST', '/groups/settings', { callNames: names }); },
+  /** Somebody joins or leaves a group on the platform (the fake OneBot's roster and its notice); `sync: true` only
+   * has the bridge read the roster again. The step waits `settleMs` for the bridge to report it. */
+  async groupMembers(run, _ctx, { group, join, leave, sync, settleMs = 2500 }) {
+    if ([join, leave, sync].filter(value => value !== undefined).length !== 1) fail('groupMembers takes one of join, leave, sync');
+    // (Leaving with an account that is not in the group changes nothing there and still makes the bridge look again.)
+    await run.onebot('POST', '/group-members', { group_id: run.groupId(group), ...(join ? { join: { user_id: run.qq(join), card: join } } : { leave: leave ? run.qq(leave) : '999900000098' }) });
+    await run.sleep(settleMs);
+  },
+  /** A message in a group. `at`: whom it mentions ("self", "all", or names); `quote: "her"`: it quotes her latest
+   * message in that group; `image`: one made-up picture; `anonymous`: sent anonymously. */
+  async groupSay(run, ctx, { group, from, text, at = [], quote, image, anonymous }) {
+    if (quote !== undefined && quote !== 'her') fail(`groupSay: unknown quote ${JSON.stringify(quote)}`);
+    const quoted = quote === 'her' ? (await run.groupSent()).filter(item => item.group_id === run.groupId(group)).at(-1)?.message_id ?? fail(`groupSay: she said nothing in ${group} to quote`) : undefined;
+    const said = await run.onebot('POST', '/group-message', { group_id: run.groupId(group), user_id: run.qq(from), ...(text === undefined ? {} : { text }), at: list(at).map(target => ['self', 'all'].includes(target) ? target : run.qq(target)), ...(quoted === undefined ? {} : { reply_to: quoted }), ...(image ? { image } : {}), ...(anonymous ? { anonymous: true } : {}) });
+    (ctx.groupSaid ??= new Map()).set(group, said?.message_id);
+  },
+  /** The next not-yet-matched message she sent to `group` must arrive and contain `contains`. `quotes: true`: it must
+   * quote the latest `groupSay` of this scenario in that group; `quotes: false`: it must quote nothing. `types`: its
+   * segment types, in order. Nothing may have gone to anybody's private chat in its place. */
+  async expectGroupReply(run, ctx, { group, contains, absent, quotes, types, timeoutMs = 60000 }) {
+    const message = await run.poll(async () => (await run.groupSent()).find(item => item.group_id === run.groupId(group) && !ctx.matched.has('g:' + item.message_id)), timeoutMs, `no message delivered to ${group}`);
+    ctx.matched.add('g:' + message.message_id);
+    if (!includes(message.text, { contains, absent })) fail(`${group} received ${JSON.stringify(message.text.slice(0, 80))}, expected it to ${contains !== undefined ? 'contain ' + JSON.stringify(contains) : 'lack ' + JSON.stringify(absent)}`);
+    if (quotes === true && message.reply !== String(ctx.groupSaid?.get(group))) fail(`her message to ${group} quotes ${message.reply}, expected the message that called her`);
+    if (quotes === false && message.reply !== null) fail(`her message to ${group} quotes a message`);
+    if (types !== undefined && JSON.stringify(message.types) !== JSON.stringify(types)) fail(`her message to ${group} has the segments ${JSON.stringify(message.types)}, expected ${JSON.stringify(types)}`);
+  },
+  /** After `afterMs`, nothing unmatched may have been sent to `group` (a name or "*": any group). */
+  async expectGroupSilence(run, ctx, { group = '*', afterMs = 4000 }) {
+    await run.sleep(afterMs);
+    const extra = (await run.groupSent()).filter(item => !ctx.matched.has('g:' + item.message_id) && (group === '*' || item.group_id === run.groupId(group)));
+    if (extra.length) fail(`expected silence in ${group}, but a group received ${JSON.stringify(extra[0].text.slice(0, 80))}`);
+  },
+  /** Group sends that got no receipt during this scenario: exactly `count`, all to `group`. */
+  async expectGroupLostSends(run, _ctx, { group, count, timeoutMs = 60000 }) {
+    let lost = [];
+    const exact = () => lost.length === count && lost.every(item => item.group_id === run.groupId(group));
+    try { await run.poll(async () => { lost = (await run.onebot('GET', '/groups')).groupLost; return exact(); }, timeoutMs, 'timeout'); } catch (error) { if (error.message !== 'timeout') throw error; fail(`${lost.length} group send(s) went without a receipt, expected ${count} to ${group}`); }
+  },
+  /** The group's conversation in Authority (operator GET /conversations). `bound: false`: there is none.
+   * `noteGroupMessages` remembers how many lines it holds; `expectGroupMessages` waits until exactly `added` more are
+   * there (and, after `holdMs`, still exactly that many). */
+  async expectGroupConversation(run, _ctx, { group, bound, enabled }) {
+    const row = (await run.operator('GET', '/conversations')).find(item => item.streamId === run.groupStream(group));
+    if (Boolean(row) !== bound) fail(`${group}: conversation bound=${Boolean(row)}, expected ${bound}`);
+    if (row && (row.group !== true || row.audience !== 'shared' || row.owner !== false)) fail(`${group} is not listed as a group conversation that is nobody's`);
+    if (row && enabled !== undefined && row.enabled !== enabled) fail(`${group}: enabled=${row.enabled}, expected ${enabled}`);
+  },
+  async noteGroupMessages(run, ctx, { group }) { (ctx.groupMessages ??= new Map()).set(group, await run.groupMessageCount(group)); },
+  async expectGroupMessages(run, ctx, { group, added, holdMs = 1500, timeoutMs = 15000 }) {
+    const base = ctx.groupMessages?.get(group) ?? fail('expectGroupMessages needs a noteGroupMessages before it');
+    await run.poll(async () => await run.groupMessageCount(group) >= base + added, timeoutMs, `${group} gained ${await run.groupMessageCount(group) - base} recorded line(s), expected ${added}`);
+    await run.sleep(holdMs);
+    const actual = await run.groupMessageCount(group) - base;
+    if (actual !== added) fail(`${group} gained ${actual} recorded line(s), expected ${added}`);
+  },
+  /** The tools the model was offered for the run whose typed text contains `userText`: exactly `names` (in any order). */
+  async expectTools(run, ctx, { userText, names }) {
+    const requests = run.modelLog(ctx).filter(entry => entry.stream && entry.userText.includes(userText));
+    if (!requests.length) fail(`the model never received ${JSON.stringify(userText)}`);
+    const wanted = JSON.stringify([...names].sort());
+    for (const entry of requests) if (JSON.stringify([...(entry.tools ?? [])].sort()) !== wanted) fail(`the request for ${JSON.stringify(userText)} offers the tools ${JSON.stringify(entry.tools ?? [])}, expected ${wanted}`);
+  },
+  /** `times` turns in a group, each long enough to push earlier turns out of her window: before each call, lines of
+   * `padFrom` (not calling her) adding up to `pad` characters, then `from` mentions her with `text` (`{n}` = the turn
+   * number) and her reply is awaited. */
+  async groupConverse(run, ctx, { group, from, padFrom = from, text, times, reply, pad = 3600 }) {
+    for (let n = 1; n <= times; n++) {
+      for (let left = pad, part = 1; left > 0; left -= 400, part++) await STEPS.groupSay(run, ctx, { group, from: padFrom, text: `MOCK-PAD ${n}-${part} ` + '。'.repeat(Math.min(400, left)) });
+      await STEPS.groupSay(run, ctx, { group, from, at: ['self'], text: text.replaceAll('{n}', String(n)) + '。'.repeat(1500) });
+      await STEPS.expectGroupReply(run, ctx, { group, contains: reply });
+    }
+  },
+  /** A group digest (operator GET /memory: a machine digest bound to the group, not to a person, without a feeling)
+   * whose summary contains `contains`; waits for the memory worker to write it. `covers`: one of the lines it was
+   * made from must contain this text. `expectNoGroupDigest`: none of that group contains the text. */
+  async expectGroupDigest(run, _ctx, { group, contains, covers, timeoutMs = 120000 }) {
+    const digest = await run.poll(async () => (await run.groupDigests(group)).find(item => item.summary.includes(contains)), timeoutMs, `Authority has no digest of ${group} containing ${JSON.stringify(contains)}`);
+    if (digest.source?.machine !== 'digest' || digest.visibility !== 'private' || digest.evidence !== undefined || digest.feeling !== undefined || digest.personIsOwner || digest.personId !== 'group:' + run.groupStream(group)) fail(`the digest of ${group} is not a private machine digest of the group itself, without a feeling`);
+    if (covers === undefined) return;
+    const { sources } = await run.operator('GET', '/memory/sources?id=' + encodeURIComponent(digest.id));
+    if (!sources.some(source => source.text.includes(covers))) fail(`the digest of ${group} is not made from a line containing ${JSON.stringify(covers)}`);
+  },
+  async expectNoGroupDigest(run, _ctx, { group, contains }) {
+    if ((await run.groupDigests(group)).some(item => item.summary.includes(contains))) fail(`Authority still has a digest of ${group} containing ${JSON.stringify(contains)}`);
+  },
+  /** Forget one line said in a group the way the console does, up to the forget itself: the group digest containing
+   * `contains` leads to the line containing `source`; the preview must take the digest along and retire the group's
+   * conversation and the private conversation of each of `members` (people in the group), and of none of `others`.
+   * Pause, forget. `expectCleanup` follows, `resume` ends it. */
+  async forgetGroupLine(run, ctx, { group, contains, source, members = [], others = [] }) {
+    let digest, observation;
+    for (const item of (await run.groupDigests(group)).filter(entry => entry.summary.includes(contains))) {
+      const found = (await run.operator('GET', '/memory/sources?id=' + encodeURIComponent(item.id))).sources.find(row => row.text.includes(source));
+      if (found) { digest = item; observation = found; break; }
+    }
+    if (!digest) fail(`no digest of ${group} containing ${JSON.stringify(contains)} is made from a line containing ${JSON.stringify(source)}`);
+    const preview = await run.operator('POST', '/memory/forget-preview', { entityId: digest.entityId, ids: [observation.id] });
+    if (!preview.digestIds?.includes(digest.id) || preview.epochScope !== 'streams') fail('the forget preview does not take the group digest along, or retires every conversation');
+    const affected = preview.affectedStreams.map(row => row.streamId), privateOf = name => `qq:${run.data.bot.qq}:private:${run.qq(name)}`;
+    if (!affected.includes(run.groupStream(group))) fail('the forget preview does not retire the group conversation');
+    for (const name of list(members)) if (!affected.includes(privateOf(name))) fail(`the forget preview does not retire the private conversation of ${name}, who is in the group`);
+    for (const name of list(others)) if (affected.includes(privateOf(name))) fail(`the forget preview retires the private conversation of ${name}, who is not in the group`);
+    await run.setPaused(true);
+    const at = Date.now();
+    const job = await run.operator('POST', '/memory/forget', { entityId: digest.entityId, ids: [observation.id], expectedMemoryEpoch: preview.memoryEpoch });
+    ctx.cleanup = { id: job.id, at };
+  },
+  /** Nobody was admitted and nothing was remembered about anybody because of a group: the number of people Authority
+   * knows is as `notePeople` found it, and no fact, intent or note mentions `absent`. */
+  async notePeople(run, ctx) { ctx.people = (await run.operator('GET', '/people')).admitted; },
+  async expectPeopleUnchanged(run, ctx, { absent }) {
+    if (ctx.people === undefined) fail('expectPeopleUnchanged needs a notePeople before it');
+    const now = (await run.operator('GET', '/people')).admitted;
+    if (now !== ctx.people) fail(`Authority knows ${now} people, it knew ${ctx.people}`);
+    const found = (await run.memoryPages('')).flatMap(page => page.items).find(item => item.kind !== 'digest' && [item.key, item.value, item.summary, item.text].filter(Boolean).join(' ').includes(absent));
+    if (found) fail(`Authority remembers ${JSON.stringify(absent)} outside a digest`);
+  },
   /** The second channel (MOCK, not QQ; deploy/staging/fake-channel.mjs). `mockFriends`: who is a friend of the bot
    * there (only a friend is admitted and answered). `mockSay`: a private message from a person's account there. */
   async mockFriends(run, _ctx, { people }) {
@@ -1070,6 +1215,17 @@ export class Runner {
     return (await this.memoryPages(`person=${label}&`)).flatMap(page => page.items).filter(item => item.kind === 'digest' && item.status === 'active' && typeof item.summary === 'string');
   }
   async sent() { return (await this.onebot('GET', '/state')).sent; }
+  // Groups of the scenario file: the platform's group number, the conversation Authority binds for it, and the label
+  // Authority gives one member inside it (authority/src/context.js `opaqueMember`).
+  groupId(name) { return this.data.groups?.[name]?.id ?? fail(`unknown group ${name}`); }
+  groupStream(name) { return `qq:${this.data.bot.qq}:group:${this.groupId(name)}`; }
+  memberLabel(group, person) { return 'm-' + createHash('sha256').update(`qq\0${this.groupStream(group)}\0qq:${this.data.bot.qq}:user:${this.qq(person)}`).digest('hex').slice(0, 6); }
+  async groupSent() { return (await this.onebot('GET', '/groups')).groupSent; }
+  async groupMessageCount(name) { return (await this.operator('GET', '/conversations')).find(item => item.streamId === this.groupStream(name))?.messages ?? 0; }
+  /** The active digests of a group (operator GET /memory, every page). */
+  async groupDigests(name) {
+    return (await this.memoryPages('')).flatMap(page => page.items).filter(item => item.kind === 'digest' && item.status === 'active' && item.scope?.kind === 'group' && item.streamId === this.groupStream(name) && typeof item.summary === 'string');
+  }
   async messageCount(name, channel = 'qq') {
     const row = (await this.operator('GET', '/conversations')).find(item => item.streamId === (channel === 'mock' ? mockStream(name) : `qq:${this.data.bot.qq}:private:${this.qq(name)}`));
     return row ? row.messages : -1;
@@ -1092,6 +1248,8 @@ export class Runner {
   async prepare() {
     await this.poll(async () => (await this.onebot('GET', '/state')).clients > 0 && (await this.operator('GET', '/qq')).loggedIn, 45000, 'the QQ bridge never logged in to the fake OneBot');
     await this.onebot('POST', '/friends', { friends: Object.entries(this.data.people).filter(([, person]) => person.friend).map(([name, person]) => ({ user_id: person.qq, nickname: name })) });
+    // The groups the bot is in, each member's card being the member's MOCK- name (a scenario file without groups has none).
+    if (this.data.groups) await this.onebot('POST', '/groups', { groups: Object.entries(this.data.groups).map(([name, group]) => ({ group_id: group.id, name, members: group.members.map(member => ({ user_id: this.qq(member), card: member, nickname: member })) })) });
     await this.setPaused(true);
     await this.operator('POST', '/qq', { allowedCallerUID: this.qq(this.owner) });
     await this.operator('POST', '/model', { model: 'deepseek-flash', apiKey: MOCK_MODEL_KEY });
@@ -1104,7 +1262,9 @@ export class Runner {
     // `{label:MOCK-X}`: the opaque label Authority gives that person (the first six hex digits of the SHA-256 of the
     // person ID, authority/src/context.js `opaquePerson`), for what the scripted model writes in her wake-up.
     const scenario = JSON.parse(JSON.stringify(written).replaceAll('{run}', 'R' + Date.now().toString(36).toUpperCase())
-      .replace(/\{label:(MOCK-[A-Z0-9-]{1,24})\}/g, (_, name) => this.data.people[name] ? 'p-' + createHash('sha256').update(this.personId(name)).digest('hex').slice(0, 6) : fail(`unknown person in {label:${name}}`)));
+      .replace(/\{label:(MOCK-[A-Z0-9-]{1,24})\}/g, (_, name) => this.data.people[name] ? 'p-' + createHash('sha256').update(this.personId(name)).digest('hex').slice(0, 6) : fail(`unknown person in {label:${name}}`))
+      // `{member:MOCK-GROUP-X:MOCK-A}`: the label Authority gives that person's account inside that group.
+      .replace(/\{member:(MOCK-[A-Z0-9-]{1,24}):(MOCK-[A-Z0-9-]{1,24})\}/g, (_, group, name) => this.data.groups?.[group] && this.data.people[name] ? this.memberLabel(group, name) : fail(`unknown group or person in {member:${group}:${name}}`)));
     const ctx = { matched: new Set(), observed: new Map(), logOffset: this.logLines().length };
     let done = 0, error = null;
     const each = async steps => { for (const step of steps) { const [name] = Object.keys(step); await STEPS[name](this, ctx, step[name]); done++; } };

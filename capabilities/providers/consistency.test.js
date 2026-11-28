@@ -248,9 +248,10 @@ test('model gateway (spend.mjs): categories and stop tiers are the derived ones 
   // A reserved category has no declaration charged to it; a declaration that claims it moves it out of RESERVED_STOP.
   assert.deepEqual(Object.keys(RESERVED_STOP), ['generation']);
   assert.deepEqual(Object.keys(RESERVED_STOP).filter(category => Object.hasOwn(SPEND_STOP, category)), []);
-  // The tables spend.mjs had written by hand before it read the declarations: the same categories and stop tiers.
-  assert.deepEqual(sorted(CATEGORIES), sorted(['conversation', 'maintenance', 'vision', 'web', 'generation', 'proactive', 'activity']));
-  assert.deepEqual({ ...STOP }, { proactive: 'reduced', maintenance: 'restricted', vision: 'restricted', web: 'restricted', generation: 'restricted', activity: 'restricted', conversation: 'exhausted' });
+  // The tables spend.mjs had written by hand before it read the declarations: the same categories and stop tiers, and
+  // `group` (group chat), declared since.
+  assert.deepEqual(sorted(CATEGORIES), sorted(['conversation', 'maintenance', 'vision', 'web', 'generation', 'proactive', 'group', 'activity']));
+  assert.deepEqual({ ...STOP }, { proactive: 'reduced', group: 'restricted', maintenance: 'restricted', vision: 'restricted', web: 'restricted', generation: 'restricted', activity: 'restricted', conversation: 'exhausted' });
   // One category, one stop tier, whichever capability is charged to it.
   for (const item of CAPABILITIES.filter(item => item.meter.spendCategory)) assert.equal(item.meter.stopTier, SPEND_STOP[item.meter.spendCategory], item.id);
 });

@@ -5,6 +5,9 @@ export const DECLINE_MARK = '<不说>';
 /** Her whole reply to a private wake-up (`input.wake`) when she does nothing in it. Whatever she replies there, the
  * channel sends nothing. */
 export const REST_MARK = '<休息>';
+/** In a group run (`input.group`): the mark at the head of a line that called her. The channel writes it and the
+ * executor's group system text explains it. */
+export const GROUP_CALLED = '叫到你的';
 
 /** Text execution port: the backend owns sessions (derived from scope) and its model/tool loop. */
 export async function executeConversation(executor, { scope, requestId, input, timeoutMs = DEFAULT_EXECUTION_TIMEOUT_MS }) {

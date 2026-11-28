@@ -12,6 +12,7 @@
 // credential entry points at `model-data/providers.json`. None is declared yet.
 //
 // `proactive` is not something the model calls: it is the usage row and spend category of a run she starts herself.
+// `group-chat` likewise: the usage row and spend category of a turn in a group conversation.
 //
 // Today the declarations are read by the usage ledger (model-gateway/usage-ledger.mjs) and, through
 // it, the console's quota page, and by the executor (capabilities/conversation/tools.js): the whole definition of the
@@ -40,6 +41,7 @@ import web from './web/manifest.js';
 import speechTts from './speech-tts/manifest.js';
 import speechAsr from './speech-asr/manifest.js';
 import proactive from './proactive/manifest.js';
+import groupChat from './group-chat/manifest.js';
 import demo from './demo/manifest.js';
 import video from './video/manifest.js';
 import videoNote from './video-note/manifest.js';
@@ -50,7 +52,7 @@ import job from './job/manifest.js';
 
 const frozen = value => { if (value && typeof value === 'object') { Object.values(value).forEach(frozen); Object.freeze(value); } return value; };
 /** Every declaration, metered or not. */
-export const DECLARATIONS = frozen([chat, consolidation, vision, sticker, web, speechTts, speechAsr, proactive, demo, video, videoNote, videoFrame, media, stickerLibrary, job]);
+export const DECLARATIONS = frozen([chat, consolidation, vision, sticker, web, speechTts, speechAsr, proactive, groupChat, demo, video, videoNote, videoFrame, media, stickerLibrary, job]);
 /** Every metered capability (one ledger row each), in the order the quota page lists them. A declaration without a
  * `meter` has no row and is not in this list. */
 export const CAPABILITIES = frozen(DECLARATIONS.filter(item => item.meter));

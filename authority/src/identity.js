@@ -58,9 +58,35 @@ export function capability(store, id) {
   if (!result) fail('FORBIDDEN', 'Unknown capability', 403);
   return result;
 }
+/** A group conversation is bound to an opaque scope key, never to a person: `group:<streamId>`. The prefix is
+ * reserved: no account and no private conversation is ever bound to a name that starts with it. */
+export const GROUP_PREFIX = 'group:';
+export const groupKey = streamId => GROUP_PREFIX + streamId;
+/** The switch of a group conversation, `{ enabled }`, or undefined when this conversation never had one (a `shared`
+ * binding from before groups keeps what it always was: it reads public material and nothing is written from it). */
+export function groupFlag(store, capabilityId, streamId) {
+  if (!store.groups) return undefined;
+  const row = store.db.prepare('SELECT enabled FROM conversation_flags WHERE capability_id=? AND stream_id=?').get(capabilityId, streamId);
+  return row ? { enabled: row.enabled === 1 } : undefined;
+}
+/** `{ key }` when this conversation is an enabled group (a `shared` stream bound to its own scope key, switched on),
+ * otherwise null. */
+export function groupScope(store, capabilityId, streamId) {
+  if (!groupFlag(store, capabilityId, streamId)?.enabled) return null;
+  const stream = store.db.prepare("SELECT person_id AS personId FROM streams WHERE capability_id=? AND stream_id=? AND audience='shared'").get(capabilityId, streamId);
+  return stream?.personId === groupKey(streamId) ? { key: stream.personId } : null;
+}
+/** In a private conversation an account is confirmed when it is bound to the person the conversation is bound to.
+ * In an enabled group it is confirmed when it is a present member of that group; who it is (`subjectPersonId`) is
+ * whatever person the account is bound to, or nobody (null). */
 export function resolveIdentity(store, capabilityId, observation) {
   const stream = store.db.prepare('SELECT person_id AS personId, audience, entity_id AS entityId FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId, observation.streamId);
   const actor = store.db.prepare('SELECT person_id AS personId FROM actors WHERE capability_id=? AND actor_id=?').get(capabilityId, observation.actorId);
+  const group = stream?.audience === 'shared' ? groupScope(store, capabilityId, observation.streamId) : null;
+  if (group) {
+    const member = store.db.prepare('SELECT 1 FROM group_members WHERE capability_id=? AND stream_id=? AND actor_id=? AND left_at IS NULL').get(capabilityId, observation.streamId, observation.actorId);
+    return { stream, actor, group, subjectPersonId: actor?.personId ?? null, confirmed: member !== undefined };
+  }
   return { stream, actor, confirmed: !!stream && !!actor && actor.personId === stream.personId };
 }
 export function contextScope(store, capabilityId, streamId) {

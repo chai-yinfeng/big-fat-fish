@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { messageFromOneBot, imageProbeLines, replyProbeLines, quotedText, quoteLine, pokeFromOneBot, pokeProbeLine } from './source.js';
+import { messageFromOneBot, imageProbeLines, replyProbeLines, atProbeLines, senderProbeLine, cardName, quotedText, quoteLine, pokeFromOneBot, pokeProbeLine } from './source.js';
+import { GROUP, GroupBuffer, Limiter, addressed, flat, withMentions, speaker, groupLine, groupHead, groupQuoteLine } from './group.js';
+import { sendCall } from './media.js';
 import { qqRequestId } from './worker-route.js';
 import { forgetRecords } from './dispatch-forget.js';
 import { createCleanupParty } from '../../authority/src/cleanup-party.js';
@@ -43,6 +45,9 @@ function completionEvent(result) {
  * kind as a run she starts herself (she may say nothing). A poke among the person's messages is this line instead. */
 const POKE_EVENT = '对方在 QQ 上戳了你一下（拍一拍），没有说话。';
 const POKE_FACT = '[渠道事实：对方在 QQ 上戳了你一下（拍一拍）。]';
+/** A group message that only mentions her: what its line says in place of words. */
+const AT_FACT = '[渠道事实：对方在群里 @ 了你，没有说别的。]';
+const HOUR_MS = 3600000;
 /** Her latest delivered messages kept in memory (a restart forgets them), so that a quote of one needs no platform call. */
 const SENT_TEXTS = 500;
 // She chose to say nothing: the mark anywhere in the reply (full-width brackets too) means nothing is sent.
@@ -78,10 +83,10 @@ export const isDiaryCodeReply = message => /^\s*你的日记口令是：/.test(t
 export const OWNER_BUDGET_NOTICE = '提醒：今天的模型开销已经到达每日上限，大肥鱼今天先不再回复任何人，北京时间零点后自动恢复。可以在控制台查看今日开销或调整上限。';
 export class QQBridge {
   /** faces: send her `[名字]` as small faces (only where the bridge sends without the content service); by default
-   * what QQ's channel declaration says (`expression.faces`). pacing: see pacing.js. random, setTimer, clearTimer: the
+   * what QQ's channel declaration says (`expression.faces`). pacing: see pacing.js. group: see group.js. random, setTimer, clearTimer: the
    * random source and the timer of the burst wait (tests pass their own). log: one line to the service's output. */
   constructor({ authority, port, onebot, executor, media, settingsFile, stateFile, clock = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), faces = channel('qq').expression.faces,
-    pacing = PACING, random = Math.random, setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = timer => clearTimeout(timer), log = line => process.stderr.write(line + '\n') }) {
+    pacing = PACING, group = GROUP, random = Math.random, setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = timer => clearTimeout(timer), log = line => process.stderr.write(line + '\n') }) {
     Object.assign(this, { authority, port, onebot, executor, media, settingsFile, stateFile, clock, sleep, faces, pacing, random, setTimer, clearTimer, log });
     this.settings = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile, 'utf8')) : null;
     this.state = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : { records: {} };
@@ -101,6 +106,10 @@ export class QQBridge {
     // In memory only: the text of her latest delivered messages by platform message id (what a quote of one says),
     // and per conversation when a poke was last taken (pacing.pokeCooldownMs).
     this.sentTexts = new Map(); this.lastPoke = new Map();
+    // Group chat, in memory only: the enabled groups (each with its members' cards and labels and the lines kept until
+    // she is called), the names she answers to, the sliding-window limits, and which conversation each of her delivered
+    // messages went to (a quote of one is only read in that same conversation).
+    this.groupSettings = group; this.groups = new Map(); this.callNames = []; this.groupLimits = new Limiter(); this.groupActive = 0; this.groupWaiting = []; this.groupProbe = null; this.sentStreams = new Map(); this.groupQuoteRefusals = 0;
     // Forgetting while the bridge stays up (pollForget below); `startedAt` in a confirmation says which process forgot.
     const startedAt = clock();
     this.cleanup = createCleanupParty({ authority, party: 'bridge', forget: async job => ({ ...this.forgetDispatch(job), startedAt }) });
@@ -114,7 +123,7 @@ export class QQBridge {
     if (this.connected === connected) { if (connected) await this.refreshIdentity(); return; }
     this.connected = connected; this.selfId = null; this.connectionEpoch++;
     if (!connected) return;
-    this.connectedAt = Date.now(); await this.refreshIdentity(); void this.refreshFriends();
+    this.connectedAt = Date.now(); await this.refreshIdentity(); void this.refreshFriends(); void this.refreshGroups();
   }
   refreshFriends() {
     if (!this.connected) return Promise.resolve();
@@ -136,12 +145,13 @@ export class QQBridge {
   peopleStatus() {
     return { friends: this.friends ? this.friends.size : null, friendsRefreshedAt: this.friendsAt || null, admitted: this.admitted.size, active: this.active, waiting: this.waiting.length, conversationsQueued: this.streams.size };
   }
-  /** Run `job` after earlier jobs of the same conversation, holding one of CONCURRENCY slots. */
-  enqueue(streamId, job) {
+  /** Run `job` after earlier jobs of the same conversation, holding one of CONCURRENCY slots. `gate` (a group turn's):
+   * what the job passes before it takes a slot. */
+  enqueue(streamId, job, gate) {
     let lane = this.streams.get(streamId);
     if (!lane) { lane = { tail: Promise.resolve(), queued: 0 }; this.streams.set(streamId, lane); }
     lane.queued++;
-    const task = lane.tail.then(() => this.slot(job));
+    const task = lane.tail.then(() => gate ? gate(() => this.slot(job)) : this.slot(job));
     lane.tail = task.catch(() => {}).finally(() => { lane.queued--; if (!lane.queued && this.streams.get(streamId) === lane) this.streams.delete(streamId); });
     return task;
   }
@@ -172,12 +182,17 @@ export class QQBridge {
   async receive(event) {
     const cfg = this.settings, arrival = ++this.arrivals;
     if (event?.post_type === 'notice' && event.notice_type === 'friend_add') { this.friends = null; void this.refreshFriends(); return; }
+    // Somebody joined or left a group she listens in: its member list is read again.
+    if (event?.post_type === 'notice' && ['group_increase', 'group_decrease'].includes(event.notice_type)) { const streamId = `qq:${this.selfId}:group:${event.group_id}`; if (this.groups.has(streamId)) void this.syncMembers(streamId); return; }
     // A poke at her in a private conversation is taken like a message with no words (see process); any other is ignored.
     const poke = event?.post_type === 'notice' && event.notice_type === 'notify' && event.sub_type === 'poke';
     if (poke) this.log(pokeProbeLine(event));
+    // A group message has its own path: she answers only in an enabled group, and only when called (receiveGroup).
+    if (!poke && event?.post_type === 'message' && event.message_type === 'group') return cfg && this.connected && this.selfId === cfg.expectedSelfId ? this.receiveGroup(event, cfg, arrival) : undefined;
     if (!cfg || !this.connected || this.selfId !== cfg.expectedSelfId || !poke && (event?.post_type !== 'message' || event.message_type !== 'private' || event.anonymous)) return;
     const uid = String(event.user_id), owner = uid === cfg.allowedCallerUID;
-    // Others: bot friends only. Temporary (group) sessions wait for group support.
+    // Others: bot friends only. A temporary session opened from a group (`sub_type: 'group'`) is still not taken:
+    // it would admit somebody who is not a friend.
     if (!owner && (!poke && event.sub_type !== undefined && event.sub_type !== 'friend' || !identifier(uid) || !await this.isFriend(uid))) return;
     let message; try { message = poke ? pokeFromOneBot(event, cfg) : messageFromOneBot(event, cfg); } catch { return; }
     if (!message || message.observation.at < this.connectedAt - 1000) return;
@@ -206,13 +221,14 @@ export class QQBridge {
    * first message, then queues one turn in the conversation's queue. Until that turn starts (e.g. while an earlier turn
    * of the conversation is still running) later messages still join it; once it has started they begin the next burst.
    * A message that would make the burst too big (pacing.burstMaxMessages, BURST_MAX_MEDIA, BURST_MAX_CHARS) closes it
-   * and begins the next one. */
-  gather(streamId, entry) {
+   * and begins the next one. A group's burst (receiveGroup) gives its own size (`max`), its own turn (`run`) and what
+   * the turn passes before it takes a slot (`gate`). */
+  gather(streamId, entry, { max = this.pacing.burstMaxMessages, run = entries => this.process(entries), gate } = {}) {
     let burst = this.bursts.get(streamId);
     const media = entry.message.media.length, chars = entry.message.authoredText.length;
-    if (burst && (burst.entries.length >= this.pacing.burstMaxMessages || burst.media + media > BURST_MAX_MEDIA || burst.chars + chars > BURST_MAX_CHARS)) { this.bursts.delete(streamId); if (!burst.queued) this.flush(streamId, burst); burst = null; }
+    if (burst && (burst.entries.length >= max || burst.media + media > BURST_MAX_MEDIA || burst.chars + chars > BURST_MAX_CHARS)) { this.bursts.delete(streamId); if (!burst.queued) this.flush(streamId, burst); burst = null; }
     if (!burst) {
-      burst = { entries: [], media: 0, chars: 0, firstAt: this.clock(), timer: null, queued: false };
+      burst = { entries: [], media: 0, chars: 0, firstAt: this.clock(), timer: null, queued: false, run, gate };
       burst.done = new Promise((resolve, reject) => { burst.resolve = resolve; burst.reject = reject; });
       this.bursts.set(streamId, burst);
     }
@@ -248,8 +264,8 @@ export class QQBridge {
     burst.queued = true;
     this.enqueue(streamId, () => {
       if (this.bursts.get(streamId) === burst) this.bursts.delete(streamId);
-      return this.process(burst.entries.sort((a, b) => a.arrival - b.arrival));
-    }).then(burst.resolve, burst.reject);
+      return burst.run(burst.entries.sort((a, b) => a.arrival - b.arrival));
+    }, burst.gate).then(burst.resolve, burst.reject);
   }
   /** "日记口令": Authority says whether this conversation's person is on the open diary's list and, if so, makes a
    * new passcode; the bridge sends the answer to that same person. Nothing is observed and no model runs. The
@@ -292,6 +308,7 @@ export class QQBridge {
   async delivered(observation, item, receipt, text = receipt.text) {
     item.receipts ||= []; item.receipts.push({ messageId: receipt.messageId, type: receipt.type }); item.messageId = receipt.messageId; this.save();
     this.sentTexts.set(receipt.messageId, receipt.text); while (this.sentTexts.size > SENT_TEXTS) this.sentTexts.delete(this.sentTexts.keys().next().value);
+    this.sentStreams.set(receipt.messageId, observation.streamId); while (this.sentStreams.size > SENT_TEXTS) this.sentStreams.delete(this.sentStreams.keys().next().value);
     try { await this.port.observe({ eventId: 'qq:sent:' + receipt.messageId, streamId: observation.streamId, actorId: 'qq:model', role: 'assistant', text, at: Date.now() }); }
     catch { item.unobserved = true; this.save(); }
   }
@@ -330,7 +347,284 @@ export class QQBridge {
     const dispatchForgotten = forgetRecords(this.state.records, job.sourceEvents);
     if (dispatchForgotten) this.save();
     this.sentTexts.clear(); this.lastPicture.clear(); this.recentPictures.clear(); this.recentStickers.clear();
+    // The group lines kept in memory go as well (one of them may be what was forgotten).
+    this.sentStreams.clear(); for (const group of this.groups.values()) { group.buffer = new GroupBuffer(this.groupSettings); }
     return { dispatchForgotten };
+  }
+  // ---- Group chat (phase 2). She listens only in the groups Authority says are enabled, answers only when called,
+  // and never starts anything in a group. The numbers are group.js GROUP (or qq-bridge.json `group`). ----
+  /** The enabled groups of this bot and the names she answers to, as Authority lists them. A group that is no longer
+   * listed is dropped with the lines kept in memory for it; a new one has its members read at once. A timer calls
+   * this, and the control socket after the operator enabled or disabled a group. */
+  refreshGroups() {
+    if (!this.connected || !this.selfId || typeof this.authority?.groups !== 'function') return Promise.resolve();
+    if (this.groupProbe) return this.groupProbe;
+    const epoch = this.connectionEpoch;
+    const probe = Promise.resolve().then(async () => {
+      try {
+        const listed = await this.authority.groups();
+        if (this.connectionEpoch !== epoch || !Array.isArray(listed?.groups)) return;
+        const wanted = new Map();
+        for (const row of listed.groups) {
+          const match = typeof row?.streamId === 'string' ? /^qq:([1-9]\d{0,19}):group:([1-9]\d{0,19})$/.exec(row.streamId) : null;
+          if (match && match[1] === this.selfId) wanted.set(row.streamId, match[2]);
+        }
+        for (const streamId of [...this.groups.keys()]) if (!wanted.has(streamId)) this.groups.delete(streamId);
+        const added = [];
+        for (const [streamId, groupId] of wanted) if (!this.groups.has(streamId)) { this.groups.set(streamId, { streamId, groupId, members: new Map(), syncedAt: 0, buffer: new GroupBuffer(this.groupSettings), seen: new Set() }); added.push(streamId); }
+        this.callNames = Array.isArray(listed.callNames) ? listed.callNames.filter(name => typeof name === 'string' && name.length <= 64).slice(0, 16) : [];
+        for (const streamId of added) await this.syncMembers(streamId);
+      } catch {}
+    }).finally(() => { if (this.groupProbe === probe) this.groupProbe = null; });
+    this.groupProbe = probe; return probe;
+  }
+  /** Reads who is in one enabled group (OneBot `get_group_member_list`) and reports the whole roster to Authority,
+   * which answers with each account's member label. A failed or empty lookup changes nothing anywhere. */
+  async syncMembers(streamId) {
+    const group = this.groups.get(streamId);
+    if (!group || !this.connected || !this.selfId) return false;
+    try {
+      const list = await this.onebot.call('get_group_member_list', { group_id: group.groupId });
+      if (!Array.isArray(list) || !list.length || this.groups.get(streamId) !== group) return false;
+      const members = [];
+      for (const row of list) {
+        const uid = String(row?.user_id);
+        if (!identifier(uid) || uid === this.selfId) continue;
+        // `join_time` (seconds) is OneBot 11's; without it Authority takes the time it first hears of the account.
+        members.push({ uid, name: cardName(row.card) || cardName(row.nickname), joinedAt: Number.isSafeInteger(row.join_time) && row.join_time > 0 ? row.join_time * 1000 : 0 });
+      }
+      if (!members.length || members.length > this.groupSettings.maxMembers * 2 || members.length > 200) { if (members.length) this.log('qq group members: too many to read'); return false; }
+      const report = await this.authority.syncGroupMembers({ streamId, complete: true, members: members.map(member => ({ actorId: `qq:${this.selfId}:user:${member.uid}`, ...(member.name ? { name: member.name } : {}), ...(member.joinedAt ? { joinedAt: member.joinedAt } : {}) })) });
+      if (this.groups.get(streamId) !== group) return false;
+      group.members = new Map(members.map(member => [member.uid, { name: member.name, label: report?.labels?.[`qq:${this.selfId}:user:${member.uid}`] }]).filter(([, member]) => typeof member.label === 'string'));
+      group.syncedAt = this.clock();
+      return true;
+    } catch { return false; }
+  }
+  /** Every enabled group whose member list is older than `memberRefreshMs` is read again. */
+  async refreshMembers() {
+    for (const [streamId, group] of [...this.groups]) if (this.clock() - group.syncedAt >= this.groupSettings.memberRefreshMs) await this.syncMembers(streamId);
+  }
+  /** Operator (control socket): the groups this account is in, as the platform lists them, and which of them the
+   * bridge currently treats as enabled. */
+  async groupList() {
+    if (!this.connected || !this.selfId) throw new Error('QQ_GROUPS_UNAVAILABLE');
+    const list = await this.onebot.call('get_group_list');
+    const title = value => [...String(typeof value === 'string' ? value : '').replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, ' ').replace(/\s+/g, ' ').trim()].slice(0, 40).join('');
+    return { selfId: this.selfId, groups: (Array.isArray(list) ? list : []).map(row => ({ groupId: String(row?.group_id), name: title(row?.group_name), memberCount: Number.isSafeInteger(row?.member_count) ? row.member_count : null })).filter(row => identifier(row.groupId)).slice(0, 100)
+      .map(row => ({ ...row, listening: this.groups.has(`qq:${this.selfId}:group:${row.groupId}`) })) };
+  }
+  /** Operator (control socket), before a group is enabled: is she in it, is the owner in it, and how large is it. */
+  async groupCheck(groupId) {
+    if (!identifier(groupId) || !this.connected || !this.selfId || !identifier(this.settings?.allowedCallerUID)) throw new Error('QQ_GROUPS_UNAVAILABLE');
+    const list = await this.onebot.call('get_group_list'), row = (Array.isArray(list) ? list : []).find(item => String(item?.group_id) === groupId);
+    let ownerInGroup = false, memberCount = Number.isSafeInteger(row?.member_count) ? row.member_count : null;
+    if (row) {
+      try { ownerInGroup = String((await this.onebot.call('get_group_member_info', { group_id: groupId, user_id: this.settings.allowedCallerUID }))?.user_id) === this.settings.allowedCallerUID; } catch {}
+      // No count in the listing (an implementation without `member_count`): the member list is counted instead.
+      if (memberCount === null) try { const members = await this.onebot.call('get_group_member_list', { group_id: groupId }); if (Array.isArray(members) && members.length) memberCount = members.length; } catch {}
+    }
+    return { selfId: this.selfId, inGroup: Boolean(row), ownerInGroup, memberCount, maxMembers: this.groupSettings.maxMembers };
+  }
+  /** At most `groupConcurrency` group turns at once: a group turn waits here before it takes one of the bridge's
+   * CONCURRENCY slots, so it never holds one while waiting and the other slot stays free for private chat. */
+  async groupGate(job) {
+    if (this.groupActive >= this.groupSettings.groupConcurrency) await new Promise(resolve => this.groupWaiting.push(resolve)); else this.groupActive++;
+    try { return await job(); } finally { const next = this.groupWaiting.shift(); if (next) next(); else this.groupActive--; }
+  }
+  /** What a group message quotes: whether it is a message of hers in this group (that is a call to her), and the line
+   * put before the message. Her own message is read from what this bridge delivered to this group, otherwise from
+   * the platform; a member's words are named by card and label; anything else is only "a message was quoted". */
+  async groupQuoteOf(group, messageId) {
+    if (this.sentTexts.has(messageId) && this.sentStreams.get(messageId) === group.streamId) return { self: true, line: groupQuoteLine('self', quotedText(this.sentTexts.get(messageId))) };
+    try {
+      const quoted = await this.onebot.call('get_msg', { message_id: Number(messageId) });
+      // Only a message of this very group is ever shown here (the platform says where it is from, when it says).
+      if (quoted?.message_type === 'private' || quoted?.group_id !== undefined && String(quoted.group_id) !== group.groupId) return { self: false, line: groupQuoteLine(null, '') };
+      const from = String(quoted?.sender?.user_id ?? quoted?.user_id);
+      if (from === this.selfId) return { self: true, line: groupQuoteLine('self', isDiaryCodeReply(quoted.message) ? DIARY_CODE_QUOTED : quotedText(quoted.message)) };
+      const member = group.members.get(from);
+      return { self: false, line: groupQuoteLine(member ?? null, member ? quotedText(quoted.message) : '') };
+    } catch { return { self: false, line: groupQuoteLine(null, '') }; }
+  }
+  /** A message in a group. Not an enabled group: dropped at once (nothing kept, nothing asked, nothing logged).
+   * Otherwise it is a line of that group, kept in memory only, unless it calls her (group.js `addressed`): then, within
+   * the limits, it joins the group's burst and is answered by one group turn (processGroup). Over a limit she is
+   * silent and the message is just a line. */
+  async receiveGroup(event, cfg, arrival) {
+    const streamId = `qq:${this.selfId}:group:${typeof event.group_id === 'number' || typeof event.group_id === 'string' ? event.group_id : ''}`, group = this.groups.get(streamId);
+    if (!group || event.anonymous) return;
+    let message; try { message = messageFromOneBot(event, cfg); } catch { return; }
+    if (!message || message.observation.streamId !== streamId || message.observation.at < this.connectedAt - 1000) return;
+    const uid = String(event.user_id), { observation } = message, requestId = qqRequestId(observation), now = this.clock(), settings = this.groupSettings;
+    if (!identifier(uid) || this.state.records[requestId] || group.seen.has(observation.eventId)) return;
+    group.seen.add(observation.eventId); while (group.seen.size > 500) group.seen.delete(group.seen.values().next().value);
+    for (const line of [...atProbeLines(event), ...replyProbeLines(event)]) this.log(line);
+    if (!this.senderProbed) { this.senderProbed = true; this.log(senderProbeLine(event)); }
+    const quoted = message.replyTo ? await this.groupQuoteOf(group, message.replyTo) : null;
+    const by = addressed(message, { callNames: this.callNames, isReplyToHer: quoted?.self === true });
+    // The line as it will be shown: what the person typed on one line, a placeholder for each picture or voice clip
+    // (none is fetched unless this message calls her), the quote line before it. Mentions are filled in by the turn.
+    const marks = message.media.map(part => part.kind === 'audio' ? '[语音]' : '[图片]').join(''), typed = flat(message.authoredText), cut = by ? 2000 : settings.contextLineChars;
+    const said = [...typed].length > cut ? [...typed].slice(0, cut - 1).join('') + '…' : typed;
+    const line = { eventId: observation.eventId, actorId: observation.actorId, uid, name: message.senderName, text: [quoted?.line, [said, marks].filter(Boolean).join(' ') || AT_FACT].filter(Boolean).join(' '), at: observation.at, arrival };
+    if (!by) { group.buffer.push(line, now); return; }
+    const silent = name => { this.log(`qq group limited: ${name}`); group.buffer.push(line, now); };
+    if (!this.groupLimits.allow(`sender\0${streamId}\0${uid}`, settings.perSenderTurns, settings.perSenderWindowMs, now)) return silent('perSenderTurns');
+    if (this.groupTurnsToday(streamId) >= settings.perGroupTurnsPerDay) return silent('perGroupTurnsPerDay');
+    // The group's burst not yet taken by a turn takes this call too; otherwise it would be one more turn in the queue.
+    if (!this.bursts.has(streamId) && (this.streams.get(streamId)?.queued ?? 0) >= settings.queuedTurns) { this.state.records[requestId] = { status: 'dropped:busy' }; this.save(); return silent('queuedTurns'); }
+    const item = this.state.records[requestId] = { status: 'queued' }; this.save();
+    try {
+      const world = (await this.authority.health()).world; item.worldRevision = world.revision;
+      if (world.paused) { item.status = 'paused'; this.save(); return; }
+      const scope = await this.authority.context({ streamId, query: '', budgetChars: 1 });
+      if (!Number.isSafeInteger(scope.memoryEpoch) || scope.memoryEpoch < 0 || typeof scope.entityId !== 'string') throw new Error('QQ_GROUP_SCOPE');
+      item.memoryEpoch = scope.memoryEpoch; item.entityId = scope.entityId;
+    } catch (error) {
+      // Authority no longer has this group enabled (403): she is silent, and the list is read again.
+      item.status = error?.status === 403 ? 'dropped:disabled' : 'failed'; this.save();
+      if (error?.status === 403) void this.refreshGroups();
+      return;
+    }
+    return this.gather(streamId, { cfg, message, requestId, item, userId: uid, arrival, receivedAt: this.clock(), by, line }, { max: settings.burstMaxMessages, run: entries => this.processGroup(group, entries), gate: job => this.groupGate(job) });
+  }
+  /** Turns of one group counted for today (Beijing day), kept in the state file: a restart does not reset them. */
+  groupTurnsToday(streamId) {
+    const day = beijingDay(this.clock());
+    if (this.state.groupTurns?.day !== day) this.state.groupTurns = { day, counts: {} };
+    return this.state.groupTurns.counts[streamId] ?? 0;
+  }
+  /** Sends one message of a group reply. `replyTo`: the message it quotes (the first message of a reply quotes the call
+   * it answers). A send that fails is never made again, with or without the quote: the platform's refusal does not
+   * prove that nothing went out. Should two quoted messages in a row be refused (an implementation that does not take
+   * a `reply` segment in a group message), later messages go without a quote; one that goes through resets the count. */
+  async sendGroup({ scope, target, part, replyTo }) {
+    const quote = replyTo && this.groupQuoteRefusals < 2 ? replyTo : null;
+    try {
+      let receipt;
+      if (this.media) receipt = await this.media.send({ scope, target, part, ...(quote ? { replyTo: quote } : {}) });
+      else {
+        const body = replySegments(part.text, this.faces);
+        const sent = await this.onebot.call(...sendCall(target, quote ? [{ type: 'reply', data: { id: quote } }, ...body] : body));
+        const messageId = String(sent.message_id); if (!/^-?\d{1,20}$/.test(messageId)) throw new Error('INVALID_SEND_RECEIPT');
+        receipt = { messageId, type: 'text', text: part.text };
+      }
+      if (quote) this.groupQuoteRefusals = 0;
+      return receipt;
+    } catch (error) {
+      if (quote && error?.message === 'ONEBOT_REJECTED' && ++this.groupQuoteRefusals === 2) this.log('qq group send: two quoted messages in a row were refused; sending without quotes');
+      throw error;
+    }
+  }
+  /** One turn in a group: it answers the messages that called her (one or more, of one or several people; see
+   * receiveGroup) and shows her, before them, the group's lines since she last spoke (group.js GroupBuffer). Every
+   * line shown is first observed under its own account, after the bridge told Authority who is speaking; only then is
+   * the executor asked, with `group: true`. Her reply goes to the group as at most `replyMaxMessages` messages, the
+   * first quoting the last call; each has its own receipt, the first that fails or is unknown ends the turn, nothing
+   * is sent twice, and only delivered messages are observed as hers. Whatever stops the turn (a limit, the spend tier,
+   * a pause, the group switched off, a failure), she is silent: nothing is said about it in the group or to the owner. */
+  async processGroup(group, entries) {
+    const { streamId } = group, settings = this.groupSettings, target = { groupId: group.groupId }, stream = { streamId, text: '' };
+    const turn = [];
+    for (const entry of entries) {
+      let current; try { current = this.groups.get(streamId) === group && await this.current(entry.cfg, stream, entry.item); } catch { entry.item.status = 'failed'; this.save(); continue; }
+      if (current) turn.push(entry); else { entry.item.status = 'paused'; this.save(); }
+    }
+    if (!turn.length) return;
+    const last = turn.at(-1), { cfg, item, requestId } = last, scope = { streamId, memoryEpoch: item.memoryEpoch };
+    const end = status => { for (const entry of turn) entry.item.status = status; this.save(); };
+    const actorOf = uid => `qq:${this.selfId}:user:${uid}`, who = uid => group.members.get(uid) ?? null;
+    let sending = false, report = null, called = [];
+    const meant = new Map();
+    try {
+      if (this.groupTurnsToday(streamId) >= settings.perGroupTurnsPerDay) { this.log('qq group limited: perGroupTurnsPerDay'); return end('limited'); }
+      this.state.groupTurns.counts[streamId] = this.groupTurnsToday(streamId) + 1;
+      end('processing');
+      // The lines before the last call that are still kept, then the calls themselves, in the order they arrived.
+      const rows = [...group.buffer.take(this.clock()).filter(line => line.arrival < last.arrival).map(line => ({ line })), ...turn.map(entry => ({ line: entry.line, entry }))].sort((a, b) => a.line.arrival - b.line.arrival);
+      // Authority is told who speaks in this turn (so each line can be observed under its account) and answers with
+      // their member labels.
+      const names = new Map(rows.map(({ line }) => [line.uid, line.name || who(line.uid)?.name || '']));
+      const labels = (await this.authority.syncGroupMembers({ streamId, complete: false, members: [...names].map(([uid, name]) => ({ actorId: actorOf(uid), ...(name ? { name } : {}) })) }))?.labels;
+      for (const [uid, name] of names) { if (typeof labels?.[actorOf(uid)] !== 'string') throw new Error('QQ_GROUP_MEMBERS'); group.members.set(uid, { name, label: labels[actorOf(uid)] }); }
+      for (const row of rows) {
+        const { line, entry } = row;
+        row.text = withMentions(line.text, who);
+        // Recorded by an earlier turn that ended before she had it: shown again, not observed again.
+        if (line.observationId) continue;
+        const observed = await this.port.observe({ eventId: line.eventId, streamId, actorId: line.actorId, role: 'user', text: row.text, at: line.at, ...(entry?.message.observation.origin ? { origin: entry.message.observation.origin } : {}) });
+        if (observed?.forgotten) { row.forgotten = true; if (entry) { entry.item.status = 'forgotten'; this.save(); turn.splice(turn.indexOf(entry), 1); } continue; }
+        if (typeof observed?.observationId !== 'string' || !observed.observationId) throw new Error('QQ_OBSERVATION_UNAVAILABLE');
+        line.observationId = observed.observationId;
+      }
+      const shown = rows.filter(row => !row.forgotten);
+      called = shown.filter(row => row.entry);
+      if (!called.length) return;
+      // Only a message that called her has its pictures looked at and its voice transcribed, and only a call by
+      // mention may ask for a voice reply (within the hourly limit).
+      const extras = [], mediaRefs = []; let voiceRequested = false;
+      const policy = '\n' + channel('qq').turnPolicy.voice;
+      if (this.media) for (const { entry, line } of called) {
+        const part = await this.media.prepare(entry.message, scope), base = entry.message.authoredText || entry.message.observation.text;
+        let extra = part.executionText.startsWith(base) ? part.executionText.slice(base.length) : '';
+        if (extra.endsWith(policy)) extra = extra.slice(0, -policy.length);
+        if (extra.trim()) extras.push(`[${speaker(who(line.uid))} 那条消息的附件]${extra}`);
+        mediaRefs.push(...part.mediaRefs);
+        if (part.voiceRequested && entry.by === 'at') voiceRequested = true;
+      }
+      if (voiceRequested && this.groupLimits.count(`voice\0${streamId}`, HOUR_MS, this.clock()) >= settings.voicePerHour) { voiceRequested = false; this.log('qq group limited: voicePerHour'); }
+      const text = [groupHead(shown.some(row => !row.entry)), ...shown.map(row => groupLine({ ...who(row.line.uid), text: row.text, called: Boolean(row.entry) })), ...extras].join('\n') + (voiceRequested ? policy : '');
+      if (text.length > 24000) throw Object.assign(new Error('QQ_MEDIA_CONTEXT_LIMIT'), { code: 'QQ_MEDIA_CONTEXT_LIMIT' });
+      if (!await this.current(cfg, stream, item)) return end('paused');
+      // Retrieval goes by the calls alone, not by the chatter before them. The executor takes 16 evidence refs: every
+      // call, then the newest other lines.
+      const cited = [...called, ...shown.filter(row => !row.entry).reverse()].slice(0, 16).sort((a, b) => a.line.arrival - b.line.arrival);
+      const input = { text, queryText: called.map(row => row.text).join('\n').slice(-512), ...(mediaRefs.length ? { mediaRefs } : {}), evidence: cited.map(row => ({ ref: row.line.observationId, eventId: row.line.eventId, role: 'user' })), group: true };
+      const reply = await executeConversation(this.executor, { scope, requestId, input, timeoutMs: mediaRefs.length ? 420000 : 120000 });
+      // Her run is stored with these lines in it: they are not shown again.
+      group.buffer.drop(shown.map(row => row.line));
+      const taken = takeStickerMarker(reply), word = taken.word, said = this.sayable(taken.text), marks = markerParts(reply), chosen = marks.find(mark => mark.word)?.part;
+      // The executor's output guard left nothing to say: nothing is sent.
+      if (DECLINED.test(said)) { report = { parts: [] }; return end('declined'); }
+      report = { requestId, parts: [{ kind: 'text', status: 'unsent' }, ...marks.map(mark => mark.part)] };
+      meant.set(report.parts[0], said);
+      if (!await this.current(cfg, stream, item)) return end('paused');
+      const sourceEventId = last.message.observation.eventId;
+      const planned = this.media ? await this.media.plan({ scope, requestId, sourceEventId, text: said, voiceRequested }) : [{ type: 'text', text: said }];
+      // At most `replyMaxMessages` messages: what would be further messages stays in the last one, nothing is cut.
+      const pieces = whole => { const all = splitReply(whole); return all.length > settings.replyMaxMessages ? [...all.slice(0, settings.replyMaxMessages - 1), all.slice(settings.replyMaxMessages - 1).join('\n')] : all; };
+      const parts = planned.flatMap(part => part.type === 'text' && !voiceRequested ? pieces(part.text).map((piece, index) => ({ type: 'text', text: piece, ...(index ? { follows: true } : {}) })) : [part]).filter(part => part.type !== 'text' || part.text.trim());
+      let asked = false;
+      const sticker = word && this.media && !voiceRequested ? await this.media.pickSticker(scope, word, sourceEventId).then(found => { asked = true; return found; }).catch(() => null) : null;
+      const records = new Map(parts.map(part => [part, deliveryPart(part)]));
+      for (const [part, record] of records) meant.set(record, part.text ?? '');
+      if (sticker) { parts.push(sticker); records.set(sticker, chosen); if (sticker.description) Object.assign(chosen, { description: sticker.description.slice(0, MAX_DELIVERY_DESCRIPTION_CHARS), ...(sticker.machine ? { machine: true } : {}) }); }
+      else if (asked && chosen) chosen.reason = 'none';
+      report.parts = [...parts.filter(part => part !== sticker).map(part => records.get(part)), ...marks.map(mark => mark.part)];
+      if (!report.parts.length) report.parts = [{ kind: 'text', status: 'unsent' }];
+      for (const [index, part] of parts.entries()) {
+        if (part.follows) await this.sleep(segmentGap(part.text, this.pacing, this.random));
+        else if (!index && part.type === 'text' && !voiceRequested) await this.sleep(firstDelay(part.text, turn.reduce((n, entry) => n + [...entry.message.authoredText].length, 0), this.clock() - Math.max(...turn.map(entry => entry.receivedAt ?? this.clock())), this.pacing, this.random));
+        if (!await this.current(cfg, stream, item)) return end(item.receipts?.length ? 'partial' : 'paused');
+        if (this.groupLimits.count(`sent\0${streamId}`, HOUR_MS, this.clock()) >= settings.perGroupMessagesPerHour) { this.log('qq group limited: perGroupMessagesPerHour'); return end(item.receipts?.length ? 'partial' : 'limited'); }
+        sending = true; end('sending'); records.get(part).status = 'unknown';
+        // Counted as it is handed over: a message whose receipt is lost may still have gone out.
+        this.groupLimits.add(`sent\0${streamId}`, this.clock()); if (part.type === 'audio') this.groupLimits.add(`voice\0${streamId}`, this.clock());
+        const receipt = await this.sendGroup({ scope, target, part, ...(index ? {} : { replyTo: last.message.messageId }) });
+        records.get(part).status = 'sent';
+        await this.delivered(stream, item, receipt, observedText(part.text ?? '', records.get(part))); sending = false;
+      }
+      end(parts.length ? item.unobserved ? 'sent_unobserved' : 'sent' : 'failed');
+    } catch (error) {
+      // The spend tier stops group turns first (from the restricted tier on): silence, and no notice to the owner.
+      const restricted = ['BUDGET_EXHAUSTED', 'CONTENT_SPEND_RESTRICTED'].includes(error?.code) && !sending && !item.receipts?.length;
+      end(restricted ? 'budget_restricted' : sending ? item.receipts?.length ? 'partial_unknown' : 'unknown' : item.receipts?.length ? 'partial' : 'failed');
+      // She never had these calls: they stay as lines of the group for a later turn (already recorded, not recorded again).
+      if (!report) for (const row of called.length ? called : turn.map(entry => ({ line: entry.line }))) group.buffer.push(row.line, this.clock());
+    } finally {
+      if (report?.parts.length) { await this.tellDelivery(scope, report.requestId, report.parts); await this.undelivered(cfg, stream, item, report.requestId, report.parts, meant); }
+    }
   }
   /** One round of forgetting: ask Authority for the cleanup jobs this bridge has not confirmed, forget, confirm. The
    * same timer as the initiated runs calls it, whether or not QQ is connected. */

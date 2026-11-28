@@ -155,7 +155,7 @@ test('the database is read without a lock while the Authority runs; nothing pend
 });
 
 test('pending migrations are reported, and refused when the backup cannot be written or the disk is too full', async t => {
-  const w = world(t), { file, authority } = await database(w);
+  const w = world(t), { file, authority } = await database(w, []);
   t.after(() => authority.close());
   const before = fs.readFileSync(file), migrations = [drill(1), drill(2)];
   let result = await preflight({ base: w.base, release: w.release, migrations });
@@ -176,7 +176,7 @@ test('a database migrated further than the release knows, or differently, refuse
   authority.close();
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [drill(1), drill(2)] })).failures), []);
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [drill(1)] })).failures), ['authority-db MIGRATION_UNKNOWN m2-drill-2']);
-  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['authority-db MIGRATION_UNKNOWN m1-drill-1', 'authority-db MIGRATION_UNKNOWN m2-drill-2']);
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [] })).failures), ['authority-db MIGRATION_UNKNOWN m1-drill-1', 'authority-db MIGRATION_UNKNOWN m2-drill-2']);
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [{ ...drill(1), name: 'renamed' }, drill(2)] })).failures), ['authority-db SCHEMA_ERROR']);
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [drill(2)] })).failures), ['authority-db MIGRATION_INVALID']);
 });
@@ -194,7 +194,7 @@ test('a database this release cannot open refuses the deploy', async t => {
 });
 
 test('a migration that widens an existing table needs a running release that names its insert columns', async t => {
-  const w = world(t), { authority } = await database(w);
+  const w = world(t), { authority } = await database(w, []);
   authority.close();
   const migrations = [drill(1), { id: 2, name: 'widen-streams', rollbackLevel: 1, up: db => db.exec('ALTER TABLE streams ADD COLUMN note TEXT') }];
   // `current` is OLD, which has no authority/src/migrations.js: rollback level 0, like production release 7987e8b.
@@ -415,4 +415,28 @@ test('ops/config-keys.mjs prints only key names and the version, including every
   // deploy/staging/staging-agent.py writes these (or asks first).
   for (const [label, key] of [['memory-worker.json', 'tickMs'], ['memory-worker.json', 'consolidationDeferMs'], ['qq-bridge.json', 'onebotPort'], ['qq-bridge.json', 'initiationPollMs'], ['qq-bridge.json', 'pacing'], ['content.json', 'allowRawSmallPng'], ['authority.json', 'operator']]) assert.ok(printed.files[label].includes(key), `${label} ${key}`);
   assert.ok(printed.files['model-gateway.json'].includes('budgets.web'));
+});
+
+test('the QQ bridge group settings are optional (no release writes them); a value out of range is refused, as the bridge would refuse to start; an unknown key is refused here only', async t => {
+  const w = world(t);
+  w.edit('qq-bridge.json', c => { c.group = { contextMessages: 15, contextWindowMs: 7200000, contextMaxMessages: 50, contextMaxChars: 4000, perGroupMessagesPerHour: 200 }; });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), []);
+  w.edit('qq-bridge.json', c => { c.group = { later: 1 }; });
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['qq-bridge.json CONFIG_UNKNOWN_KEY group.later']);
+  for (const bad of [null, [], { contextMessages: -1 }, { contextMessages: '15' }, { contextMaxMessages: 101 }, { groupConcurrency: 3 }, { perSenderTurns: 0 }]) {
+    w.edit('qq-bridge.json', c => { c.group = bad; });
+    assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['qq-bridge.json CONFIG_INVALID'], JSON.stringify(bad));
+  }
+  // The key is listed for staging, which asks a release before writing it.
+  const printed = JSON.parse(spawnSync(process.execPath, [path.join(here, 'config-keys.mjs')], { encoding: 'utf8' }).stdout);
+  assert.ok(printed.files['qq-bridge.json'].includes('group') && printed.files['qq-bridge.json'].includes('group.contextMessages'));
+});
+
+test('this release\'s first migration is reported for a database from before it, and a database it already migrated has nothing pending', async t => {
+  const w = world(t), { file, authority } = await database(w, []);
+  t.after(() => authority.close());
+  const before = fs.readFileSync(file);
+  let result = await preflight({ base: w.base, release: w.release });
+  assert.deepEqual([codes(result.failures), codes(result.warnings)], [[], ['authority-db MIGRATION_PENDING m1-group-chat-tables']]);
+  assert.ok(before.equals(fs.readFileSync(file)), 'the preflight only reads');
 });

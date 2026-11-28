@@ -23,6 +23,29 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
   const expected = Buffer.from(tokenHash, 'hex');
   // Control sockets of channel bridges, by channel id (only the QQ bridge has one).
   const channelControls = { ...(qqControl ? { qq: qqControl } : {}) };
+  // Group chat (QQ only). A refusal to enable a group says which condition was not met (`reason`), nothing else.
+  const refuse = reason => Object.assign(new Error('Group operation refused'), { statusCode: 409, code: 'CONFLICT', reason });
+  const groupId = value => typeof value === 'string' && /^[1-9]\d{0,19}$/.test(value);
+  /** The groups her QQ account is in (the bridge's list; null when the bridge cannot be asked) joined with what
+   * Authority holds for each: its switch, member rows, recorded lines, her last reply and its digests. A group
+   * Authority holds that the account is no longer in (or that belongs to an earlier account) is listed too, without
+   * a name. Account numbers are only ever shown on this owner-only port. */
+  async function groupListing(authorization) {
+    const live = qqControl ? await qqControl('/qq/groups', undefined, authorization).catch(() => null) : null;
+    const self = groupId(live?.selfId) ? live.selfId : null, held = new Map();
+    for (const row of authority.listGroups('qq')) {
+      const match = /^qq:([1-9]\d{0,19}):group:([1-9]\d{0,19})$/.exec(row.streamId);
+      if (match) held.set(`${match[1]}:${match[2]}`, { ...row, selfId: match[1], groupId: match[2] });
+    }
+    const state = row => row ? row.enabled ? 'enabled' : 'disabled' : 'none';
+    const counts = row => row ? { members: row.members, messages: row.messages, lastReplyAt: row.lastReplyAt ?? null, digests: row.digests } : { members: 0, messages: 0, lastReplyAt: null, digests: 0 };
+    const groups = (Array.isArray(live?.groups) ? live.groups : []).filter(row => groupId(row?.groupId)).map(row => {
+      const own = held.get(`${self}:${row.groupId}`); held.delete(`${self}:${row.groupId}`);
+      return { capabilityId: 'qq', groupId: row.groupId, name: typeof row.name === 'string' ? row.name : '', memberCount: Number.isSafeInteger(row.memberCount) ? row.memberCount : null, present: true, state: state(own), ...counts(own) };
+    });
+    for (const row of held.values()) groups.push({ capabilityId: 'qq', groupId: row.groupId, name: '', memberCount: null, present: false, current: row.selfId === self, state: state(row), ...counts(row) });
+    return { available: live !== null, settings: authority.groupSettings(), groups };
+  }
   async function overview(authorization) {
     const state = authority.snapshot();
     // Her own conversation (bound to the reserved `person:self`, wake.js) is nobody's binding: not listed, not counted.
@@ -110,6 +133,8 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       }
       // The persona card library: every card with its persona, and which one is current.
       if (req.method === 'GET' && req.url === '/persona/cards') { respond(200, { ok: true, value: authority.listPersonaCards() }); return; }
+      // Group chat: her groups on QQ with their switches (see groupListing).
+      if (req.method === 'GET' && req.url === '/groups') { respond(200, { ok: true, value: await groupListing(req.headers.authorization) }); return; }
       if (req.method === 'GET' && req.url === '/conversations') { respond(200, { ok: true, value: authority.listConversations() }); return; }
       // Read-only: the newest runs she was asked to start herself and how each ended (labels and times, no text).
       // Read-only: her private wake-up (settings, schedule, her moods and notes, the wake log with the pick worked through).
@@ -200,6 +225,32 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       } else if (req.url === '/people/attach') {
         // One account of a channel is the same human as a person already known. Only here: no bridge can do this.
         value = authority.attachAccount(object(body, ['capabilityId', 'actorId', 'streamId', 'personId', 'move']));
+      } else if (req.url === '/groups/enable' || req.url === '/groups/disable') {
+        // She starts (or stops) listening in one QQ group. The operator names the group as the console lists it; the
+        // conversation's own name is put together here from the account the bridge is logged in as, like the owner's
+        // private conversation. Enabling needs no pause and sends nothing; before it the bridge says that she is in
+        // the group, that the owner is in it too, and that it is not too large.
+        object(body, ['capabilityId', 'groupId']);
+        if (body.capabilityId !== 'qq' || !groupId(body.groupId)) throw Object.assign(new Error('Invalid group'), { statusCode: 400, code: 'INVALID_REQUEST' });
+        if (!qqControl) throw Object.assign(new Error('QQ unavailable'), { statusCode: 503 });
+        const { expectedSelfId } = await qqControl('/qq/identity', undefined, req.headers.authorization);
+        if (!groupId(expectedSelfId)) throw refuse('not_logged_in');
+        const streamId = `qq:${expectedSelfId}:group:${body.groupId}`;
+        if (req.url === '/groups/enable') {
+          const check = await qqControl('/qq/groups/check', { groupId: body.groupId }, req.headers.authorization);
+          if (check?.selfId !== expectedSelfId || check.inGroup !== true) throw refuse('not_in_group');
+          if (check.ownerInGroup !== true) throw refuse('owner_absent');
+          if (!Number.isSafeInteger(check.memberCount) || !Number.isSafeInteger(check.maxMembers) || check.memberCount > check.maxMembers) throw refuse('too_large');
+          authority.enableGroup({ capabilityId: 'qq', streamId });
+        } else authority.disableGroup({ capabilityId: 'qq', streamId });
+        // The bridge hears of it at once (otherwise on its next round); its answer is not waited on for the result.
+        await qqControl('/qq/groups/refresh', {}, req.headers.authorization).catch(() => null);
+        value = await groupListing(req.headers.authorization);
+      } else if (req.url === '/groups/settings') {
+        // The other names she answers to in a group. Applies when the bridge next reads its list.
+        authority.setGroupSettings(object(body, ['callNames']));
+        if (qqControl) await qqControl('/qq/groups/refresh', {}, req.headers.authorization).catch(() => null);
+        value = await groupListing(req.headers.authorization);
       } else if (req.url === '/initiative/poke') {
         // "Try it on me": the body is empty, so the request can only ever be about the owner's own conversation.
         value = authority.initiationPoke(object(body, []));
@@ -271,7 +322,7 @@ export function createOperatorServer({ authority, socketPath, tokenHash, origins
       const status = [400, 403, 409, 413, 503].includes(error.statusCode) ? error.statusCode : 500;
       // A validation error may name the field and the rule it broke (never the field's content).
       const detail = error.code === 'VALIDATION_ERROR' && error.detail ? { field: error.detail.field, rule: error.detail.rule, ...(error.detail.limit === undefined ? {} : { limit: error.detail.limit }) } : {};
-      respond(status, { ok: false, error: { code: ['VALIDATION_ERROR', 'CONFLICT', 'INVALID_REQUEST', 'BODY_TOO_LARGE'].includes(error.code) ? error.code : 'OPERATION_FAILED', message: status === 409 ? 'State changed; refresh before saving' : status === 400 ? 'The operation does not match the field requirements' : 'The operator operation failed', ...detail } });
+      respond(status, { ok: false, error: { code: ['VALIDATION_ERROR', 'CONFLICT', 'INVALID_REQUEST', 'BODY_TOO_LARGE'].includes(error.code) ? error.code : 'OPERATION_FAILED', message: status === 409 ? 'State changed; refresh before saving' : status === 400 ? 'The operation does not match the field requirements' : 'The operator operation failed', ...detail, ...(typeof error.reason === 'string' && /^[a-z_]{1,32}$/.test(error.reason) ? { reason: error.reason } : {}) } });
     }
   });
   server.requestTimeout = 10000; server.headersTimeout = 5000; server.keepAliveTimeout = 1000;

@@ -24,7 +24,7 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 
 test('the shipped scenarios are valid and every simulated person is visibly fake', () => {
   const data = validateScenarios(shipped());
-  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'V4', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2', 'I1', 'W1', 'W2', 'W3', 'W4', 'W5']);
+  assert.deepEqual(data.scenarios.map(scenario => scenario.id), ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9', 'G10', 'G11', 'G12', 'G13', 'G14', 'G15', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'V4', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2', 'I1', 'W1', 'W2', 'W3', 'W4', 'W5']);
   for (const change of [
     d => { d.people['Alice'] = { qq: '999900000050', friend: true }; },
     d => { d.people['MOCK-A'].qq = '10001'; },
@@ -1046,12 +1046,13 @@ test('`{label:MOCK-X}` in a scenario becomes that person\'s opaque label, as Aut
 
 });
 
-test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 900000 }, async t => {
+// (79 scenarios and the second replay take about 13 minutes on their own, longer beside the rest of the suite.)
+test('scenario replay against the real Authority, gateway (scripted upstream), executor, QQ bridge, a second non-QQ channel and memory worker', { timeout: 1800000 }, async t => {
   const { runner, data, files, fake, base } = await stack(t);
   const summary = await runner(data).run();
-  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'V4', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2', 'I1', 'W1', 'W2', 'W3', 'W4', 'W5'];
+  const ids = ['S1', 'S2', 'S3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9', 'G10', 'G11', 'G12', 'G13', 'G14', 'G15', 'H1', 'H2', 'H3', 'H4', 'Q1', 'Q2', 'P1', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'J1', 'J2', 'J3', 'V1', 'V2', 'V3', 'V4', 'K1', 'K2', 'K4', 'K5', 'K6', 'K7', 'K8', 'K9', 'K10', 'K11', 'K12', 'K13', 'B1', 'QT1', 'PK1', 'MOCK-1', 'MOCK-2', 'MOCK-3', 'MOCK-4', 'F1', 'F2', 'I1', 'W1', 'W2', 'W3', 'W4', 'W5'];
   assert.deepEqual(summary.results.map(result => [result.id, result.ok, result.error]), ids.map(id => [id, true, undefined]));
-  assert.equal(summaryLine(summary), '64/64 passed: ' + ids.map(id => id + ' PASS').join(', '));
+  assert.equal(summaryLine(summary), '79/79 passed: ' + ids.map(id => id + ' PASS').join(', '));
   // Nothing was ever delivered to a QQ number outside the scenario file.
   const numbers = new Set(Object.values(data.people).map(person => person.qq));
   assert.ok(fake.sent.every(message => numbers.has(message.user_id)));
@@ -1064,7 +1065,10 @@ test('scenario replay against the real Authority, gateway (scripted upstream), e
     // Without M9-M13: so are the day's consolidation batches (two a conversation).
     // Without D1 and D2: so are the diary markers (the day's diary, and a person's open diary of it, are written once).
     // Without W1-W5: so is her wake-up state (W5 leaves a fuse hit for the rest of the day, by design).
-    const again = ids.filter(id => !['S2', 'S3', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'W1', 'W2', 'W3', 'W4', 'W5'].includes(id)), second = await runner(data).run(again);
+    // Without G6, G7, G12, G13: a group gets two consolidation batches a day too, and they share G6's digests.
+    // Without G14: it wakes her, and W5's fuse still stands. Without G15: the per-sender limit it uses up is kept in
+    // the bridge's memory, and this replay runs in the same bridge process (staging restarts it).
+    const again = ids.filter(id => !['S2', 'S3', 'M9', 'M10', 'M12', 'M13', 'D1', 'D2', 'G6', 'G7', 'G12', 'G13', 'G14', 'G15', 'W1', 'W2', 'W3', 'W4', 'W5'].includes(id)), second = await runner(data).run(again);
     assert.deepEqual(second.results.map(result => [result.id, result.ok, result.error]), again.map(id => [id, true, undefined]));
   });
 
@@ -1096,4 +1100,51 @@ test('scenario replay against the real Authority, gateway (scripted upstream), e
     silent.scenarios = [{ id: 'X2', title: 'a reply is not silence', model: [], steps: [{ say: { from: 'MOCK-A', text: 'MOCK-X2 在吗' } }, { expectSilence: { to: '*', observedFrom: ['MOCK-A'], afterMs: 1500 } }] }];
     assert.match((await runner(silent).run()).results[0].error, /expected silence, but MOCK-A received "MOCK-REPLY"/);
   });
+});
+
+test('group steps: groups are visibly fake and made of known people; `{member:GROUP:PERSON}` is Authority\'s member label; a group reply is matched once, must quote the call when asked, and silence means no unmatched group send', async () => {
+  const { opaqueMember } = await import('../../authority/src/context.js');
+  const data = shipped();
+  assert.ok(Object.keys(data.groups).length >= 2 && Object.values(data.groups).every(group => /^9999\d{8}$/.test(group.id)));
+  for (const change of [
+    d => { d.groups['Family'] = { id: '999900009090', members: ['MOCK-OWNER'] }; },
+    d => { d.groups['MOCK-GROUP-A'].id = '123456'; },
+    d => { d.groups['MOCK-GROUP-A'].id = d.people['MOCK-A'].qq; },
+    d => { d.groups['MOCK-GROUP-A'].members.push('MOCK-NOBODY'); },
+    d => { d.scenarios[0].steps.push({ groupSay: { group: 'MOCK-GROUP-NOWHERE', from: 'MOCK-A', text: 'x' } }); },
+  ]) { const broken = shipped(); change(broken); assert.throws(() => validateScenarios(broken)); }
+  const bot = data.bot.qq, group = 'MOCK-GROUP-A', gid = data.groups[group].id, stream = `qq:${bot}:group:${gid}`;
+  const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fscn-group-')), script = path.join(dir, 'script.json');
+  try {
+    const state = { groupSent: [], posted: [], rows: [{ streamId: stream, messages: 3, group: true, audience: 'shared', owner: false, enabled: true }] };
+    const onebot = async (method, route, body) => {
+      if (method === 'GET' && route === '/groups') return { groupSent: state.groupSent, groupLost: [] };
+      if (route === '/group-message') { state.posted.push(body); return { message_id: 700 + state.posted.length }; }
+      return {};
+    };
+    const run = new Runner({ data, modelScript: script, modelLog: path.join(dir, 'log'), onebot, operator: async (method, route) => route === '/conversations' ? state.rows : {}, sleep: async () => {} });
+    assert.deepEqual([run.groupId(group), run.groupStream(group), run.memberLabel(group, 'MOCK-GA')], [gid, stream, opaqueMember('qq', stream, `qq:${bot}:user:${data.people['MOCK-GA'].qq}`)]);
+    const scenario = steps => run.scenario({ id: 'X1', title: 'groups', model: [{ match: 'x', reply: '{member:MOCK-GROUP-A:MOCK-GA}' }], steps });
+    // The placeholder; a mention of her, of everyone and of a person become what the fake OneBot takes.
+    let result = await scenario([{ groupSay: { group, from: 'MOCK-GA', text: 'MOCK 你好', at: ['self', 'all', 'MOCK-GB'] } }]);
+    assert.equal(result.ok, true, result.error);
+    assert.equal(JSON.parse(fs.readFileSync(script, 'utf8'))[0].reply, run.memberLabel(group, 'MOCK-GA'));
+    assert.deepEqual(state.posted.at(-1), { group_id: gid, user_id: data.people['MOCK-GA'].qq, text: 'MOCK 你好', at: ['self', 'all', data.people['MOCK-GB'].qq] });
+    assert.match((await run.scenario({ id: 'X1', title: 'groups', model: [{ match: 'x', reply: '{member:MOCK-GROUP-A:MOCK-NOBODY}' }], steps: [{ expectGroupSilence: { afterMs: 0 } }] }).catch(error => ({ error: error.message }))).error, /unknown group or person in \{member:/);
+    // A reply that quotes the call; each sent message is matched once.
+    state.groupSent = [{ message_id: 1, group_id: gid, text: 'MOCK-REPLY 好', types: ['reply', 'text'], reply: String(700 + state.posted.length + 1) }];
+    result = await scenario([{ groupSay: { group, from: 'MOCK-GA', text: 'MOCK 再问', at: ['self'] } }, { expectGroupReply: { group, contains: 'MOCK-REPLY', quotes: true, types: ['reply', 'text'] } }, { expectGroupSilence: { group, afterMs: 0 } }]);
+    assert.equal(result.ok, true, result.error);
+    result = await scenario([{ groupSay: { group, from: 'MOCK-GA', text: 'MOCK 三问', at: ['self'] } }, { expectGroupReply: { group, contains: 'MOCK-REPLY', quotes: true } }]);
+    assert.match(result.error, /^step 2 .*quotes \d+, expected the message that called her/);
+    result = await scenario([{ expectGroupReply: { group, contains: '别的话', timeoutMs: 1 } }]);
+    assert.match(result.error, /received "MOCK-REPLY 好", expected it to contain "别的话"/);
+    result = await scenario([{ expectGroupSilence: { group: '*', afterMs: 0 } }]);
+    assert.match(result.error, /expected silence in \*, but a group received "MOCK-REPLY 好"/);
+    // The group's conversation: listed as a group that is nobody's, and its recorded lines counted from a noted point.
+    result = await scenario([{ expectGroupConversation: { group, bound: true, enabled: true } }, { noteGroupMessages: { group } }, { expectGroupMessages: { group, added: 0 } }, { expectGroupConversation: { group: 'MOCK-GROUP-X', bound: false } }]);
+    assert.equal(result.ok, true, result.error);
+    state.rows[0].owner = true;
+    assert.match((await scenario([{ expectGroupConversation: { group, bound: true } }])).error, /not listed as a group conversation that is nobody's/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

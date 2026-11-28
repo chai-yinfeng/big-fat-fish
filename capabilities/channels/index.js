@@ -12,6 +12,10 @@
 //               outside, for instance): a send without a confirmed receipt is `unknown` and is never sent again.
 //   prompt      the channel's part of the system message: fixed text from this repository, the same bytes on
 //               every request of that channel (provider prefix cache), at most CHANNEL_PROMPT_CHARS.
+//   groups      the platform has group conversations and this channel's bridge can take part in one. Which groups she
+//               listens in is the operator's to say (Authority `enableGroup`); false: none ever.
+//   groupPrompt the channel's part of the system message of a group run: fixed text like `prompt`, the same bound,
+//               '' where `groups` is false.
 //   forget      who forgets the bridge's own files of a forgotten message ({ owner: the process, what }), or null
 //               when the bridge keeps none (the same shape as a capability's `forget`)
 //   turnPolicy  fixed lines the bridge adds to a turn's input (e.g. when the reply will be spoken).
@@ -33,3 +37,5 @@ export const CHANNELS = frozen([qq, mock]);
 export const channel = id => CHANNELS.find(item => item.id === id) ?? null;
 /** The channel's part of the system message ('' for an unknown channel or one without any). */
 export const channelPrompt = id => { const text = channel(id)?.prompt; return typeof text === 'string' && text.length <= CHANNEL_PROMPT_CHARS ? text : ''; };
+/** The channel's part of the system message of a group run ('' for an unknown channel or one without groups). */
+export const channelGroupPrompt = id => { const declared = channel(id), text = declared?.groups === true ? declared.groupPrompt : ''; return typeof text === 'string' && text.length <= CHANNEL_PROMPT_CHARS ? text : ''; };

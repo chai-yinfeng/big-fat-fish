@@ -49,7 +49,7 @@ test('usage parsing counts cache hits, misses and reasoning output at the window
 
 test('each category is refused from the same tier as before the stop table was derived from the declarations', async t => {
   // The table spend.mjs had written by hand; every category is tried at every tier against it.
-  const before = { proactive: 'reduced', maintenance: 'restricted', vision: 'restricted', web: 'restricted', generation: 'restricted', activity: 'restricted', conversation: 'exhausted' };
+  const before = { proactive: 'reduced', group: 'restricted', maintenance: 'restricted', vision: 'restricted', web: 'restricted', generation: 'restricted', activity: 'restricted', conversation: 'exhausted' };
   const ORDER = ['normal', 'reduced', 'restricted', 'exhausted'], held = { normal: 0, reduced: 600000, restricted: 800000, exhausted: 1000000 };
   for (const tier of ORDER) {
     const dir = await directory(t);
@@ -83,7 +83,7 @@ test('meter rolls over at Beijing midnight and charges reservations that never r
   handle = await meter.reserve('maintenance', () => 30000);
   await meter.settle(handle, null); // no usage reported: the reservation is charged
   assert.equal(meter.status().spentYuan, 0.13); assert.equal(meter.status().unreportedUsage, 1);
-  assert.deepEqual(meter.status().byTier, { conversation: 0.1, maintenance: 0.03, vision: 0, web: 0, generation: 0, proactive: 0, activity: 0 });
+  assert.deepEqual(meter.status().byTier, { conversation: 0.1, maintenance: 0.03, vision: 0, web: 0, generation: 0, proactive: 0, group: 0, activity: 0 });
   // A reservation still in flight at midnight is carried into the new day.
   handle = await meter.reserve('conversation', () => 20000);
   now = Date.parse('2026-11-09T02:00:00Z'); // Monday 10:00 in Beijing: new day, peak

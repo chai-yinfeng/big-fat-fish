@@ -11,7 +11,7 @@ test('the registry lists every declared channel once, as frozen dependency-free 
   for (const id of directories) assert.doesNotMatch(fs.readFileSync(fileURLToPath(new URL(`./${id}/manifest.js`, import.meta.url)), 'utf8'), /^\s*import\s|require\(/m, `${id}: a declaration imports nothing`);
   assert.ok(Object.isFrozen(CHANNELS) && CHANNELS.every(item => Object.isFrozen(item) && Object.isFrozen(item.expression) && Object.isFrozen(item.turnPolicy) && Object.isFrozen(item.faceNames)));
   for (const item of CHANNELS) {
-    assert.deepEqual(Object.keys(item).sort(), ['account', 'expression', 'faceNames', 'forget', 'friends', 'id', 'prompt', 'receipts', 'testOnly', 'title', 'turnPolicy'], item.id);
+    assert.deepEqual(Object.keys(item).sort(), ['account', 'expression', 'faceNames', 'forget', 'friends', 'groupPrompt', 'groups', 'id', 'prompt', 'receipts', 'testOnly', 'title', 'turnPolicy'], item.id);
     assert.match(item.id, /^[a-z][a-z0-9-]{1,31}$/); assert.ok(item.title.length > 0 && item.title.length <= 12);
     assert.deepEqual(Object.keys(item.expression).sort(), ['faces', 'images', 'split', 'stickers', 'voice']);
     assert.ok(Object.values(item.expression).every(value => typeof value === 'boolean') && typeof item.friends === 'boolean' && typeof item.testOnly === 'boolean', item.id);

@@ -134,3 +134,55 @@ test('fake NapCat serves the real OneBotClient: token, login, friends, recorded 
 test('the fake refuses production ports', () => {
   for (const port of [3001, 3082, 6099, 80]) assert.throws(() => createFakeOneBot({ port, token: 't', controlSocket: '/tmp/x.sock', selfId: '999900000001' }), /FAKE_ONEBOT_PORT/);
 });
+
+test('fake NapCat groups: listed with their members, group messages with mentions and cards, recorded group sends, lost receipts, join and leave notices', async t => {
+  const dir = fs.realpathSync(fs.mkdtempSync('/tmp/fob-')), controlSocket = path.join(dir, 'control.sock'), port = await freePort(), token = 'a'.repeat(64), SELF = '999900000001', GROUP = '999900009001';
+  const fake = createFakeOneBot({ port, token, controlSocket, selfId: SELF });
+  await fake.start();
+  t.after(async () => { await fake.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const control = (method, route, body) => new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: controlSocket, method, path: route, agent: false }, res => { let raw = ''; res.setEncoding('utf8'); res.on('data', chunk => { raw += chunk; }); res.on('end', () => resolve({ status: res.statusCode, ...JSON.parse(raw) })); });
+    req.on('error', reject); req.end(body === undefined ? undefined : JSON.stringify(body));
+  });
+  const events = []; let connected = false;
+  const client = new OneBotClient({ url: onebotURL(port), token, onEvent: event => { events.push(event); }, onStatus: value => { connected = value; } });
+  client.start(); t.after(() => client.stop());
+  await until(() => connected);
+  assert.deepEqual(await client.call('get_group_list'), []);
+  await assert.rejects(client.call('send_group_msg', { group_id: GROUP, message: [{ type: 'text', data: { text: 'MOCK' } }] }), /ONEBOT_REJECTED/);
+  assert.equal((await control('POST', '/groups', { groups: [{ group_id: GROUP, name: 'MOCK-GROUP-A', members: [{ user_id: '999900000002', card: 'MOCK-OWNER' }, { user_id: '999900000011', card: 'MOCK-A', join_time: 1700000000 }] }] })).status, 200);
+  assert.deepEqual(await client.call('get_group_list'), [{ group_id: Number(GROUP), group_name: 'MOCK-GROUP-A', member_count: 3, max_member_count: 200 }]);
+  // The roster holds the bot itself and each member with card and join time; a member's own row can be asked for.
+  assert.deepEqual((await client.call('get_group_member_list', { group_id: GROUP })).map(row => [row.user_id, row.card, row.join_time]), [[Number(SELF), '', 1], [999900000002, 'MOCK-OWNER', 1], [999900000011, 'MOCK-A', 1700000000]]);
+  assert.equal((await client.call('get_group_member_info', { group_id: GROUP, user_id: '999900000011' })).user_id, 999900000011);
+  await assert.rejects(client.call('get_group_member_info', { group_id: GROUP, user_id: '999900000099' }), /ONEBOT_REJECTED/);
+  // A group message as the bridge reads it: mentions first, the member's card, and the bot's own parser agrees.
+  const said = (await control('POST', '/group-message', { group_id: GROUP, user_id: '999900000011', at: ['self', '999900000002'], text: 'MOCK 大家好' })).value;
+  await until(() => events.some(event => event.message_id === said.message_id));
+  const event = events.find(item => item.message_id === said.message_id), message = messageFromOneBot(event, { expectedSelfId: SELF });
+  assert.deepEqual([event.message_type, event.group_id, event.sender.card, event.message.map(segment => segment.type)], ['group', Number(GROUP), 'MOCK-A', ['at', 'at', 'text']]);
+  assert.deepEqual([message.observation.streamId, message.mentionsSelf, message.mentions, message.senderName, message.groupId], [`qq:${SELF}:group:${GROUP}`, true, ['999900000002'], 'MOCK-A', GROUP]);
+  for (const bad of [{ group_id: '999900009009', user_id: '999900000011', text: 'x' }, { group_id: GROUP, user_id: '999900000011' }, { group_id: GROUP, user_id: '999900000011', text: 'x', at: ['everyone'] }]) assert.equal((await control('POST', '/group-message', bad)).status, 400);
+  // Her group sends are recorded apart from the private ones, with what they quote; get_msg says where one is from.
+  const sent = await client.call('send_group_msg', { group_id: GROUP, message: [{ type: 'reply', data: { id: String(said.message_id) } }, { type: 'text', data: { text: 'MOCK-REPLY' } }], auto_escape: true });
+  let state = (await control('GET', '/groups')).value;
+  assert.deepEqual(state.groupSent.map(item => [item.message_id, item.group_id, item.text, item.types, item.reply]), [[sent.message_id, GROUP, 'MOCK-REPLY', ['reply', 'text'], String(said.message_id)]]);
+  assert.deepEqual((await control('GET', '/state')).value.sent, []);
+  const read = await client.call('get_msg', { message_id: sent.message_id });
+  assert.deepEqual([read.message_type, read.group_id, read.sender.user_id], ['group', Number(GROUP), Number(SELF)]);
+  assert.deepEqual([(await client.call('get_msg', { message_id: said.message_id })).group_id, (await client.call('get_msg', { message_id: said.message_id })).sender.user_id], [Number(GROUP), 999900000011]);
+  // A lost receipt of a group send: unknown to the caller, recorded as lost, never as sent.
+  await control('POST', '/lose-receipts', { count: 1 });
+  await assert.rejects(client.call('send_group_msg', { group_id: GROUP, message: [{ type: 'text', data: { text: 'MOCK-LOST' } }] }), /ONEBOT_REJECTED/);
+  state = (await control('GET', '/groups')).value;
+  assert.deepEqual([state.groupLost.map(item => [item.group_id, item.text]), state.groupSent.length], [[[GROUP, 'MOCK-LOST']], 1]);
+  // Joining and leaving change the roster and are announced.
+  await control('POST', '/group-members', { group_id: GROUP, join: { user_id: '999900000012', card: 'MOCK-B' } });
+  await control('POST', '/group-members', { group_id: GROUP, leave: '999900000011' });
+  await until(() => events.filter(item => item.post_type === 'notice').length === 2);
+  assert.deepEqual(events.filter(item => item.post_type === 'notice').map(item => [item.notice_type, item.group_id, item.user_id]), [['group_increase', Number(GROUP), 999900000012], ['group_decrease', Number(GROUP), 999900000011]]);
+  assert.deepEqual((await client.call('get_group_member_list', { group_id: GROUP })).map(row => row.user_id), [Number(SELF), 999900000002, 999900000012]);
+  await control('POST', '/reset', {});
+  state = (await control('GET', '/groups')).value;
+  assert.deepEqual([state.groupSent, state.groupLost, state.groups.length], [[], [], 1], 'a reset forgets what was sent, not the groups');
+});

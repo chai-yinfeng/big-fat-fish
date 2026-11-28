@@ -11,6 +11,7 @@ import { OneBotClient, onebotURL } from './onebot-client.js';
 import { ContentClient } from '../media/client.js';
 import { QQMedia } from './media.js';
 import { pacingFrom } from './pacing.js';
+import { groupFrom } from './group.js';
 import { load } from './config.js';
 
 process.umask(0o077);
@@ -29,7 +30,8 @@ async function main() {
   const media = cfg.contentEnabled ? new QQMedia({ content: new ContentClient(cfg.authority), onebot, stickerSubType: cfg.stickerSubType ?? true }) : undefined;
   // Optional qq-bridge.json `pacing` (any of the settings in pacing.js): the burst wait and the pauses between messages.
   const pacing = pacingFrom(cfg.pacing);
-  bridge = new QQBridge({ ...cfg, authority, port, onebot, executor, media, pacing });
+  // Optional qq-bridge.json `group` (any of the settings in group.js): group chat's limits and how much of a group she is shown.
+  bridge = new QQBridge({ ...cfg, authority, port, onebot, executor, media, pacing, group: groupFrom(cfg.group) });
   const expected = Buffer.from(cfg.operatorTokenHash, 'hex');
   const server = http.createServer(async (req, res) => {
     const send = (status, value) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(value)); };
@@ -39,10 +41,22 @@ async function main() {
       if (req.method === 'GET' && req.url === '/qq') { send(200, { ok: true, value: await bridge.status() }); return; }
       if (req.method === 'GET' && req.url === '/qq/people') { send(200, { ok: true, value: bridge.peopleStatus() }); return; }
       if (req.method === 'GET' && req.url === '/qq/identity') { send(200, { ok: true, value: { expectedSelfId: bridge.loginIdentity() } }); return; }
-      if (req.method !== 'POST' || req.url !== '/qq') { send(404, { ok: false }); return; }
+      // Group chat, for the operator's console: the groups this account is in, and after a group was enabled or
+      // disabled in Authority, the bridge reads the list again at once.
+      if (req.method === 'GET' && req.url === '/qq/groups') { try { send(200, { ok: true, value: await bridge.groupList() }); } catch { send(503, { ok: false, error: { code: 'UNAVAILABLE', message: 'QQ is not connected' } }); } return; }
+      if (req.method !== 'POST' || !['/qq', '/qq/groups/check', '/qq/groups/refresh'].includes(req.url)) { send(404, { ok: false }); return; }
       let raw = '';
       for await (const chunk of req) { raw += chunk; if (Buffer.byteLength(raw) > 4096) throw new Error('QQ_BODY'); }
       const body = JSON.parse(raw);
+      if (req.url !== '/qq') {
+        const check = req.url === '/qq/groups/check';
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !(check && key === 'groupId')) || check && typeof body.groupId !== 'string') { send(400, { ok: false, error: { code: 'INVALID_REQUEST', message: 'Invalid group request' } }); return; }
+        try {
+          if (check) send(200, { ok: true, value: await bridge.groupCheck(body.groupId) });
+          else { await bridge.refreshGroups(); await bridge.refreshMembers(); send(200, { ok: true, value: { listening: bridge.groups.size } }); }
+        } catch { send(503, { ok: false, error: { code: 'UNAVAILABLE', message: 'QQ is not connected' } }); }
+        return;
+      }
       if (!body || typeof body !== 'object' || Object.keys(body).some(k => !['expectedSelfId', 'allowedCallerUID'].includes(k))) throw new Error('QQ_BODY');
       const value = await bridge.configure(body); send(200, { ok: true, value });
     } catch { send(409, { ok: false, error: { code: 'CONFLICT', message: 'Pause the world and complete QQ login before configuring the private caller' } }); }
@@ -63,7 +77,8 @@ async function main() {
   // A run she starts herself is fetched from Authority, never pushed here; the bridge skips the round while QQ is down.
   // The same round asks for cleanup jobs (forgetting while the bridge stays up), connected or not.
   void bridge.pollForget();
-  const initiationTimer = setInterval(() => { void bridge.pollForget(); void bridge.pollInitiations(); }, initiationPollMs);
+  // And for the groups she listens in (Authority's list) and, when it is due, who is in each.
+  const initiationTimer = setInterval(() => { void bridge.pollForget(); void bridge.pollInitiations(); void bridge.refreshGroups().then(() => bridge.refreshMembers()); }, initiationPollMs);
   initiationTimer.unref();
   let stopping = false;
   const stop = () => { if (stopping) return; stopping = true; clearInterval(identityTimer); clearInterval(friendTimer); clearInterval(initiationTimer); onebot.stop(); server.closeIdleConnections(); server.close(); };

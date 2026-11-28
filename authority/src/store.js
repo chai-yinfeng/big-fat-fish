@@ -90,6 +90,8 @@ export class Store {
       this.migrated=migrate(this.db,file,options.migrations??MIGRATIONS,{
         fresh:!version,...(options.now?{now:options.now}:{})
       });
+      // Whether the group tables (migration 1) are there: a list without that migration (a test, a drill) has no groups.
+      this.groups=this.db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='conversation_flags'").get()!==undefined;
     }
     catch(error){
       try{

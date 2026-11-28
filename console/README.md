@@ -33,6 +33,10 @@ Linear-style dark/light design (tokens in `standalone.css`, after the approved m
 
 UI tests evaluate the shared view through `test-harness.mjs` with an injected fake React; it is not shipped.
 
+## Group chat (channels page)
+
+The card "群聊（QQ）" sits below the QQ settings and above the sticker library. It lists every group her account is in (GET `/groups`: the bridge's list joined with Authority's switch and counts), one row each: not enabled / enabled / disabled (has history). "Enable" first opens a confirmation that says what it means (anyone there may call her; the lines before her reply are recorded and digested; digests reach members' private chats, nothing private reaches the group) and only then posts `/groups/enable`; a refusal says which condition failed. "Disable" posts at once. The input at the bottom is her other names in a group, checked in the page before it is sent (at most 8, 2–12 characters each). There is no "leave group". Group numbers appear only here, on the owner's port. Tests: `groups-ui.test.mjs`.
+
 ## Authorization and sensitive data
 
 - Before mounting, consume `#companion-operator=<32–256 base64url chars>` once into this tab's sessionStorage and immediately remove the fragment, including malformed matching fragments/storage failures. Unrelated hashes are untouched.

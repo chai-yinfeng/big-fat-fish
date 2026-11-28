@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { Store, DEFAULT_ENTITY_ID } from './store.js';
-import { SELF_PERSON, capability, canonical, closed, contextScope, enumeration, fail, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
+import { SELF_PERSON, GROUP_PREFIX, capability, canonical, closed, contextScope, enumeration, fail, groupFlag, groupKey, groupScope, identifier, integer, jsonValue, resolveIdentity, text } from './identity.js';
 import { POLICIES, validatePayload, review } from './policies.js';
 import { normalizePersona, validatePersonaPatch } from './persona.js';
 import { tokenize } from './util.js';
-import { renderContextParts, renderProfile, renderContinuation, CONTINUATION_CHARS, RETRIEVED_ITEMS, DEFAULT_CONTEXT_CHARS, personaBudget, personaContextText, opaquePerson, opaqueStream } from './context.js';
+import { renderContextParts, renderProfile, renderContinuation, CONTINUATION_CHARS, RETRIEVED_ITEMS, DEFAULT_CONTEXT_CHARS, personaBudget, personaContextText, opaquePerson, opaqueStream, opaqueMember } from './context.js';
 import { BACKGROUND_PROPOSAL } from './consolidation.js';
 import { CARDS_KEY, CARD_SUMMARY_CHARS, CARD_TAGS, CARD_TAG_CHARS, CARD_TITLE_CHARS, DEFAULT_CARD_ID, MAX_PERSONA_CARDS, initialLibrary } from './cards.js';
 import { InitiationDomain } from './initiations.js';
@@ -21,6 +21,17 @@ export const MAX_CONTEXT_EXCLUDE = 256;
 /** Metadata key of the world's conversation settings (no schema change). */
 export const CONVERSATION_SETTINGS_KEY = 'conversation.settings';
 const OWNER = 'person:owner';
+/** Metadata key of the settings of group chat (no schema change): `{ callNames: [...] }`. */
+export const GROUP_SETTINGS_KEY = 'groups.settings';
+/** Group chat bounds: other names she answers to in a group (count and length), accounts in one member report, and
+ * the length of a member's name as it is kept. */
+export const GROUP = Object.freeze({ callNames: 8, callNameMin: 2, callNameMax: 12, syncMembers: 200, nameChars: 12 });
+/** A member's group card as it is kept and shown: untrusted text, so no control characters and no brackets of any
+ * kind (it cannot open a line head or a label of its own), short, and never an account-like run of digits. */
+export function memberName(value){
+  const cleaned=[...String(typeof value==='string'?value:'').normalize('NFKC').replace(/[\p{Cc}\u2028\u2029]/gu,' ').replace(/[\p{Cf}\[\]［］【】〔〕〖〗「」『』《》〈〉<>＜＞(){}（）｛｝]/gu,'').replace(/\s+/g,' ').trim()].slice(0,GROUP.nameChars).join('').trim();
+  return /\d{7,}/.test(cleaned)?'（群友）':cleaned;
+}
 /** An actor or conversation ID as a channel names it: inside the channel's own namespace, plain and bounded. */
 function channelId(capabilityId,value){
   if(typeof value!=='string'||value.length>128||!value.startsWith(capabilityId+':')||!/^[A-Za-z0-9:._-]+$/.test(value))fail('VALIDATION_ERROR','Invalid channel identifier');
@@ -114,8 +125,8 @@ export class Authority extends InitiationDomain {
     closed(input,['capabilityId','externalActorId','personId']);
     identifier(input.externalActorId);
     identifier(input.personId);
-    // Her own conversation's person is nobody: no account is ever bound to it.
-    if(input.personId===SELF_PERSON)fail('VALIDATION_ERROR','Reserved person');
+    // Her own conversation's person is nobody: no account is ever bound to it. Nor to a group's scope key.
+    if(input.personId===SELF_PERSON||input.personId.startsWith(GROUP_PREFIX))fail('VALIDATION_ERROR','Reserved person');
     return this.store.transaction(()=>{
       capability(this.store,input.capabilityId);
       const old=this.store.db.prepare('SELECT person_id FROM actors WHERE capability_id=? AND actor_id=?').get(input.capabilityId,input.externalActorId);
@@ -136,7 +147,8 @@ export class Authority extends InitiationDomain {
     closed(input,['capabilityId','streamId','personId','audience','entityId'],['capabilityId','streamId','personId','audience']);
     identifier(input.streamId);
     identifier(input.personId);
-    if(input.personId===SELF_PERSON)fail('VALIDATION_ERROR','Reserved person');
+    // A group's scope key is bound by enableGroup only.
+    if(input.personId===SELF_PERSON||input.personId.startsWith(GROUP_PREFIX))fail('VALIDATION_ERROR','Reserved person');
     enumeration(input.audience,['private','shared']);
     const entityId=input.entityId??DEFAULT_ENTITY_ID;
     this.entity(entityId);
@@ -205,7 +217,7 @@ export class Authority extends InitiationDomain {
   attachAccount(input){
     closed(input,['capabilityId','actorId','streamId','personId','move'],['capabilityId','actorId','streamId','personId']);
     identifier(input.personId);
-    if(input.personId===SELF_PERSON)fail('VALIDATION_ERROR','Reserved person');
+    if(input.personId===SELF_PERSON||input.personId.startsWith(GROUP_PREFIX))fail('VALIDATION_ERROR','Reserved person');
     if(input.move!==undefined&&typeof input.move!=='boolean')fail('VALIDATION_ERROR','move must be boolean');
     const {capabilityId,actorId,streamId,personId}=input;
     if(!this.conversationChannel(capabilityId))fail('FORBIDDEN','Not a conversation channel',403);
@@ -247,8 +259,153 @@ export class Authority extends InitiationDomain {
     return this.store.db.prepare(`SELECT s.capability_id AS capabilityId,s.stream_id AS streamId,s.person_id AS personId,s.audience,s.entity_id AS entityId,
       (SELECT COUNT(*) FROM observations o WHERE o.capability_id=s.capability_id AND o.stream_id=s.stream_id AND o.forgotten=0) AS messages,
       (SELECT MAX(json_extract(o.body,'$.at')) FROM observations o WHERE o.capability_id=s.capability_id AND o.stream_id=s.stream_id) AS lastAt
-      FROM streams s WHERE s.person_id<>? ORDER BY s.capability_id,s.stream_id`).all(SELF_PERSON).map(row=>({...row,label:opaquePerson(row.personId),owner:row.personId==='person:owner',memoryEpoch:this.streamEpoch(this.entity(row.entityId),row.capabilityId,row.streamId)}))
+      FROM streams s WHERE s.person_id<>? ORDER BY s.capability_id,s.stream_id`).all(SELF_PERSON).map(row=>({...row,label:opaquePerson(row.personId),owner:row.personId==='person:owner',
+      // A group conversation (bound to its own scope key, nobody's): marked so, with its switch.
+      ...(row.audience==='shared'&&row.personId===groupKey(row.streamId)?{group:true,enabled:groupFlag(this.store,row.capabilityId,row.streamId)?.enabled===true}:{}),memoryEpoch:this.streamEpoch(this.entity(row.entityId),row.capabilityId,row.streamId)}))
       .sort((a,b)=>(b.lastAt??0)-(a.lastAt??0));
+  }
+  #groupTables(){
+    if(!this.store.groups)fail('CONFLICT','This database has no group tables',409);
+  }
+  /** Operator only: she starts to listen in one group conversation of a channel that declares groups
+   * (capabilities/channels). The conversation is bound as `shared` to its own scope key `group:<streamId>`, which is
+   * nobody; the entity comes from the owner's binding on that channel. Who is in the group is the bridge's to report
+   * (syncGroupMembers). Enabling sends nothing and needs no pause: no existing conversation is touched. */
+  enableGroup(input){
+    closed(input,['capabilityId','streamId']);
+    const {capabilityId,streamId}=input;
+    if(!this.conversationChannel(capabilityId)||channel(capabilityId)?.groups!==true)fail('FORBIDDEN','This channel has no groups',403);
+    channelId(capabilityId,streamId);
+    this.#groupTables();
+    return this.store.transaction(()=>{
+      const key=groupKey(streamId),stream=this.store.db.prepare('SELECT person_id,audience FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId,streamId);
+      if(stream&&(stream.person_id!==key||stream.audience!=='shared'))fail('CONFLICT','Conversation binding conflicts',409);
+      if(!stream){
+        const owner=this.store.db.prepare("SELECT s.entity_id AS entityId FROM actors a LEFT JOIN streams s ON s.capability_id=a.capability_id AND s.person_id=a.person_id AND s.audience='private' WHERE a.capability_id=? AND a.person_id=? ORDER BY a.rowid DESC,s.rowid DESC").get(capabilityId,OWNER);
+        if(!owner)fail('CONFLICT','Bind the owner before enabling a group',409);
+        this.store.db.prepare('INSERT INTO streams(capability_id,stream_id,person_id,audience,entity_id) VALUES(?,?,?,?,?)').run(capabilityId,streamId,key,'shared',owner.entityId??DEFAULT_ENTITY_ID);
+      }
+      if(groupFlag(this.store,capabilityId,streamId)?.enabled)return{capabilityId,streamId,enabled:true,changed:false};
+      this.store.db.prepare('INSERT INTO conversation_flags(capability_id,stream_id,enabled,updated_at) VALUES(?,?,1,?) ON CONFLICT(capability_id,stream_id) DO UPDATE SET enabled=1,updated_at=excluded.updated_at').run(capabilityId,streamId,this.now());
+      this.adminAudit('group.enable',{capabilityId,streamId});
+      return{capabilityId,streamId,enabled:true,changed:true};
+    });
+  }
+  /** Operator only: she stops answering in that group at once, and its digests are read in no private conversation
+   * any more. The binding, the members and everything recorded stay (forgetting is the memory page's). */
+  disableGroup(input){
+    closed(input,['capabilityId','streamId']);
+    const {capabilityId,streamId}=input;
+    channelId(capabilityId,streamId);
+    this.#groupTables();
+    return this.store.transaction(()=>{
+      const flag=groupFlag(this.store,capabilityId,streamId);
+      // Never enabled: whoever asks is looking at an outdated list.
+      if(!flag)fail('CONFLICT','Group not found',409);
+      if(!flag.enabled)return{capabilityId,streamId,enabled:false,changed:false};
+      this.store.db.prepare('UPDATE conversation_flags SET enabled=0,updated_at=? WHERE capability_id=? AND stream_id=?').run(this.now(),capabilityId,streamId);
+      this.adminAudit('group.disable',{capabilityId,streamId});
+      return{capabilityId,streamId,enabled:false,changed:true};
+    });
+  }
+  /** Operator only: every group conversation that was ever enabled (of one channel, or of all), with its switch,
+   * how many member rows are present, its recorded lines, her last delivered reply and its group digests. */
+  listGroups(capabilityId){
+    this.store.check();
+    if(!this.store.groups)return[];
+    if(capabilityId!==undefined)identifier(capabilityId);
+    return this.store.db.prepare(`SELECT f.capability_id AS capabilityId,f.stream_id AS streamId,f.enabled,f.updated_at AS updatedAt,
+      (SELECT COUNT(*) FROM group_members g WHERE g.capability_id=f.capability_id AND g.stream_id=f.stream_id AND g.left_at IS NULL) AS members,
+      (SELECT COUNT(*) FROM observations o WHERE o.capability_id=f.capability_id AND o.stream_id=f.stream_id AND o.forgotten=0) AS messages,
+      (SELECT MAX(json_extract(o.body,'$.at')) FROM observations o WHERE o.capability_id=f.capability_id AND o.stream_id=f.stream_id AND json_extract(o.body,'$.role')='assistant') AS lastReplyAt,
+      (SELECT COUNT(*) FROM memory_items m WHERE m.person_id=s.person_id AND m.kind='digest' AND m.status='active') AS digests
+      FROM conversation_flags f JOIN streams s ON s.capability_id=f.capability_id AND s.stream_id=f.stream_id AND s.audience='shared'
+      WHERE (?1 IS NULL OR f.capability_id=?1) ORDER BY f.capability_id,f.stream_id`).all(capabilityId??null).map(row=>({...row,enabled:row.enabled===1,label:opaqueStream(row.capabilityId,row.streamId)}));
+  }
+  /** A channel's bridge asks, with the channel's credential: the group conversations of that channel she listens in,
+   * and the names she answers to there (the current persona's name, then the operator's other names). */
+  groupsFor(capabilityId,input={}){
+    closed(input,[],[]);
+    if(!this.conversationChannel(capabilityId))fail('FORBIDDEN','Not a conversation channel',403);
+    const name=String(JSON.parse(this.entity(DEFAULT_ENTITY_ID).persona).name??'').trim();
+    return{
+      groups:this.listGroups(capabilityId).filter(row=>row.enabled&&groupScope(this.store,capabilityId,row.streamId)).map(row=>({streamId:row.streamId})),
+      callNames:[...new Set([...(name?[name]:[]),...this.groupSettings().callNames])]
+    };
+  }
+  /** A channel's bridge reports who is in an enabled group of that channel: accounts, in the channel's own terms,
+   * each with its group card and since when it has been there (`joinedAt`, ms; absent or 0: unknown, the time it is
+   * first reported stands). The bridge says who is in a group as it says who is a friend: the same trust boundary.
+   * `complete: true` is the whole roster: a kept account that is not in it has left, and a row is kept only for an
+   * account bound to a person or one that already has a row (nothing is kept of someone who never spoke and is
+   * nobody here); an empty roster is a failed lookup and changes nothing. `complete: false` names accounts that
+   * are speaking now: each gets a row, so what they say can be observed. Coming back after leaving starts a new
+   * `joined_at`. Returns each reported account's member label (context.js opaqueMember). */
+  syncGroupMembers(capabilityId,input){
+    closed(input,['streamId','members','complete']);
+    const {streamId,members,complete}=input;
+    channelId(capabilityId,streamId);
+    if(typeof complete!=='boolean'||!Array.isArray(members)||members.length>GROUP.syncMembers)fail('VALIDATION_ERROR','Invalid member report');
+    const seen=new Set();
+    for(const member of members){
+      closed(member,['actorId','name','joinedAt'],['actorId']);
+      channelId(capabilityId,member.actorId);
+      if(seen.has(member.actorId))fail('VALIDATION_ERROR','Invalid member report');
+      seen.add(member.actorId);
+      if(member.name!==undefined&&(typeof member.name!=='string'||member.name.length>256))fail('VALIDATION_ERROR','Invalid member report');
+      if(member.joinedAt!==undefined)integer(member.joinedAt);
+    }
+    this.#groupTables();
+    return this.store.transaction(()=>{
+      if(!groupScope(this.store,capabilityId,streamId))fail('FORBIDDEN','Not an enabled group',403);
+      const now=this.now(),labels=Object.fromEntries(members.map(member=>[member.actorId,opaqueMember(capabilityId,streamId,member.actorId)]));
+      if(complete&&!members.length)return{labels,changed:0};
+      let changed=0;
+      const rows=new Map(this.store.db.prepare('SELECT actor_id AS actorId,name,joined_at AS joinedAt,left_at AS leftAt FROM group_members WHERE capability_id=? AND stream_id=?').all(capabilityId,streamId).map(row=>[row.actorId,row]));
+      for(const member of members){
+        const old=rows.get(member.actorId),name=memberName(member.name),given=member.joinedAt>0?Math.min(member.joinedAt,now):null;
+        if(!old){
+          if(complete&&!this.store.db.prepare('SELECT 1 FROM actors WHERE capability_id=? AND actor_id=?').get(capabilityId,member.actorId))continue;
+          this.store.db.prepare('INSERT INTO group_members(capability_id,stream_id,actor_id,name,joined_at,first_seen_at,last_seen_at,left_at) VALUES(?,?,?,?,?,?,?,NULL)').run(capabilityId,streamId,member.actorId,name,given??now,now,now);
+          changed++;
+          continue;
+        }
+        // Back after leaving: in the group from now (or from when the platform says), not from the first time.
+        const joinedAt=old.leftAt!==null?given??now:given??old.joinedAt,kept=member.name===undefined?old.name:name;
+        if(old.leftAt!==null||joinedAt!==old.joinedAt||kept!==old.name){
+          this.store.db.prepare('UPDATE group_members SET name=?,joined_at=?,left_at=NULL WHERE capability_id=? AND stream_id=? AND actor_id=?').run(kept,joinedAt,capabilityId,streamId,member.actorId);
+          changed++;
+        }
+      }
+      if(complete)for(const row of rows.values())if(row.leftAt===null&&!seen.has(row.actorId)){
+        this.store.db.prepare('UPDATE group_members SET left_at=? WHERE capability_id=? AND stream_id=? AND actor_id=?').run(now,capabilityId,streamId,row.actorId);
+        changed++;
+      }
+      return{labels,changed};
+    });
+  }
+  /** The settings of group chat: `callNames`, other names she answers to in a group besides the persona's own. */
+  groupSettings(){
+    const row=this.store.db.prepare('SELECT value FROM metadata WHERE key=?').get(GROUP_SETTINGS_KEY),stored=row?JSON.parse(row.value).callNames:[];
+    return{callNames:Array.isArray(stored)?stored.filter(name=>typeof name==='string'):[]};
+  }
+  /** Operator only: `{callNames:[...]}`, at most GROUP.callNames names of GROUP.callNameMin..callNameMax characters
+   * each. A one-character name is refused: it would be "called" by ordinary sentences all the time. */
+  setGroupSettings(input){
+    closed(input,['callNames']);
+    if(!Array.isArray(input.callNames))fail('VALIDATION_ERROR','Invalid call names',400,{field:'callNames',rule:'invalid'});
+    if(input.callNames.length>GROUP.callNames)fail('VALIDATION_ERROR','Invalid call names',400,{field:'callNames',rule:'maxItems',limit:GROUP.callNames});
+    const names=input.callNames.map(value=>{
+      if(typeof value!=='string'||/[\p{Cc}\u2028\u2029]/u.test(value))fail('VALIDATION_ERROR','Invalid call name',400,{field:'callNames',rule:'invalid'});
+      const name=value.normalize('NFKC').trim(),length=[...name].length;
+      if(length<GROUP.callNameMin)fail('VALIDATION_ERROR','Invalid call name',400,{field:'callNames',rule:'minChars',limit:GROUP.callNameMin});
+      if(length>GROUP.callNameMax)fail('VALIDATION_ERROR','Invalid call name',400,{field:'callNames',rule:'maxChars',limit:GROUP.callNameMax});
+      return name;
+    });
+    return this.store.transaction(()=>{
+      this.store.db.prepare('INSERT INTO metadata(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(GROUP_SETTINGS_KEY,JSON.stringify({callNames:[...new Set(names)]}));
+      return this.groupSettings();
+    });
   }
   adminAudit(type,input){
     this.store.audit({
@@ -435,9 +592,15 @@ export class Authority extends InitiationDomain {
     integer(input.at);
     const encoded=canonical(input);
     return this.store.transaction(()=>{
-      const binding = this.store.db.prepare('SELECT entity_id,person_id FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId, input.streamId);
+      const binding = this.store.db.prepare('SELECT entity_id,person_id,audience FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId, input.streamId);
       // Her own conversation holds no observation: nobody speaks in it and nothing in it is sent.
       if (binding?.person_id === SELF_PERSON) fail('FORBIDDEN', 'Nothing is observed in her own conversation', 403);
+      // A group conversation: nothing while it is switched off, and a person's line only from a present member.
+      const flag = binding?.audience === 'shared' ? groupFlag(this.store, capabilityId, input.streamId) : undefined;
+      if (flag) {
+        if (!groupScope(this.store, capabilityId, input.streamId)) fail('FORBIDDEN', 'This group is not enabled', 403);
+        if (input.role === 'user' && !this.store.db.prepare('SELECT 1 FROM group_members WHERE capability_id=? AND stream_id=? AND actor_id=? AND left_at IS NULL').get(capabilityId, input.streamId, input.actorId)) fail('FORBIDDEN', 'Not a member of this group', 403);
+      }
       const tombstone = this.store.db.prepare('SELECT observation_id FROM source_tombstones WHERE entity_id=? AND capability_id=? AND stream_id=? AND event_id=?').get(binding?.entity_id ?? DEFAULT_ENTITY_ID, capabilityId, input.streamId, input.eventId);
       if (tombstone) return { observationId: tombstone.observation_id, duplicate: true, forgotten: true };
       const previous=this.store.db.prepare('SELECT * FROM observations WHERE capability_id=? AND stream_id=? AND event_id=?').get(capabilityId,input.streamId,input.eventId);
@@ -453,6 +616,7 @@ export class Authority extends InitiationDomain {
       const stream=this.store.db.prepare('SELECT entity_id FROM streams WHERE capability_id=? AND stream_id=?').get(capabilityId,input.streamId);
       const entityId=stream?.entity_id??DEFAULT_ENTITY_ID,id=randomUUID();
       this.store.db.prepare('INSERT INTO observations(id,capability_id,stream_id,event_id,canonical,body,entity_id) VALUES(?,?,?,?,?,?,?)').run(id,capabilityId,input.streamId,input.eventId,encoded,JSON.stringify(input),entityId);
+      if(flag&&input.role==='user')this.store.db.prepare('UPDATE group_members SET last_seen_at=? WHERE capability_id=? AND stream_id=? AND actor_id=?').run(this.now(),capabilityId,input.streamId,input.actorId);
       return{
         observationId:id,duplicate:false
       };
@@ -579,10 +743,15 @@ export class Authority extends InitiationDomain {
     e=this.entity(scope.entityId),
     query=input.query===undefined?'':input.query;
     text(query,2000,true);
+    // A group conversation that is switched off is read by nobody; an enabled one is a `group` scope (below).
+    const flag=scope.audience==='shared'?groupFlag(this.store,capabilityId,input.streamId):undefined,
+    group=flag!==undefined&&groupScope(this.store,capabilityId,input.streamId)!==null;
+    if(flag&&!group)fail('FORBIDDEN','This group is not enabled',403);
     // `windowFromAt`: when the oldest run the executor still replays for this conversation began. Dialogue
     // before it has left the window and may be consolidated; a digest of this person is only read back when the
     // dialogue it covers ended before it (without it no digest is returned: the original may still be replayed).
-    const windowFromAt=input.windowFromAt!==undefined&&scope.audience==='private'&&registered.policy==='conversation.v1'?Math.min(input.windowFromAt,this.now()):undefined;
+    // An enabled group reports its window the same way, for its own group digests.
+    const windowFromAt=input.windowFromAt!==undefined&&(scope.audience==='private'||group)&&registered.policy==='conversation.v1'?Math.min(input.windowFromAt,this.now()):undefined;
     if(windowFromAt!==undefined)this.windows.set(`${capabilityId}\u0000${input.streamId}`,windowFromAt);
     // `exclude`: IDs the caller already shows the model (the executor's persisted notes); never retrieved again.
     const exclude=input.exclude??[];
@@ -597,7 +766,8 @@ export class Authority extends InitiationDomain {
     const budget=integer(input.budgetChars===undefined?DEFAULT_CONTEXT_CHARS:input.budgetChars,0,16000),
     rows=this.candidates(scope,registered.policy,query,64,{exclude:[...exclude,...profile.ids,...continuation.ids],digestsBefore:windowFromAt}),
     // The best-ranked few only; what is left out was not injected and can come in on a later call.
-    shown=rows.slice(0,RETRIEVED_ITEMS),
+    // A group digest shown in a member's private conversation says which member label in it is that person (`you`).
+    shown=rows.slice(0,RETRIEVED_ITEMS).map(row=>{const you=this.memberLabel(scope,row);return you?{...row,you}:row;}),
     {sections,...rendered}=renderContextParts(JSON.parse(e.persona),shown,budget),
     injected=new Set(sections.flatMap(section=>section.ids)),
     result={
@@ -607,6 +777,8 @@ export class Authority extends InitiationDomain {
       capabilityId,
       // Her own conversation (wake.js): the executor runs her private wake-up there and nothing else, and never anywhere else.
       ...(scope.personId===SELF_PERSON?{own:true}:{}),
+      // An enabled group conversation: the executor runs a group turn there and nothing else, and never anywhere else.
+      ...(group?{group:true}:{}),
       memoryEpoch:this.streamEpoch(e,capabilityId,input.streamId),
       personaRevision:e.persona_revision,
       // `text` is the whole context; personaText/memoryText are the same content apart (stable / per-query).

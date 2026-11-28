@@ -26,7 +26,7 @@ test('ledger: one row per declared capability; outcomes, denials by reason, unit
   const open = async () => { const ledger = createUsageLedger({ directory, capabilities: CAPABILITIES, defaults: { vision: 12, web: 20 }, external: () => counters, clock: () => Date.parse('2026-11-12T04:00:00Z') }); await ledger.start(); return ledger; };
   let ledger = await open();
   let status = await ledger.status();
-  assert.deepEqual([status.day, status.timezone, status.rows.map(row => row.id)], ['2026-11-12', 'Asia/Shanghai', ['chat', 'consolidation', 'vision', 'sticker', 'web', 'speech-tts', 'speech-asr', 'proactive', 'demo', 'video', 'video-note', 'video-frame']]);
+  assert.deepEqual([status.day, status.timezone, status.rows.map(row => row.id)], ['2026-11-12', 'Asia/Shanghai', ['chat', 'consolidation', 'vision', 'sticker', 'web', 'speech-tts', 'speech-asr', 'proactive', 'group-chat', 'demo', 'video', 'video-note', 'video-frame']]);
   assert.deepEqual(rowsOf(status).chat, { id: 'chat', title: '聊天', kind: 'paid', unit: 'requests', used: 0, limit: null, calls: 0, ok: 0, failed: 0, denied: {}, units: {}, busyMs: 0, limitDefault: null, costYuan: 0, spendCategory: 'conversation', stopTier: 'exhausted' });
   await ledger.record('chat', { outcome: 'ok', busyMs: 1200, costMicros: 2500 });
   await ledger.record('chat', { outcome: 'failed', busyMs: 300 });
@@ -192,7 +192,7 @@ test('gateway: every exit lands in its row, and the rows add up to what the spen
   for (const call of [f.chat, f.chat, f.memory, f.vision, f.search, f.activity]) assert.equal((await call()).status, 200);
   const rows = await f.usage(seen => seen.web.ok === 1 && seen.chat.ok === 2 && seen['video-note'].ok === 1);
   assert.deepEqual(Object.fromEntries(Object.entries(rows).map(([id, row]) => [id, [row.used, row.limit, row.calls, row.ok, row.failed, row.denied]])), {
-    chat: [2, null, 2, 2, 0, {}], consolidation: [1, null, 1, 1, 0, {}], vision: [1, 12, 1, 1, 0, {}], sticker: [0, 20, 0, 0, 0, {}], web: [1, 20, 1, 1, 0, {}], 'speech-tts': [0, null, 0, 0, 0, {}], 'speech-asr': [0, null, 0, 0, 0, {}], proactive: [0, null, 0, 0, 0, {}], demo: [0, 10, 0, 0, 0, {}],
+    chat: [2, null, 2, 2, 0, {}], consolidation: [1, null, 1, 1, 0, {}], vision: [1, 12, 1, 1, 0, {}], sticker: [0, 20, 0, 0, 0, {}], web: [1, 20, 1, 1, 0, {}], 'speech-tts': [0, null, 0, 0, 0, {}], 'speech-asr': [0, null, 0, 0, 0, {}], proactive: [0, null, 0, 0, 0, {}], 'group-chat': [0, null, 0, 0, 0, {}], demo: [0, 10, 0, 0, 0, {}],
     // Watching a video: the local row has a daily count and no money; the summary's request is the paid row.
     video: [0, 6, 0, 0, 0, {}], 'video-note': [1, null, 1, 1, 0, {}], 'video-frame': [0, 6, 0, 0, 0, {}],
   });
@@ -422,4 +422,38 @@ test('gateway: a client that hangs up once the reply is complete is ok; one that
   assert.equal(await hangUp({}, 'MOCK'), 200);
   rows = await f.usage(seen => seen.chat.calls === 2);
   assert.deepEqual([rows.chat.ok, rows.chat.failed], [1, 1]);
+});
+
+test('gateway: a turn in a group is group work, with its own row and spend category, stopped at the restricted tier while private chat goes on', async t => {
+  const f = await gateway(t), body = { model: 'deepseek', messages: [{ role: 'user', content: 'MOCK synthetic test' }], stream: true };
+  // What the conversation executor sends for a group run: the same chat completion, marked by the request header.
+  const marked = value => new Promise((resolve, reject) => {
+    const req = http.request({ socketPath: f.directory + '/infer.sock', path: '/v1/chat/completions', method: 'POST', agent: false, headers: { authorization: `Bearer ${infer}`, 'content-type': 'application/json', [INITIATED_HEADER]: value } }, res => {
+      const chunks = []; res.on('data', chunk => chunks.push(chunk)); res.on('error', reject);
+      res.on('end', () => resolve({ status: res.statusCode, text: Buffer.concat(chunks).toString() }));
+    });
+    req.on('error', reject); req.end(JSON.stringify(body));
+  });
+  assert.equal((await marked('group')).status, 200);
+  let rows = await f.usage(seen => seen['group-chat'].ok === 1), spend = (await f.control('/spend')).json().value;
+  assert.deepEqual([rows['group-chat'].title, rows['group-chat'].calls, rows['group-chat'].units, rows['group-chat'].spendCategory, rows['group-chat'].stopTier, rows.chat.calls, rows.proactive.calls], ['群聊', 1, { inputTokens: 1000, outputTokens: 100 }, 'group', 'restricted', 0, 0]);
+  assert.deepEqual([spend.byTier.group, spend.byTier.conversation, spend.byTier.proactive], [rows['group-chat'].costYuan, 0, 0]);
+  assert.ok(spend.categories.some(row => row.category === 'group' && row.capabilities.some(item => item.id === 'group-chat')));
+  // The provider is sent exactly what a private turn is sent; an unknown value of the header is ordinary chat.
+  assert.equal((await marked('something-else')).status, 200);
+  assert.deepEqual(f.calls[0].body, f.calls[1].body);
+  rows = await f.usage(seen => seen.chat.ok === 1);
+  assert.deepEqual([rows.chat.calls, rows['group-chat'].calls], [1, 1]);
+  // The reduced tier stops what she starts herself, not a group turn.
+  assert.equal((await f.control('/spend/settings', { dailyCapYuan: 0.02, reducedPercent: 10, restrictedPercent: 90 })).status, 200);
+  assert.equal((await f.control('/spend')).json().value.tier, 'reduced');
+  assert.deepEqual([(await marked('initiated')).status, (await marked('group')).status, f.calls.length], [429, 200, 3]);
+  // From the restricted tier on a group turn is refused before the provider is contacted; a private reply is not.
+  assert.equal((await f.control('/spend/settings', { dailyCapYuan: 0.02, reducedPercent: 10, restrictedPercent: 20 })).status, 200);
+  assert.equal((await f.control('/spend')).json().value.tier, 'restricted');
+  const refused = await marked('group');
+  assert.deepEqual([refused.status, JSON.parse(refused.text).error.code, f.calls.length], [429, 'BUDGET_EXHAUSTED', 3]);
+  assert.equal((await f.chat()).status, 200);
+  rows = await f.usage(seen => seen['group-chat'].denied.spend_tier === 1 && seen.chat.ok === 2);
+  assert.deepEqual([rows['group-chat'].calls, rows['group-chat'].denied, rows.chat.denied, f.calls.length], [2, { spend_tier: 1 }, {}, 4]);
 });
