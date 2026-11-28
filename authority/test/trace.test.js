@@ -246,7 +246,7 @@ test('the trace is a bounded in-memory ring, filtered by opaque person label, ne
   for (const bad of [{ person: `person:qq:${A}` }, { person: A }, { limit: 0 }, { limit: TRACE_LIMIT + 1 }, { stream: stream(A) }]) assert.throws(() => a.contextTrace(bad), { code: 'VALIDATION_ERROR' }, JSON.stringify(bad));
   // Tracing writes nothing: no audit row, no revision, no migration, no table.
   assert.deepEqual([a.snapshot().audit.length, a.health().revision], [audit, revision]);
-  assert.deepEqual(MIGRATIONS, []);
+  assert.deepEqual(MIGRATIONS.map(migration => migration.name), ['group-chat-tables']);
   assert.deepEqual(a.store.db.prepare("SELECT name FROM sqlite_schema WHERE name LIKE '%trace%'").all(), []);
 });
 

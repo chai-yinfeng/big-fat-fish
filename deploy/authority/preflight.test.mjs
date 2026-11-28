@@ -155,7 +155,7 @@ test('the database is read without a lock while the Authority runs; nothing pend
 });
 
 test('pending migrations are reported, and refused when the backup cannot be written or the disk is too full', async t => {
-  const w = world(t), { file, authority } = await database(w);
+  const w = world(t), { file, authority } = await database(w, []);
   t.after(() => authority.close());
   const before = fs.readFileSync(file), migrations = [drill(1), drill(2)];
   let result = await preflight({ base: w.base, release: w.release, migrations });
@@ -176,7 +176,7 @@ test('a database migrated further than the release knows, or differently, refuse
   authority.close();
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [drill(1), drill(2)] })).failures), []);
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [drill(1)] })).failures), ['authority-db MIGRATION_UNKNOWN m2-drill-2']);
-  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release })).failures), ['authority-db MIGRATION_UNKNOWN m1-drill-1', 'authority-db MIGRATION_UNKNOWN m2-drill-2']);
+  assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [] })).failures), ['authority-db MIGRATION_UNKNOWN m1-drill-1', 'authority-db MIGRATION_UNKNOWN m2-drill-2']);
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [{ ...drill(1), name: 'renamed' }, drill(2)] })).failures), ['authority-db SCHEMA_ERROR']);
   assert.deepEqual(codes((await preflight({ base: w.base, release: w.release, migrations: [drill(2)] })).failures), ['authority-db MIGRATION_INVALID']);
 });
@@ -194,7 +194,7 @@ test('a database this release cannot open refuses the deploy', async t => {
 });
 
 test('a migration that widens an existing table needs a running release that names its insert columns', async t => {
-  const w = world(t), { authority } = await database(w);
+  const w = world(t), { authority } = await database(w, []);
   authority.close();
   const migrations = [drill(1), { id: 2, name: 'widen-streams', rollbackLevel: 1, up: db => db.exec('ALTER TABLE streams ADD COLUMN note TEXT') }];
   // `current` is OLD, which has no authority/src/migrations.js: rollback level 0, like production release 7987e8b.

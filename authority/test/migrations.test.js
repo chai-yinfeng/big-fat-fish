@@ -12,11 +12,12 @@ const table = (id, name = `drill-${id}`) => ({ id, name, up: db => db.exec(`CREA
 const tables = file => { const db = new DatabaseSync(file, { readOnly: true }); try { return db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all().map(row => row.name); } finally { db.close(); } };
 const rejection = (fn, code) => assert.throws(fn, error => error.code === code);
 
-/** A database as the current release leaves it, with some rows in the tables every turn writes. */
+/** A database as a release from before any migration leaves it (this release registers m1 itself, so the framework is
+ * exercised here on lists of its own), with some rows in the tables every turn writes. */
 function world(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fish-migrations-')), file = path.join(dir, 'authority.sqlite');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const a = new Authority({ file, clock: () => 1000 });
+  const a = new Authority({ file, clock: () => 1000, migrations: [] });
   a.registerCapability({ id: 'chat', policy: 'conversation.v1' });
   a.bindActor({ capabilityId: 'chat', externalActorId: 'alice', personId: 'p1' });
   a.bindStream({ capabilityId: 'chat', streamId: 'one', personId: 'p1', audience: 'private' });
@@ -52,7 +53,7 @@ test('this release registers a valid migration list', () => {
 
 test('nothing registered: an existing database is left exactly as it was (no ledger, no backup)', t => {
   const w = world(t), before = { dump: dump(w.file), bytes: bytes(w.file), files: fs.readdirSync(w.dir) };
-  for (const options of [undefined, { migrations: [] }]) {
+  for (const options of [{ migrations: [] }]) {
     const a = new Authority({ file: w.file, ...options });
     assert.deepEqual(a.store.migrated, { applied: [], backup: null });
     a.close();
@@ -134,7 +135,7 @@ test('a failed backup refuses to migrate and to start; the database is unchanged
   fs.writeFileSync(path.join(w.backups, 'authority-m0-m1-20261110T000000000Z.sqlite'), 'stale');
   rejection(() => new Store(w.file, undefined, { migrations: [table(1)], now: () => Date.UTC(2026, 10, 10) }), 'MIGRATION_BACKUP_FAILED');
   assert.equal(dump(w.file), before);
-  const a = new Authority({ file: w.file });
+  const a = new Authority({ file: w.file, migrations: [] });
   assert.equal(write(a, 'second'), 2);
   a.close();
 });
@@ -146,7 +147,7 @@ test('a migration that fails part-way rolls the whole batch back; the database s
   assert.equal(dump(w.file), before);
   const [backup] = listBackups(w.backups);
   assert.equal(dump(path.join(w.backups, backup)), before);
-  const a = new Authority({ file: w.file });
+  const a = new Authority({ file: w.file, migrations: [] });
   assert.equal(write(a, 'second'), 2);
   a.close();
   // Fixed in the next build: both apply.
@@ -188,7 +189,7 @@ test('named inserts keep every write path working after columns are added to exi
   assert.match(a.context('chat', { streamId: 'one', query: 'second' }).text, /second/);
   a.close();
   // The release being replaced (no migration registered) writes the widened tables too.
-  a = new Authority({ file: w.file });
+  a = new Authority({ file: w.file, migrations: [] });
   assert.equal(write(a, 'third'), 3);
   assert.equal(a.store.db.prepare('SELECT drill_count FROM observations ORDER BY rowid DESC LIMIT 1').get().drill_count, 7);
   a.close();

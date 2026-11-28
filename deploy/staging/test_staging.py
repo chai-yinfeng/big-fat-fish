@@ -129,8 +129,8 @@ class ReuseTests(unittest.TestCase):
 class LifecycleOrderTests(unittest.TestCase):
     def test_rollback_round_trip_happens_after_the_upgrade_was_used_and_before_the_from_release_is_pruned(self):
         steps = re.findall(r"^    step\('([^']+)'", (HERE / 'staging-agent.py').read_text(), re.M)
-        order = ['upgrade (preflight, switch, health)', 'room-unprepared', 'room-prepare', 'room-restart', 'room-upgraded', 'smoke-upgraded', 'scenarios-upgraded', 'ledger-before-rollback', 'migration-drill (copy)', 'forget-pending-before-rollback', 'rollback (to from)', 'forget-pending-under-from',
-                 'room-after-rollback', 'smoke-from', 'ledger-rows-of-from', 'roll-forward (rollback again)', 'forget-closes-after-roll-forward', 'room-after-roll-forward', 'Q3 ledger-survives-rollback', 'prune-from', 'restart-all', 'manager-restart (default.target)', 'smoke', 'room', 'scenarios', 'prod-untouched']
+        order = ['upgrade (preflight, switch, health)', 'room-unprepared', 'room-prepare', 'room-restart', 'room-upgraded', 'smoke-upgraded', 'scenarios-upgraded', 'ledger-before-rollback', 'migration-drill (copy)', 'groups-before-rollback', 'forget-pending-before-rollback', 'rollback (to from)', 'forget-pending-under-from',
+                 'group-after-rollback', 'room-after-rollback', 'smoke-from', 'ledger-rows-of-from', 'roll-forward (rollback again)', 'forget-closes-after-roll-forward', 'room-after-roll-forward', 'Q3 ledger-survives-rollback', 'prune-from', 'restart-all', 'manager-restart (default.target)', 'smoke', 'room', 'scenarios', 'prod-untouched']
         self.assertEqual(steps[steps.index(order[0]):], order)
 
     def test_the_drill_tool_is_uploaded_and_only_ever_given_a_copy(self):

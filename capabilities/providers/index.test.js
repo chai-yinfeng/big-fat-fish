@@ -6,7 +6,7 @@ import { DECLARATIONS, CAPABILITIES, ACTIVITIES } from './index.js';
 import { CATEGORIES } from '../../model-gateway/spend.mjs';
 
 test('the registry lists every declared capability once, as frozen dependency-free data', () => {
-  assert.deepEqual(CAPABILITIES.map(item => item.id), ['chat', 'consolidation', 'vision', 'sticker', 'web', 'speech-tts', 'speech-asr', 'proactive', 'demo', 'video', 'video-note', 'video-frame']);
+  assert.deepEqual(CAPABILITIES.map(item => item.id), ['chat', 'consolidation', 'vision', 'sticker', 'web', 'speech-tts', 'speech-asr', 'proactive', 'group-chat', 'demo', 'video', 'video-note', 'video-frame']);
   // One directory per capability, and none that the index forgot.
   const directories = fs.readdirSync(fileURLToPath(new URL('./', import.meta.url)), { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name).sort();
   // The declarations without a meter (content actions that are not counted) have a directory and no ledger row.
@@ -46,7 +46,7 @@ test('metering as it is today: vision 12 and web 20 a day on the legacy counters
   assert.deepEqual([meter.chat.spendCategory, meter.chat.stopTier, meter.consolidation.spendCategory, meter.consolidation.stopTier], ['conversation', 'exhausted', 'maintenance', 'restricted']);
   assert.deepEqual([meter.chat.dailyLimit, meter.consolidation.dailyLimit], [null, null]);
   assert.deepEqual([meter['speech-tts'].source, meter['speech-tts'].units, meter['speech-asr'].source, meter['speech-asr'].units], ['reported', ['chars', 'audioSeconds'], 'reported', ['audioSeconds']]);
-  assert.deepEqual(CAPABILITIES.filter(item => item.meter.source === 'gateway').map(item => item.id), ['chat', 'consolidation', 'vision', 'sticker', 'web', 'proactive', 'video-note', 'video-frame']);
+  assert.deepEqual(CAPABILITIES.filter(item => item.meter.source === 'gateway').map(item => item.id), ['chat', 'consolidation', 'vision', 'sticker', 'web', 'proactive', 'group-chat', 'video-note', 'video-frame']);
 });
 
 test('companion_activity offers exactly the actions declared for it: watching a video, its status, its pages and its stills', () => {

@@ -29,7 +29,8 @@ test('drill with this checkout as both releases: table and column rounds, backup
   assert.match(result.line, /staging-drill-table: backup, applied, recorded, idempotent, old release writes; .*staging-drill-column/);
   const db = new DatabaseSync(database, { readOnly: true });
   t.after(() => db.close());
-  assert.equal(db.prepare('SELECT count(*) AS n FROM schema_migrations').get().n, 2);
+  // The release's own migration (m1) and the two the drill added.
+  assert.equal(db.prepare('SELECT count(*) AS n FROM schema_migrations').get().n, 3);
   assert.equal(db.prepare("SELECT count(*) AS n FROM observations WHERE capability_id='staging-drill'").get().n, 4);
   assert.deepEqual(fs.readdirSync(dir).sort(), ['authority.sqlite', 'migration-backups']);
   // A copy that was drilled before is refused instead of reporting a stale pass.
