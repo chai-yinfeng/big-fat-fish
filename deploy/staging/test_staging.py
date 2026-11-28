@@ -294,6 +294,28 @@ class ConsolidationResetTests(unittest.TestCase):
             self.assertEqual(db.execute('SELECT id FROM maintenance_tasks').fetchall(), [('t2',)])
             db.close()
 
+    def test_a_group_conversation_restarts_like_a_private_one_so_a_second_replay_of_the_day_gets_its_batches(self):
+        import json
+        import sqlite3
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / 'authority.sqlite'
+            db = sqlite3.connect(str(database))
+            db.executescript('''CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                CREATE TABLE streams(capability_id TEXT,stream_id TEXT,person_id TEXT,audience TEXT,entity_id TEXT);
+                CREATE TABLE observations(id TEXT PRIMARY KEY,capability_id TEXT,stream_id TEXT);
+                CREATE TABLE maintenance_tasks(id TEXT PRIMARY KEY,mode TEXT);''')
+            group = 'qq:999900000001:group:999900009004'
+            db.executemany('INSERT INTO streams VALUES(?,?,?,?,?)', [('qq', 'MOCK-a', 'p1', 'private', 'e'), ('qq', group, 'group:' + group, 'shared', 'e'), ('qq', 'MOCK-old-shared', 'p1', 'shared', 'e')])
+            db.executemany('INSERT INTO observations VALUES(?,?,?)', [('o1', 'qq', 'MOCK-a'), ('o2', 'qq', group), ('o3', 'qq', group), ('o4', 'qq', 'MOCK-old-shared')])
+            # As the first replay of the day leaves it: the group has used both of its batches.
+            state = {'e': {'since': 5, 'day': '2026-11-28', 'calls': 4, 'streams': {'qq\0MOCK-a': {'calls': 2, 'lastObservationId': 'o1'}, 'qq\0' + group: {'calls': 2, 'invalid': 1, 'issued': 't1', 'digests': 2, 'lastObservationId': 'o2'}}}}
+            db.execute("INSERT INTO metadata VALUES('consolidation',?)", (json.dumps(state),))
+            db.commit()
+            self.assertEqual(sa.reset_consolidation(database), 2)
+            after = json.loads(db.execute("SELECT value FROM metadata WHERE key='consolidation'").fetchone()[0])
+            self.assertEqual(after['e']['streams'], {'qq\0MOCK-a': {'calls': 0, 'invalid': 0, 'lastObservationId': 'o1'}, 'qq\0' + group: {'calls': 0, 'invalid': 0, 'digests': 2, 'lastObservationId': 'o3'}})
+            db.close()
+
 
 class InitiationReplayTests(unittest.TestCase):
     def test_a_replay_starts_with_no_open_initiation_and_leaves_everything_else(self):

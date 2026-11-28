@@ -444,7 +444,10 @@ def reset_consolidation(database):
     conversation starts the replay with nothing waiting (its cursor at its newest observation) and with
     today's batches unused; no day's diaries count as written (the diary markers go, the private one and each
     person's open one, so the day an earlier replay had written can be triggered again). Digests, facts and
-    diaries already written stay, and so does the open diary's list. Returns the number of conversations."""
+    diaries already written stay, and so does the open diary's list. A group conversation (a shared one bound to its
+    own scope key `group:<stream>`) restarts the same way: a group gets two batches a day like anybody, and without
+    this the second replay of a day finds a group's batches used up by the first and writes no group digest.
+    Returns the number of conversations."""
     if not Path(database).exists():
         return 0
     db = sqlite3.connect(str(database))
@@ -459,7 +462,7 @@ def reset_consolidation(database):
             own.pop('diary', None)
             own.pop('openDiary', None)
             streams = own.setdefault('streams', {})
-            for capability, stream in db.execute("SELECT capability_id,stream_id FROM streams WHERE entity_id=? AND audience='private'", (entity,)).fetchall():
+            for capability, stream in db.execute("SELECT capability_id,stream_id FROM streams WHERE entity_id=? AND (audience='private' OR (audience='shared' AND person_id='group:'||stream_id))", (entity,)).fetchall():
                 entry = streams.setdefault(capability + '\0' + stream, {})
                 newest = db.execute('SELECT id FROM observations WHERE capability_id=? AND stream_id=? ORDER BY rowid DESC LIMIT 1', (capability, stream)).fetchone()
                 entry.update(calls=0, invalid=0)
